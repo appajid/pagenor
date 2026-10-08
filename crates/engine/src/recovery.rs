@@ -69,6 +69,12 @@ fn owns(d: &DocState, dir: &Path, uid: u64) -> bool {
     d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(dir) == Some(&uid)
 }
 
+/// Automatic recovery must also clean up owned checkpoints when undo restores a saved
+/// document. Unclaimed files in the recovery folder do not make a clean session pending.
+pub fn needs_save(s: &Session) -> bool {
+    s.docs.iter().any(|d| d.is_dirty() || !d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty())
+}
+
 fn exists(path: &Path) -> Result<bool> {
     match path.symlink_metadata() {
         Ok(_) => Ok(true),

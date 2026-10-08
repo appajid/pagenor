@@ -1,6 +1,6 @@
 # Phase 02 — clipboard and document reliability
 
-Updated: 2026-10-09. P02.1 and P02.2 are complete locally; Phase 02 and M0 are in progress.
+Updated: 2026-10-09. P02.1–P02.3 are complete locally; Phase 02 and M0 are in progress.
 Adobe/dongle activation validation remains pending at the owner’s request.
 
 ## P02.1 — one reversible paste operation
@@ -67,6 +67,46 @@ using key 5. Another process recovers all three documents and verifies copy-save
 save and close cleanup. All fixtures are isolated temporary data; user files and
 default recovery folders are not accessed.
 
+## P02.3 — recovery scheduling, clean undo and retry
+
+Two timer regressions failed against the original behavior. The timer checked
+only dirty documents, so undo returning to the saved document left its obsolete
+checkpoint indefinitely. `recoveryMinutes: 1e308` was accepted by `prefs.set`;
+multiplying by 60 overflowed to infinity, preventing any timed recovery save.
+
+The engine now exposes whether a session has dirty documents or owned checkpoints
+awaiting cleanup. The existing `file.recovery.save` command handles both on the next
+scheduled pass; unclaimed files do not schedule recovery for a clean session. The
+UI timer requests its own repaint, independently of font polling and caret animation.
+Intervals are bounded to five seconds through the preferences UI's one-hour maximum,
+before multiplication. Nonfinite intervals fall back to 30 seconds; a reset or
+nonfinite previous clock is rebased, and an invalid current clock defers the attempt.
+Exact deadlines count as due. Failed attempts are throttled to the same interval,
+retain their previous valid snapshot and show the existing recovery error. A later
+successful timer pass replaces that failure status with “Recovery is up to date.”
+Normal edits still have the periodic checkpoint window; this is not per-keystroke
+recovery. No new dependency, document format or unsafe code was introduced.
+
+Seven new UI tests cover clean undo, oversized/default/minimum/nonfinite intervals,
+clock reset, independent idle wakeup, disabled recovery, multiple inactive documents,
+unknown files and a failed replacement followed by a scheduled retry. A real-time
+headless egui fixture honors repaint delays using actual elapsed time, without
+control requests or manual recovery saves. Three fixture processes plus three fresh
+verification processes pass: inactive dirty documents checkpoint at about six
+seconds; clean undo removes its snapshot on the second pass (about 12 seconds);
+an injected metadata-replacement failure appears on the second pass, preserves the
+previous snapshot and retries successfully on the third (about 18 seconds). Fresh
+processes verify exact document/Unicode/path data and cleanup. CPU-rendered failure
+and retry images were inspected; the current edit stays visible and intact.
+
+A live eframe window fixture was also attempted with isolated data, but timed out
+before reaching its timer checks while AppKit reported invalid message connections.
+It was terminated by its test runner and its temporary files removed. Live native
+window validation therefore remains pending; headless evidence does not establish
+native event-loop behavior. A separate source audit found that the desktop `on_exit`
+hook saves preferences only: a final recovery pass for edits newer than the last
+periodic snapshot is the next local task (PG-0206), requiring quit/close validation.
+
 ## Validation matrix
 
 | Scenario | Evidence / status |
@@ -83,17 +123,19 @@ default recovery folders are not accessed.
 | Browser / TextEdit / Pages / Word actual clipboard transfer | Pending. Require real local application transfer evidence. |
 | Multiple entries, corrupt pending files and process UID reuse | Passed. Ownership regression and fresh-process probe; unknown entries remain intact. |
 | Checkpoint write failure, retry, save/revert/close cleanup | Passed for synthetic replacement/staging failures and failed save/revert. Prior snapshot remains usable; copy-save retains it. |
-| Recovery timer, actual disk-full/read-only storage and forced native app crash | Pending. Engine/process probes do not establish timer or native exit behavior. |
+| Recovery timer deadlines, idle wakeup, clean undo and retry | Passed (P02.3). Seven UI tests and a real-time headless egui loop; fresh-process recovery matches. |
+| Recovery error and successful-retry display | Passed. CPU failure/retry images inspected; latest document remains intact. |
+| Live native timer/window exit and actual disk-full/read-only storage | Pending. Live window fixture timed out with AppKit connection errors. Normal exit hook has no final recovery pass (PG-0206). |
 | Native Windows/Linux runtime matrix | Deferred to milestone publication. |
 
-Validation: `cargo xtask ci` passes all seven steps; 828 tests pass, none fail,
+Validation: `cargo xtask ci` passes all seven steps; 835 tests pass, none fail,
 three performance tests are ignored and all 16 WASM packages check. The Mac app
-builds. Strict engine-library Clippy passes for Windows GNU and Linux GNU.
+builds. Strict UI-library Clippy, including engine dependencies, passes for Windows GNU and Linux GNU.
 No GitHub upload or remote CI was performed. Cross-target checks do not
 establish native clipboard/recovery runtime behavior.
 
-Remaining coverage includes real external-application clipboard transfer and the
-native recovery timer/exit matrix. Power-loss durability (including directory
+Remaining coverage includes real external-application clipboard transfer, final
+shutdown protection and the live native recovery timer/exit matrix. Power-loss durability (including directory
 sync), cleanup-denied storage and simultaneous app processes claiming the same
 checkpoint are not established by these tests. Key reservation prevents new-entry
 collisions; it does not add inter-process ownership locking. Keep these limits

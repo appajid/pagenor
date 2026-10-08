@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P02.3: The recovery timer handles owned checkpoints after clean undo, bounds
+  oversized intervals before multiplication, schedules its own wakeup and reports
+  successful retry after failure. Seven UI regressions, real-time headless timer
+  scenarios and CPU failure/retry images pass. Live window testing remains pending
+  after an AppKit connection timeout; final shutdown recovery is next (PG-0206).
+
 - P02.2: Recovery keeps its checkpoint when reopened and tracks owned recovery
   keys independently of runtime document IDs. New entries avoid pending files;
   save/revert/close clean up only owned checkpoints. Staged, flushed writes keep

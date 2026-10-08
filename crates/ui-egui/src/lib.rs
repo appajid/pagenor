@@ -420,8 +420,10 @@ pub struct DesignApp {
     /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
     pub native_shortcuts: std::collections::HashSet<String>,
     last_time: f64,
-    /// When recovery data was last written (seconds, egui time).
+    /// Last automatic recovery attempt (seconds, egui time), including failed attempts.
     pub last_recovery: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    recovery_failed: bool,
 }
 
 impl DesignApp {
@@ -459,6 +461,8 @@ impl DesignApp {
             native_shortcuts: Default::default(),
             last_time: 0.0,
             last_recovery: 0.0,
+            #[cfg(not(target_arch = "wasm32"))]
+            recovery_failed: false,
         }
     }
 
@@ -630,16 +634,8 @@ impl DesignApp {
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);
-        // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
-            self.last_recovery = now;
-            if self.session.documents().iter().any(|d| d.is_dirty())
-                && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
-            {
-                self.status(format!("Couldn't write recovery data: {e}"));
-            }
-        }
+        self.recovery_tick(ctx, now);
         let dt = now - self.last_time;
         if dt > 0.0 {
             self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
@@ -668,6 +664,47 @@ impl DesignApp {
                 let cmd = if lp.ends_with(".pagenor") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
                 let _ = self.run(cmd, json!({"path": p}));
             }
+        }
+    }
+
+    /// Save dirty documents and remove obsolete owned checkpoints on the same schedule.
+    /// Schedule our own wakeup: recovery must not depend on caret animation or font refresh.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recovery_tick(&mut self, ctx: &egui::Context, now: f64) {
+        use std::time::Duration;
+        if self.session.recovery_dir.is_none() || !pagenor_engine::recovery::needs_save(&self.session) {
+            return;
+        }
+        if !now.is_finite() {
+            ctx.request_repaint_after(Duration::from_secs(5));
+            return;
+        }
+        // Match the preferences dialog's one-hour maximum; clamp before multiplication so
+        // large finite preferences cannot overflow to infinity and silently disable recovery.
+        let minutes = self.session.prefs.recovery_minutes;
+        let interval = if minutes.is_finite() { minutes.clamp(5.0 / 60.0, 60.0) * 60.0 } else { 30.0 };
+        if !self.last_recovery.is_finite() || now < self.last_recovery {
+            self.last_recovery = now;
+        }
+        if now - self.last_recovery >= interval {
+            // Throttle failures too: a full or unavailable disk must not retry every frame.
+            self.last_recovery = now;
+            match self.session.execute("file.recovery.save", &json!({})) {
+                Ok(_) => {
+                    if self.recovery_failed {
+                        self.status("Recovery is up to date.");
+                    }
+                    self.recovery_failed = false;
+                }
+                Err(e) => {
+                    self.recovery_failed = true;
+                    self.status(format!("Couldn't write recovery data: {e}"));
+                }
+            }
+        }
+        if pagenor_engine::recovery::needs_save(&self.session) {
+            let remaining = (interval - (now - self.last_recovery)).clamp(0.001, interval);
+            ctx.request_repaint_after(Duration::try_from_secs_f64(remaining).unwrap_or(Duration::from_secs(5)));
         }
     }
 
@@ -919,6 +956,175 @@ pub fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recovery_app(name: &str) -> (DesignApp, egui::Context, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pagenor-ui-recovery-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::new();
+        session.recovery_dir = Some(dir.clone());
+        (DesignApp::new(session, Services::default()), egui::Context::default(), dir)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn logic_at(app: &mut DesignApp, ctx: &egui::Context, time: f64) {
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_removes_checkpoint_after_undo_to_saved_state() {
+        let (mut app, ctx, dir) = recovery_app("undo-clean");
+        app.run("file.new", json!({})).unwrap();
+        app.run("file.saveAs", json!({"path": dir.join("saved.pagenor")})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        logic_at(&mut app, &ctx, 31.0);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1);
+        app.run("edit.undo", json!({})).unwrap();
+        assert!(!app.session.doc().unwrap().is_dirty());
+        logic_at(&mut app, &ctx, 62.0);
+        assert!(pagenor_engine::recovery::list(&dir).is_empty(), "clean undo must not resurrect an old edit after restart");
+        let mut restarted = Session::new();
+        assert!(pagenor_engine::recovery::open(&mut restarted, &dir).unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_bounds_oversized_interval_from_preferences() {
+        let (mut app, ctx, dir) = recovery_app("interval-overflow");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        app.run("prefs.set", json!({"recoveryMinutes": 1e308})).unwrap();
+        logic_at(&mut app, &ctx, 3601.0);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1, "finite preferences must not overflow into a disabled timer");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_obeys_default_and_minimum_deadlines() {
+        for (name, minutes, deadline) in [("default-deadline", 0.5, 30.0), ("minimum-deadline", 0.0, 5.0)] {
+            let (mut app, ctx, dir) = recovery_app(name);
+            app.session.prefs.recovery_minutes = minutes;
+            app.run("file.new", json!({})).unwrap();
+            logic_at(&mut app, &ctx, deadline + 1.0);
+            assert!(pagenor_engine::recovery::list(&dir).is_empty(), "clean documents need no snapshot");
+            app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+            // Use a fresh clock origin after the clean frame above.
+            app.last_recovery = deadline + 1.0;
+            logic_at(&mut app, &ctx, 2.0 * deadline + 0.9);
+            assert!(pagenor_engine::recovery::list(&dir).is_empty(), "not before the deadline");
+            logic_at(&mut app, &ctx, 2.0 * deadline + 1.0);
+            assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1, "save exactly at the deadline");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_reports_failure_preserves_checkpoint_and_retries_on_schedule() {
+        let (mut app, ctx, dir) = recovery_app("retry");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        logic_at(&mut app, &ctx, 30.0);
+        let uid = pagenor_engine::recovery::list(&dir)[0].0;
+        let doc = dir.join(format!("{uid}.pagenor"));
+        let meta = dir.join(format!("{uid}.json"));
+        let previous = std::fs::read(&doc).unwrap();
+        let metadata = std::fs::read(&meta).unwrap();
+        app.run("frame.create", json!({"rect": [0, 0, 20, 20]})).unwrap();
+        std::fs::remove_file(&meta).unwrap();
+        std::fs::create_dir(&meta).unwrap();
+        logic_at(&mut app, &ctx, 60.0);
+        assert!(app.ui.status.starts_with("Couldn't write recovery data:"));
+        assert_eq!(std::fs::read(&doc).unwrap(), previous);
+        assert!(app.session.doc().unwrap().is_dirty());
+        std::fs::remove_dir(&meta).unwrap();
+        std::fs::write(&meta, metadata).unwrap();
+        logic_at(&mut app, &ctx, 60.1);
+        assert_eq!(std::fs::read(&doc).unwrap(), previous, "no busy-loop retry immediately after a failure");
+        assert_eq!(app.last_recovery, 60.0);
+        logic_at(&mut app, &ctx, 90.0);
+        assert_eq!(app.ui.status, "Recovery is up to date.");
+        assert_eq!(pagenor_engine::cmd::from_bytes(&std::fs::read(doc).unwrap()).unwrap(), *app.session.doc().unwrap().doc);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1, "retry retains the owned key");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_handles_nonfinite_preferences_and_reset_clocks() {
+        for (name, minutes) in [("nan-interval", f64::NAN), ("infinite-interval", f64::INFINITY), ("negative-infinite-interval", f64::NEG_INFINITY)] {
+            let (mut app, ctx, dir) = recovery_app(name);
+            app.session.prefs.recovery_minutes = minutes;
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+            app.last_recovery = f64::NAN;
+            app.recovery_tick(&ctx, 2.0);
+            assert_eq!(app.last_recovery, 2.0);
+            app.last_recovery = 100.0;
+            app.recovery_tick(&ctx, 3.0);
+            assert_eq!(app.last_recovery, 3.0, "reset clocks cannot indefinitely postpone recovery");
+            app.recovery_tick(&ctx, f64::INFINITY);
+            assert_eq!(app.last_recovery, 3.0);
+            app.recovery_tick(&ctx, 32.9);
+            assert!(pagenor_engine::recovery::list(&dir).is_empty());
+            app.recovery_tick(&ctx, 33.0);
+            assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1, "nonfinite intervals fall back to 30 seconds");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_handles_multiple_documents_and_preserves_unclaimed_files() {
+        let (mut app, ctx, dir) = recovery_app("multiple");
+        for _ in 0..2 {
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        }
+        let unknown = dir.join(format!("{}.pagenor", u64::MAX));
+        std::fs::write(&unknown, b"pending unreadable entry").unwrap();
+        logic_at(&mut app, &ctx, 30.0);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 3);
+        app.session.set_active(0);
+        app.run("edit.undo", json!({})).unwrap();
+        app.run("file.new", json!({})).unwrap(); // Active document is clean; inactive dirty document still needs recovery.
+        logic_at(&mut app, &ctx, 60.0);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 2);
+        assert_eq!(std::fs::read(&unknown).unwrap(), b"pending unreadable entry");
+        app.session.set_active(1);
+        app.run("edit.undo", json!({})).unwrap();
+        logic_at(&mut app, &ctx, 90.0);
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1);
+        assert!(!pagenor_engine::recovery::needs_save(&app.session), "unclaimed files do not schedule clean-session recovery");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovery_timer_schedules_idle_wakeup_and_leaves_disabled_recovery_alone() {
+        let (mut app, ctx, dir) = recovery_app("wakeup");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        // Settle egui's initial repaints; do not run the font or caret animation logic.
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+        }
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| app.recovery_tick(ui.ctx(), 1.0));
+        let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        output.textures_delta.clear();
+        assert!(delay.as_secs_f64() > 28.0 && delay.as_secs_f64() <= 29.0, "recovery itself schedules the next frame");
+        app.session.recovery_dir = None;
+        app.recovery_tick(&ctx, 100.0);
+        assert_eq!(app.last_recovery, 0.0);
+        assert!(pagenor_engine::recovery::list(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn host_clipboard_paste_is_one_reversible_edit_and_explicit_text_bypasses_the_host() {
