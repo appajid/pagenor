@@ -1,10 +1,17 @@
 # Pagenor roadmap
 
+- P02.4: Desktop Quit and root-window close checkpoint current edits before
+  closing, cancel on write/cleanup failure, and allow retry. macOS Quit dispatches
+  through the shared command; the exit hook makes a best-effort final save. Eight
+  UI regressions, six isolated process probes and inspected CPU images pass.
+  Live native shutdown, actual storage failures and external clipboard transfer
+  remain pending; Adobe/dongle activation validation stays pending.
+
 - P02.3: The recovery timer handles owned checkpoints after clean undo, bounds
   oversized intervals before multiplication, schedules its own wakeup and reports
   successful retry after failure. Seven UI regressions, real-time headless timer
   scenarios and CPU failure/retry images pass. Live window testing remains pending
-  after an AppKit connection timeout; final shutdown recovery is next (PG-0206).
+  after an AppKit connection timeout; shared shutdown protection follows in P02.4.
 
 - P02.2: Recovery keeps its checkpoint when reopened and tracks owned recovery
   keys independently of runtime document IDs. New entries avoid pending files;

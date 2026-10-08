@@ -1,6 +1,6 @@
 # Phase 02 — clipboard and document reliability
 
-Updated: 2026-10-09. P02.1–P02.3 are complete locally; Phase 02 and M0 are in progress.
+Updated: 2026-10-09. P02.1–P02.4 are complete locally; Phase 02 and M0 are in progress.
 Adobe/dongle activation validation remains pending at the owner’s request.
 
 ## P02.1 — one reversible paste operation
@@ -105,7 +105,49 @@ It was terminated by its test runner and its temporary files removed. Live nativ
 window validation therefore remains pending; headless evidence does not establish
 native event-loop behavior. A separate source audit found that the desktop `on_exit`
 hook saves preferences only: a final recovery pass for edits newer than the last
-periodic snapshot is the next local task (PG-0206), requiring quit/close validation.
+periodic snapshot was recorded as PG-0206 and is addressed by P02.4 below.
+
+## P02.4 — final recovery before desktop shutdown
+
+Two new root-window close regressions failed before the fix: edits made before
+the timer deadline had no checkpoint, and failed recovery writes did not cancel
+closing. Desktop closing now invokes the existing recovery command regardless of
+the timer deadline. Dirty documents keep their dirty state and original paths.
+All open documents, including inactive documents, are included. A failed write
+keeps the window and session open, preserves the previous checkpoint, and reports
+that Pagenor will stay open. A repaired folder allows a subsequent quit/close retry.
+
+`app.quit` is a native UI command shared by the control API, menu and shortcut.
+macOS uses a regular Quit menu item instead of Cocoa's immediate-termination item;
+Windows/Linux expose Quit in the File menu. Quit preflights recovery before
+requesting a cancellable root viewport close. The close event checkpoints again
+to include intervening commands. Closing is checked in logic, including occluded
+windows, and after host UI processing to protect edits later in a closing frame.
+Secondary window closing does not trigger application shutdown. A dirty session
+without a configured recovery folder returns an error instead of closing silently.
+
+The desktop `on_exit` hook also invokes final recovery as a best-effort fallback
+for termination that cannot be cancelled, then saves preferences. This fallback
+cannot keep the application open if the operating system is already terminating
+it. Force Quit, killed processes, power loss and native Dock/OS termination have
+no new guarantee. The periodic recovery window still applies to abrupt exits.
+No format, dependency, unsafe code or font behavior changed.
+
+Recovery now returns an error if an obsolete clean-document checkpoint cannot
+be removed, retaining ownership for retry. Previously this cleanup failure was
+logged but returned success, which could let undone edits reappear after restart.
+This is tested with a synthetic blocked checkpoint; actual permission-denied and
+full-disk storage remain separate native matrix gaps.
+
+Seven new UI regressions pass: before-deadline close, failure cancellation, previous
+snapshot preservation and retry across multiple documents, clean-undo cleanup
+failure, all control quit routes, intervening and late-frame edits, and secondary
+windows. Six isolated Mac child processes verify three writers (close, failure/
+retry, and the fallback's shared shutdown function) and three fresh recoveries.
+Exact document models, Unicode text and original paths match; corrupt unclaimed
+entries remain untouched. These exercise the shared engine/egui code, not a live
+native window or the host callback itself. CPU failure/retry UI images were
+inspected; the newest edit remains visible and the status reports failure/retry.
 
 ## Validation matrix
 
@@ -125,18 +167,18 @@ periodic snapshot is the next local task (PG-0206), requiring quit/close validat
 | Checkpoint write failure, retry, save/revert/close cleanup | Passed for synthetic replacement/staging failures and failed save/revert. Prior snapshot remains usable; copy-save retains it. |
 | Recovery timer deadlines, idle wakeup, clean undo and retry | Passed (P02.3). Seven UI tests and a real-time headless egui loop; fresh-process recovery matches. |
 | Recovery error and successful-retry display | Passed. CPU failure/retry images inspected; latest document remains intact. |
-| Live native timer/window exit and actual disk-full/read-only storage | Pending. Live window fixture timed out with AppKit connection errors. Normal exit hook has no final recovery pass (PG-0206). |
+| Final quit/root-close checkpoint and failure cancellation | Passed locally (P02.4). Seven UI tests, six isolated writer/restart processes and inspected CPU images. |
+| Live native timer/window exit and actual disk-full/read-only storage | Pending. Live window fixture timed out with AppKit connection errors. Shared close logic and fallback function pass headlessly; native events/host callback remain unverified. |
 | Native Windows/Linux runtime matrix | Deferred to milestone publication. |
 
-Validation: `cargo xtask ci` passes all seven steps; 835 tests pass, none fail,
+Validation: `cargo xtask ci` passes all seven steps; 842 tests pass, none fail,
 three performance tests are ignored and all 16 WASM packages check. The Mac app
 builds. Strict UI-library Clippy, including engine dependencies, passes for Windows GNU and Linux GNU.
 No GitHub upload or remote CI was performed. Cross-target checks do not
 establish native clipboard/recovery runtime behavior.
 
-Remaining coverage includes real external-application clipboard transfer, final
-shutdown protection and the live native recovery timer/exit matrix. Power-loss durability (including directory
-sync), cleanup-denied storage and simultaneous app processes claiming the same
+Remaining coverage includes real external-application clipboard transfer and the live native recovery timer/exit matrix. Power-loss durability (including directory
+sync), actual cleanup-denied storage and simultaneous app processes claiming the same
 checkpoint are not established by these tests. Key reservation prevents new-entry
 collisions; it does not add inter-process ownership locking. Keep these limits
 separate from the verified immediate-restart and reused-UID fixes.

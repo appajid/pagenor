@@ -37,6 +37,12 @@ so only enable it while you use it. Transport: `apps/pagenor/src/control_server.
 | `ui.render` | `{path?, page?, scale?, bleed?}` | Render a page headlessly (PNG; base64 if no path) |
 | `app.open` / `app.save` / `app.export` / `app.quit` | | Files |
 
+On desktop, `app.quit` checkpoints unsaved documents before requesting window
+close. Recovery failures return `ok: false` and keep Pagenor open. A successful
+response acknowledges the request; the subsequent close event checks recovery
+again and can cancel closing if a later write fails. `app.quit` is also available
+as a UI command through `engine.execute` and `ui.menu.invoke`.
+
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
 merged document; the template stays as it was ([agents.md](agents.md#data-merge)).

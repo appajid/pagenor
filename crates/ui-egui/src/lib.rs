@@ -424,6 +424,8 @@ pub struct DesignApp {
     pub last_recovery: f64,
     #[cfg(not(target_arch = "wasm32"))]
     recovery_failed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    quit_requested: bool,
 }
 
 impl DesignApp {
@@ -463,6 +465,8 @@ impl DesignApp {
             last_recovery: 0.0,
             #[cfg(not(target_arch = "wasm32"))]
             recovery_failed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            quit_requested: false,
         }
     }
 
@@ -664,6 +668,69 @@ impl DesignApp {
                 let cmd = if lp.ends_with(".pagenor") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
                 let _ = self.run(cmd, json!({"path": p}));
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.handle_close_request(ctx);
+    }
+
+    /// Flush current edits before desktop shutdown, without marking documents saved.
+    /// Hosts also call this as a last-chance fallback when termination cannot be cancelled.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prepare_shutdown(&mut self) -> Result<(), String> {
+        if !pagenor_engine::recovery::needs_save(&self.session) {
+            return Ok(());
+        }
+        let result = if self.session.recovery_dir.is_some() {
+            self.session.execute("file.recovery.save", &json!({})).map(|_| ()).map_err(|e| e.to_string())
+        } else {
+            Err("No recovery folder is configured for unsaved documents.".into())
+        };
+        match result {
+            Ok(()) => {
+                if self.recovery_failed {
+                    self.status("Recovery is up to date.");
+                }
+                self.recovery_failed = false;
+                Ok(())
+            }
+            Err(e) => {
+                self.recovery_failed = true;
+                let message = format!("Couldn't write recovery data: {e}");
+                self.status(&message);
+                Err(message)
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn request_quit(&mut self) -> Result<Value, String> {
+        // Control callers receive write failures immediately. Close generates a cancellable
+        // viewport event on the next pass, where any intervening edits are checkpointed again.
+        self.quit_requested = false;
+        if let Err(e) = self.prepare_shutdown() {
+            self.status(format!("{e} Pagenor will stay open."));
+            return Err(e);
+        }
+        self.quit_requested = true;
+        Ok(Value::Null)
+    }
+
+    /// Run in logic (including occluded windows) and again after host UI processing, so
+    /// commands later in a closing frame cannot leave newer edits outside the checkpoint.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if ctx.viewport_id() != egui::ViewportId::ROOT {
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && let Err(e) = self.prepare_shutdown()
+        {
+            self.status(format!("{e} Pagenor will stay open."));
+            self.quit_requested = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        if std::mem::take(&mut self.quit_requested) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -971,6 +1038,188 @@ mod tests {
     fn logic_at(app: &mut DesignApp, ctx: &egui::Context, time: f64) {
         let mut output = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| app.logic(ui.ctx()));
         output.textures_delta.clear();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn close_frame(app: &mut DesignApp, ctx: &egui::Context) -> egui::FullOutput {
+        let mut raw = egui::RawInput { time: Some(1.0), ..Default::default() };
+        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
+        let mut output = ctx.run_ui(raw, |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        output
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn window_close_checkpoints_edits_before_timer_deadline() {
+        let (mut app, ctx, dir) = recovery_app("close-before-timer");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        let output = close_frame(&mut app, &ctx);
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        let mut restarted = Session::new();
+        assert_eq!(pagenor_engine::recovery::open(&mut restarted, &dir).unwrap().len(), 1);
+        assert_eq!(restarted.doc().unwrap().doc.as_ref(), app.session.doc().unwrap().doc.as_ref());
+        assert!(app.session.doc().unwrap().is_dirty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn window_close_is_cancelled_on_recovery_failure() {
+        let (mut app, ctx, dir) = recovery_app("close-failure");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        let blocked = dir.join("blocked");
+        std::fs::write(&blocked, b"fixture").unwrap();
+        app.session.recovery_dir = Some(blocked);
+        let output = close_frame(&mut app, &ctx);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.session.documents().len(), 1);
+        assert!(app.session.doc().unwrap().is_dirty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn shutdown_preserves_old_checkpoint_on_failure_then_retries_all_documents() {
+        let (mut app, ctx, dir) = recovery_app("shutdown-retry");
+        let path = dir.join("Original café.pagenor");
+        app.run("file.new", json!({})).unwrap();
+        app.run("file.saveAs", json!({"path": path})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        app.prepare_shutdown().unwrap();
+        let uid = pagenor_engine::recovery::list(&dir)[0].0;
+        let doc = dir.join(format!("{uid}.pagenor"));
+        let meta = dir.join(format!("{uid}.json"));
+        let before = std::fs::read(&doc).unwrap();
+        app.run("frame.create", json!({"rect": [20, 20, 80, 80]})).unwrap();
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [30, 30, 70, 70]})).unwrap();
+        std::fs::remove_file(&meta).unwrap();
+        std::fs::create_dir(&meta).unwrap();
+        let output = close_frame(&mut app, &ctx);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.ui.status.ends_with("Pagenor will stay open."));
+        assert_eq!(std::fs::read(&doc).unwrap(), before);
+        assert_eq!(app.session.documents().len(), 2);
+        std::fs::remove_dir(&meta).unwrap();
+        let output = close_frame(&mut app, &ctx);
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.ui.status, "Recovery is up to date.");
+        let mut restarted = Session::new();
+        assert_eq!(pagenor_engine::recovery::open(&mut restarted, &dir).unwrap().len(), 2);
+        for (actual, expected) in restarted.documents().iter().zip(app.session.documents()) {
+            assert_eq!(actual.doc, expected.doc);
+            assert_eq!(actual.path, expected.path);
+            assert!(expected.is_dirty());
+        }
+        assert_eq!(app.session.documents()[0].path, Some(path.to_string_lossy().into_owned()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn shutdown_rejects_failed_clean_checkpoint_cleanup_and_retries() {
+        let (mut app, ctx, dir) = recovery_app("shutdown-cleanup");
+        app.run("file.new", json!({})).unwrap();
+        app.run("file.saveAs", json!({"path": dir.join("saved.pagenor")})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        app.prepare_shutdown().unwrap();
+        let uid = pagenor_engine::recovery::list(&dir)[0].0;
+        let doc = dir.join(format!("{uid}.pagenor"));
+        app.run("edit.undo", json!({})).unwrap();
+        assert!(!app.session.doc().unwrap().is_dirty());
+        std::fs::remove_file(&doc).unwrap();
+        std::fs::create_dir(&doc).unwrap();
+        let output = close_frame(&mut app, &ctx);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(pagenor_engine::recovery::needs_save(&app.session));
+        std::fs::remove_dir(&doc).unwrap();
+        let output = close_frame(&mut app, &ctx);
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!pagenor_engine::recovery::needs_save(&app.session));
+        assert!(pagenor_engine::recovery::list(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quit_command_and_control_routes_report_failures_before_requesting_close() {
+        let (mut app, ctx, dir) = recovery_app("quit-command");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        app.session.recovery_dir = None;
+        assert!(control::all_commands(&app).as_array().unwrap().iter().any(|v| v["id"] == "app.quit"));
+        for (method, params) in [
+            ("app.quit", json!({})),
+            ("ui.menu.invoke", json!({"command": "app.quit"})),
+            ("engine.execute", json!({"command": "app.quit", "params": {}})),
+        ] {
+            let (req, _) = ControlRequest::new(method, params);
+            let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("expected synchronous quit response") };
+            assert_eq!(reply["ok"], false);
+            assert!(!app.quit_requested);
+        }
+        app.session.recovery_dir = Some(dir.clone());
+        let (req, _) = ControlRequest::new("app.quit", json!({}));
+        let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("expected synchronous quit response") };
+        assert_eq!(reply["ok"], true);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn close_guard_catches_edits_and_write_failures_after_logic() {
+        let (mut app, ctx, dir) = recovery_app("late-close-edit");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        app.run("app.quit", json!({})).unwrap();
+        // An edit can arrive after the quit command and before its viewport close event.
+        app.run("frame.create", json!({"rect": [20, 20, 80, 80]})).unwrap();
+        let mut raw = egui::RawInput { time: Some(1.0), ..Default::default() };
+        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
+        let mut output = ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            let uid = pagenor_engine::recovery::list(&dir)[0].0;
+            let meta = dir.join(format!("{uid}.json"));
+            std::fs::remove_file(&meta).unwrap();
+            std::fs::create_dir(&meta).unwrap();
+            app.run("frame.create", json!({"rect": [30, 30, 70, 70]})).unwrap();
+            app.handle_close_request(ui.ctx());
+        });
+        output.textures_delta.clear();
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        let uid = pagenor_engine::recovery::list(&dir)[0].0;
+        std::fs::remove_dir(dir.join(format!("{uid}.json"))).unwrap();
+        close_frame(&mut app, &ctx);
+        let mut restarted = Session::new();
+        pagenor_engine::recovery::open(&mut restarted, &dir).unwrap();
+        assert_eq!(restarted.doc().unwrap().doc, app.session.doc().unwrap().doc);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn secondary_window_close_does_not_checkpoint_or_cancel() {
+        let (mut app, ctx, dir) = recovery_app("secondary-close");
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let mut raw = egui::RawInput { viewport_id: secondary, time: Some(1.0), ..Default::default() };
+        raw.viewports.insert(
+            secondary,
+            egui::ViewportInfo { parent: Some(egui::ViewportId::ROOT), events: vec![egui::ViewportEvent::Close], ..Default::default() },
+        );
+        let mut output = ctx.run_ui(raw, |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(output.viewport_output.values().all(|v| !v.commands.contains(&egui::ViewportCommand::CancelClose)));
+        assert!(pagenor_engine::recovery::list(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(not(target_arch = "wasm32"))]

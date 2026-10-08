@@ -106,6 +106,9 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         "ui.menu.invoke" if p.get("params").is_none_or(Value::is_null) => {
             // Exactly like choosing the menu item (commands ending in "…" open their dialog).
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
+            if id == "app.quit" {
+                return wrap(app.run(id, json!({})));
+            }
             menus::activate(app, id, &Value::Null);
             ok(json!({"dialog": app.ui.dialog.as_ref().map(|d| d.id.clone())}))
         }
@@ -337,10 +340,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         "app.open" => wrap(app.run("file.open", json!({"path": s("path")}))),
         "app.save" => wrap(app.run("file.save", json!({"path": s("path")}))),
         "app.export" => wrap(app.run("app.exportPng", json!({"path": s("path"), "page": p.get("page"), "scale": p.get("scale")}))),
-        "app.quit" => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            ok(Value::Null)
-        }
+        "app.quit" => wrap(app.run("app.quit", json!({}))),
         other => err(format!("unknown method `{other}`")),
     }
 }

@@ -35,8 +35,12 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.ui(ui);
+        self.0.handle_close_request(ui.ctx());
     }
     fn on_exit(&mut self) {
+        if let Err(e) = self.0.prepare_shutdown() {
+            eprintln!("Final recovery failed during termination: {e}");
+        }
         save_prefs(&self.0);
     }
 }

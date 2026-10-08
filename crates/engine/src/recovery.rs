@@ -162,6 +162,11 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
     for d in &s.docs {
         if !d.is_dirty() {
             discard_document(d);
+            // Failed cleanup must not be reported as a successful recovery pass: an old
+            // checkpoint could otherwise reopen edits the user already undid to clean.
+            if let Some(path) = d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().next() {
+                return Err(io_error(path, "could not remove obsolete recovery data"));
+            }
             continue;
         }
         let bytes = pagenor_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| io_error(&dir, e))?;

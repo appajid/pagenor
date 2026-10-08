@@ -39,6 +39,8 @@ impl NativeMenu {
         let app_menu = Submenu::new("Pagenor", true);
         // The branded About view instead of the stock panel.
         let about = MenuItem::with_id("pagenor-about", "About Pagenor", true, None);
+        // Cocoa's predefined Quit terminates directly, bypassing cancellable recovery.
+        let quit = MenuItem::with_id("pagenor-quit", "Quit Pagenor", true, accel("Cmd+Q"));
         let _ = app_menu.append_items(&[
             &about,
             &PredefinedMenuItem::separator(),
@@ -48,9 +50,10 @@ impl NativeMenu {
             &PredefinedMenuItem::hide_others(None),
             &PredefinedMenuItem::show_all(None),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(None),
+            &quit,
         ]);
         items.insert("pagenor-about".into(), ("help.about".into(), serde_json::Value::Null, Handle::Plain(about)));
+        items.insert("pagenor-quit".into(), ("app.quit".into(), serde_json::Value::Null, Handle::Plain(quit)));
         let _ = menu.append(&app_menu);
         for (title, entries) in menus::menu_tree() {
             let sub = Submenu::new(pagenor_ui_egui::i18n::tr(&app.ui.language, title), true);

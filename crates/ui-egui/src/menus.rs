@@ -11,6 +11,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
+    #[cfg(not(target_arch = "wasm32"))]
+    ("app.quit", "Quit Pagenor", Some("Cmd+Q"), "{} — checkpoint unsaved documents before closing"),
     ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{} — choose where to write a copy (the document stays as it is)"),
     ("app.loadSwatches", "Load Swatches…", None, "{} — pick a swatch exchange (.ase) file"),
     ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
@@ -188,6 +190,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             "cmd:layout.documentSetup",
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
+            "-",
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
+            "ui:app.quit",
         ],
     ),
     (
@@ -682,6 +688,8 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         Ok(json!(*b))
     };
     Some(match id {
+        #[cfg(not(target_arch = "wasm32"))]
+        "app.quit" => app.request_quit(),
         "app.newDocumentDialog" => {
             app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
             Ok(Value::Null)
