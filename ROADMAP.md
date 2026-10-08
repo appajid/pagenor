@@ -1,5 +1,10 @@
 # Pagenor roadmap
 
+- P01.3: Installed picker families/styles follow the refreshed catalogue even
+  after a face was loaded. Cached rendering handles and document-local fonts
+  remain intact; the removal/restoration regression and full local gate pass.
+  Native adapter execution and activation evidence: `docs/pagenor/FONT_DISCOVERY.md`.
+
 - P01.2: Windows installed-font registry and Linux/FreeBSD Fontconfig locations
   now feed the shared lazy catalogue. XDG folders and bounded configuration
   includes are rescanned for new files. Cross-target compilation and Clippy pass;

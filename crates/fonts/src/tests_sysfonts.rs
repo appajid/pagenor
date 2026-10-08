@@ -185,6 +185,51 @@ fn automatic_refresh_finds_added_files_and_preserves_document_fonts() {
 }
 
 #[test]
+fn removed_loaded_fonts_leave_menus_but_keep_existing_faces_and_document_scopes() {
+    let dir = font_dir("loaded-removal");
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let regular = db.face(FAMILY, "Regular");
+    let bold = db.face(FAMILY, "Bold");
+    let own = dir.join("Document Fonts");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("own.ttf"), renamed("SourceSans3-Regular.ttf")).unwrap();
+    // The scope stays available after its file is removed too; installed scanning is isolated.
+    let document = db.load_document_fonts(&own);
+    let scoped = db.scoped(document.scope);
+    let doc_face = scoped.face(FAMILY, "Regular");
+    std::fs::remove_file(own.join("own.ttf")).unwrap();
+    assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+    std::fs::remove_file(dir.join("Sub/Sysfont-Bold.TTF")).unwrap();
+    db.load_system_fonts();
+    assert_eq!(db.styles(FAMILY), ["Regular"], "removed cached styles must leave the picker");
+    assert!(Arc::ptr_eq(&bold, &db.face(FAMILY, "Bold")), "existing layouts retain cached bytes/metrics");
+    std::fs::remove_file(dir.join("Sysfont-Regular.ttf")).unwrap();
+    db.load_system_fonts();
+    assert!(!has(&db.families(), FAMILY));
+    assert!(!db.scoped(0).family_infos().iter().any(|f| f.family == FAMILY));
+    assert!(db.styles(FAMILY).is_empty());
+    assert!(Arc::ptr_eq(&regular, &db.face(FAMILY, "Regular")));
+    assert!(db.has_family(FAMILY), "a cached face remains usable for an existing document this session");
+    assert!(has(&scoped.families(), FAMILY));
+    assert!(scoped.family_infos().iter().any(|f| f.family == FAMILY));
+    assert_eq!(scoped.styles(FAMILY), ["Regular"]);
+    assert!(Arc::ptr_eq(&doc_face, &scoped.face(FAMILY, "Regular")));
+    // Reactivation restores menus without replacing font handles already in use.
+    std::fs::write(dir.join("Sysfont-Regular.ttf"), renamed("SourceSans3-Regular.ttf")).unwrap();
+    std::fs::write(dir.join("Sub/Sysfont-Bold.TTF"), renamed("SourceSans3-Bold.ttf")).unwrap();
+    db.load_system_fonts();
+    assert!(has(&db.families(), FAMILY));
+    assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+    assert!(Arc::ptr_eq(&bold, &db.face(FAMILY, "Bold")));
+    assert!(Arc::ptr_eq(&doc_face, &scoped.face(FAMILY, "Regular")));
+    db.add_font(crate::testing::font_with("Pagenor Memory Retained", &['m']).unwrap());
+    db.load_system_fonts();
+    assert!(has(&db.families(), "Pagenor Memory Retained"));
+    assert!(has(&db.families(), crate::DEFAULT_FAMILY));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn parallel_rescans_publish_complete_catalogues() {
     let dir = font_dir("parallel-rescan");
     let db = FontDb::with_font_dirs(vec![dir.clone()]);

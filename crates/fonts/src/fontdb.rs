@@ -1436,10 +1436,17 @@ impl ScopedFonts<'_> {
         self.own.as_deref().unwrap_or(&[])
     }
 
-    /// Family names available (the document's, loaded and cataloged system fonts), sorted and
-    /// deduplicated.
+    /// Installed menu entries come from the current catalogue. Retained font bytes can still
+    /// render existing layouts after removal, but must not put deleted faces back in the picker.
+    fn shared_menu_face(face: &&Arc<FontFace>) -> bool {
+        cfg!(target_arch = "wasm32") || !matches!(face.source, FontSource::Installed(_))
+    }
+
+    /// Selectable family names: document fonts, bundled/in-memory fonts and the current installed
+    /// catalogue. Removed installed faces stay cached for rendering, outside these menus.
     pub fn families(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.own().iter().chain(self.db.read_faces().iter()).map(|f| f.family.clone()).collect();
+        let mut v: Vec<String> =
+            self.own().iter().chain(self.db.read_faces().iter().filter(Self::shared_menu_face)).map(|f| f.family.clone()).collect();
         #[cfg(not(target_arch = "wasm32"))]
         v.extend(self.db.read_catalog().iter().map(|c| c.family.clone()));
         v.sort_by_key(|a| a.to_lowercase());
@@ -1452,7 +1459,7 @@ impl ScopedFonts<'_> {
     pub fn family_infos(&self) -> Vec<FamilyInfo> {
         let mut out: Vec<FamilyInfo> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for f in self.own().iter().chain(self.db.read_faces().iter()) {
+        for f in self.own().iter().chain(self.db.read_faces().iter().filter(Self::shared_menu_face)) {
             if seen.insert(f.family.to_lowercase()) {
                 let (group, native) = f.menu_group();
                 out.push(FamilyInfo { family: f.family.clone(), group, native: native.map(str::to_string) });
@@ -1467,12 +1474,13 @@ impl ScopedFonts<'_> {
         out
     }
 
-    /// Style names available for `family` (Regular first, then by weight).
+    /// Selectable style names for `family` (Regular first, then by weight). Retained installed
+    /// faces no longer in the catalogue do not appear here.
     pub fn styles(&self, family: &str) -> Vec<String> {
         let mut v: Vec<(bool, f32, String)> = self
             .own()
             .iter()
-            .chain(self.db.read_faces().iter())
+            .chain(self.db.read_faces().iter().filter(Self::shared_menu_face))
             .filter(|f| f.family.eq_ignore_ascii_case(family) && !f.style.contains('{'))
             .map(|f| (f.italic, f.weight, f.style.clone()))
             .collect();

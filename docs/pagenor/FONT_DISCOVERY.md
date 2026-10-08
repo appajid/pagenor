@@ -1,6 +1,6 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-08. Tasks P01.1 / P01.2.
+Updated: 2026-10-08. Tasks P01.1 / P01.2 / P01.3.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
@@ -67,9 +67,11 @@ Remaining Phase 01 evidence:
 - Descriptors with no readable file path cannot be fed to the existing Rust
   shaper; their count is visible in diagnostics. This includes fonts that macOS
   may expose without accessible font bytes.
-- Already-loaded installed faces stay cached to preserve existing rendering;
-  unused removed files leave the catalogue. Define picker behaviour for loaded
-  deactivated faces before hiding or evicting them (PG-0104).
+- Loaded installed faces stay cached to preserve existing rendering. P01.3 makes
+  installed picker families/styles follow the current catalogue, so removed
+  cached faces no longer restore deleted entries. Document scopes remain
+  selectable and keep their existing handles. Host deactivation that leaves a
+  readable file in a scanned directory still needs a separate policy/test.
 - Windows and Linux/FreeBSD adapters are implemented as described below. Native
   CI and user font-manager/installation smoke tests remain PG-0103.
 
@@ -130,3 +132,39 @@ API references: [Fontconfig configuration](https://fontconfig.pages.freedesktop.
 [Microsoft font installation](https://learn.microsoft.com/en-us/windows/win32/gdi/font-installation-and-deletion),
 [`fontconfig` safe wrapper](https://docs.rs/fontconfig/0.11.0/fontconfig/),
 [`winreg` safe wrapper](https://docs.rs/winreg/0.56.0/winreg/).
+
+## Removed loaded fonts and menu availability (P01.3)
+
+Installed family/style picker entries now come from the current lazy catalogue.
+Loaded installed faces remain cached for resolution and rendering, but no longer
+add stale families or styles to these menus. Bundled and in-memory fonts remain
+selectable; document-font scopes retain their own entries and take precedence.
+`has_family` continues to describe usable cached/scoped/installed faces, so a
+removed but loaded face may still return true during the current process even
+though it is absent from the shared picker. This preserves the existing renderer
+and fallback behaviour rather than evicting font bytes used by layouts.
+
+A regression failed before the fix when removed Bold remained in the style list.
+It now covers partial-style removal, complete family removal from both menu APIs,
+unchanged cached/document Arc handles, scoped styles, restored files and retained
+bundled/memory entries. The complete local gate passed: 796 tests, zero failures,
+three performance tests ignored, all seven steps and all 16 WASM packages.
+
+Font Book validated the uniquely named QA font: one file passed with no problems.
+The owner installed it as `/Library/Fonts/pagenor.ttf`; Font Book lists Pagenor
+Test1. A native Rust UI probe confirmed `font_menu` contains Pagenor Test1 /
+Regular and resolves it from that installed path (glyph A = 2). The inspected
+diagnostics dialog reports 799 installed families, 3,773 faces and 945 files;
+these counts are host-specific. The owner requested that it remain active. No activation setting was
+changed by this test. Font Book’s Active filter showed the test family.
+A separate Core Text family-list/matching probe did not expose it on this host;
+Pagenor discovered its readable installed file through directory scanning. This
+confirms installed-file/menu coverage, not external session registration. Direct
+activation/deactivation remains unverified.
+
+P01.2 remote CI passed macOS, Linux (including native Fontconfig comparisons),
+minimum Rust and packaging lint. Windows and FreeBSD are still running at the
+time of this update; the issue register records their final evidence. Windows
+ARM64 packaging/run smoke passed in run 37776034034: cross-build MSI, native
+install, executable architecture check, CLI version invocation and uninstall.
+This does not validate ARM64 GUI rendering or font activation.
