@@ -29,6 +29,13 @@ Run `packaging/icons.sh` to regenerate with Cargo, the workspace resvg renderer,
 and portable ICO/ICNS packers on any host.
 Generated assets are checked into source control, so building Pagenor on another platform does not require these generation tools.
 
+For local macOS development, run `packaging/macos/dev.sh` from the repository.
+It builds the current executable and packages `pagenor.icns` into
+`target/macos-dev/Pagenor.app`, then opens that bundle. Finder gets its icon from
+the bundle; the running app also supplies `pagenor-macos-512.png` to eframe.
+Rebuild and relaunch after changing icon assets. `--no-launch` only builds the
+bundle; `--release` selects the release profile. App arguments follow `--`.
+
 ## Editing the artwork
 
 The nine `Pagenor-*.svg` files are the exact supplied originals. The two

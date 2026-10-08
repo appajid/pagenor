@@ -51,6 +51,19 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 
 ## Quick start
 
+On macOS, build and launch a local app bundle so Finder and the Dock use the
+current Pagenor icon:
+
+```sh
+packaging/macos/dev.sh                              # current debug build → target/macos-dev/Pagenor.app
+packaging/macos/dev.sh -- --sample                  # pass arguments to the app
+packaging/macos/dev.sh --release --no-launch        # build a local release bundle without opening it
+```
+
+Quit this local app before rebuilding. The launcher uses the same icon and bundle
+metadata as release packaging; it signs locally without making a DMG or contacting
+GitHub. Windows and Linux keep their existing executable/desktop icon packaging.
+
 ```sh
 cargo run --release -p pagenor                         # desktop app (start screen)
 cargo run --release -p pagenor -- --sample             # open the sample magazine

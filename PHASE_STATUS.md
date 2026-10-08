@@ -21,7 +21,7 @@ local. A task completion does not by itself complete a roadmap milestone.
 | 07 | P1 | Professional typography and page tools | Planned. Validate existing features before adding or replacing them. |
 | 08 | P1 | Import, export and print | Planned. |
 | 09 | P1 | UI, accessibility and performance | Planned. |
-| 10 | P1 | Cross-platform distribution | Planned. Native macOS, Windows and Linux CI starts in Phase 00; Windows ARM64 unsigned MSI build/install/architecture/CLI-version/uninstall smoke passed in run 37776034034; packaging breadth, GUI and signing gates remain here. |
+| 10 | P1 | Cross-platform distribution | Partial local development evidence (P10.1): current macOS executable is bundled with the owner icon through `packaging/macos/dev.sh`; Finder display, native launch, independent macOS icon decoding, signature and CLI version pass. Rebuilding a running bundle is refused. Native macOS, Windows and Linux CI starts in Phase 00; Windows ARM64 unsigned MSI build/install/architecture/CLI-version/uninstall smoke passed in run 37776034034. Release packaging breadth, GUI/file-open, installation and signing gates remain open. |
 | 11 | P1 | Public beta and 1.0 | Planned. |
 | 12 | P2 | Post-1.0 improvements | Planned. |
 

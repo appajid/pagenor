@@ -1,5 +1,12 @@
 # Pagenor roadmap
 
+- P10.1: Local macOS builds now have a build-and-launch command that assembles
+  `target/macos-dev/Pagenor.app` with the supplied owner icon and release bundle
+  metadata. It ad-hoc signs the current binary and refuses to rebuild a running
+  bundle. Finder icon display, native launch, icon decoding/hash, signature and
+  CLI version pass locally; the workspace gate passes (846 tests, 3 ignored).
+  Windows/Linux packaging stays intact; distribution/signing gates remain open.
+
 - P02.5: Text Copy/Cut now reach the system clipboard through the shared UI
   command path, including menus/control and canvas events. Same-batch Copy/Paste
   uses queued text; internal formatting and undo remain intact. Four UI regressions
