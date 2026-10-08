@@ -63,6 +63,62 @@ fn has(list: &[String], family: &str) -> bool {
 }
 
 #[test]
+fn unicode_family_case_variants_resolve_lazy_installed_fonts() {
+    let dir = font_dir("unicode-family-lookup");
+    let installed = dir.join("installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let pairs =
+        [("Pagenor École", "pagenor école"), ("Pagenor Шрифт", "pagenor шрифт"), ("Pagenor ΟΣ", "pagenor ος"), ("Pagenor İ", "pagenor i\u{307}")];
+    for (i, (family, _)) in pairs.iter().enumerate() {
+        std::fs::write(installed.join(format!("{i}.ttf")), crate::testing::font_with(family, &['A']).unwrap()).unwrap();
+    }
+    let db = FontDb::with_font_dirs(vec![installed]);
+    for (family, query) in pairs {
+        assert!(db.has_family(query), "Unicode case variant {query} must find {family}");
+        assert_eq!(db.styles(query), ["Regular"]);
+        assert!(db.has_style(query, "Reg-u lar"));
+        assert!(!db.is_loaded(family), "metadata lookup stays lazy");
+        let face = db.face(query, "Regular");
+        assert_eq!(face.family, family);
+        assert!(matches!(face.source, FontSource::Installed(_)));
+        assert!(Arc::ptr_eq(&face, &db.face(family, "Regular")));
+    }
+    assert!(!db.has_family("Pagenor Ecole"), "diacritics are part of the family name");
+    assert!(!db.has_family("PagenorÉcole"), "spacing is part of the family name");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn unicode_family_case_variants_do_not_duplicate_catalogue_or_memory_faces() {
+    let dir = font_dir("unicode-family-duplicates");
+    let installed = dir.join("installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let family = "Pagenor École Duplicate";
+    let alias = "pagenor école duplicate";
+    let a = crate::testing::font_with(family, &['A']).unwrap();
+    let b = crate::testing::font_with(alias, &['B']).unwrap();
+    let path = installed.join("a.ttf");
+    std::fs::write(&path, &a).unwrap();
+    std::fs::write(installed.join("b.ttf"), &b).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    let report = db.scan_report();
+    assert_eq!((report.families, report.faces, report.duplicate_faces), (1, 1, 1));
+    assert_eq!(db.families().iter().filter(|f| f.to_lowercase() == alias).count(), 1);
+    assert_eq!(db.scoped(0).family_infos().iter().filter(|f| f.family.to_lowercase() == alias).count(), 1);
+    assert!(!db.is_loaded(family));
+    let face = db.face(alias, "Regular");
+    assert_eq!(face.source, FontSource::Installed(path));
+    assert!(face.covers('A') && !face.covers('B'), "existing first-path precedence stays intact");
+
+    let memory = FontDb::with_font_dirs(vec![]);
+    assert_eq!(memory.add_font(a), 1);
+    assert_eq!(memory.add_font(b), 0, "case variants must not insert duplicate shared faces");
+    assert_eq!(memory.families().iter().filter(|f| f.to_lowercase() == alias).count(), 1);
+    assert!(memory.face(alias, "Regular").covers('A'));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn every_lookup_by_name_finds_installed_fonts_in_a_fresh_database() {
     let dir = font_dir("fresh");
     // Each lookup is the first thing a new database is asked. A folder listed twice is read once.

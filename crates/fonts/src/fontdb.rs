@@ -593,7 +593,7 @@ fn name(font: &skrifa::FontRef<'_>, ids: &[StringId]) -> Option<String> {
 /// A face's family and style names (the default instance's style for a variable font).
 /// Is a face of `family` and `style` among `faces`?
 fn has_face(faces: &[Arc<FontFace>], family: &str, style: &str) -> bool {
-    faces.iter().any(|f| f.family.eq_ignore_ascii_case(family) && f.style.eq_ignore_ascii_case(style))
+    faces.iter().any(|f| same_family(&f.family, family) && f.style.eq_ignore_ascii_case(style))
 }
 
 fn face_names(f: &skrifa::FontRef<'_>) -> Option<(String, String)> {
@@ -875,6 +875,18 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
 /// The named style part of a style with axis settings (`Bold {wght:650}` → `Bold`).
 pub fn base_style(style: &str) -> &str {
     style.split('{').next().unwrap_or(style).trim()
+}
+
+/// Match the Unicode lowercase keys used to group font families in menus. Keep names intact:
+/// punctuation, spaces and diacritics distinguish families. Exact/ASCII names need no allocation.
+fn same_family(a: &str, b: &str) -> bool {
+    if a == b {
+        true
+    } else if a.is_ascii() && b.is_ascii() {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a.to_lowercase() == b.to_lowercase()
+    }
 }
 
 fn norm(s: &str) -> String {
@@ -1334,7 +1346,7 @@ impl FontDb {
         }
         found.sort_by_cached_key(|f| (f.family.to_lowercase(), f.style.to_lowercase(), f.location.clone()));
         found.dedup_by(|a, b| {
-            let duplicate = a.family.eq_ignore_ascii_case(&b.family) && a.style.eq_ignore_ascii_case(&b.style);
+            let duplicate = same_family(&a.family, &b.family) && a.style.eq_ignore_ascii_case(&b.style);
             if duplicate {
                 report.duplicate_faces += 1;
                 report.note(
@@ -1434,7 +1446,7 @@ impl FontDb {
     fn load_cataloged_with(&self, family: &str, native_data: impl Fn(&str) -> Result<Vec<u8>, String>) -> bool {
         let locations: Vec<CatalogLocation> = {
             let cat = self.read_catalog();
-            let mut locations: Vec<_> = cat.iter().filter(|c| c.family.eq_ignore_ascii_case(family)).map(|c| c.location.clone()).collect();
+            let mut locations: Vec<_> = cat.iter().filter(|c| same_family(&c.family, family)).map(|c| c.location.clone()).collect();
             locations.sort();
             locations.dedup();
             locations
@@ -1512,7 +1524,7 @@ impl FontDb {
                     total = total.saturating_add(len);
                     // A family and style the folder already gave stays with its first file.
                     for f in faces {
-                        if !own.iter().any(|o| o.family.eq_ignore_ascii_case(&f.family) && o.style.eq_ignore_ascii_case(&f.style)) {
+                        if !own.iter().any(|o| same_family(&o.family, &f.family) && o.style.eq_ignore_ascii_case(&f.style)) {
                             own.push(f);
                         }
                     }
@@ -1591,7 +1603,7 @@ impl FontDb {
     }
 
     fn is_loaded(&self, family: &str) -> bool {
-        self.read_faces().iter().any(|f| f.family.eq_ignore_ascii_case(family) && self.current_face(f))
+        self.read_faces().iter().any(|f| same_family(&f.family, family) && self.current_face(f))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1722,7 +1734,7 @@ impl FontDb {
         let generation = self.scan_generation();
         let cataloged: Vec<String> = self.read_catalog().iter().map(|e| e.family.clone()).collect();
         for fam in SYSTEM_FALLBACKS {
-            if !self.is_loaded(fam) && cataloged.iter().any(|f| f.eq_ignore_ascii_case(fam)) {
+            if !self.is_loaded(fam) && cataloged.iter().any(|f| same_family(f, fam)) {
                 self.load_cataloged(fam);
                 if covered(self) {
                     return true;
@@ -1846,7 +1858,7 @@ impl ScopedFonts<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         v.extend(self.db.read_catalog().iter().map(|c| c.family.clone()));
         v.sort_by_key(|a| a.to_lowercase());
-        v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        v.dedup_by(|a, b| same_family(a, b));
         v
     }
 
@@ -1877,12 +1889,12 @@ impl ScopedFonts<'_> {
             .own()
             .iter()
             .chain(self.db.read_faces().iter().filter(Self::shared_menu_face))
-            .filter(|f| f.family.eq_ignore_ascii_case(family) && !f.style.contains('{'))
+            .filter(|f| same_family(&f.family, family) && !f.style.contains('{'))
             .map(|f| (f.italic, f.weight, f.style.clone()))
             .collect();
         #[cfg(not(target_arch = "wasm32"))]
         for c in self.db.read_catalog().iter() {
-            if c.family.eq_ignore_ascii_case(family) && !v.iter().any(|(_, _, s)| s.eq_ignore_ascii_case(&c.style)) {
+            if same_family(&c.family, family) && !v.iter().any(|(_, _, s)| s.eq_ignore_ascii_case(&c.style)) {
                 v.push((style_italic(&c.style), style_weight(&c.style), c.style.clone()));
             }
         }
@@ -1913,7 +1925,7 @@ impl ScopedFonts<'_> {
             // Only read font bytes when the catalogue can improve this lookup.
             let requested = norm(base_style(style));
             let catalogued =
-                closest.is_none() || self.db.read_catalog().iter().any(|c| c.family.eq_ignore_ascii_case(family) && norm(&c.style) == requested);
+                closest.is_none() || self.db.read_catalog().iter().any(|c| same_family(&c.family, family) && norm(&c.style) == requested);
             if catalogued {
                 self.db.load_cataloged(family);
                 // Another lookup may have loaded the exact style concurrently.
@@ -1931,11 +1943,11 @@ impl ScopedFonts<'_> {
 
     /// Is `family` available (the document's, loaded, or installed on the system)?
     pub fn has_family(&self, family: &str) -> bool {
-        if self.own().iter().any(|f| f.family.eq_ignore_ascii_case(family)) || self.db.is_loaded(family) {
+        if self.own().iter().any(|f| same_family(&f.family, family)) || self.db.is_loaded(family) {
             return true;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.db.read_catalog().iter().any(|c| c.family.eq_ignore_ascii_case(family)) {
+        if self.db.read_catalog().iter().any(|c| same_family(&c.family, family)) {
             return true;
         }
         false
@@ -2003,7 +2015,7 @@ impl ScopedFonts<'_> {
         }
         let faces = self.db.read_faces();
         // The document's fonts first: they stand in for other fonts of the same name.
-        let named = |f: &&Arc<FontFace>| f.family.eq_ignore_ascii_case(family);
+        let named = |f: &&Arc<FontFace>| same_family(&f.family, family);
         let cands: Vec<&Arc<FontFace>> =
             self.own().iter().filter(named).chain(faces.iter().filter(named).filter(|f| self.db.current_face(f))).collect();
         if cands.is_empty() {
@@ -2061,12 +2073,8 @@ impl ScopedFonts<'_> {
             }
         }
         let faces = self.db.read_faces();
-        let mut order: Vec<&Arc<FontFace>> = self
-            .own()
-            .iter()
-            .chain(faces.iter())
-            .filter(|f| f.id != exclude && f.family.eq_ignore_ascii_case(family) && self.db.current_face(f))
-            .collect();
+        let mut order: Vec<&Arc<FontFace>> =
+            self.own().iter().chain(faces.iter()).filter(|f| f.id != exclude && same_family(&f.family, family) && self.db.current_face(f)).collect();
         order.sort_by_key(|f| (f.italic, (f.weight - 400.0).abs() as i32));
         order.into_iter().find(|f| f.covers(c)).cloned()
     }
@@ -2074,7 +2082,7 @@ impl ScopedFonts<'_> {
     fn loaded_fallback(&self, c: char, exclude: u32) -> Option<Arc<FontFace>> {
         let faces = self.db.read_faces();
         let mut order: Vec<&Arc<FontFace>> = faces.iter().chain(self.own().iter()).filter(|f| f.id != exclude && self.db.current_face(f)).collect();
-        order.sort_by_key(|f| (!f.family.eq_ignore_ascii_case(FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
+        order.sort_by_key(|f| (!same_family(&f.family, FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
         order.into_iter().find(|f| f.covers(c)).cloned()
     }
 }

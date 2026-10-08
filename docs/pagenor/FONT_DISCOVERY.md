@@ -532,3 +532,48 @@ Strict font-crate Clippy including test targets passes for Windows GNU and Linux
 GNU, and the Mac app builds. These are local checks; no GitHub upload or remote
 CI was performed. Actual Adobe/dongle lifecycle, deactivation evidence and native
 Windows/Linux memory-font support remain open. Phase 01 and M0 stay in progress.
+
+
+## P01.10 — Unicode family identity (2026-10-09)
+
+The owner requested that actual Adobe/dongle activation validation remain
+pending. This task fixes a separate, reproducible shared font-name defect.
+Menu metadata already groups family names by Rust's Unicode lowercase key,
+but installed lookup, loaded lookup, duplicate-face checks and scoped precedence
+used ASCII-only case comparisons. For example, `Pagenor École` could appear in
+the menu while `pagenor école` failed to resolve. A document's lowercase family
+could also lose to an already-loaded installed font with an uppercase accented
+family name, even though menu grouping treated both as the same family.
+
+A private `same_family` helper now follows the existing Unicode lowercase key
+through family availability, lazy loading, face selection, duplicate handling,
+family/style menus and fallback family comparisons. Exact and ASCII names use
+allocation-free comparisons. Stored family strings are not rewritten. Accents,
+spaces and punctuation remain part of identity: `École` is not `Ecole`, and
+`Pagenor École` is not `PagenorÉcole`. This is the established lowercase-key policy,
+not locale-specific collation, complete Unicode case folding, canonical Unicode
+normalization or translation of localized names. Style matching remains governed
+by its existing normalization; no new dependency or native adapter was introduced.
+
+Three new font regressions failed before the fix: lazy Unicode family lookup,
+case-variant duplicate faces, and document scope precedence. They now pass for
+accented Latin, Cyrillic, Greek final sigma and the expanding lowercase of `İ`.
+The duplicate test checks that the first physical path still wins and duplicate
+memory input adds no face. Scope tests preserve held handles after closure and
+keep document faces ahead of shared installed data. A fourth regression verifies
+that real composition draws the document font's glyphs under a differently cased
+family request and does not report a missing font.
+
+A macOS CPU UI/engine probe adds only synthetic bytes to its own process. It
+checks one family menu entry, correct `font.list` availability/source, preserved
+document identity/revision/journal and actual composed glyphs. Pagenor Test1
+remains available from its existing installed file. No OS font registration,
+Font Book setting, vendor application or dongle was changed.
+
+Validation: the full local `cargo xtask ci` gate passes all seven steps,
+817 tests passed, none failed, three performance tests ignored and all 16 WASM
+packages checked. Strict font-crate Clippy (including tests) passes for Windows
+GNU and Linux GNU; the Mac app builds. These cross-target checks do not establish
+native Windows/Linux activation support. Adobe/dongle activation validation stays
+pending, other native lifecycle/memory-provider gaps remain open, and Phase 01
+and milestone M0 are still in progress. Nothing was uploaded to GitHub.

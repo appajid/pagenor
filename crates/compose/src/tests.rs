@@ -1558,6 +1558,32 @@ fn kenten_missing_from_the_font_are_its_box_unless_fallback_is_on() {
 }
 
 #[test]
+fn unicode_family_case_variants_shape_in_the_documents_font() {
+    use pagenor_fonts::testing::font_with_glyph;
+    let family = "Pagenor École Compose";
+    let alias = "pagenor école compose";
+    let db = FontDb::global();
+    db.add_font(font_with_glyph(family, &['A', ' '], 'X').unwrap());
+    let folder = std::env::temp_dir().join(format!("pagenor-unicode-compose-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("own.ttf"), font_with_glyph(alias, &['A', ' '], 'O').unwrap()).unwrap();
+    let scope = db.load_document_fonts(&folder).scope;
+    let (mut d, sid, _) = doc_with("A A", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+    d.font_scope = scope;
+    d.story_mut(sid).unwrap().format_chars(0..3, |f| f.over.font_family = Some(family.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let letters: Vec<_> = all_lines(&cs).into_iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.byte == 0 || g.byte == 2).collect();
+    assert_eq!(letters.len(), 2);
+    let expected = db.face(pagenor_fonts::FALLBACK_FAMILY, "Regular").glyph_for('O');
+    assert!(letters.iter().all(|g| g.face.family == alias && g.gid == expected));
+    assert!(letters.iter().all(|g| matches!(g.face.source, pagenor_fonts::FontSource::Document(_))));
+    assert!(!cs.styles.iter().any(|s| s.missing_font));
+    assert_eq!(db.face(alias, "Regular").glyph_for('A'), db.face(pagenor_fonts::FALLBACK_FAMILY, "Regular").glyph_for('X'));
+    db.close_scope(scope);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[test]
 fn each_document_shapes_words_in_its_own_fonts() {
     use pagenor_fonts::testing::font_with_glyph;
     const FAMILY: &str = "DocFont Word Cache";

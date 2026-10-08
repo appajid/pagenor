@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.10: Unicode family-name matching now follows the menu grouping key.
+  Case variants resolve the same lazy installed/memory/document fonts, duplicate
+  faces are excluded and document fonts keep precedence during composition.
+  Accents, punctuation, spacing and original names remain distinct/intact.
+  Actual Adobe/dongle activation validation stays pending at the owner’s request.
+
 - P01.9: Font diagnostics recognize style aliases and custom variable base styles
   using the existing lookup normalization, without loading glyph data for checks.
   An independent macOS inventory comparison covers all 272 SFNT families; two

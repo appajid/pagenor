@@ -22,6 +22,35 @@ fn write_font(dir: &Path, file: &str, family: &str, chars: &[char]) -> PathBuf {
 }
 
 #[test]
+fn unicode_family_case_variants_preserve_document_precedence_and_scope() {
+    let root = temp_dir("unicode-family-precedence");
+    let system = root.join("system");
+    let folder = root.join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&system).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    let family = "Pagenor École Scoped";
+    let alias = "pagenor école scoped";
+    write_font(&system, "installed.ttf", family, &['a']);
+    let file = write_font(&folder, "document.ttf", alias, &['b']);
+    let db = FontDb::with_font_dirs(vec![system]);
+    let installed = db.face(family, "Regular");
+    let document = db.load_document_fonts(&folder);
+    let scoped = db.scoped(document.scope);
+    let face = scoped.face(family, "Regular");
+    assert_eq!(face.source, FontSource::Document(file));
+    assert!(face.covers('b') && !face.covers('a'));
+    assert!(Arc::ptr_eq(&face, &scoped.face(alias, "Regular")));
+    assert!(scoped.has_family(family) && scoped.has_style(family, "Regular"));
+    assert_eq!(scoped.families().iter().filter(|f| f.to_lowercase() == alias).count(), 1);
+    assert_eq!(scoped.family_infos().iter().filter(|f| f.family.to_lowercase() == alias).count(), 1);
+    assert!(Arc::ptr_eq(&installed, &db.face(alias, "Regular")), "outside the scope the installed face remains");
+    db.close_scope(document.scope);
+    assert!(Arc::ptr_eq(&installed, &db.scoped(document.scope).face(alias, "Regular")));
+    assert!(face.covers('b'), "held layout handles remain valid after scope closure");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn document_fonts_load_ahead_of_installed_ones() {
     let root = temp_dir("precedence");
     let system = root.join("system");
