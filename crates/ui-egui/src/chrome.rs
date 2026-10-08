@@ -96,10 +96,6 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         app.status("Export a PDF, IDML or package to share — no cloud account needed.");
                     }
                     ui.add_space(8.0);
-                    // Always one click away: the ArtCraft community Discord.
-                    if crate::about::discord_button(ui, "Discord", vec2(78.0, 22.0)) {
-                        let _ = app.run("help.discord", json!({}));
-                    }
                     tools_start = ui.min_rect().min.x;
                 });
             });
@@ -685,11 +681,11 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.vertical(|ui| {
                 ui.label(crate::rtl::widget(
                     ui,
-                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Join the ArtCraft community")).font(semibold(14.0)).color(t.text_strong),
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Pagenor")).font(semibold(14.0)).color(t.text_strong),
                 ));
                 ui.label(crate::rtl::widget(
                     ui,
-                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Get help, share your layouts and shape what we build next."))
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Professional publishing and page layout."))
                         .size(12.0)
                         .color(t.text_dim),
                 ));
