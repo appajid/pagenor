@@ -234,10 +234,7 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     st.saved_revision = st.revision;
     st.saved_doc = st.doc.clone();
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(dir) = &s.recovery_dir {
-        let uid = s.doc()?.uid;
-        crate::recovery::discard(dir, uid);
-    }
+    crate::recovery::discard_document(st);
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }
 
@@ -629,10 +626,8 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         fresh.fonts = fonts;
         fresh.uid = uid;
         fresh.revision = st.revision + 1;
+        crate::recovery::discard_document(st);
         *st = fresh;
-        if let Some(dir) = &s.recovery_dir {
-            crate::recovery::discard(dir, uid);
-        }
         Ok(json!({"path": path}))
     }
     #[cfg(target_arch = "wasm32")]

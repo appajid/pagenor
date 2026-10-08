@@ -1,9 +1,16 @@
 # Pagenor roadmap
 
+- P02.2: Recovery keeps its checkpoint when reopened and tracks owned recovery
+  keys independently of runtime document IDs. New entries avoid pending files;
+  save/revert/close clean up only owned checkpoints. Staged, flushed writes keep
+  previous snapshots usable on failure. Seven regressions and a fresh-process
+  restart probe cover repeat exits, UID reuse, multiple entries and cleanup.
+  Real external clipboard transfer and native timer/exit validation remain open.
+
 - P02.1: External/plain paste creates one undo step and one journal entry.
   It reuses text insertion without dispatching a second command; undo captures
   the selection before edits. Unicode/formatting persistence and UI bridge tests
-  pass. The immediate repeat-crash recovery gap is the next reliability finding.
+  pass. P02.2 addresses the immediate repeat-crash recovery gap.
 
 - P01.10: Unicode family-name matching now follows the menu grouping key.
   Case variants resolve the same lazy installed/memory/document fonts, duplicate

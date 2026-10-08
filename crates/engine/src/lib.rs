@@ -97,6 +97,8 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// Recovery keys are independent of runtime UIDs and shared with state snapshots.
+    pub(crate) recovery_entries: Arc<recovery::Entries>,
 }
 
 /// A document's font scope ([`pagenor_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -132,6 +134,7 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            recovery_entries: Arc::default(),
         }
     }
     pub fn is_dirty(&self) -> bool {
@@ -374,8 +377,8 @@ impl Session {
             self.stop_data_preview();
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(dir), Some(d)) = (&self.recovery_dir, self.docs.get(i)) {
-            recovery::discard(dir, d.uid);
+        if let Some(d) = self.docs.get(i) {
+            recovery::discard_document(d);
         }
         if i < self.docs.len() {
             self.docs.remove(i);

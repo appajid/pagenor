@@ -1,6 +1,6 @@
 # Phase 02 — clipboard and document reliability
 
-Updated: 2026-10-09. P02.1 is complete locally; Phase 02 and M0 are in progress.
+Updated: 2026-10-09. P02.1 and P02.2 are complete locally; Phase 02 and M0 are in progress.
 Adobe/dongle activation validation remains pending at the owner’s request.
 
 ## P02.1 — one reversible paste operation
@@ -29,6 +29,44 @@ probe renders paste, undo and redo and checks their model state. The visual fixt
 uses Latin/accented text; Indic/emoji tests establish data preservation, not shaping
 parity or real third-party clipboard transfer.
 
+## P02.2 — retain recovery checkpoints across restarts
+
+PG-0203 was reproduced before the fix: opening recovery deleted its only snapshot,
+so another immediate exit before the next timer/manual save recovered nothing.
+A second failing regression showed that saving a new document with a reused
+process-local UID overwrote a pending, unreadable recovery entry.
+
+Recovery now retains the original checkpoint and records its ownership in native
+document session state. Recovery keys are independent of runtime UIDs. New entries
+reserve an unused numeric filename with `create_new`; corrupt snapshots and orphan
+metadata remain untouched. Repeated recovery-open calls in the same session skip
+owned entries, including paths with different spellings of the same directory.
+Updates keep their original keys. Successful save, revert and explicit close remove
+only that document's checkpoints, including explicitly supplied recovery folders.
+Copy-save and failed save/revert keep the checkpoints. Serialization errors propagate
+rather than writing an empty archive. No document format or dependency changed.
+
+Checkpoint data and metadata are staged and flushed with `sync_all` before rename;
+metadata replacement precedes document replacement. A staging or metadata failure
+keeps the previous document bytes usable. A failure of the final document rename can
+leave newer title/timestamp metadata alongside the previous valid snapshot. Unique
+staging files avoid truncating leftovers from an interrupted write. Failed staging
+files and new empty reservations are removed; a failed existing checkpoint can retry
+under its original key. Collision searches are bounded to 4096 recovery-key candidates
+and 64 staging candidates; exhaustion returns an error and preserves pending data.
+Mutex poisoning is handled and `unsafe_code = "forbid"` is preserved.
+
+Seven new synthetic regressions cover retention, repeated open, ownership and
+cleanup, reused/extreme UIDs, failed replacement and retry, explicit directories,
+undo after save, copy-save, multiple entries and stale staging files. A separate
+Mac probe uses five child processes with abrupt exits (no Session destruction or
+normal exit-save). Two immediate restarts retain identical dirty document models,
+Unicode text and original paths without a recovery save. Later edits use the original
+keys; a new document with runtime UID 3 skips corrupt key 3 and orphan metadata 4,
+using key 5. Another process recovers all three documents and verifies copy-save,
+save and close cleanup. All fixtures are isolated temporary data; user files and
+default recovery folders are not accessed.
+
 ## Validation matrix
 
 | Scenario | Evidence / status |
@@ -41,20 +79,22 @@ parity or real third-party clipboard transfer.
 | CPU UI paste/undo/redo | Passed and inspected; no native user document/clipboard was changed. |
 | Copy-save preserves dirty/path; Unicode and format bytes | Passed. Temporary `.pagenor` round-trip. |
 | First restart recovery; save/reopen | Passed. Temporary documents and fresh engine sessions. |
-| Immediate second restart before recovery timer/save | Failed probe, PG-0203 open. Recovery currently deletes its source snapshot on reopen. |
+| Immediate second restart before recovery timer/save | Passed (P02.2). Retained checkpoint; synthetic sessions and separate processes with abrupt exits. |
 | Browser / TextEdit / Pages / Word actual clipboard transfer | Pending. Require real local application transfer evidence. |
-| Recovery timer, disk/write failure, multiple entries/process UID reuse | Pending. Resolve PG-0203 first. |
+| Multiple entries, corrupt pending files and process UID reuse | Passed. Ownership regression and fresh-process probe; unknown entries remain intact. |
+| Checkpoint write failure, retry, save/revert/close cleanup | Passed for synthetic replacement/staging failures and failed save/revert. Prior snapshot remains usable; copy-save retains it. |
+| Recovery timer, actual disk-full/read-only storage and forced native app crash | Pending. Engine/process probes do not establish timer or native exit behavior. |
 | Native Windows/Linux runtime matrix | Deferred to milestone publication. |
 
-Validation: `cargo xtask ci` passes all seven steps; 821 tests pass, none fail,
+Validation: `cargo xtask ci` passes all seven steps; 828 tests pass, none fail,
 three performance tests are ignored and all 16 WASM packages check. The Mac app
 builds. Strict engine-library Clippy passes for Windows GNU and Linux GNU.
 No GitHub upload or remote CI was performed. Cross-target checks do not
 establish native clipboard/recovery runtime behavior.
 
-The repeat-crash probe uses isolated temporary data and three engine sessions.
-The first restart opens one dirty document and leaves zero snapshots. A second
-restart without a timer/manual save opens zero documents. The next task must
-retain a valid checkpoint and prevent restarted UID allocation from overwriting
-another pending recovery entry. User files and default recovery folders were
-not accessed by these probes.
+Remaining coverage includes real external-application clipboard transfer and the
+native recovery timer/exit matrix. Power-loss durability (including directory
+sync), cleanup-denied storage and simultaneous app processes claiming the same
+checkpoint are not established by these tests. Key reservation prevents new-entry
+collisions; it does not add inter-process ownership locking. Keep these limits
+separate from the verified immediate-restart and reused-UID fixes.
