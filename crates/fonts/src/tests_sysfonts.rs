@@ -568,7 +568,7 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
         .into_iter()
         .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
         .collect();
-    db.update_native_available([ps.into()]);
+    db.update_native_available([ps.into()], false);
     assert!(has(&db.families(), family));
     assert_eq!(db.styles(family), ["Regular"]);
     assert!(!db.is_loaded(family), "metadata/menu access must not retain glyph tables");
@@ -604,7 +604,7 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
     // Simulate the registration disappearing from the current catalogue. Loaded layout
     // handles remain valid, but native faces cannot restore stale picker entries.
     db.catalog.write().unwrap().clear();
-    db.update_native_available([]);
+    db.update_native_available([], false);
     assert!(!has(&db.families(), family));
     assert!(!db.scoped(0).family_infos().iter().any(|f| f.family == family));
     assert!(db.styles(family).is_empty());
@@ -617,12 +617,27 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
         .into_iter()
         .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
         .collect();
-    db.update_native_available([ps.into()]);
+    db.update_native_available([ps.into()], false);
     assert!(!db.is_loaded(family));
     assert!(db.load_cataloged_with(family, |_| crate::macos::copy_font_data(&native, false)));
     let restored = db.face(family, "Regular");
     assert_ne!(face.id(), restored.id());
     assert!(restored.covers('\u{e123}'));
+    // The same native identity now supplies different data, without a visible withdrawal.
+    let changed_data = with_names(
+        &font_with(family, &['a', 'b', '\u{e123}']).unwrap(),
+        &[(3, 1, 0x409, 1, family), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x409, 4, family), (3, 1, 0x409, 6, ps)],
+    )
+    .unwrap();
+    let changed_native = core_text::font::new_from_buffer(&changed_data).unwrap();
+    assert_eq!(changed_native.postscript_name(), native.postscript_name());
+    assert!(changed_native.copy_descriptor().font_path().is_none());
+    publish_native_snapshot(&db, ps, &crate::macos::copy_font_data(&changed_native, true).unwrap(), true);
+    assert!(!db.is_loaded(family));
+    assert!(db.load_cataloged_with(family, |_| crate::macos::copy_font_data(&changed_native, false)));
+    let changed = db.face(family, "Regular");
+    assert_ne!(changed.id(), restored.id());
+    assert!(changed.covers('b') && !restored.covers('b'));
 }
 
 #[test]
@@ -739,4 +754,95 @@ fn late_installed_reads_cannot_publish_superseded_or_removed_versions() {
     assert_eq!(db.insert_faces(removed), 0, "removed files cannot be newly inserted from old requests");
     assert!(!db.has_family(family));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A provider snapshot injected into an isolated catalogue; no OS registration changes.
+fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool) {
+    *db.catalog.write().unwrap() = native_face_names(metadata)
+        .unwrap()
+        .into_iter()
+        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(name.into()), group: f.group, native: f.native })
+        .collect();
+    db.update_native_available([name.into()], force);
+}
+
+#[test]
+fn forced_native_refresh_reloads_same_identity_lazily_and_rejects_late_requests() {
+    let family = "Pagenor Native Refresh";
+    let name = "PagenorNativeRefresh-Regular";
+    let old = crate::testing::font_with(family, &['a']).unwrap();
+    let replacement = crate::testing::font_with(family, &['a', 'b']).unwrap();
+    let dir = font_dir("native-refresh-document");
+    std::fs::write(dir.join("own.ttf"), crate::testing::font_with(family, &['d']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![]);
+    db.scan_report();
+    let document = db.load_document_fonts(&dir);
+    let document_face = db.scoped(document.scope).face(family, "Regular");
+    publish_native_snapshot(&db, name, &old, false);
+    assert!(db.load_cataloged_with(family, |_| Ok(old.clone())));
+    let original = db.face(family, "Regular");
+    let handle = FaceRef::of(&original);
+    let epoch = original.native_epoch;
+    publish_native_snapshot(&db, name, &old, false);
+    assert!(Arc::ptr_eq(&original, &db.face(family, "Regular")), "unchanged polling retains loaded data");
+    publish_native_snapshot(&db, name, &replacement, true);
+    assert_eq!(db.styles(family), ["Regular"]);
+    assert!(!db.is_loaded(family), "forced refresh invalidates data without loading glyph tables");
+    assert!(!original.covers('b') && !handle.covers('b'));
+    assert!(!db.load_cataloged_with(family, |_| Err("provider temporarily unavailable".into())));
+    assert!(!db.is_loaded(family));
+    assert!(db.scan_report().issues.iter().any(|(_, reason)| reason.contains("temporarily unavailable")));
+    let pending = db.new_faces_with_epoch(old.clone(), FontSource::Native(name.into()), epoch);
+    assert_eq!(db.insert_faces(pending), 0, "a parsed request from before the rescan cannot publish");
+    assert!(!db.load_cataloged_with(family, |_| {
+        // Simulate a rescan while an older OS table request is in flight.
+        publish_native_snapshot(&db, name, &replacement, true);
+        Ok(old.clone())
+    }));
+    assert!(!db.is_loaded(family));
+    assert!(db.load_cataloged_with(family, |_| Ok(replacement.clone())));
+    let current = db.face(family, "Regular");
+    assert_ne!(current.id(), original.id());
+    assert!(current.covers('b'));
+    assert!(original.covers('a') && !original.covers('b'));
+    assert_eq!(db.read_faces().iter().filter(|f| f.source == FontSource::Native(name.into())).count(), 1);
+    assert!(Arc::ptr_eq(&document_face, &db.scoped(document.scope).face(family, "Regular")));
+    assert!(document_face.covers('d') && !document_face.covers('b'));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn forced_native_refresh_retires_changed_families_and_variable_instances() {
+    let name = "PagenorNativeVariable";
+    let variable = named_instance_font();
+    let db = FontDb::with_font_dirs(vec![]);
+    db.scan_report();
+    publish_native_snapshot(&db, name, &variable, false);
+    assert!(db.load_cataloged_with(FAMILY, |_| Ok(variable.clone())));
+    let light = db.face(FAMILY, "Light");
+    let heavy = db.face(FAMILY, "Heavy");
+    let custom = db.face(FAMILY, "Light {wght:450}");
+    let old_epoch = custom.native_epoch;
+    publish_native_snapshot(&db, name, &variable, true);
+    assert!(!db.is_loaded(FAMILY));
+    assert!(db.load_cataloged_with(FAMILY, |_| Ok(variable.clone())));
+    let fresh_custom = db.face(FAMILY, "Light {wght:450}");
+    assert_ne!(custom.id(), fresh_custom.id());
+    assert_ne!(old_epoch, fresh_custom.native_epoch);
+    assert_eq!(fresh_custom.weight, 450.0);
+    assert_ne!(heavy.id(), db.face(FAMILY, "Heavy").id());
+    assert_ne!(light.id(), db.face(FAMILY, "Light").id());
+    let renamed = "Pagenor Native Renamed";
+    let replacement = crate::testing::font_with(renamed, &['z']).unwrap();
+    publish_native_snapshot(&db, name, &replacement, true);
+    assert!(!db.has_family(FAMILY));
+    assert!(db.load_cataloged_with(renamed, |_| Ok(replacement.clone())));
+    assert_eq!(
+        db.read_faces().iter().filter(|f| f.source == FontSource::Native(name.into())).count(),
+        1,
+        "old family/style/custom cache entries leave once current data arrives"
+    );
+    assert_eq!(db.styles(renamed), ["Regular"]);
+    assert!(db.face(renamed, "Regular").covers('z'));
+    assert!(custom.covers('a') && heavy.covers('a') && light.covers('a'), "existing variable layout handles remain valid");
 }

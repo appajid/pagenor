@@ -1,6 +1,6 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6.
+Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6 / P01.7.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
@@ -240,7 +240,7 @@ remain valid; document-local scopes and their precedence remain unchanged.
 Provider errors become bounded diagnostics without blocking a concurrent scan.
 Activation/deactivation entirely between polls, or changed tables under an
 unchanged identity, cannot be identified by this snapshot scheme. P01.6 below fixes already-loaded installed-file replacement (PG-0106).
-Unchanged native identities remain PG-0108.
+P01.7 below provides an explicit manual refresh for unchanged native identities; automatic detection remains PG-0108.
 
 Validation uses a real Core Text font created from synthetic OFL-derived bytes
 in memory: its descriptor has no path and its tables reproduce the reference
@@ -347,3 +347,59 @@ References: [Microsoft memory-font scope](https://learn.microsoft.com/en-us/wind
 [DirectWrite system collection](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritefactory-getsystemfontcollection),
 [Fontconfig developer API](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-devel/),
 [dwrote safe API](https://docs.rs/dwrote/0.11.5/dwrote/).
+
+
+## Manual refresh of unchanged native identities (P01.7)
+
+Type › Rescan Installed Fonts (`font.rescan`) now invalidates native table caches
+for every currently registered identity, even when the registered names and paths
+have not changed. The next lookup requests current tables through the native
+provider. Scanning still reads bounded metadata for the picker; it does not retain
+full font data for every menu entry. The existing command clears composition
+caches without editing the document or its undo history.
+
+Unchanged background polls preserve native cache identities. Observed withdrawal
+and return still get separate epochs. A forced rescan renews epochs under the
+same insertion/lookup lock, so a table request or parsed face from an earlier
+epoch cannot publish after it. On successful reload, superseded native family,
+style and custom-instance cache entries leave; Arc/FaceRef handles held by existing
+layouts remain valid. Document font scopes retain precedence. If the provider
+cannot supply current tables, bounded diagnostics record the error and new
+lookups use the existing fallback policy; stale native tables are not made current.
+Even an identical native font receives a fresh face identity on manual reload,
+because the explicit rescan requests fresh provider data. Unchanged physical
+font files retain the P01.6 identical-byte cache policy.
+
+Two new regressions failed before the fix. They verify same-identity glyph changes,
+unchanged polling, metadata-only invalidation, provider denial, stale request
+rejection, cache retirement, variable named/custom instances and preserved document
+and layout handles. The macOS test now creates a second real pathless Core Text
+memory font with the same PostScript name and changed glyph coverage; metadata
+and lazy full-table access resolve the replacement. Discovery snapshots in these
+tests are injected into an isolated database; no global OS registration or Font
+Book setting changes occur. Pagenor Test1 stays active.
+
+This is an explicit refresh policy, not automatic detection of an invisible
+same-identity change. Apple provides registered-font-change notifications with
+process scope on the local notification center and session/user scopes on the
+distributed center. The current safe Rust Core Text wrappers do not expose these
+subscriptions; the available Core Foundation bindings require unsafe callbacks.
+No unsafe code or dependency is introduced to bridge that gap. A fallible safe
+notification adapter or provider generation API, and actual Adobe/dongle lifecycle
+evidence, remain required for automatic detection (PG-0108 / PG-0107).
+
+Reference: [Apple registered-font-change notification](https://developer.apple.com/documentation/coretext/kctfontmanagerregisteredfontschangednotification).
+
+Validation: the complete local gate passes all seven steps, with 806 tests passed,
+zero failed, three performance tests ignored and all 16 WASM packages checked.
+Strict font-crate Clippy including test targets passes for Windows GNU and Linux
+GNU; these are cross-target checks, not native memory-provider evidence. The Mac
+application builds. A fresh UI picker/engine-command probe finds Pagenor Test1 /
+Regular at `/Library/Fonts/pagenor.ttf`, glyph A = 2, and confirms `font.rescan`
+works without a document or undo entries and retains the unchanged installed face.
+The host snapshot is 800 families / 3,774 faces / 946 files, 52 duplicates and zero
+rejected/unavailable paths. It contains no pathless/native-service font entries,
+so actual vendor activation remains unverified. The first full-gate attempt was
+blocked by sandbox localhost socket restrictions; granting access for the existing
+control-server tests allowed the complete rerun to pass. No Font Book setting,
+unsafe policy, dependency, GitHub upload or remote CI run was changed/performed.

@@ -14,7 +14,7 @@ use crate::{Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "font.diagnostics", "Font Discovery", [], None, "{} → installed-font scan counts, roots and bounded issues; no font files loaded", native_fonts, |_, _| scan_report(false)),
-        cmd!(query "font.rescan", "Rescan Installed Fonts", ["Type"], None, "{} → refreshed installed-font diagnostics; preserves documents and undo history", native_fonts, |s, _| {
+        cmd!(query "font.rescan", "Rescan Installed Fonts", ["Type"], None, "{} → refreshed installed-font diagnostics and invalidated native table caches for lazy reload; preserves documents and undo history", native_fonts, |s, _| {
             let report = scan_report(true)?;
             s.cache.clear();
             Ok(report)

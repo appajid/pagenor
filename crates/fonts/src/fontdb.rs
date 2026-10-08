@@ -1042,7 +1042,7 @@ impl FontDb {
         let mut faces = self.faces.write().unwrap_or_else(|e| e.into_inner());
         #[cfg(not(target_arch = "wasm32"))]
         for face in &new {
-            if matches!(face.source, FontSource::Installed(_)) && self.can_insert_face(face) {
+            if matches!(face.source, FontSource::Installed(_) | FontSource::Native(_)) && self.can_insert_face(face) {
                 // A replacement may rename a family or remove styles in a collection.
                 // Layout Arc handles survive even when their superseded cache entries leave.
                 faces.retain(|old| old.source != face.source || self.current_face(old));
@@ -1126,8 +1126,9 @@ impl FontDb {
         self.scan_state.lock().unwrap_or_else(|e| e.into_inner()).report.clone()
     }
 
-    /// Scan the font folders again (fonts installed or removed since), cataloging the faces
-    /// found (native only). Font data is loaded when a cataloged family is first resolved.
+    /// Scan installed/activated fonts again, cataloging their metadata (native only).
+    /// Native table caches are invalidated even for unchanged identities; full font data
+    /// loads on the next lookup. Existing layout handles and document scopes remain valid.
     /// Returns the number of faces cataloged.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_system_fonts(&self) -> usize {
@@ -1292,7 +1293,7 @@ impl FontDb {
         log::debug!("cataloged {n} system font faces");
         self.update_installed_versions(&signature, &usable_paths);
         *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
-        self.update_native_available(native_fonts.iter().map(|f| f.name.clone()));
+        self.update_native_available(native_fonts.iter().map(|f| f.name.clone()), force);
         state.signature = signature;
         state.native_signature = native_fonts;
         state.report = report;
@@ -1490,15 +1491,19 @@ impl FontDb {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn update_native_available(&self, names: impl IntoIterator<Item = String>) {
+    fn update_native_available(&self, names: impl IntoIterator<Item = String>, force: bool) {
         let names: std::collections::HashSet<_> = names.into_iter().collect();
         // Serialize with insertion and cached lookup so activation changes cannot admit data
-        // fetched for a previous activation. An identity returning later gets a new epoch.
+        // fetched for a previous activation. A forced rescan also renews unchanged identities:
+        // OS table data may change without a path or an observable withdrawal between polls.
+        // This changes eligibility only; full font data remains lazy.
         let _faces = self.faces.write().unwrap_or_else(|e| e.into_inner());
         let mut available = self.native_available.write().unwrap_or_else(|e| e.into_inner());
         available.retain(|name, _| names.contains(name));
         for name in names {
-            available.entry(name).or_insert_with(|| self.next_source_epoch.fetch_add(1, Ordering::Relaxed));
+            if force || !available.contains_key(&name) {
+                available.insert(name, self.next_source_epoch.fetch_add(1, Ordering::Relaxed));
+            }
         }
     }
 

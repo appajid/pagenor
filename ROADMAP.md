@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.7: Manual rescan invalidates native table caches even when registered
+  identities stay unchanged. Data reloads lazily; old requests cannot publish
+  after the rescan. Variable instances, document scopes and held layout handles
+  have regression coverage. Automatic same-identity change detection and actual
+  Adobe/dongle activation remain open.
+
 - P01.6: Replaced installed-font files now reload lazily using published file
   versions. New glyphs, collection styles and named/custom variable instances
   resolve current data; existing layout/document handles remain valid.
