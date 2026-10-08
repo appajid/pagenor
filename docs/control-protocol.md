@@ -43,6 +43,10 @@ response acknowledges the request; the subsequent close event checks recovery
 again and can cancel closing if a later write fails. `app.quit` is also available
 as a UI command through `engine.execute` and `ui.menu.invoke`.
 
+Text `edit.copy` and `edit.cut` invoked through these command routes publish text
+through the host's normal egui clipboard output. The command response does not
+acknowledge a completed platform clipboard write. Object copies remain internal.
+
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
 merged document; the template stays as it was ([agents.md](agents.md#data-merge)).

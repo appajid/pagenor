@@ -1,5 +1,12 @@
 # Pagenor roadmap
 
+- P02.5: Text Copy/Cut now reach the system clipboard through the shared UI
+  command path, including menus/control and canvas events. Same-batch Copy/Paste
+  uses queued text; internal formatting and undo remain intact. Four UI regressions
+  and actual bidirectional TextEdit/native Pagenor transfers pass. Native control
+  quit, fresh native recovery and screenshot inspection pass. Other application
+  transfers, native menu/keyboard delivery and timer/storage/OS-exit cases remain open.
+
 - P02.4: Desktop Quit and root-window close checkpoint current edits before
   closing, cancel on write/cleanup failure, and allow retry. macOS Quit dispatches
   through the shared command; the exit hook makes a best-effort final save. Eight

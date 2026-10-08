@@ -1,6 +1,6 @@
 # Phase 02 — clipboard and document reliability
 
-Updated: 2026-10-09. P02.1–P02.4 are complete locally; Phase 02 and M0 are in progress.
+Updated: 2026-10-09. P02.1–P02.5 are complete locally; Phase 02 and M0 are in progress.
 Adobe/dongle activation validation remains pending at the owner’s request.
 
 ## P02.1 — one reversible paste operation
@@ -149,6 +149,60 @@ entries remain untouched. These exercise the shared engine/egui code, not a live
 native window or the host callback itself. CPU failure/retry UI images were
 inspected; the newest edit remains visible and the status reports failure/retry.
 
+## P02.5 — Copy and Cut through every UI command route
+
+A new regression reproduced PG-0207: menu/control `edit.copy` returned selected
+Unicode text but produced no platform clipboard output. Only the canvas Copy/Cut
+event handler forwarded the result to egui. Native menu accelerators and in-window
+menu choices therefore updated the internal formatted clipboard without publishing
+the text for another application.
+
+The shared `DesignApp::run` path now queues successful text Copy/Cut results.
+Logic and UI passes consume that queue through egui's existing clipboard output;
+the canvas uses the same path. Text is emitted once per queued result and is not
+rewritten on subsequent frames. Object copies stay internal, and failed commands
+do not publish text. Same-batch Copy/Paste uses queued text until the platform has
+processed its output; later paste reads the external clipboard as before. Internal
+formatting, engine history/journaling and the native Unicode read callback remain
+in the existing subsystems. No dependency, document format or unsafe code changed.
+
+Four new regressions cover menu/control Copy and Cut, canvas Copy/Cut events,
+same-batch paste followed by external paste, and object/failed-copy behavior.
+Copy leaves the document and undo history untouched. Text Cut is one undo/journal
+operation and restores the original selection/document on undo. Canvas output is
+emitted once. The same egui output path is compiled on macOS, Windows, Linux and WASM.
+
+Actual Mac transfers now pass with newly created TextEdit documents and an isolated
+native Pagenor fixture using the production menu, control transport, `DesignApp`
+and arboard read callback. TextEdit Copy reaches Pagenor's plain Unicode paste;
+undo restores the original selection, redo restores the text, and a copy-save
+matches that stage's document model. Pagenor Copy reaches a new TextEdit document.
+Pagenor Cut replaces an independently copied sentinel on the OS clipboard; pasting
+back into TextEdit gives the expected text. Source and destination accessibility
+values match the fixture, including multiple scripts, combining marks, emoji and LF.
+Pagenor commands were dispatched through `engine.execute` and `ui.menu.invoke`;
+actual native menu clicks and accelerator delivery were not tested.
+
+The native fixture exits normally through `app.quit`, invokes its final recovery
+hook, and restores the pre-test clipboard text without logging its contents.
+A fresh native process opens the retained recovery document. Exact typed document
+models/path/dirty state match; a separate fresh-process verifier checks both native
+exit checkpoints and the earlier copy-save against their respective snapshots.
+A real native screenshot was captured and inspected. It reports a missing emoji
+glyph in the fixture's Kokonor run: this validates data integrity, not Indic/emoji
+shaping parity. TextEdit's RTF-to-text export normalizes the decomposed accent to
+NFC; those exports compare canonically, while Pagenor's model checks are exact.
+The two owned TextEdit documents were saved locally and closed. Native fixture
+recovery folders and app wrapper are removed after verification.
+
+Native fixture startup now works through the desktop launcher, improving on the
+previous direct-launch AppKit timeout. Computer-use still could not bind its
+wrapper window; Pagenor's production control transport drove the commands and
+captured the screenshot. Actual live timer deadlines, cancelled native close on
+storage failure, menu/keyboard focus behavior, Dock/OS termination, other clipboard
+applications and the native Windows/Linux matrix remain pending. Platform clipboard
+write failure acknowledgement and rich external clipboard formats were not tested.
+
 ## Validation matrix
 
 | Scenario | Evidence / status |
@@ -162,22 +216,25 @@ inspected; the newest edit remains visible and the status reports failure/retry.
 | Copy-save preserves dirty/path; Unicode and format bytes | Passed. Temporary `.pagenor` round-trip. |
 | First restart recovery; save/reopen | Passed. Temporary documents and fresh engine sessions. |
 | Immediate second restart before recovery timer/save | Passed (P02.2). Retained checkpoint; synthetic sessions and separate processes with abrupt exits. |
-| Browser / TextEdit / Pages / Word actual clipboard transfer | Pending. Require real local application transfer evidence. |
+| Actual TextEdit → Pagenor and Pagenor → TextEdit text transfer | Passed (P02.5). Native clipboard read/output, menu/control command routes, undo/redo and inspected native screenshot. |
+| Browser / Pages / Word actual clipboard transfer and native menu/keyboard delivery | Pending. TextEdit alone does not establish these paths. |
 | Multiple entries, corrupt pending files and process UID reuse | Passed. Ownership regression and fresh-process probe; unknown entries remain intact. |
 | Checkpoint write failure, retry, save/revert/close cleanup | Passed for synthetic replacement/staging failures and failed save/revert. Prior snapshot remains usable; copy-save retains it. |
 | Recovery timer deadlines, idle wakeup, clean undo and retry | Passed (P02.3). Seven UI tests and a real-time headless egui loop; fresh-process recovery matches. |
 | Recovery error and successful-retry display | Passed. CPU failure/retry images inspected; latest document remains intact. |
 | Final quit/root-close checkpoint and failure cancellation | Passed locally (P02.4). Seven UI tests, six isolated writer/restart processes and inspected CPU images. |
-| Live native timer/window exit and actual disk-full/read-only storage | Pending. Live window fixture timed out with AppKit connection errors. Shared close logic and fallback function pass headlessly; native events/host callback remain unverified. |
+| Live native fixture control quit and fresh native recovery | Passed (P02.5). Fixture final recovery hook ran; exact document restored in a fresh native process. Production startup/default folders were not exercised. |
+| Live timer/failure cancellation, actual disk-full/read-only storage and OS termination | Pending. Earlier direct-launch AppKit timeout is historical; the clipboard fixture starts, but these scenarios have not been exercised natively. |
 | Native Windows/Linux runtime matrix | Deferred to milestone publication. |
 
-Validation: `cargo xtask ci` passes all seven steps; 842 tests pass, none fail,
+Validation: `cargo xtask ci` passes all seven steps; 846 tests pass, none fail,
 three performance tests are ignored and all 16 WASM packages check. The Mac app
 builds. Strict UI-library Clippy, including engine dependencies, passes for Windows GNU and Linux GNU.
 No GitHub upload or remote CI was performed. Cross-target checks do not
 establish native clipboard/recovery runtime behavior.
 
-Remaining coverage includes real external-application clipboard transfer and the live native recovery timer/exit matrix. Power-loss durability (including directory
+Remaining coverage includes other external-application clipboard transfers, native
+menu/keyboard delivery, and the live native recovery timer/failure/OS-exit matrix. Power-loss durability (including directory
 sync), actual cleanup-denied storage and simultaneous app processes claiming the same
 checkpoint are not established by these tests. Key reservation prevents new-entry
 collisions; it does not add inter-process ownership locking. Keep these limits

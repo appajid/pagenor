@@ -413,6 +413,8 @@ pub struct DesignApp {
     fonts_lang: String,
     pub restyle: bool,
     fonts_ready: bool,
+    /// Text copied through any command route, awaiting the host's egui output pass.
+    pending_clipboard_text: Option<String>,
     font_generation: u64,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
@@ -457,6 +459,7 @@ impl DesignApp {
             fonts_lang: String::new(),
             restyle: false,
             fonts_ready: false,
+            pending_clipboard_text: None,
             font_generation: 0,
             integrated_titlebar: false,
             native_menu: false,
@@ -512,8 +515,8 @@ impl DesignApp {
         let mut params = params;
         if matches!(id, "edit.paste" | "edit.pasteWithoutFormatting")
             && params.get("text").is_none()
-            && let Some(read_clipboard) = self.services.clipboard_text.as_mut()
-            && let Some(text) = read_clipboard()
+            // A Copy followed by Paste in the same command batch precedes platform output.
+            && let Some(text) = self.pending_clipboard_text.clone().or_else(|| self.services.clipboard_text.as_mut().and_then(|read| read()))
         {
             if let Some(obj) = params.as_object_mut() {
                 obj.insert("text".into(), Value::String(text));
@@ -526,6 +529,12 @@ impl DesignApp {
             return r;
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
+        if matches!(id, "edit.copy" | "edit.cut")
+            && let Ok(result) = &r
+        {
+            // Object copies stay internal. Only successful text results reach the OS/browser.
+            self.pending_clipboard_text = result.get("text").and_then(Value::as_str).map(str::to_owned);
+        }
         self.after_engine();
         if let Err(e) = &r {
             self.status(e.clone());
@@ -535,6 +544,12 @@ impl DesignApp {
             self.status(format!("Font scan complete: {} families, {} faces", report["families"], report["faces"]));
         }
         r
+    }
+
+    fn flush_clipboard(&mut self, ctx: &egui::Context) {
+        if let Some(text) = self.pending_clipboard_text.take() {
+            ctx.copy_text(text);
+        }
     }
 
     /// Handle requests produced by tools/commands (dialogs, view changes, file pickers).
@@ -671,6 +686,7 @@ impl DesignApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_close_request(ctx);
+        self.flush_clipboard(ctx);
     }
 
     /// Flush current edits before desktop shutdown, without marking documents saved.
@@ -793,6 +809,7 @@ impl DesignApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.flush_clipboard(&ctx);
         let db = pagenor_fonts::FontDb::global();
         db.refresh_in_background();
         #[cfg(not(target_arch = "wasm32"))]
@@ -936,6 +953,7 @@ impl DesignApp {
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
+        self.flush_clipboard(&ctx);
         self.perf.frame_ms = now_ms() - t0;
     }
 
@@ -1401,6 +1419,145 @@ mod tests {
             app.run(command, json!({"text": "Explicit हिन्दी"})).unwrap();
             assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, "AExplicit हिन्दीB");
         }
+    }
+
+    #[test]
+    fn menu_and_control_copy_cut_emit_unicode_to_the_platform_clipboard() {
+        for command in ["edit.copy", "edit.cut"] {
+            for control in [false, true] {
+                let mut app = DesignApp::new(Session::new(), Services::default());
+                let ctx = egui::Context::default();
+                app.run("file.new", json!({})).unwrap();
+                let text = "café e\u{301} தமிழ் తెలుగు 👩🏽‍💻\nSecond line";
+                let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
+                let story = pagenor_doc::StoryId(frame["story"].as_u64().unwrap());
+                app.run("text.select", json!({"story": story.0, "anchor": 0, "focus": text.len()})).unwrap();
+                let before = app.session.doc().unwrap().doc.clone();
+                let selection = app.session.doc().unwrap().selection.clone();
+                let undo = app.session.doc().unwrap().history.undo.len();
+                let journal = app.session.journal.len();
+                if control {
+                    let (req, _) = ControlRequest::new("engine.execute", json!({"command": command, "params": {}}));
+                    let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("expected command result") };
+                    assert_eq!(reply["ok"], true);
+                } else {
+                    menus::activate(&mut app, command, &Value::Null);
+                }
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+                output.textures_delta.clear();
+                let copied: Vec<_> = output
+                    .platform_output
+                    .commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        egui::OutputCommand::CopyText(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(copied, [text], "{command}, control={control}: all command routes must reach the host clipboard once");
+                if command == "edit.copy" {
+                    assert_eq!(app.session.doc().unwrap().doc, before);
+                    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
+                } else {
+                    assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1);
+                    assert_eq!(app.session.journal.len(), journal + 1);
+                    assert!(app.session.doc().unwrap().doc.story(story).unwrap().text.is_empty());
+                    app.run("edit.undo", json!({})).unwrap();
+                    assert_eq!(app.session.doc().unwrap().doc, before);
+                    assert_eq!(app.session.doc().unwrap().selection, selection);
+                }
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+                output.textures_delta.clear();
+                assert!(
+                    !output.platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_))),
+                    "do not rewrite the clipboard every frame"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canvas_copy_cut_emit_once_through_the_shared_clipboard_bridge() {
+        for event in [egui::Event::Copy, egui::Event::Cut] {
+            let ctx = egui::Context::default();
+            let mut app = DesignApp::new(Session::new(), Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let text = "Canvas café தமிழ்";
+            let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
+            app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": text.len()})).unwrap();
+            app.session.set_tool("type");
+            let undo = app.session.doc().unwrap().history.undo.len();
+            for events in [vec![], vec![], vec![event.clone()]] {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 750.0))),
+                    events,
+                    ..Default::default()
+                };
+                let has_event = !raw.events.is_empty();
+                let mut output = ctx.run_ui(raw, |ui| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                });
+                output.textures_delta.clear();
+                let copied: Vec<_> = output
+                    .platform_output
+                    .commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        egui::OutputCommand::CopyText(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if has_event {
+                    assert_eq!(copied, [text]);
+                } else {
+                    assert!(copied.is_empty());
+                }
+            }
+            assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + usize::from(matches!(event, egui::Event::Cut)));
+        }
+    }
+
+    #[test]
+    fn queued_copy_is_used_for_same_batch_paste_then_external_clipboard_is_read() {
+        let ctx = egui::Context::default();
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = "தமிழ்";
+        let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
+        let story = pagenor_doc::StoryId(frame["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": story.0, "anchor": 0, "focus": text.len()})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        app.run("text.select", json!({"story": story.0, "anchor": text.len(), "focus": text.len()})).unwrap();
+        app.services.clipboard_text = Some(Box::new(|| panic!("same-batch copy must precede stale OS clipboard text")));
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, format!("{text}{text}"));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(output.platform_output.commands.iter().filter(|c| matches!(c, egui::OutputCommand::CopyText(_))).count(), 1);
+        app.services.clipboard_text = Some(Box::new(|| Some(" External café".into())));
+        app.run("edit.pasteWithoutFormatting", json!({})).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, format!("{text}{text} External café"));
+    }
+
+    #[test]
+    fn object_and_failed_copy_cut_do_not_replace_the_platform_clipboard() {
+        let ctx = egui::Context::default();
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        assert!(app.run("edit.copy", json!({})).is_err());
+        assert!(app.run("edit.cut", json!({})).is_err());
+        let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 4})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        // A newer object copy supersedes the queued text copy but stays internal.
+        app.run("frame.create", json!({"rect": [20, 20, 60, 60]})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!output.platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_))));
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(), 3);
     }
 
     #[test]
