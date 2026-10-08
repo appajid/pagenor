@@ -20,7 +20,7 @@ local. A task completion does not by itself complete a roadmap milestone.
 | 06 | P1 | Indic composition and language support | Planned. |
 | 07 | P1 | Professional typography and page tools | Planned. Validate existing features before adding or replacing them. |
 | 08 | P1 | Import, export and print | Planned. |
-| 09 | P1 | UI, accessibility and performance | Planned. |
+| 09 | P1 | UI, accessibility and performance | Partial branding evidence (P09.1): shared desktop launch splash uses the supplied artwork, independent of whether documents are open/recovered. Two timing/document/recovery tests, inspected CPU renders and an actual macOS splash-to-welcome transition pass; full local gate is 848 passed, 3 ignored, with 16 WASM packages and Windows/Linux strict UI-library checks passing. The phase's broader UI/accessibility/performance gates and native Windows/Linux validation remain planned. |
 | 10 | P1 | Cross-platform distribution | Partial local development evidence (P10.1): current macOS executable is bundled with the owner icon through `packaging/macos/dev.sh`; Finder display, native launch, independent macOS icon decoding, signature and CLI version pass. Rebuilding a running bundle is refused. Native macOS, Windows and Linux CI starts in Phase 00; Windows ARM64 unsigned MSI build/install/architecture/CLI-version/uninstall smoke passed in run 37776034034. Release packaging breadth, GUI/file-open, installation and signing gates remain open. |
 | 11 | P1 | Public beta and 1.0 | Planned. |
 | 12 | P2 | Post-1.0 improvements | Planned. |

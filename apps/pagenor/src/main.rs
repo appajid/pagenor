@@ -210,7 +210,7 @@ fn main() -> eframe::Result {
             // Crash recovery: reopen what a previous run left unsaved, then keep it current.
             session.recovery_dir = pagenor_engine::recovery::default_dir();
             let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
-            let mut app = DesignApp::new(session, services());
+            let mut app = DesignApp::new(session, services()).with_startup_splash();
             if let Some(n) = recovered.as_ref().and_then(|r| r["opened"].as_array()).map(Vec::len).filter(|n| *n > 0) {
                 app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
             }

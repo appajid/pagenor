@@ -19,6 +19,7 @@ pub mod menus;
 pub mod panels;
 pub mod render_worker;
 mod rtl;
+mod startup;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
@@ -415,6 +416,8 @@ pub struct DesignApp {
     fonts_ready: bool,
     /// Text copied through any command route, awaiting the host's egui output pass.
     pending_clipboard_text: Option<String>,
+    /// Transient desktop launch artwork; never persisted with preferences/documents.
+    startup_splash: Option<startup::Splash>,
     font_generation: u64,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
@@ -460,6 +463,7 @@ impl DesignApp {
             restyle: false,
             fonts_ready: false,
             pending_clipboard_text: None,
+            startup_splash: None,
             font_generation: 0,
             integrated_titlebar: false,
             native_menu: false,
@@ -475,6 +479,13 @@ impl DesignApp {
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
+        self
+    }
+
+    /// Show the supplied artwork briefly on launch, even when opening/restoring
+    /// documents. Desktop hosts opt in; the web keeps its existing loader.
+    pub fn with_startup_splash(mut self) -> Self {
+        self.startup_splash = Some(startup::Splash::default());
         self
     }
 
@@ -835,6 +846,12 @@ impl DesignApp {
                 dialog.fields = report;
             }
         }
+        if let Some(splash) = &mut self.startup_splash {
+            if splash.show(ui) {
+                return;
+            }
+            self.startup_splash = None;
+        }
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
@@ -1041,6 +1058,77 @@ pub fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_splash_appears_with_or_without_documents_then_finishes_once() {
+        for has_document in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = DesignApp::new(Session::new(), Services::default()).with_startup_splash();
+            if has_document {
+                app.run("file.new", json!({})).unwrap();
+                app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "தமிழ் café"})).unwrap();
+                app.session.doc_mut().unwrap().path = Some("/local/தமிழ்.pagenor".into());
+            }
+            let before: Vec<_> = app
+                .session
+                .documents()
+                .iter()
+                .map(|d| (serde_json::to_value(&d.doc).unwrap(), d.path.clone(), d.is_dirty(), d.history.undo.len()))
+                .collect();
+            // The first visible frame can arrive long after process start.
+            for (time, visible) in [(20.0, true), (20.8, true), (21.21, false), (22.0, false)] {
+                let raw = egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 560.0))),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(raw, |ui| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                });
+                assert_eq!(app.startup_splash.is_some(), visible);
+                assert!(!output.shapes.is_empty());
+                output.textures_delta.clear();
+            }
+            let after: Vec<_> = app
+                .session
+                .documents()
+                .iter()
+                .map(|d| (serde_json::to_value(&d.doc).unwrap(), d.path.clone(), d.is_dirty(), d.history.undo.len()))
+                .collect();
+            assert_eq!(before, after);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn launch_splash_preserves_recovered_document_and_shutdown_checkpoint() {
+        let (mut old, _, dir) = recovery_app("startup-splash");
+        old.run("file.new", json!({})).unwrap();
+        old.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Recovered தமிழ் café"})).unwrap();
+        old.session.doc_mut().unwrap().path = Some("/local/recovered.pagenor".into());
+        old.prepare_shutdown().unwrap();
+        let mut session = Session::new();
+        session.recovery_dir = Some(dir.clone());
+        session.execute("file.recovery.open", &json!({})).unwrap();
+        let mut app = DesignApp::new(session, Services::default()).with_startup_splash();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        output.textures_delta.clear();
+        assert!(app.startup_splash.is_some());
+        app.prepare_shutdown().unwrap();
+        let mut recovered = Session::new();
+        recovered.recovery_dir = Some(dir.clone());
+        recovered.execute("file.recovery.open", &json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&recovered.doc().unwrap().doc).unwrap(), before);
+        assert_eq!(recovered.doc().unwrap().path.as_deref(), Some("/local/recovered.pagenor"));
+        assert!(recovered.doc().unwrap().is_dirty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn recovery_app(name: &str) -> (DesignApp, egui::Context, std::path::PathBuf) {

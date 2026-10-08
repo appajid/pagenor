@@ -1,5 +1,13 @@
 # Pagenor roadmap
 
+- P09.1: Desktop launch now shows the supplied splash artwork once for about
+  1.2 seconds from its first UI frame, including launches with documents already
+  opened or recovered. The transient shared UI state preserves documents and
+  preferences; the web keeps its loader. Two timing/document/recovery regressions,
+  inspected CPU renders and an observed macOS splash-to-welcome transition pass.
+  Local gate: 848 tests pass, 3 ignored; 16 WASM packages and Windows/Linux strict
+  UI-library checks pass. Native Windows/Linux execution awaits the milestone matrix.
+
 - P10.1: Local macOS builds now have a build-and-launch command that assembles
   `target/macos-dev/Pagenor.app` with the supplied owner icon and release bundle
   metadata. It ad-hoc signs the current binary and refuses to rebuild a running

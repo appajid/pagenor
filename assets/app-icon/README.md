@@ -5,7 +5,10 @@ in `assets/brand/` from `Pagenor_SVG_Assets.zip` and
 `Pagenor_Splash_About_Editable_SVG.zip` (2026-10-08). Branding rights are
 reserved; see `LICENSE.txt`. Existing software and upstream notices remain applicable.
 
-The supplied splash design appears on wide start screens and during web loading.
+The supplied splash design appears briefly on every desktop launch, on wide
+start screens and during web loading. The desktop launch splash lasts about
+1.2 seconds from its first UI frame, including launches that restore or open
+documents. It then gives way to the normal workspace; it has no sample progress bar.
 The start-screen wordmark adapts to light/dark mode; About uses the supplied page
 artwork with the actual build version, plus Contributors and Models tabs. The original
 wordmarks contain text; runtime derivatives outline that text to preserve its
