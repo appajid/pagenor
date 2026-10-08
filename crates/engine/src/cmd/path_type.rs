@@ -1,7 +1,7 @@
 //! Type on a Path: a story set along any path (lines, curves, shapes), with Type on a Path
 //! Options (start, flip, alignment) and Delete Type from Path.
 
-use designcraft_doc::{Content, ItemId, PathAlign, PathType, Selection, Story, StoryId, TextFrame, TextSel};
+use pagenor_doc::{Content, ItemId, PathAlign, PathType, Selection, Story, StoryId, TextFrame, TextSel};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc};
@@ -46,7 +46,7 @@ fn on_path(s: &mut Session, p: &Value) -> Result<Value> {
         pt.align = a;
     }
     s.edit(|d, sel| {
-        let it = d.item(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let it = d.item(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         match &it.content {
             Content::Unassigned => {}
             Content::Text(_) => return Err(bad("type.onPath", "the object already holds text")),
@@ -56,7 +56,7 @@ fn on_path(s: &mut Session, p: &Value) -> Result<Value> {
         let mut st = Story::with_text(sid, &text, Default::default());
         st.frames = vec![id];
         d.stories.insert(sid, std::sync::Arc::new(st));
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let mut tf = TextFrame { story: sid, options: Default::default() };
         tf.options.path = Some(pt);
         it.content = Content::Text(tf);
@@ -84,7 +84,7 @@ fn path_options(s: &mut Session, p: &Value) -> Result<Value> {
     let delete = p.get("delete").and_then(Value::as_bool).unwrap_or(false);
     let p = p.clone();
     s.edit(|d, sel| {
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let Content::Text(tf) = &mut it.content else { return Err(bad("type.pathOptions", "not type on a path")) };
         let Some(pt) = tf.options.path.as_mut() else { return Err(bad("type.pathOptions", "not type on a path")) };
         if delete {
@@ -120,14 +120,14 @@ mod tests {
         // A vertical line: the text must run down it, not across.
         let id = s.execute("line.create", &json!({"a": [300, 100], "b": [300, 600]})).unwrap()["id"].as_u64().unwrap();
         let r = s.execute("type.onPath", &json!({"id": id, "text": "Along the line we go"})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         let d = s.doc().unwrap().doc.clone();
-        let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+        let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
         assert!(cs.overset_at.is_none());
-        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
-        let designcraft_doc::Content::Text(tf) = &it.content else { panic!() };
-        let glyphs = designcraft_compose::path_glyphs(&cs, &cs.frames[0], &it.path.to_bezpath(), tf.options.path.as_ref().unwrap());
-        let b = glyphs.iter().map(|(_, bp)| designcraft_geom::kurbo::Shape::bounding_box(bp)).reduce(|a, b| a.union(b)).unwrap();
+        let it = d.item(pagenor_doc::ItemId(id)).unwrap();
+        let pagenor_doc::Content::Text(tf) = &it.content else { panic!() };
+        let glyphs = pagenor_compose::path_glyphs(&cs, &cs.frames[0], &it.path.to_bezpath(), tf.options.path.as_ref().unwrap());
+        let b = glyphs.iter().map(|(_, bp)| pagenor_geom::kurbo::Shape::bounding_box(bp)).reduce(|a, b| a.union(b)).unwrap();
         assert!(b.height() > b.width() * 3.0, "runs down the line: {b:?}");
         assert!(b.x0 > 280.0 && b.x1 < 320.0);
         // Typing at the cursor adds to it; options; delete.
@@ -138,11 +138,11 @@ mod tests {
         // Too much text oversets (one line only).
         s.execute("text.insert", &json!({"text": " more words".repeat(60)})).unwrap();
         let d = s.doc().unwrap().doc.clone();
-        assert!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at.is_some());
+        assert!(pagenor_compose::compose_story(&d, sid, &Default::default()).overset_at.is_some());
         s.execute("type.pathOptions", &json!({"id": id, "delete": true})).unwrap();
         let d = s.doc().unwrap().doc.clone();
         assert!(d.story(sid).is_none());
-        assert!(matches!(d.item(designcraft_doc::ItemId(id)).unwrap().content, designcraft_doc::Content::Unassigned));
+        assert!(matches!(d.item(pagenor_doc::ItemId(id)).unwrap().content, pagenor_doc::Content::Unassigned));
         // Rendered output has ink along the line.
         let mut s2 = Session::new();
         s2.execute("file.new", &json!({})).unwrap();
@@ -150,13 +150,13 @@ mod tests {
         s2.execute("object.stroke", &json!({"ids": [id], "swatch": "[None]"})).unwrap();
         s2.execute("type.onPath", &json!({"id": id, "text": "MMMMMMMM"})).unwrap();
         let d = s2.doc().unwrap().doc.clone();
-        let mut rr = designcraft_render::Renderer::new();
+        let mut rr = pagenor_render::Renderer::new();
         rr.threads = 0;
         let img = rr.render_page(&d, &s2.cache, 0, 1.0, false, &Default::default()).unwrap();
         let ink = (100..200).filter(|&x| img.pixel(x, 295)[0] < 128).count();
         assert!(ink > 8, "glyphs sit on the line: {ink}");
         assert_eq!((100..200).filter(|&x| img.pixel(x, 306)[0] < 128).count(), 0, "nothing hangs below the baseline");
-        let pdf = designcraft_pdf::export_pdf(&d, &s2.cache, &Default::default()).unwrap();
+        let pdf = pagenor_pdf::export_pdf(&d, &s2.cache, &Default::default()).unwrap();
         assert!(pdf.len() > 1000);
     }
 }

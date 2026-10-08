@@ -1,16 +1,16 @@
 [package]
-name = "designcraft-images"
+name = "pagenor-images"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft placed-graphic decoding: raster formats (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD) and SVG"
+description = "Pagenor placed-graphic decoding: raster formats (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD) and SVG"
 
 [lints]
 workspace = true
 
 [dependencies]
-designcraft-color = { workspace = true }
-designcraft-fonts = { workspace = true }
+pagenor-color = { workspace = true }
+pagenor-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }

@@ -1,8 +1,8 @@
 //! The Tools panel (left): single or double column, tool groups with flyouts, fill/stroke proxy,
 //! screen mode buttons.
 
-use designcraft_tools::TOOL_GROUPS;
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
+use pagenor_tools::TOOL_GROUPS;
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -169,7 +169,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             fill_stroke_proxy(app, ui, width);
         });
-    if std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some() {
+    if std::env::var_os("PAGENOR_DEBUG_LAYOUT").is_some() {
         eprintln!("tools panel rect {:?} (wanted width {width}); remaining {:?}", r.response.rect, ui.available_rect_before_wrap());
     }
 }

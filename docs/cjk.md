@@ -2,7 +2,7 @@
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
-DesignCraft document can be set to the standard of a Japanese, Chinese or Korean publisher,
+Pagenor document can be set to the standard of a Japanese, Chinese or Korean publisher,
 round-trip through IDML, and export correct PDF and EPUB.
 
 It builds on the CJK import and composition described in [cjk-typography.md](cjk-typography.md)
@@ -34,7 +34,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Vertical text, upright CJK, rotated Latin | done: story direction per story (frames of a thread agree; IDML `StoryOrientation`); glyphs turned by transforms; arrow keys follow the vertical lines |
 | Vertical metrics and shaping | done: upright runs shaped top to bottom (`vert`; `vkrn`/`vpal` when asked) with `vmtx`/`VORG` advances and origins, centred on the ideographic em box (`BASE`, else OS/2); turned runs shaped horizontally, without `vrt2`; Horizontal Kana (`hkna`) takes the vertical kana (`vkna`) in upright runs. Default location of variable fonts only (no `VVAR`) |
 | Kinsoku | named (hard, soft, Chinese, Korean) and custom kinsoku sets, bunri-kinshi, rensuuji, hanging punctuation (regular, force); without a set, fixed no-start / no-end lists and a break anywhere between CJK characters; kinsoku type (push in / push out priorities) kept but not applied |
-| Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); DesignCraft-only, not in IDML |
+| Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); Pagenor-only, not in IDML |
 | Mojikumi | tables and paragraph references kept through IDML; not applied (Preflight says so) |
 | Aki, tsume, jidori | done ([cjk-typography.md](cjk-typography.md)) |
 | Character alignment, leading model | em box top / centre / bottom, ICF from ascender and descender, roman baseline; aki above / below, centre (centre down as centre) |
@@ -56,7 +56,7 @@ Known bugs to fix first:
 
 ### Character classes
 
-A `cjk::class_of(char, &Context) -> Class` in `designcraft-compose` with the JLREQ classes
+A `cjk::class_of(char, &Context) -> Class` in `pagenor-compose` with the JLREQ classes
 (opening brackets, closing brackets, hyphens, dividing punctuation, middle dots, full stops,
 commas, inseparable characters, iteration marks, prolonged sound mark, small kana, prefixed and
 postfixed abbreviations, full-width ideographic space, hiragana, katakana, math symbols and
@@ -153,15 +153,15 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   full-width symbols, punctuation, Latin, numerals) beside custom sets.
 - **Missing glyphs**: InDesign doesn't substitute fonts per character: a character the applied
   font lacks shows as the font's missing-glyph box, prints that way and is a Preflight error.
-  DesignCraft does the same, with a document setting (Draw Missing Glyphs from Fallback Fonts)
+  Pagenor does the same, with a document setting (Draw Missing Glyphs from Fallback Fonts)
   that draws such characters from fallback fonts instead.
 - **Language-aware fallback** (when that setting is on): Japanese, Simplified Chinese, Traditional
   Chinese and Korean each have their own fallback chain of system fonts (Japanese: the craft-fonts
   Japanese faces first); `locl` follows the character language (IDML language names).
 - **No CJK fonts in the repo.** CJK fonts are large (15–25 MB each even subset) and documents
   should name the fonts they use. The Japanese UI and document faces come from the optional
-  craft-fonts build input when DesignCraft is built with it (release builds are).
-- **Document fonts**: fonts in a `Document Fonts` folder beside an opened `.designcraft` or
+  craft-fonts build input when Pagenor is built with it (release builds are).
+- **Document fonts**: fonts in a `Document Fonts` folder beside an opened `.pagenor` or
   `.idml` file are available to that document only, ahead of system fonts, and unloaded when it
   closes. File › Package copies the document's fonts into the package's `Document Fonts` folder
   (font licences permitting: OS/2 `fsType` restricted-licence fonts are listed, not copied), so a
@@ -234,7 +234,7 @@ Total: roughly 100–150 agent hours.
 
 ### Phase 1 in detail
 
-1. `CharProps.language` reaches `designcraft_fonts::shape` (harfrust buffer language) and the
+1. `CharProps.language` reaches `pagenor_fonts::shape` (harfrust buffer language) and the
    word cache key; tests: a font with `locl` for JAN vs ZHS draws different glyphs for U+76F4.
 2. Language list: "Chinese: Simplified", "Chinese: Traditional", "Korean", "Japanese" (IDML
    names), with quotes and spelling/hyphenation off for them.
@@ -264,7 +264,7 @@ Each follows what an InDesign user expects.
 3. **PDF vertical text** keeps transformed horizontal glyphs (correct-looking, copyable via
    ActualText) rather than vertical CID fonts (`Identity-V`).
 4. **No CJK fonts in the repo**; documents carry theirs in `Document Fonts`, scoped to the
-   document as in InDesign. DesignCraft embeds Japanese UI and document faces only when built with
+   document as in InDesign. Pagenor embeds Japanese UI and document faces only when built with
    the optional craft-fonts input (release builds are).
 5. **Package copies every font that draws text**, fallback fonts included (when the document
    draws missing glyphs from them), so a package reproduces what is on screen.

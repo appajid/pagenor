@@ -1,14 +1,14 @@
 //! Renderer caching/culling behaviour, and a render-time regression test (`#[ignore]`: wall-clock
 //! timings are only meaningful on an idle machine — run with
-//! `cargo test --release -p designcraft-render --test perf -- --ignored`).
+//! `cargo test --release -p pagenor-render --test perf -- --ignored`).
 
 use std::time::Instant;
 
-use designcraft_compose::Cache;
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Document, ParaFormat, SpreadRef};
-use designcraft_geom::{Affine, Rect, Vec2};
-use designcraft_render::{Placed, RenderOptions, Renderer};
+use pagenor_compose::Cache;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Document, ParaFormat, SpreadRef};
+use pagenor_geom::{Affine, Rect, Vec2};
+use pagenor_render::{Placed, RenderOptions, Renderer};
 
 const WORDS: &[&str] = &["grid", "margin", "column", "rhythm", "baseline", "reader", "story", "frame", "quiet", "layout", "type", "texture"];
 

@@ -1,6 +1,6 @@
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef};
-use designcraft_geom::Rect;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef};
+use pagenor_geom::Rect;
 
 use super::*;
 
@@ -134,8 +134,7 @@ fn wrap_pushes_text_aside() {
     let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
     let lid = d.default_layer();
     let id = ItemId(d.alloc());
-    let mut it =
-        designcraft_doc::Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 60.0)));
+    let mut it = pagenor_doc::Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 60.0)));
     it.wrap.mode = WrapMode::BoundingBox;
     it.wrap.offsets = [0.0, 0.0, 6.0, 6.0];
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
@@ -150,7 +149,7 @@ fn wrap_pushes_text_aside() {
 fn paragraph_composer_is_no_worse_than_greedy() {
     // Sum of squared slack over lines (excluding last) should not exceed the greedy result.
     let measure = 180.0;
-    let mk = |c: designcraft_doc::Composer| {
+    let mk = |c: pagenor_doc::Composer| {
         let (d, sid, _) = doc_with(
             &[LOREM; 2].join(" "),
             Rect::new(0.0, 0.0, measure, 4000.0),
@@ -161,15 +160,15 @@ fn paragraph_composer_is_no_worse_than_greedy() {
         let n = lines.len();
         lines[..n - 1].iter().map(|l| (l.x1 - l.end_x).powi(2)).sum::<f64>()
     };
-    let kp = mk(designcraft_doc::Composer::Paragraph);
-    let gr = mk(designcraft_doc::Composer::SingleLine);
+    let kp = mk(pagenor_doc::Composer::Paragraph);
+    let gr = mk(pagenor_doc::Composer::SingleLine);
     assert!(kp <= gr * 1.05 + 1.0, "kp {kp} greedy {gr}");
 }
 
 #[test]
 fn tabs_align_to_stops() {
     let pa = ParaAttrs {
-        tabs: Some(vec![designcraft_doc::TabStop { position: 100.0, align: TabAlign::Right, leader: String::new(), align_on: String::new() }]),
+        tabs: Some(vec![pagenor_doc::TabStop { position: 100.0, align: TabAlign::Right, leader: String::new(), align_on: String::new() }]),
         ..Default::default()
     };
     let (d, sid, _) = doc_with("Name\t42", Rect::new(0.0, 0.0, 300.0, 100.0), pa);
@@ -281,14 +280,14 @@ fn hyphen_limit_is_a_hard_constraint() {
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");
-    let count = |zone: f64, composer: designcraft_doc::Composer| {
+    let count = |zone: f64, composer: pagenor_doc::Composer| {
         let para =
             ParaAttrs { align: Some(Align::Left), hyph_zone: Some(zone), composer: Some(composer), hyph_weight: Some(0.0), ..Default::default() };
         let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 110.0, 100_000.0), para);
         let cs = compose_story(&d, sid, &ComposeOptions::default());
         all_lines(&cs).iter().filter(|l| l.hyphenated).count()
     };
-    for c in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+    for c in [pagenor_doc::Composer::Paragraph, pagenor_doc::Composer::SingleLine] {
         let (free, zoned, huge) = (count(0.0, c), count(36.0, c), count(1000.0, c));
         // A huge zone leaves only words that start a line (no space to break at) hyphenable.
         assert!(free > 0 && zoned <= free && huge * 4 <= free, "{c:?}: {free} {zoned} {huge}");
@@ -550,7 +549,7 @@ fn perf_compose_300k_story() {
 
 #[test]
 fn column_break_moves_following_text() {
-    let text = format!("First column text.{}Second column text.", designcraft_doc::story::COLUMN_BREAK);
+    let text = format!("First column text.{}Second column text.", pagenor_doc::story::COLUMN_BREAK);
     let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 300.0), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -572,7 +571,7 @@ fn tabs_without_stops_use_default_half_inch() {
 
 // ---------- tables ----------
 
-fn table_doc(frame: Rect, t: designcraft_doc::Table) -> (Document, StoryId, ItemId) {
+fn table_doc(frame: Rect, t: pagenor_doc::Table) -> (Document, StoryId, ItemId) {
     let (mut d, sid, fid) = doc_with("Intro", frame, ParaAttrs::default());
     let st = d.story_mut(sid).unwrap();
     let end = st.len();
@@ -583,8 +582,8 @@ fn table_doc(frame: Rect, t: designcraft_doc::Table) -> (Document, StoryId, Item
     (d, sid, fid)
 }
 
-fn filled(rows: usize, cols: usize, header: usize, width: f64) -> designcraft_doc::Table {
-    let mut t = designcraft_doc::Table::new(77, rows, cols, header, 0, width);
+fn filled(rows: usize, cols: usize, header: usize, width: f64) -> pagenor_doc::Table {
+    let mut t = pagenor_doc::Table::new(77, rows, cols, header, 0, width);
     for r in 0..t.nrows() {
         for c in 0..t.ncols() {
             t.cell_mut(r, c).unwrap().text.insert(0, &format!("R{r}C{c}"));
@@ -598,7 +597,7 @@ fn table_rows_fit_their_content() {
     let mut t = filled(3, 3, 1, 300.0);
     t.cell_mut(2, 1).unwrap().text.insert(0, &format!("{LOREM} "));
     t.rows[3].height = 50.0;
-    t.rows[3].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.rows[3].mode = pagenor_doc::RowHeightMode::Exactly;
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(!cs.is_overset());
@@ -695,9 +694,9 @@ fn table_cells_hit_test_and_place_carets() {
 #[test]
 fn table_fills_and_merged_cells() {
     let mut t = filled(4, 3, 1, 300.0);
-    t.options.alt_rows = Some(designcraft_doc::AltFills { first: 1, next: 1, ..Default::default() });
+    t.options.alt_rows = Some(pagenor_doc::AltFills { first: 1, next: 1, ..Default::default() });
     t.cell_mut(0, 0).unwrap().fill = "[Black]".into();
-    t.merge(designcraft_doc::CellRange::new(1, 1, 2, 2)).unwrap();
+    t.merge(pagenor_doc::CellRange::new(1, 1, 2, 2)).unwrap();
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), t);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let tf = &cs.frames[0].tables[0];
@@ -714,17 +713,16 @@ fn table_fills_and_merged_cells() {
 
 #[test]
 fn tab_leaders_fill_the_gap() {
-    let mut doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut doc = pagenor_doc::Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = doc.default_layer();
-    let pf = designcraft_doc::ParaFormat {
-        para: designcraft_doc::ParaAttrs {
-            tabs: Some(vec![designcraft_doc::TabStop { position: 200.0, align: TabAlign::Right, leader: ".".into(), align_on: String::new() }]),
+    let pf = pagenor_doc::ParaFormat {
+        para: pagenor_doc::ParaAttrs {
+            tabs: Some(vec![pagenor_doc::TabStop { position: 200.0, align: TabAlign::Right, leader: ".".into(), align_on: String::new() }]),
             ..Default::default()
         },
         ..Default::default()
     };
-    let (_, sid) =
-        doc.add_text_frame(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Rect::new(0.0, 0.0, 300.0, 100.0), lid, "Intro\t12", pf).unwrap();
+    let (_, sid) = doc.add_text_frame(pagenor_doc::SpreadRef::Doc(0), pagenor_geom::Rect::new(0.0, 0.0, 300.0, 100.0), lid, "Intro\t12", pf).unwrap();
     let cs = crate::compose_story(&doc, sid, &Default::default());
     let line = &cs.frames[0].lines[0];
     let dots: Vec<&crate::PlacedGlyph> = line.glyphs.iter().filter(|g| g.len == 0 && g.visible).collect();
@@ -810,15 +808,15 @@ fn right_to_left_runs_are_ordered_visually() {
     assert!(x_of(alef) > x_of(bet) && x_of(bet) > x_of(gimel), "Hebrew reversed");
     assert!(x_of(0) < x_of(gimel) && x_of(alef) < x_of(11), "Latin around it stays in place");
     // A right-to-left paragraph puts its first word on the right.
-    let rtl = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    let rtl = ParaAttrs { direction: Some(pagenor_doc::TextDirection::RightToLeft), ..Default::default() };
     let (d, sid, _) = doc_with("\u{5D0}\u{5D1} abc", Rect::new(36.0, 36.0, 500.0, 200.0), rtl);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let l = all_lines(&cs)[0];
     let x_of = |byte: usize| l.glyphs.iter().find(|g| g.byte == byte).map(|g| g.x).unwrap();
     assert!(x_of(0) > x_of(5), "the Hebrew word (first in the text) is right of the Latin one");
     // Shaping keeps clusters in text order.
-    let face = designcraft_fonts::FontDb::global().face(designcraft_fonts::DEFAULT_FAMILY, "Regular");
-    let g = designcraft_fonts::shape(&face, "ab \u{5D0}\u{5D1}", &[], |c| c);
+    let face = pagenor_fonts::FontDb::global().face(pagenor_fonts::DEFAULT_FAMILY, "Regular");
+    let g = pagenor_fonts::shape(&face, "ab \u{5D0}\u{5D1}", &[], |c| c);
     assert!(g.windows(2).all(|w| w[0].cluster <= w[1].cluster), "{:?}", g.iter().map(|g| g.cluster).collect::<Vec<_>>());
 }
 
@@ -827,7 +825,7 @@ fn bidi_matches_the_reference_order() {
     use unicode_bidi::{BidiInfo, Level};
     let text = "English then \u{645}\u{631}\u{62D}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645} 123 and \u{5E9}\u{5DC}\u{5D5}\u{5DD} \u{5E2}\u{5D5}\u{5DC}\u{5DD} end.";
     for rtl in [false, true] {
-        let dir = if rtl { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight };
+        let dir = if rtl { pagenor_doc::TextDirection::RightToLeft } else { pagenor_doc::TextDirection::LeftToRight };
         let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 200.0), ParaAttrs { direction: Some(dir), ..Default::default() });
         let cs = compose_story(&d, sid, &ComposeOptions::default());
         let l = all_lines(&cs)[0];
@@ -843,7 +841,7 @@ fn bidi_matches_the_reference_order() {
 
 #[test]
 fn carets_in_right_to_left_text_follow_the_drawing() {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     // "abc" then an Arabic word, in a left-to-right paragraph.
     let text = "abc سلام";
@@ -884,11 +882,11 @@ fn kashidas_without_tatweel_fall_back_to_spaces() {
 }
 
 fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين الرحمن الرحيم مالك يوم الدين اياك نعبد واياك نستعين";
     let pf = ParaFormat {
-        para: ParaAttrs { align: Some(Align::RightJustified), direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() },
+        para: ParaAttrs { align: Some(Align::RightJustified), direction: Some(pagenor_doc::TextDirection::RightToLeft), ..Default::default() },
         ..Default::default()
     };
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 260.0, 400.0), lid, text, pf).unwrap();
@@ -927,11 +925,11 @@ fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
 
 #[test]
 fn digits_option_draws_figures_in_another_script() {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, "No. 2024", ParaFormat::default()).unwrap();
     let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
-    d.story_mut(sid).unwrap().format_chars(0..8, |f| f.over.digits = Some(designcraft_doc::Digits::Hindi));
+    d.story_mut(sid).unwrap().format_chars(0..8, |f| f.over.digits = Some(pagenor_doc::Digits::Hindi));
     let hindi = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
     // One glyph per digit, each still mapped to its own source character.
     let digits: Vec<_> = hindi.iter().filter(|g| g.byte >= 4 && g.len > 0).collect();
@@ -944,7 +942,7 @@ fn digits_option_draws_figures_in_another_script() {
 
 #[test]
 fn ruby_and_kenten_sit_over_their_text() {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 200.0), lid, "漢字です", ParaFormat::default()).unwrap();
     let base_n = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.len();
@@ -972,7 +970,7 @@ fn ruby_and_kenten_sit_over_their_text() {
 
 #[test]
 fn tate_chu_yoko_sets_digits_across_one_em() {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 400.0), lid, "令和12年", ParaFormat::default()).unwrap();
     let at = "令和".len();
@@ -1012,7 +1010,7 @@ fn tate_chu_yoko_sets_digits_across_one_em() {
 
 #[test]
 fn vertical_frames_compose_in_the_turned_box() {
-    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
     let lid = d.default_layer();
     let (fid, sid) =
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 400.0), lid, "縦書きの文章です。Latin", ParaFormat::default()).unwrap();
@@ -1031,8 +1029,8 @@ fn vertical_frames_compose_in_the_turned_box() {
     assert!(!l.glyphs.iter().rev().find(|g| g.len > 0).unwrap().upright, "Latin turns");
     // Text space → frame: the first line sits at the right edge and runs down.
     let xf = d.text_xf(d.item(fid).unwrap());
-    let p0 = xf * designcraft_geom::Point::new(l.glyphs[0].x, l.baseline);
-    let p1 = xf * designcraft_geom::Point::new(l.glyphs[3].x, l.baseline);
+    let p0 = xf * pagenor_geom::Point::new(l.glyphs[0].x, l.baseline);
+    let p1 = xf * pagenor_geom::Point::new(l.glyphs[3].x, l.baseline);
     assert!(p0.x > 150.0 && p1.y > p0.y && (p1.x - p0.x).abs() < 1e-6, "{p0:?} {p1:?}");
 }
 
@@ -1087,7 +1085,7 @@ fn cjk_aki_adds_space_without_scaling_outlines() {
 
 #[test]
 fn cjk_jidori_sets_group_width_and_survives_narrow_frames() {
-    for composer in [designcraft_doc::Composer::SingleLine, designcraft_doc::Composer::Paragraph] {
+    for composer in [pagenor_doc::Composer::SingleLine, pagenor_doc::Composer::Paragraph] {
         let (mut d, sid, _) = doc_with(
             "AB",
             Rect::new(0.0, 0.0, 30.0, 150.0),
@@ -1111,8 +1109,8 @@ fn cjk_tsume_removes_sidebearings_without_collapsing_ink() {
     let a = &old.frames[0].lines[0];
     let b = &new.frames[0].lines[0];
     let g = &b.glyphs[0];
-    let outline = designcraft_fonts::FontDb::global().outline(&g.face, g.gid);
-    let ink_width = designcraft_geom::Shape::bounding_box(&*outline).width() * g.sx;
+    let outline = pagenor_fonts::FontDb::global().outline(&g.face, g.gid);
+    let ink_width = pagenor_geom::Shape::bounding_box(&*outline).width() * g.sx;
     assert!(ink_width > 0.0);
     assert!((b.end_x - b.x0 - 2.0 * ink_width).abs() < 1e-6);
     assert!(b.end_x < a.end_x);
@@ -1121,7 +1119,7 @@ fn cjk_tsume_removes_sidebearings_without_collapsing_ink() {
 
 #[test]
 fn cjk_composite_font_selects_entries_before_shaping() {
-    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+    use pagenor_doc::cjk::{CompositeFont, CompositeFontEntry};
     let (mut d, sid, _) = doc_with("A1B", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     std::sync::Arc::make_mut(&mut d.styles).composite_fonts.push(CompositeFont {
         name: "Mixed".into(),
@@ -1143,7 +1141,7 @@ fn cjk_composite_font_selects_entries_before_shaping() {
 
 #[test]
 fn cjk_bunri_does_not_split_double_dash() {
-    for composer in [designcraft_doc::Composer::SingleLine, designcraft_doc::Composer::Paragraph] {
+    for composer in [pagenor_doc::Composer::SingleLine, pagenor_doc::Composer::Paragraph] {
         let (d, sid, _) =
             doc_with("--", Rect::new(0.0, 0.0, 5.0, 100.0), ParaAttrs { composer: Some(composer), bunri_kinshi: Some(true), ..Default::default() });
         let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -1157,8 +1155,8 @@ fn cjk_custom_kinsoku_disables_selected_breaks() {
         "甲乙丙丁",
         Rect::new(0.0, 0.0, 25.0, 200.0),
         ParaAttrs {
-            composer: Some(designcraft_doc::Composer::SingleLine),
-            kinsoku: Some(Some(designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: "乙丙丁".into(), ..Default::default() })),
+            composer: Some(pagenor_doc::Composer::SingleLine),
+            kinsoku: Some(Some(pagenor_doc::cjk::Kinsoku { name: "Test".into(), no_start: "乙丙丁".into(), ..Default::default() })),
             ..Default::default()
         },
     );
@@ -1171,8 +1169,8 @@ fn cjk_custom_kinsoku_disables_selected_breaks() {
 fn cjk_center_leading_measures_em_centers_across_different_sizes() {
     let (mut d, sid, _) = doc_with("A\nB", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
     d.story_mut(sid).unwrap().format_chars(0..3, |f| {
-        f.over.leading = Some(designcraft_doc::Leading::Points(30.0));
-        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::Center);
+        f.over.leading = Some(pagenor_doc::Leading::Points(30.0));
+        f.over.leading_model = Some(pagenor_doc::cjk::LeadingModel::Center);
     });
     d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -1191,7 +1189,7 @@ fn cjk_center_leading_measures_em_centers_across_different_sizes() {
 fn cjk_em_center_alignment_moves_small_characters() {
     let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.size = Some(24.0));
-    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.character_alignment = Some(designcraft_doc::cjk::CharacterAlignment::EmCenter));
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.character_alignment = Some(pagenor_doc::cjk::CharacterAlignment::EmCenter));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let line = &cs.frames[0].lines[0];
     let center = |g: &PlacedGlyph| {
@@ -1203,14 +1201,14 @@ fn cjk_em_center_alignment_moves_small_characters() {
 
 #[test]
 fn cjk_hanging_punctuation_uses_frame_edge_without_changing_glyph_size() {
-    let k = designcraft_doc::cjk::Kinsoku { name: "Test".into(), no_start: ",".into(), hanging: ",".into(), ..Default::default() };
+    let k = pagenor_doc::cjk::Kinsoku { name: "Test".into(), no_start: ",".into(), hanging: ",".into(), ..Default::default() };
     let (mut d, sid, fid) = doc_with(
         "AB,",
         Rect::new(0.0, 0.0, 300.0, 100.0),
         ParaAttrs {
-            composer: Some(designcraft_doc::Composer::SingleLine),
+            composer: Some(pagenor_doc::Composer::SingleLine),
             kinsoku: Some(Some(k)),
-            kinsoku_hang: Some(designcraft_doc::cjk::KinsokuHang::Regular),
+            kinsoku_hang: Some(pagenor_doc::cjk::KinsokuHang::Regular),
             ..Default::default()
         },
     );
@@ -1219,7 +1217,7 @@ fn cjk_hanging_punctuation_uses_frame_edge_without_changing_glyph_size() {
     let text_w = line.glyphs.iter().take(2).map(|g| g.adv).sum::<f64>();
     // A fresh frame whose measure fits the letters, but not the comma.
     let frame = d.item_mut(fid).unwrap();
-    frame.path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, text_w + 1.0, 100.0));
+    frame.path = pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, text_w + 1.0, 100.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert_eq!(all_lines(&cs).len(), 1);
     assert_eq!(cs.frames[0].lines[0].glyphs.last().unwrap().sx, line.glyphs.last().unwrap().sx);
@@ -1261,7 +1259,7 @@ fn arabic_bidi_keeps_paragraph_context_across_forced_lines() {
 fn arabic_character_direction_override_survives_line_layout() {
     let text = "abc 123 def";
     let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(4..7, |f| f.over.character_direction = Some(designcraft_doc::arabic::CharacterDirection::RightToLeft));
+    d.story_mut(sid).unwrap().format_chars(4..7, |f| f.over.character_direction = Some(pagenor_doc::arabic::CharacterDirection::RightToLeft));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let line = all_lines(&cs)[0];
     let x = |byte| line.glyphs.iter().find(|g| g.byte == byte).unwrap().x;
@@ -1271,8 +1269,8 @@ fn arabic_character_direction_override_survives_line_layout() {
 
 #[test]
 fn arabic_fallback_marks_stay_with_bases_and_custom_offsets_move_only_marks() {
-    let db = designcraft_fonts::FontDb::global();
-    let Some(face) = db.fallback_for('ب', db.face(designcraft_fonts::DEFAULT_FAMILY, "Regular").id(), None) else { return };
+    let db = pagenor_fonts::FontDb::global();
+    let Some(face) = db.fallback_for('ب', db.face(pagenor_fonts::DEFAULT_FAMILY, "Regular").id(), None) else { return };
     if !face.covers('ُ') {
         return;
     }
@@ -1322,7 +1320,7 @@ fn arabic_character_kashida_switch_prevents_insertion() {
     let (mut d, sid, _) = doc_with(
         text,
         Rect::new(0.0, 0.0, 160.0, 300.0),
-        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::RightJustified), ..Default::default() },
+        ParaAttrs { direction: Some(pagenor_doc::TextDirection::RightToLeft), align: Some(Align::RightJustified), ..Default::default() },
     );
     d.settings.glyph_fallback = true;
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.allow_kashidas = Some(false));
@@ -1334,7 +1332,7 @@ fn arabic_character_kashida_switch_prevents_insertion() {
 fn arabic_indic_digit_conversion_retains_original_utf8_ranges() {
     let text = "١٢٣";
     let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.digits = Some(designcraft_doc::Digits::Arabic));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.digits = Some(pagenor_doc::Digits::Arabic));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let gs = &cs.frames[0].lines[0].glyphs;
     assert_eq!(gs.iter().map(|g| (g.byte, g.len)).collect::<Vec<_>>(), [(0, 2), (2, 2), (4, 2)]);
@@ -1360,9 +1358,9 @@ fn arabic_contextual_digits_follow_strong_text_across_style_changes() {
 
 #[test]
 fn arabic_story_direction_flows_right_column_first() {
-    let text = format!("first{}second", designcraft_doc::story::COLUMN_BREAK);
+    let text = format!("first{}second", pagenor_doc::story::COLUMN_BREAK);
     let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    d.story_mut(sid).unwrap().direction = pagenor_doc::TextDirection::RightToLeft;
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let lines = all_lines(&cs);
@@ -1373,11 +1371,11 @@ fn arabic_story_direction_flows_right_column_first() {
 
 #[test]
 fn arabic_rtl_table_keeps_logical_indices_and_merged_cell_hit_testing() {
-    let mut t = designcraft_doc::Table::new(987, 2, 3, 0, 0, 240.0);
-    t.options.direction = designcraft_doc::TextDirection::RightToLeft;
-    t.cell_mut(0, 0).unwrap().text = designcraft_doc::Story::with_text(StoryId(0), "Right", ParaFormat::default());
-    t.cell_mut(0, 2).unwrap().text = designcraft_doc::Story::with_text(StoryId(0), "Left", ParaFormat::default());
-    t.merge(designcraft_doc::CellRange::new(1, 0, 1, 1)).unwrap();
+    let mut t = pagenor_doc::Table::new(987, 2, 3, 0, 0, 240.0);
+    t.options.direction = pagenor_doc::TextDirection::RightToLeft;
+    t.cell_mut(0, 0).unwrap().text = pagenor_doc::Story::with_text(StoryId(0), "Right", ParaFormat::default());
+    t.cell_mut(0, 2).unwrap().text = pagenor_doc::Story::with_text(StoryId(0), "Left", ParaFormat::default());
+    t.merge(pagenor_doc::CellRange::new(1, 0, 1, 1)).unwrap();
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 400.0), t);
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let (_, _, right) = table::find_cell(&cs, 987, 0, 0).unwrap();
@@ -1394,7 +1392,7 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     let (mut d, sid, _) = doc_with(
         text,
         Rect::new(0.0, 0.0, 180.0, 100.0),
-        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+        ParaAttrs { direction: Some(pagenor_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
     );
     d.settings.glyph_fallback = true;
     let with = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
@@ -1414,7 +1412,7 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     let (mut d, sid, _) = doc_with(
         text,
         Rect::new(0.0, 0.0, 180.0, 100.0),
-        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+        ParaAttrs { direction: Some(pagenor_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
     );
     d.settings.glyph_fallback = true;
     let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -1436,7 +1434,7 @@ fn arabic_explicit_isolated_forms_disable_contextual_joining() {
 
 #[test]
 fn arabic_character_overrides_mirror_brackets_using_final_levels() {
-    use designcraft_doc::arabic::CharacterDirection as D;
+    use pagenor_doc::arabic::CharacterDirection as D;
     for (text, direction, mirrored) in [("(123)", D::RightToLeft, true), ("(ب)", D::LeftToRight, false)] {
         let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
         d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.character_direction = Some(direction));
@@ -1472,7 +1470,7 @@ fn language_picks_localized_forms_through_the_word_cache() {
 #[test]
 fn chinese_and_japanese_take_their_localized_forms() {
     // Noto Sans CJK SC (craft-fonts) draws 直 differently for Japanese (`locl`).
-    let Some(noto) = designcraft_fonts::CRAFT_FONTS.iter().find(|f| f.family == "Noto Sans CJK SC") else { return };
+    let Some(noto) = pagenor_fonts::CRAFT_FONTS.iter().find(|f| f.family == "Noto Sans CJK SC") else { return };
     FontDb::global().add_font(noto.bytes.to_vec());
     let gid = |language: &str| {
         let (mut d, sid, _) = doc_with("直", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
@@ -1492,10 +1490,10 @@ fn chinese_and_japanese_take_their_localized_forms() {
 
 #[test]
 fn cjk_fallback_follows_the_language() {
-    use designcraft_fonts::testing::font_with;
+    use pagenor_fonts::testing::font_with;
     // Stand-ins for Hiragino Mincho ProN (the Japanese chain's first system font) and Songti SC
     // (first in the Simplified Chinese chain); the real ones when installed.
-    let db = designcraft_fonts::FontDb::global();
+    let db = pagenor_fonts::FontDb::global();
     db.add_font(font_with("Hiragino Mincho ProN", &['直']).unwrap());
     db.add_font(font_with("Songti SC", &['直']).unwrap());
     // (face of the Latin letter, face of the ideograph)
@@ -1509,7 +1507,7 @@ fn cjk_fallback_follows_the_language() {
     };
     assert_eq!(faces_of("Chinese: Simplified").1.family, "Songti SC");
     // Japanese: the craft-fonts faces lead the chain (Mincho first), then the system fonts.
-    let japanese = designcraft_fonts::japanese_document_fonts().first().map_or("Hiragino Mincho ProN", |f| f.family);
+    let japanese = pagenor_fonts::japanese_document_fonts().first().map_or("Hiragino Mincho ProN", |f| f.family);
     assert_eq!(faces_of("Japanese").1.family, japanese);
     // Without a CJK language, the language-blind search.
     let (primary, han) = faces_of("English: USA");
@@ -1518,9 +1516,9 @@ fn cjk_fallback_follows_the_language() {
 
 #[test]
 fn missing_glyphs_are_the_fonts_box_unless_fallback_is_on() {
-    use designcraft_fonts::testing::font_with;
+    use pagenor_fonts::testing::font_with;
     // Some font draws 語 when fallback fonts are allowed (a system CJK font, or this stand-in).
-    designcraft_fonts::FontDb::global().add_font(font_with("DC Test Missing Glyph Helper", &['語']).unwrap());
+    pagenor_fonts::FontDb::global().add_font(font_with("DC Test Missing Glyph Helper", &['語']).unwrap());
     let text = "a語";
     let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Japanese".into()));
@@ -1530,19 +1528,19 @@ fn missing_glyphs_are_the_fonts_box_unless_fallback_is_on() {
     };
     assert!(!d.settings.glyph_fallback, "new documents draw missing glyphs as InDesign does");
     let (face, gid, adv) = glyph_at(&d, 1);
-    assert_eq!((face.family.as_str(), gid), (designcraft_fonts::DEFAULT_FAMILY, 0), "Source Serif 4's .notdef");
+    assert_eq!((face.family.as_str(), gid), (pagenor_fonts::DEFAULT_FAMILY, 0), "Source Serif 4's .notdef");
     assert!((adv - face.advance(0) * 12.0 / face.upem).abs() < 1e-6, "its advance: {adv}");
     d.settings.glyph_fallback = true;
     let (face, gid, _) = glyph_at(&d, 1);
-    assert_ne!(face.family, designcraft_fonts::DEFAULT_FAMILY);
+    assert_ne!(face.family, pagenor_fonts::DEFAULT_FAMILY);
     assert_ne!(gid, 0, "a fallback font draws it");
 }
 
 #[test]
 fn kenten_missing_from_the_font_are_its_box_unless_fallback_is_on() {
-    use designcraft_fonts::testing::font_with;
+    use pagenor_fonts::testing::font_with;
     // Some font draws the sesame dot when fallback fonts are allowed (a system font, or this one).
-    designcraft_fonts::FontDb::global().add_font(font_with("DC Test Kenten Helper", &['\u{FE45}']).unwrap());
+    pagenor_fonts::FontDb::global().add_font(font_with("DC Test Kenten Helper", &['\u{FE45}']).unwrap());
     let (mut d, sid, _) = doc_with("ab", Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
     let plain = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.len();
     d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.kenten = Some(true));
@@ -1552,16 +1550,16 @@ fn kenten_missing_from_the_font_are_its_box_unless_fallback_is_on() {
     };
     let missing = marks(&d);
     assert_eq!(missing.len(), 2);
-    assert!(missing.iter().all(|(family, gid)| family == designcraft_fonts::DEFAULT_FAMILY && *gid == 0), "{missing:?}");
+    assert!(missing.iter().all(|(family, gid)| family == pagenor_fonts::DEFAULT_FAMILY && *gid == 0), "{missing:?}");
     d.settings.glyph_fallback = true;
     let drawn = marks(&d);
     assert_eq!(drawn.len(), 2);
-    assert!(drawn.iter().all(|(family, gid)| family != designcraft_fonts::DEFAULT_FAMILY && *gid != 0), "{drawn:?}");
+    assert!(drawn.iter().all(|(family, gid)| family != pagenor_fonts::DEFAULT_FAMILY && *gid != 0), "{drawn:?}");
 }
 
 #[test]
 fn each_document_shapes_words_in_its_own_fonts() {
-    use designcraft_fonts::testing::font_with_glyph;
+    use pagenor_fonts::testing::font_with_glyph;
     const FAMILY: &str = "DocFont Word Cache";
     // Two documents' fonts of one name: the same words, drawn as `X` in one and `O` in the other.
     let root = std::env::temp_dir().join(format!("dc-compose-docfonts-{}", std::process::id()));
@@ -1570,7 +1568,7 @@ fn each_document_shapes_words_in_its_own_fonts() {
         let folder = root.join(name);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("word.ttf"), font_with_glyph(FAMILY, &['a', 'b', ' '], glyph).unwrap()).unwrap();
-        scopes.push((designcraft_fonts::FontDb::global().load_document_fonts(&folder).scope, glyph));
+        scopes.push((pagenor_fonts::FontDb::global().load_document_fonts(&folder).scope, glyph));
     }
     let text = "ab ab ab ab";
     let mut faces = Vec::new();
@@ -1583,7 +1581,7 @@ fn each_document_shapes_words_in_its_own_fonts() {
             all_lines(&cs).into_iter().flat_map(|l| l.glyphs.iter()).filter(|g| text[g.byte..].starts_with('a')).collect();
         assert_eq!(glyphs.len(), 4);
         let face = glyphs[0].face;
-        let drawn = designcraft_fonts::FontDb::global().face(designcraft_fonts::FALLBACK_FAMILY, "Regular").glyph_for(glyph);
+        let drawn = pagenor_fonts::FontDb::global().face(pagenor_fonts::FALLBACK_FAMILY, "Regular").glyph_for(glyph);
         assert!(glyphs.iter().all(|g| g.face == face && g.gid == drawn), "scope {scope}: {glyph}");
         faces.push(face);
     }
@@ -1593,8 +1591,8 @@ fn each_document_shapes_words_in_its_own_fonts() {
 
 #[test]
 fn composite_fonts_draw_from_the_documents_fonts() {
-    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
-    use designcraft_fonts::testing::font_with_glyph;
+    use pagenor_doc::cjk::{CompositeFont, CompositeFontEntry};
+    use pagenor_fonts::testing::font_with_glyph;
     const FAMILY: &str = "DocFont Composite Member";
     // A composite font whose digits come from a font only the document has.
     let folder = std::env::temp_dir().join(format!("dc-compose-composite-docfont-{}", std::process::id()));
@@ -1606,7 +1604,7 @@ fn composite_fonts_draw_from_the_documents_fonts() {
     std::sync::Arc::make_mut(&mut d.styles).composite_fonts.push(CompositeFont {
         name: "Mixed".into(),
         entries: vec![
-            CompositeFontEntry { family: designcraft_fonts::DEFAULT_FAMILY.into(), ..Default::default() },
+            CompositeFontEntry { family: pagenor_fonts::DEFAULT_FAMILY.into(), ..Default::default() },
             CompositeFontEntry { characters: "0123456789".into(), family: FAMILY.into(), ..Default::default() },
         ],
     });
@@ -1628,8 +1626,8 @@ const KO_LONG: &str = "가나다라마바사아자차카타파하」";
 /// A Korean paragraph in a narrow frame (70 pt), set in a stand-in font covering the samples.
 fn korean_doc(text: &str, language: &str, para: ParaAttrs) -> (Document, StoryId) {
     let chars: Vec<char> = [KO_WORDS, KO_HANJA, KO_PUNCT, KO_LONG].concat().chars().collect();
-    let font = designcraft_fonts::testing::font_with("DC Test Korean", &chars).unwrap();
-    designcraft_fonts::FontDb::global().add_font(font);
+    let font = pagenor_fonts::testing::font_with("DC Test Korean", &chars).unwrap();
+    pagenor_fonts::FontDb::global().add_font(font);
     let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 106.0, 400.0), para);
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
         f.over.font_family = Some("DC Test Korean".into());
@@ -1648,7 +1646,7 @@ fn lines_starting_mid_word(d: &Document, sid: StoryId, text: &str) -> Vec<String
 
 #[test]
 fn korean_breaks_at_spaces() {
-    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+    for composer in [pagenor_doc::Composer::Paragraph, pagenor_doc::Composer::SingleLine] {
         for align in [Align::Left, Align::LeftJustified] {
             let para = ParaAttrs { composer: Some(composer), align: Some(align), ..Default::default() };
             // By script: Hangul is set word by word whatever the language.
@@ -1663,9 +1661,9 @@ fn korean_breaks_at_spaces() {
 
 #[test]
 fn korean_breaks_at_spaces_under_a_kinsoku_set() {
-    let set = designcraft_doc::cjk::Kinsoku::named("KoreanKinsoku");
+    let set = pagenor_doc::cjk::Kinsoku::named("KoreanKinsoku");
     assert!(set.is_some());
-    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+    for composer in [pagenor_doc::Composer::Paragraph, pagenor_doc::Composer::SingleLine] {
         let para = ParaAttrs { composer: Some(composer), kinsoku: Some(set.clone()), ..Default::default() };
         let (d, sid) = korean_doc(KO_WORDS, "Korean", para.clone());
         let mid = lines_starting_mid_word(&d, sid, KO_WORDS);
@@ -1677,14 +1675,14 @@ fn korean_breaks_at_spaces_under_a_kinsoku_set() {
 
 #[test]
 fn korean_character_breaks_on_request() {
-    let para = ParaAttrs { korean_char_breaks: Some(true), composer: Some(designcraft_doc::Composer::SingleLine), ..Default::default() };
+    let para = ParaAttrs { korean_char_breaks: Some(true), composer: Some(pagenor_doc::Composer::SingleLine), ..Default::default() };
     let (d, sid) = korean_doc(KO_WORDS, "Korean", para);
     assert!(!lines_starting_mid_word(&d, sid, KO_WORDS).is_empty(), "breaks between syllables");
 }
 
 #[test]
 fn korean_by_its_locale_code_breaks_at_spaces() {
-    let para = ParaAttrs { composer: Some(designcraft_doc::Composer::SingleLine), ..Default::default() };
+    let para = ParaAttrs { composer: Some(pagenor_doc::Composer::SingleLine), ..Default::default() };
     let (d, sid) = korean_doc(KO_HANJA, "ko_KR", para);
     let mid = lines_starting_mid_word(&d, sid, KO_HANJA);
     assert!(mid.is_empty(), "{mid:?}");
@@ -1692,7 +1690,7 @@ fn korean_by_its_locale_code_breaks_at_spaces() {
 
 #[test]
 fn hanja_in_korean_text_breaks_at_spaces() {
-    let para = ParaAttrs { composer: Some(designcraft_doc::Composer::SingleLine), ..Default::default() };
+    let para = ParaAttrs { composer: Some(pagenor_doc::Composer::SingleLine), ..Default::default() };
     let (d, sid) = korean_doc(KO_HANJA, "Korean", para.clone());
     let mid = lines_starting_mid_word(&d, sid, KO_HANJA);
     assert!(mid.is_empty(), "{mid:?}");
@@ -1710,7 +1708,7 @@ fn korean_lines_keep_kinsoku() {
     for text in std::iter::once(KO_PUNCT.to_string()).chain(long) {
         let text = text.as_str();
         for char_breaks in [false, true] {
-            for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+            for composer in [pagenor_doc::Composer::Paragraph, pagenor_doc::Composer::SingleLine] {
                 let para = ParaAttrs { korean_char_breaks: Some(char_breaks), composer: Some(composer), ..Default::default() };
                 let (d, sid) = korean_doc(text, "Korean", para);
                 let cs = compose_story(&d, sid, &ComposeOptions::default());
@@ -1727,23 +1725,23 @@ fn korean_lines_keep_kinsoku() {
 /// with vertical metrics, every glyph one em down the line and 120 units below its vertical
 /// origin, except ヸ (drawn as O): 1.024 em. No vertical forms. Added to the global database once.
 fn vertical_test_font() -> &'static str {
-    use designcraft_fonts::testing::{font_mapping, with_vmtx};
+    use pagenor_fonts::testing::{font_mapping, with_vmtx};
     const FAMILY: &str = "DC Test Vertical";
     static ADDED: std::sync::Once = std::sync::Once::new();
     ADDED.call_once(|| {
         let glyphs = [('一', 'X'), ('二', 'X'), ('日', 'X'), ('本', 'X'), ('ま', 'o'), ('ヸ', 'O'), ('、', ','), ('A', 'A'), ('b', 'b')];
         let base = font_mapping(FAMILY, &glyphs).unwrap();
-        let scratch = designcraft_fonts::FontDb::with_font_dirs(vec![]);
+        let scratch = pagenor_fonts::FontDb::with_font_dirs(vec![]);
         scratch.add_font(base.clone());
         let wi = u16::try_from(scratch.face(FAMILY, "Regular").glyph_for('ヸ')).unwrap();
-        designcraft_fonts::FontDb::global().add_font(with_vmtx(&base, (1000, 120), &[(wi, 1024, 100)]).unwrap());
+        pagenor_fonts::FontDb::global().add_font(with_vmtx(&base, (1000, 120), &[(wi, 1024, 100)]).unwrap());
     });
     FAMILY
 }
 
 /// Shippori Mincho (vertical forms, `vpal`) when built with craft-fonts; else `None`, with a note.
 fn shippori() -> Option<&'static str> {
-    if !designcraft_fonts::japanese_fonts().any(|f| f.family == "Shippori Mincho") {
+    if !pagenor_fonts::japanese_fonts().any(|f| f.family == "Shippori Mincho") {
         eprintln!("skipped Shippori Mincho: built without craft-fonts (set CRAFT_FONTS_DIR to a checkout)");
         return None;
     }
@@ -1757,7 +1755,7 @@ fn vertical_families() -> Vec<&'static str> {
 
 /// A vertical frame (no inset) with `text` in `family` at 20 pt (and `over`), and its first line
 /// with the frame's first column.
-fn vertical_line(family: &str, text: &str, over: impl Fn(&mut designcraft_doc::CharFormat)) -> (Line, Rect) {
+fn vertical_line(family: &str, text: &str, over: impl Fn(&mut pagenor_doc::CharFormat)) -> (Line, Rect) {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 500.0), lid, text, ParaFormat::default()).unwrap();
@@ -1780,8 +1778,8 @@ fn vertical_line(family: &str, text: &str, over: impl Fn(&mut designcraft_doc::C
 
 /// Text-space bounds of a glyph's ink as drawn in a vertical frame.
 fn vertical_ink(g: &PlacedGlyph, baseline: f64) -> Rect {
-    use designcraft_geom::{Affine, Shape};
-    let ink = designcraft_fonts::FontDb::global().outline(&g.face, g.gid).bounding_box();
+    use pagenor_geom::{Affine, Shape};
+    let ink = pagenor_fonts::FontDb::global().outline(&g.face, g.gid).bounding_box();
     let mut a = Affine::translate((g.x, baseline + g.y)) * Affine::scale_non_uniform(g.sx, g.sy);
     if let Some(turn) = g.vertical_xf(baseline) {
         a = turn * a;

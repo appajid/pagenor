@@ -1,4 +1,4 @@
-//! DesignCraft's egui frontend: an InDesign-style UI over `designcraft-engine`.
+//! Pagenor's egui frontend: an InDesign-style UI over `pagenor-engine`.
 //!
 //! The UI is thin: every action goes through [`DesignApp::run`], which dispatches UI commands
 //! (view/window) here and everything else to the engine. Menus, shortcuts, the ⌘K palette and
@@ -28,8 +28,8 @@ pub mod widgets;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
-use designcraft_engine::{Session, SnapView, UiRequest, ViewInfo};
-use designcraft_geom::{Point, Unit};
+use pagenor_engine::{Session, SnapView, UiRequest, ViewInfo};
+use pagenor_geom::{Point, Unit};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -58,7 +58,7 @@ pub struct Services {
     /// Hand bytes to the user as a named file (browser download). When set, Save uses it
     /// instead of writing to a path.
     pub download: Option<DownloadFn>,
-    /// Files delivered asynchronously, drained every frame: `.designcraft` → `file.openBytes`,
+    /// Files delivered asynchronously, drained every frame: `.pagenor` → `file.openBytes`,
     /// anything else → `file.place`.
     pub inbox: Option<Inbox>,
 }
@@ -126,10 +126,10 @@ pub struct UiState {
     /// Tab / Shift+Tab: 1 = every panel hidden, 2 = all but the Tools panel (0 = shown).
     pub hidden_panels: u8,
     /// Edit › Color Settings (re-applied at start).
-    pub color_settings: Option<designcraft_color::cms::ColorSettings>,
+    pub color_settings: Option<pagenor_color::cms::ColorSettings>,
     /// View › Proof Colors and View › Proof Setup.
     pub proof_colors: bool,
-    pub proof_setup: designcraft_color::cms::ProofSetup,
+    pub proof_setup: pagenor_color::cms::ProofSetup,
     /// Edit › Spelling › Dynamic Spelling: misspelled words underlined on the canvas.
     pub dynamic_spelling: bool,
     /// Preferences › Story Editor Display: text size (points).
@@ -144,7 +144,7 @@ pub struct UiState {
     #[serde(skip)]
     pub ink_limit: Option<f32>,
     /// View › Display Performance.
-    pub display_quality: designcraft_render::DisplayQuality,
+    pub display_quality: pagenor_render::DisplayQuality,
     /// Preferences › Interface › UI scaling (1 = 100%).
     pub ui_scale: f32,
     /// Preferences › Appearance of Black: 100% K on screen as rich black.
@@ -189,7 +189,7 @@ pub struct UiState {
     pub snap_zone: f64,
     /// Window > Contextual Task Bar.
     pub task_bar: bool,
-    /// Help › About DesignCraft is open.
+    /// Help › About Pagenor is open.
     pub about: bool,
     /// The About window's tab: 0 About, 1 Contributors, 2 Models (`about::ABOUT_TABS`).
     #[serde(skip)]
@@ -237,7 +237,7 @@ impl Default for UiState {
             flattener: String::new(),
             separation: None,
             ink_limit: None,
-            display_quality: designcraft_render::DisplayQuality::High,
+            display_quality: pagenor_render::DisplayQuality::High,
             ui_scale: 1.0,
             rich_black: false,
             overprint_preview: false,
@@ -322,8 +322,8 @@ pub struct Shown {
 
 impl CanvasCache {
     pub fn new() -> Self {
-        let mut renderer = designcraft_render::Renderer::new();
-        renderer.threads = designcraft_render::default_threads();
+        let mut renderer = pagenor_render::Renderer::new();
+        renderer.threads = pagenor_render::default_threads();
         CanvasCache {
             renderer,
             texture: None,
@@ -336,7 +336,7 @@ impl CanvasCache {
             last_ms: 0.0,
             shown_doc: None,
             pending_doc: None,
-            patcher: designcraft_render::Renderer::new(),
+            patcher: pagenor_render::Renderer::new(),
             patches: 0,
         }
     }
@@ -349,7 +349,7 @@ impl Default for CanvasCache {
 }
 
 pub struct CanvasCache {
-    pub renderer: designcraft_render::Renderer,
+    pub renderer: pagenor_render::Renderer,
     pub texture: Option<egui::TextureHandle>,
     pub shown: Option<Shown>,
     /// The request in flight on the worker.
@@ -360,11 +360,11 @@ pub struct CanvasCache {
     pub worker_started: bool,
     pub last_ms: f64,
     /// The document the texture shows (to repaint only what an edit changed).
-    pub shown_doc: Option<std::sync::Arc<designcraft_doc::Document>>,
+    pub shown_doc: Option<std::sync::Arc<pagenor_doc::Document>>,
     /// Document of the request in flight.
-    pub pending_doc: Option<std::sync::Arc<designcraft_doc::Document>>,
+    pub pending_doc: Option<std::sync::Arc<pagenor_doc::Document>>,
     /// Renders damaged regions (its own context: region sizes vary).
-    pub patcher: designcraft_render::Renderer,
+    pub patcher: pagenor_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
 }
@@ -394,13 +394,13 @@ pub struct DesignApp {
     pub focus_pane: u8,
     pub other_pane: Option<(CanvasCache, Option<egui::Rect>)>,
     /// Power Zoom in progress: the zoom to return to and the canvas point it will centre on.
-    pub power_zoom: Option<(f64, designcraft_geom::Point)>,
+    pub power_zoom: Option<(f64, pagenor_geom::Point)>,
     /// The persisted colour settings have been applied this session.
     pub color_applied: bool,
     pub perf: Perf,
     pub synthetic: Vec<egui::Event>,
     /// Story open in the Story Editor.
-    pub story_editor: Option<designcraft_doc::StoryId>,
+    pub story_editor: Option<pagenor_doc::StoryId>,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<(u64, Option<String>, Sender<ControlResponse>, f64)>,
     queued_shots: Vec<(u64, f64, u32)>,
@@ -423,7 +423,7 @@ pub struct DesignApp {
 impl DesignApp {
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.
-        designcraft_fonts::FontDb::global().scan_in_background();
+        pagenor_fonts::FontDb::global().scan_in_background();
         DesignApp {
             session,
             ui: UiState::default(),
@@ -533,8 +533,7 @@ impl DesignApp {
             return match pick(purpose) {
                 // Image Import Options: a multi-page PDF asks which page.
                 Some(path) if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") => {
-                    let pages =
-                        self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
+                    let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| pagenor_render::pdf_page_count(&b)).unwrap_or(1);
                     if pages > 1 {
                         self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages})));
                         Ok(Value::Null)
@@ -557,11 +556,11 @@ impl DesignApp {
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner()));
         for (name, bytes) in files {
-            let b64 = designcraft_engine::cmd::base64_encode(&bytes);
+            let b64 = pagenor_engine::cmd::base64_encode(&bytes);
             let lower = name.to_ascii_lowercase();
             let r = if lower.ends_with(".ase") {
                 self.run("swatch.load", json!({"base64": b64}))
-            } else if lower.ends_with(".designcraft") || lower.ends_with(".idml") {
+            } else if lower.ends_with(".pagenor") || lower.ends_with(".idml") {
                 let title = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
                 self.run("file.openBytes", json!({"name": title, "base64": b64}))
             } else {
@@ -583,7 +582,7 @@ impl DesignApp {
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {
-                let _ = designcraft_color::cms::set_active(&cs);
+                let _ = pagenor_color::cms::set_active(&cs);
             }
         }
         let scale = self.ui.ui_scale.clamp(0.5, 3.0);
@@ -642,7 +641,7 @@ impl DesignApp {
                     continue;
                 }
                 let lp = p.to_ascii_lowercase();
-                let cmd = if lp.ends_with(".designcraft") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
+                let cmd = if lp.ends_with(".pagenor") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
                 let _ = self.run(cmd, json!({"path": p}));
             }
         }
@@ -673,7 +672,7 @@ impl DesignApp {
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
         let presenting = self.ui.screen_mode == ScreenMode::Presentation;
-        let dbg = std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some();
+        let dbg = std::env::var_os("PAGENOR_DEBUG_LAYOUT").is_some();
         if dbg {
             eprintln!("root start {:?}", ui.available_rect_before_wrap());
         }
@@ -748,7 +747,7 @@ impl DesignApp {
             let fill = t.pasteboard;
             let ctx = ui.ctx().clone();
             ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("designcraft_second_window"),
+                egui::ViewportId::from_hash_of("pagenor_second_window"),
                 egui::ViewportBuilder::default().with_title(title).with_inner_size([960.0, 720.0]),
                 |ui, _class| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {

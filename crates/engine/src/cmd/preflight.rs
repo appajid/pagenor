@@ -2,9 +2,9 @@
 //! fonts and glyphs, missing or low-resolution graphics, RGB content in print documents, empty
 //! text frames.
 
-use designcraft_compose::ComposedStory;
-use designcraft_doc::{Content, Document, Intent, Item, SpreadRef};
-use designcraft_fonts::FaceRef;
+use pagenor_compose::ComposedStory;
+use pagenor_doc::{Content, Document, Intent, Item, SpreadRef};
+use pagenor_fonts::FaceRef;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -76,7 +76,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let d = &st.doc;
     let mut out = Vec::new();
     // Stories: overset and fonts.
-    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
+    let db = pagenor_fonts::FontDb::global().scoped(d.font_scope);
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
     let mut missing: Vec<(FaceRef, Vec<char>)> = Vec::new();
@@ -93,7 +93,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
         for (pi, pf) in story.paras.iter().enumerate() {
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
-            let has_rtl = story.text.get(range.clone()).is_some_and(|text| text.chars().any(designcraft_fonts::is_rtl));
+            let has_rtl = story.text.get(range.clone()).is_some_and(|text| text.chars().any(pagenor_fonts::is_rtl));
             if has_rtl {
                 if !matches!(para.arabic_justification.as_str(), "" | "DefaultJustification") {
                     unsupported_typography.insert(format!(
@@ -116,10 +116,9 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let mut fams = vec![base.font_family.clone()];
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
-                if has_rtl
-                    && story.text.get(run.start.max(range.start)..run.end.min(range.end)).is_some_and(|t| t.chars().any(designcraft_fonts::is_rtl))
+                if has_rtl && story.text.get(run.start.max(range.start)..run.end.min(range.end)).is_some_and(|t| t.chars().any(pagenor_fonts::is_rtl))
                 {
-                    use designcraft_doc::arabic::DiacriticPosition as P;
+                    use pagenor_doc::arabic::DiacriticPosition as P;
                     if !matches!(props.diacritic_position, P::Default | P::OpenType) {
                         unsupported_typography.insert(format!(
                             "Diacritic preset `{:?}` is preserved; font OpenType anchors and explicit offsets are used",
@@ -181,7 +180,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                         Some(a) => {
                             // Effective ppi: pixels per inch at the placed size. Placed PDF and
                             // SVG pages export as vectors; their `pixels` is only the preview's.
-                            let vector = designcraft_images::is_pdf(&a.data) || designcraft_images::is_svg(&a.data);
+                            let vector = pagenor_images::is_pdf(&a.data) || pagenor_images::is_svg(&a.data);
                             if let Some((pw, _)) = a.pixels.filter(|_| !vector) {
                                 let placed_w = (g.xf * it.xf).as_coeffs()[0].hypot((g.xf * it.xf).as_coeffs()[1]) * g.size.0;
                                 let ppi = pw as f64 / (placed_w / 72.0).max(1e-6);
@@ -208,7 +207,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // RGB swatches in use in a print document.
     if d.settings.intent == Intent::Print {
         for sw in &d.swatches {
-            if let designcraft_color::SwatchValue::Color { color: designcraft_color::Color::Rgb { .. }, .. } = sw.value {
+            if let pagenor_color::SwatchValue::Color { color: pagenor_color::Color::Rgb { .. }, .. } = sw.value {
                 out.push(Issue {
                     severity: "warning",
                     kind: "rgbColor",
@@ -248,7 +247,7 @@ mod placed_vector_tests {
         s.execute("file.place", &json!({"base64": pdf["base64"], "name": "logo.pdf", "x": 72, "y": 72, "width": 300})).unwrap();
         // Deselect the logo, or the photo would replace it in its frame.
         s.execute("selection.set", &json!({"ids": []})).unwrap();
-        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
         s.execute("file.place", &json!({"base64": base64_encode(&png), "name": "photo.png", "x": 72, "y": 300, "width": 300})).unwrap();
         let r = s.execute("preflight.run", &json!({})).unwrap();
         let low: Vec<&str> =
@@ -299,11 +298,11 @@ mod missing_glyph_tests {
     #[test]
     fn characters_drawn_as_missing_glyphs_are_listed() {
         // Some font has them, for when fallback fonts are on.
-        designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with("DC Test Preflight Helper", &['日', '本', '語']).unwrap());
+        pagenor_fonts::FontDb::global().add_font(pagenor_fonts::testing::font_with("DC Test Preflight Helper", &['日', '本', '語']).unwrap());
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Hello 日本語 日本 and 語."})).unwrap();
-        let family = designcraft_fonts::DEFAULT_FAMILY;
+        let family = pagenor_fonts::DEFAULT_FAMILY;
         assert_eq!(missing_glyphs(&mut s), [("error".to_string(), format!("Missing glyphs in {family} Regular: 日 本 語"))]);
         // Drawn from fallback fonts: nothing missing.
         s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();

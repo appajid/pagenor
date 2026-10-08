@@ -1,6 +1,6 @@
 //! File › Export: Adobe PDF (Print).
 
-use designcraft_pdf::{Marks, PdfOptions, Standard};
+use pagenor_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -34,13 +34,13 @@ pub fn specs() -> Vec<CommandSpec> {
 fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.printBooklet";
     let kind = match str_param(p, "type").unwrap_or("saddleStitch") {
-        "saddleStitch" => designcraft_pdf::BookletKind::SaddleStitch,
-        "twoUpConsecutive" | "twoUp" => designcraft_pdf::BookletKind::TwoUpConsecutive,
+        "saddleStitch" => pagenor_pdf::BookletKind::SaddleStitch,
+        "twoUpConsecutive" | "twoUp" => pagenor_pdf::BookletKind::TwoUpConsecutive,
         t => return Err(bad(ID, format!("unknown type `{t}` (saddleStitch, twoUpConsecutive)"))),
     };
-    let opts = designcraft_pdf::BookletOptions { kind, space_between: p.get("spaceBetween").and_then(Value::as_f64).unwrap_or(0.0), title: None };
+    let opts = pagenor_pdf::BookletOptions { kind, space_between: p.get("spaceBetween").and_then(Value::as_f64).unwrap_or(0.0), title: None };
     let st = s.doc()?;
-    let r = designcraft_pdf::export_booklet(&st.doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let r = pagenor_pdf::export_booklet(&st.doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -53,9 +53,8 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let opts =
-        designcraft_epub::HtmlOptions { title: str_param(p, "title").map(str::to_string), language: str_param(p, "language").map(str::to_string) };
-    let text = designcraft_epub::export_html(&st.doc, &opts);
+    let opts = pagenor_epub::HtmlOptions { title: str_param(p, "title").map(str::to_string), language: str_param(p, "language").map(str::to_string) };
+    let text = pagenor_epub::export_html(&st.doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -84,9 +83,9 @@ fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
         None => "txt",
     };
     let text = match format {
-        "rtf" => designcraft_textimport::export::rtf(doc, story),
-        "tagged" => designcraft_textimport::tagged::tagged_text(doc, story),
-        _ => designcraft_textimport::export::plain_text(story),
+        "rtf" => pagenor_textimport::export::rtf(doc, story),
+        "tagged" => pagenor_textimport::tagged::tagged_text(doc, story),
+        _ => pagenor_textimport::export::plain_text(story),
     };
     match path {
         Some(path) => {
@@ -99,7 +98,7 @@ fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Text of the frames on page `abs`, in line order (for fixed-layout pages).
-fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, abs: usize) -> String {
+fn page_text(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, abs: usize) -> String {
     let mut out = String::new();
     for st in d.stories.values() {
         let cs = cache.get(d, st.id, None);
@@ -124,14 +123,14 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
     let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it));
-    let epub_doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
+    let epub_doc: &pagenor_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
-    let mut rr = designcraft_render::Renderer::new();
-    rr.threads = designcraft_render::default_threads();
-    let ropts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+    let mut rr = pagenor_render::Renderer::new();
+    rr.threads = pagenor_render::default_threads();
+    let ropts = pagenor_render::RenderOptions { printing_only: true, ..Default::default() };
     let cover = (want_cover && !fixed).then(|| rr.render_page(&st.doc, &s.cache, 0, 2.0, false, &ropts).map(|img| img.to_png())).flatten();
-    let opts = designcraft_epub::EpubOptions {
+    let opts = pagenor_epub::EpubOptions {
         title: p.get("title").and_then(Value::as_str).map(str::to_string),
         author: p.get("author").and_then(Value::as_str).map(str::to_string),
         language: p.get("language").and_then(Value::as_str).unwrap_or("en").to_string(),
@@ -145,9 +144,9 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             let Some((si, pi)) = d.page_loc(i) else { continue };
             let b = d.spreads[si].pages[pi].bounds();
             let Some(img) = rr.render_page(d, &s.cache, i, 2.0, false, &ropts) else { continue };
-            pages.push(designcraft_epub::FixedPage { png: img.to_png(), width: b.width(), height: b.height(), text: page_text(d, &s.cache, i) });
+            pages.push(pagenor_epub::FixedPage { png: img.to_png(), width: b.width(), height: b.height(), text: page_text(d, &s.cache, i) });
         }
-        let bytes = designcraft_epub::export_fixed_epub(d, &pages, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+        let bytes = pagenor_epub::export_fixed_epub(d, &pages, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
         return match p.get("path").and_then(Value::as_str) {
             Some(path) => {
                 write_file(path, &bytes)?;
@@ -156,7 +155,7 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(serde_json::json!({"base64": super::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages.len()})),
         };
     }
-    let bytes = designcraft_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    let bytes = pagenor_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -172,7 +171,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
 
     let pages = match p.get("pages") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(ID, e.to_string()))?),
+        Some(Value::String(s)) => Some(pagenor_pdf::parse_page_range(s, page_count).map_err(|e| bad(ID, e.to_string()))?),
         Some(Value::Array(a)) => {
             let mut v = Vec::new();
             for x in a {
@@ -223,7 +222,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
 }
 
 /// Does this object (or anything in it) need the transparency flattener?
-fn transparent(it: &designcraft_doc::Item) -> bool {
+fn transparent(it: &pagenor_doc::Item) -> bool {
     it.involves_transparency()
 }
 
@@ -231,46 +230,44 @@ fn transparent(it: &designcraft_doc::Item) -> bool {
 /// area as it looks over what's beneath it (so the rest stays vector); spreads whose parent items
 /// involve transparency are rasterised whole. Works on a copy of the document made for export.
 /// Returns the copy and the number of rasterised regions.
-fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, ppi: f64) -> (designcraft_doc::Document, usize) {
-    use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
+fn flatten(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, ppi: f64) -> (pagenor_doc::Document, usize) {
+    use pagenor_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
     let mut out = d.clone();
     let mut n = 0;
-    let mut rr = designcraft_render::Renderer::new();
-    rr.threads = designcraft_render::default_threads();
+    let mut rr = pagenor_render::Renderer::new();
+    rr.threads = pagenor_render::default_threads();
     let k = ppi / 72.0;
-    let parent_transparent = |pid: Option<designcraft_doc::SpreadId>| {
+    let parent_transparent = |pid: Option<pagenor_doc::SpreadId>| {
         pid.and_then(|id| d.parents.iter().find(|p| p.id == id)).is_some_and(|p| p.items.iter().any(|it| transparent(it)))
     };
     // An opaque image item showing `img` over `r`.
-    let image_item =
-        |out: &mut designcraft_doc::Document, r: designcraft_geom::Rect, img: designcraft_render::Rendered, layer: designcraft_doc::LayerId| {
-            let (w, h) = (img.width, img.height);
-            let aid = AssetId(out.alloc());
-            out.assets.insert(
-                aid,
-                std::sync::Arc::new(Asset {
-                    page: 0,
-                    id: aid,
-                    name: format!("flattened-{}.png", aid.0),
-                    mime: "image/png".into(),
-                    link: None,
-                    data: std::sync::Arc::new(img.to_png()),
-                    pixels: Some((w, h)),
-                }),
-            );
-            let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
-            it.content = Content::Graphic(Graphic {
-                asset: aid,
-                size: (w as f64, h as f64),
-                xf: designcraft_geom::Affine::translate((r.x0, r.y0))
-                    * designcraft_geom::Affine::scale_non_uniform(r.width() / w as f64, r.height() / h as f64),
-                auto_fit: Default::default(),
-                fit_align: 4,
-                crop: [0.0; 4],
-            });
-            it.stroke.weight = 0.0;
-            it
-        };
+    let image_item = |out: &mut pagenor_doc::Document, r: pagenor_geom::Rect, img: pagenor_render::Rendered, layer: pagenor_doc::LayerId| {
+        let (w, h) = (img.width, img.height);
+        let aid = AssetId(out.alloc());
+        out.assets.insert(
+            aid,
+            std::sync::Arc::new(Asset {
+                page: 0,
+                id: aid,
+                name: format!("flattened-{}.png", aid.0),
+                mime: "image/png".into(),
+                link: None,
+                data: std::sync::Arc::new(img.to_png()),
+                pixels: Some((w, h)),
+            }),
+        );
+        let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
+        it.content = Content::Graphic(Graphic {
+            asset: aid,
+            size: (w as f64, h as f64),
+            xf: pagenor_geom::Affine::translate((r.x0, r.y0)) * pagenor_geom::Affine::scale_non_uniform(r.width() / w as f64, r.height() / h as f64),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+        });
+        it.stroke.weight = 0.0;
+        it
+    };
     for (si, sp) in d.spreads.iter().enumerate() {
         let whole = sp.pages.iter().any(|pg| pg.show_parent_items && parent_transparent(pg.parent));
         if whole {
@@ -300,10 +297,9 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             if it.hidden || !transparent(it) {
                 continue;
             }
-            let reach = it.bounds().inflate(
-                designcraft_render::effect_outset(it) + it.stroke.extent() + 1.0,
-                designcraft_render::effect_outset(it) + it.stroke.extent() + 1.0,
-            );
+            let reach = it
+                .bounds()
+                .inflate(pagenor_render::effect_outset(it) + it.stroke.extent() + 1.0, pagenor_render::effect_outset(it) + it.stroke.extent() + 1.0);
             // Only the part on the spread's pages and pasteboard that prints.
             let (w, h) = ((reach.width() * k).ceil().max(1.0) as u32, (reach.height() * k).ceil().max(1.0) as u32);
             if w as u64 * h as u64 > 80_000_000 {
@@ -312,12 +308,12 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
             // The stack up to and including this object.
             let mut below = d.clone();
             std::sync::Arc::make_mut(&mut below.spreads[si]).items.truncate(idx + 1);
-            let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
-            let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+            let view = pagenor_geom::Affine::scale(k) * pagenor_geom::Affine::translate((-reach.x0, -reach.y0));
+            let opts = pagenor_render::RenderOptions { printing_only: true, ..Default::default() };
             let img = rr.render(
                 &below,
                 cache,
-                &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
+                &[pagenor_render::Placed { spread: SpreadRef::Doc(si), xf: pagenor_geom::Affine::translate(pagenor_geom::Vec2::ZERO) }],
                 w,
                 h,
                 view,
@@ -339,12 +335,12 @@ fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, pp
 }
 
 /// A text frame in a story that runs through other frames (replacing it would reflow the story).
-fn threaded(d: &designcraft_doc::Document, it: &designcraft_doc::Item) -> bool {
+fn threaded(d: &pagenor_doc::Document, it: &pagenor_doc::Item) -> bool {
     it.text_frame().and_then(|t| d.story(t.story)).is_some_and(|st| st.frames.len() > 1)
 }
 
 /// Soft effects other than the gradient feather (which PDF export draws itself).
-fn raster_effects(it: &designcraft_doc::Item) -> bool {
+fn raster_effects(it: &pagenor_doc::Item) -> bool {
     let e = &it.effects;
     // Knockout groups too: PDF output here has no knockout transparency groups.
     it.knockout
@@ -360,35 +356,34 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
 
 /// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
-fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize) {
+fn rasterize_effects(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache) -> (Option<pagenor_doc::Document>, usize) {
     rasterize_where(d, cache, 300.0, |it| raster_effects(it) && !threaded(d, it))
 }
 
 /// A copy of `d` where the spread-level objects `pred` picks are images of their appearance at
 /// `ppi` (transparent around them).
 fn rasterize_where(
-    d: &designcraft_doc::Document,
-    cache: &designcraft_compose::Cache,
+    d: &pagenor_doc::Document,
+    cache: &pagenor_compose::Cache,
     ppi: f64,
-    pred: impl Fn(&designcraft_doc::Item) -> bool,
-) -> (Option<designcraft_doc::Document>, usize) {
-    use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
+    pred: impl Fn(&pagenor_doc::Item) -> bool,
+) -> (Option<pagenor_doc::Document>, usize) {
+    use pagenor_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
     let todo: Vec<(usize, ItemId)> =
         d.spreads.iter().enumerate().flat_map(|(si, sp)| sp.items.iter().filter(|it| !it.hidden && pred(it)).map(move |it| (si, it.id))).collect();
     if todo.is_empty() {
         return (None, 0);
     }
     let mut out = d.clone();
-    let mut rr = designcraft_render::Renderer::new();
-    rr.threads = designcraft_render::default_threads();
+    let mut rr = pagenor_render::Renderer::new();
+    rr.threads = pagenor_render::default_threads();
     let k = ppi / 72.0;
     let mut n = 0;
     for (si, id) in todo {
         let Some(it) = d.item(id) else { continue };
-        let reach = it.bounds().inflate(
-            designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
-            designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
-        );
+        let reach = it
+            .bounds()
+            .inflate(pagenor_render::effect_outset(it) + it.stroke.extent() + 2.0, pagenor_render::effect_outset(it) + it.stroke.extent() + 2.0);
         // Just this object on its spread, no paper.
         let mut solo = d.clone();
         let sp = std::sync::Arc::make_mut(&mut solo.spreads[si]);
@@ -400,12 +395,12 @@ fn rasterize_where(
         if w as u64 * h as u64 > 60_000_000 {
             continue;
         }
-        let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
-        let opts = designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
+        let view = pagenor_geom::Affine::scale(k) * pagenor_geom::Affine::translate((-reach.x0, -reach.y0));
+        let opts = pagenor_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
         let img = rr.render(
             &solo,
             cache,
-            &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
+            &[pagenor_render::Placed { spread: SpreadRef::Doc(si), xf: pagenor_geom::Affine::translate(pagenor_geom::Vec2::ZERO) }],
             w,
             h,
             view,
@@ -424,11 +419,11 @@ fn rasterize_where(
                 pixels: Some((w, h)),
             }),
         );
-        let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(reach));
+        let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, pagenor_geom::shapes::rectangle(reach));
         img_item.content = Content::Graphic(Graphic {
             asset: aid,
             size: (w as f64, h as f64),
-            xf: designcraft_geom::Affine::translate((reach.x0, reach.y0)) * designcraft_geom::Affine::scale(1.0 / k),
+            xf: pagenor_geom::Affine::translate((reach.x0, reach.y0)) * pagenor_geom::Affine::scale(1.0 / k),
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
@@ -447,8 +442,8 @@ fn rasterize_where(
 }
 
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
-fn rasterize_layered(d: &designcraft_doc::Document) -> (Option<designcraft_doc::Document>, usize) {
-    let ids: Vec<designcraft_doc::ItemId> =
+fn rasterize_layered(d: &pagenor_doc::Document) -> (Option<pagenor_doc::Document>, usize) {
+    let ids: Vec<pagenor_doc::ItemId> =
         d.all_items().into_iter().filter(|id| d.item(*id).is_some_and(|it| !it.pdf_hidden_layers.is_empty() && it.graphic().is_some())).collect();
     if ids.is_empty() {
         return (None, 0);
@@ -458,16 +453,16 @@ fn rasterize_layered(d: &designcraft_doc::Document) -> (Option<designcraft_doc::
     for id in ids {
         let Some((g, hidden)) = out.item(id).and_then(|it| Some((it.graphic()?.clone(), it.pdf_hidden_layers.clone()))) else { continue };
         let Some(a) = out.assets.get(&g.asset).cloned() else { continue };
-        if !designcraft_render::is_pdf(&a.data) {
+        if !pagenor_render::is_pdf(&a.data) {
             continue;
         }
         let side = (g.size.0.max(g.size.1) * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let Some(png) = designcraft_render::pdf_page_png(&a.data, a.page as usize, side, &hidden) else { continue };
-        let px = designcraft_render::image_size(&png);
-        let aid = designcraft_doc::AssetId(out.alloc());
+        let Some(png) = pagenor_render::pdf_page_png(&a.data, a.page as usize, side, &hidden) else { continue };
+        let px = pagenor_render::image_size(&png);
+        let aid = pagenor_doc::AssetId(out.alloc());
         out.assets.insert(
             aid,
-            std::sync::Arc::new(designcraft_doc::Asset {
+            std::sync::Arc::new(pagenor_doc::Asset {
                 page: 0,
                 id: aid,
                 name: format!("{}.png", a.name),
@@ -477,7 +472,7 @@ fn rasterize_layered(d: &designcraft_doc::Document) -> (Option<designcraft_doc::
                 pixels: px,
             }),
         );
-        if let Some(designcraft_doc::Content::Graphic(gg)) = out.item_mut(id).map(|it| &mut it.content) {
+        if let Some(pagenor_doc::Content::Graphic(gg)) = out.item_mut(id).map(|it| &mut it.content) {
             gg.asset = aid;
         }
         n += 1;
@@ -508,18 +503,18 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
     // Placed PDFs with hidden layers go out as images showing just their visible layers.
-    let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
+    let base: &pagenor_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
     let (layered, layer_count) = rasterize_layered(base);
-    let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
+    let base2: &pagenor_doc::Document = layered.as_ref().unwrap_or(base);
     let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
-    let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
-    let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let doc: &pagenor_doc::Document = fx_doc.as_ref().unwrap_or(base2);
+    let r = pagenor_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
     // Transparency Blend Space: the page group of pages with transparency.
-    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
+    let spreads = pagenor_pdf::sheet_spreads(doc, &opts);
     let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
     if blended.iter().any(|b| *b) {
-        match designcraft_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk) {
+        match pagenor_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == pagenor_doc::BlendSpace::Cmyk) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("the transparency blend space couldn't be set".into()),
         }
@@ -553,25 +548,25 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     if !cat.is_empty() {
-        match designcraft_pdf::add_catalog_entries(&r.bytes, &cat) {
+        match pagenor_pdf::add_catalog_entries(&r.bytes, &cat) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("the PDF view options couldn't be set".into()),
         }
     }
     // Flip pages every N seconds (presentation).
     if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| *s > 0.0) {
-        let n = designcraft_pdf::sheet_spreads(doc, &opts).len();
+        let n = pagenor_pdf::sheet_spreads(doc, &opts).len();
         let dur: Vec<Option<String>> = (0..n).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
-        match designcraft_pdf::add_page_entries(&r.bytes, &dur) {
+        match pagenor_pdf::add_page_entries(&r.bytes, &dur) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("page timings couldn't be set".into()),
         }
     }
     // Page transitions (each spread's first page holds them).
-    let trans: Vec<Option<designcraft_doc::PageTransition>> =
+    let trans: Vec<Option<pagenor_doc::PageTransition>> =
         spreads.into_iter().map(|si| doc.spreads.get(si).and_then(|sp| sp.pages.first()).and_then(|pg| pg.transition)).collect();
     if trans.iter().any(Option::is_some) {
-        match designcraft_pdf::add_transitions(&r.bytes, &trans) {
+        match pagenor_pdf::add_transitions(&r.bytes, &trans) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("page transitions couldn't be added to this PDF".into()),
         }
@@ -690,9 +685,9 @@ mod text_tests {
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("flattened: 1 ")), "{r}");
         assert_eq!(r["pages"], 3);
         let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
-        assert_eq!(designcraft_render::pdf_page_count(&bytes), Some(3));
+        assert_eq!(pagenor_render::pdf_page_count(&bytes), Some(3));
         // The document itself is untouched.
-        assert!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(id.as_u64().unwrap())).is_some());
+        assert!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(id.as_u64().unwrap())).is_some());
         assert!(s.execute("file.exportPdf", &json!({"flatten": 5})).is_err());
         // Interactive view options land in the catalog and on the pages.
         let r = s.execute("file.exportPdf", &json!({"fullScreen": true, "pageLayout": "single", "view": "fitPage", "advanceSeconds": 5})).unwrap();
@@ -762,7 +757,7 @@ mod variable_font_tests {
     #[test]
     fn variable_font_instance_exports_to_pdf() {
         let Ok(data) = std::fs::read("/System/Library/Fonts/Supplemental/Skia.ttf") else { return };
-        designcraft_fonts::FontDb::global().add_font(data);
+        pagenor_fonts::FontDb::global().add_font(data);
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Variable"})).unwrap();
@@ -783,7 +778,7 @@ mod booklet_tests {
 
     #[test]
     fn booklet_imposes_pages_in_pairs() {
-        use designcraft_pdf::{BookletKind, booklet_pairs};
+        use pagenor_pdf::{BookletKind, booklet_pairs};
         assert_eq!(booklet_pairs(8, BookletKind::SaddleStitch), [(Some(7), Some(0)), (Some(1), Some(6)), (Some(5), Some(2)), (Some(3), Some(4))]);
         assert_eq!(booklet_pairs(6, BookletKind::SaddleStitch)[0], (None, Some(0)), "padded with blanks");
         assert_eq!(booklet_pairs(3, BookletKind::TwoUpConsecutive), [(Some(0), Some(1)), (Some(2), None)]);
@@ -800,7 +795,7 @@ mod booklet_tests {
         s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [id]})).unwrap();
         let r = s.execute("file.printBooklet", &json!({})).unwrap();
         let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
-        let px = designcraft_render::decode_pixmap_page(&bytes, 0).expect("rasterised");
+        let px = pagenor_render::decode_pixmap_page(&bytes, 0).expect("rasterised");
         let (w, h) = (px.width() as f64, px.height() as f64);
         let at = |x: f64, y: f64| px.sample((x / 1224.0 * w) as u16, (y / 792.0 * h) as u16);
         let (ink, blank) = (at(612.0 + 200.0, 200.0), at(200.0, 200.0));
@@ -888,7 +883,7 @@ mod print_group_tests {
         let t = text(&mut s);
         assert!(t.contains("/S/Transparency/I true/CS/DeviceCMYK>>"), "CMYK group");
         assert!(!t.contains("DeviceRGB"), "no RGB left");
-        assert!(!designcraft_pdf::has_rgb_groups(t.as_bytes()));
+        assert!(!pagenor_pdf::has_rgb_groups(t.as_bytes()));
         // The file still reads, with the same page.
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         let bytes = base64_decode(r["base64"].as_str().unwrap());
@@ -896,6 +891,6 @@ mod print_group_tests {
         // An RGB blend space keeps RGB groups.
         s.execute("edit.transparencyBlendSpace", &json!({"space": "rgb"})).unwrap();
         let t = text(&mut s);
-        assert!(t.contains("/CS/DeviceRGB") && designcraft_pdf::has_rgb_groups(t.as_bytes()));
+        assert!(t.contains("/CS/DeviceRGB") && pagenor_pdf::has_rgb_groups(t.as_bytes()));
     }
 }

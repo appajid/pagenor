@@ -1,9 +1,9 @@
 //! Text editing (Type tool) and character/paragraph formatting.
 
-use designcraft_compose as compose;
-use designcraft_doc::story::floor_char_boundary;
-use designcraft_doc::{CellAddr, CharAttrs, Content, ItemId, ParaAttrs, Selection, StoryId, TextSel};
-use designcraft_geom::Point;
+use pagenor_compose as compose;
+use pagenor_doc::story::floor_char_boundary;
+use pagenor_doc::{CellAddr, CharAttrs, Content, ItemId, ParaAttrs, Selection, StoryId, TextSel};
+use pagenor_geom::Point;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, has_text, has_text_or_frames, id_param, ok, point_param, str_param};
@@ -63,11 +63,11 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 let sid = story_of(s, p).ok_or_else(|| bad("story.setDirection", "no story"))?;
-                let direction: designcraft_doc::TextDirection =
+                let direction: pagenor_doc::TextDirection =
                     serde_json::from_value(p.get("direction").cloned().ok_or_else(|| bad("story.setDirection", "missing direction"))?)
                         .map_err(|e| bad("story.setDirection", e.to_string()))?;
                 s.edit(|d, _| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
                     st.direction = direction;
                     st.rev = st.rev.wrapping_add(1);
                     ok()
@@ -99,7 +99,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let b = p.get("end").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(a);
                 let text = str_param(p, "text").unwrap_or("").to_string();
                 s.edit(|d, sel| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
                     let (a, b) = (a.min(st.len()), b.min(st.len()).max(a.min(st.len())));
                     st.replace(a..b, &text);
                     let len = st.len();
@@ -307,8 +307,8 @@ fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
         && a.table == c.table
         && (a.row, a.col) != (c.row, c.col)
     {
-        let range = designcraft_doc::CellRange::new(a.row, a.col, c.row, c.col);
-        st.selection.cells = Some(designcraft_doc::TableSel { story: sid, table: c.table, range });
+        let range = pagenor_doc::CellRange::new(a.row, a.col, c.row, c.col);
+        st.selection.cells = Some(pagenor_doc::TableSel { story: sid, table: c.table, range });
         st.revision += 1;
         return Ok(json!({"story": sid.0, "cells": range}));
     }
@@ -340,7 +340,7 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
-        let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let st = d.text_story_mut(sid, cell).ok_or(pagenor_doc::DocError::NoStory(sid))?;
         let piece = st.extract(r.clone());
         let mut at = b;
         if !copy {
@@ -367,7 +367,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let autocorrect = (s.prefs.autocorrect && !tracking && !raw).then(|| s.prefs.autocorrect_list.clone());
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.insert", "no insertion point"))?;
-        let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let st = d.text_story_mut(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let mut r = r.start.min(st.len())..r.end.min(st.len());
         // Autocorrect: a word ended by a space or punctuation is looked up.
@@ -398,7 +398,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if t.cell.is_none() && !text.is_empty() && st.table_at(r.start).is_some() {
             let pi = st.para_at(r.start);
             let pr = st.para_ranges()[pi].clone();
-            let anchor_at = pr.start + st.text[pr.clone()].find(designcraft_doc::TABLE_ANCHOR).unwrap_or(0);
+            let anchor_at = pr.start + st.text[pr.clone()].find(pagenor_doc::TABLE_ANCHOR).unwrap_or(0);
             if r.start <= anchor_at {
                 if !text.ends_with('\n') {
                     text.push('\n');
@@ -412,7 +412,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
             let at = super::changes::mark_deleted(st, r.clone());
             let mut fmt = st.char_format_at(at).clone();
-            fmt.over.change = Some(designcraft_doc::ChangeMark::Inserted);
+            fmt.over.change = Some(pagenor_doc::ChangeMark::Inserted);
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
@@ -479,10 +479,10 @@ fn smart_quotes(s: &Session, text: &str) -> String {
 }
 
 /// Typographer's quotes of a language (a name or locale code, see
-/// [`designcraft_doc::language_tag`]): [double open, double close, single open, single close].
+/// [`pagenor_doc::language_tag`]): [double open, double close, single open, single close].
 pub fn quote_marks(language: &str) -> [char; 4] {
     const ENGLISH: [char; 4] = ['\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}'];
-    let Some(tag) = designcraft_doc::language_tag(language) else { return ENGLISH };
+    let Some(tag) = pagenor_doc::language_tag(language) else { return ENGLISH };
     // Swiss German, French and Italian use guillemets.
     if tag.ends_with("-CH") {
         return ['\u{00AB}', '\u{00BB}', '\u{2039}', '\u{203A}'];
@@ -492,7 +492,7 @@ pub fn quote_marks(language: &str) -> [char; 4] {
         "zh" | "zh-Hant" => return ['\u{300C}', '\u{300D}', '\u{300E}', '\u{300F}'],
         _ => {}
     }
-    match designcraft_doc::language_subtag(tag) {
+    match pagenor_doc::language_subtag(tag) {
         "de" | "cs" | "sk" | "bg" | "lt" => ['\u{201E}', '\u{201C}', '\u{201A}', '\u{2018}'],
         "fr" | "ru" | "uk" | "no" | "nb" | "nn" | "el" => ['\u{00AB}', '\u{00BB}', '\u{2039}', '\u{203A}'],
         "es" | "it" | "pt" | "ca" => ['\u{00AB}', '\u{00BB}', '\u{201C}', '\u{201D}'],
@@ -527,7 +527,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let tracking = s.doc()?.doc.settings.track_changes;
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
-        let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let st = d.text_story_mut(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let r = if !r.is_empty() {
             r
@@ -609,7 +609,7 @@ fn story_direction(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Set the direction of `stories` (all their frames turn together).
-pub(crate) fn set_story_direction(d: &mut designcraft_doc::Document, stories: &[StoryId], vertical: bool) {
+pub(crate) fn set_story_direction(d: &mut pagenor_doc::Document, stories: &[StoryId], vertical: bool) {
     for sid in stories {
         if let Some(st) = d.story_mut(*sid)
             && st.vertical != vertical
@@ -626,7 +626,7 @@ fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     let word = bool_or(p, "word", false);
     let st = s.doc()?;
     let t = st.selection.text.ok_or_else(|| bad("text.move", "no caret"))?;
-    let story = st.doc.text_story(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+    let story = st.doc.text_story(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
     let text = story.text.clone();
     let cs = s.cache.get(&st.doc, t.story, None);
     // In a cell, lines come from the cell's own composition.
@@ -803,7 +803,7 @@ fn step_size(s: &mut Session, delta: f64) -> Result<Value> {
 }
 
 fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
-    use designcraft_doc::{CharFormat, CharProps, ParaProps};
+    use pagenor_doc::{CharFormat, CharProps, ParaProps};
     let para = match p.get("kind").and_then(Value::as_str).unwrap_or("paragraph") {
         "paragraph" => true,
         "character" => false,
@@ -818,7 +818,7 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
             if para {
                 st.format_paras(r, |pf| {
                     let (pp, pc) = styles.resolve_para(pf);
-                    pf.style = designcraft_doc::styles::NO_PARA_STYLE.into();
+                    pf.style = pagenor_doc::styles::NO_PARA_STYLE.into();
                     pf.para = ParaProps::default().delta(&pp);
                     pf.chars = CharProps::default().delta(&pc);
                 });
@@ -832,7 +832,7 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
                     let (_, pc) = styles.resolve_para(&st.paras[pi]);
                     st.format_chars(a..b, |f| {
                         let cp = styles.resolve_char(&pc, f);
-                        *f = CharFormat { style: designcraft_doc::story::NO_CHAR_STYLE.into(), over: pc.delta(&cp) };
+                        *f = CharFormat { style: pagenor_doc::story::NO_CHAR_STYLE.into(), over: pc.delta(&cp) };
                     });
                 }
             }
@@ -842,7 +842,7 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn open_type(s: &mut Session, p: &Value) -> Result<Value> {
-    use designcraft_doc::otf;
+    use pagenor_doc::otf;
     let cur = selection_attrs(s, &json!({}))?;
     let mut list: Vec<String> =
         cur["chars"]["otfFeatures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
@@ -870,7 +870,7 @@ fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let targets = format_targets(s);
     let Some(Target { story: sid, cell, range: r }) = targets.first().cloned() else { return Ok(Value::Null) };
-    let story = st.doc.text_story(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    let story = st.doc.text_story(sid, cell).ok_or(pagenor_doc::DocError::NoStory(sid))?;
     let pi = story.para_at(r.start);
     let pf = &story.paras[pi];
     let (pp, base) = st.doc.styles.resolve_para(pf);
@@ -1037,7 +1037,7 @@ mod open_type_tests {
         let sid = r["story"].clone();
         // Offsets inside 漢 (2..5) and 🙂 (5..9) snap back to the character starts: 漢 is replaced.
         s.execute("story.replaceRange", &json!({"story": sid, "start": 3, "end": 6, "text": "字"})).unwrap();
-        let story = designcraft_doc::StoryId(sid.as_u64().unwrap());
+        let story = pagenor_doc::StoryId(sid.as_u64().unwrap());
         assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "é字🙂x");
         // A caret before 🙂 (byte 5) would land inside it once é (2 bytes) is gone.
         s.execute("text.select", &json!({"story": sid, "anchor": 5})).unwrap();
@@ -1098,10 +1098,10 @@ mod open_type_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "2024"})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         let gids = |s: &Session| {
             let d = &s.doc().unwrap().doc;
-            let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+            let cs = pagenor_compose::compose_story(d, sid, &Default::default());
             cs.frames[0].lines[0].glyphs.iter().map(|g| g.gid).collect::<Vec<_>>()
         };
         let lining = gids(&s);
@@ -1135,8 +1135,8 @@ mod nested_style_tests {
         )
         .unwrap();
         let d = s.doc().unwrap().doc.clone();
-        let cs = designcraft_compose::compose_story(&d, designcraft_doc::StoryId(sid), &Default::default());
-        let text = &d.story(designcraft_doc::StoryId(sid)).unwrap().text;
+        let cs = pagenor_compose::compose_story(&d, pagenor_doc::StoryId(sid), &Default::default());
+        let text = &d.story(pagenor_doc::StoryId(sid)).unwrap().text;
         let fill_at = |byte: usize| {
             let g = cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).find(|g| g.byte == byte).unwrap();
             cs.styles[g.style as usize].fill.clone()
@@ -1163,14 +1163,14 @@ mod drag_text_tests {
         // Spread point of the glyph at byte `b`.
         let at = |s: &Session, b: usize| {
             let d = &s.doc().unwrap().doc;
-            let cs = designcraft_compose::compose_story(d, designcraft_doc::StoryId(sid), &Default::default());
+            let cs = pagenor_compose::compose_story(d, pagenor_doc::StoryId(sid), &Default::default());
             let l = &cs.frames[0].lines[0];
             let g = l.glyphs.iter().find(|g| g.byte == b).unwrap();
             json!([g.x + g.adv * 0.25, l.baseline - 3.0])
         };
         let end = |s: &Session| {
             let d = &s.doc().unwrap().doc;
-            let cs = designcraft_compose::compose_story(d, designcraft_doc::StoryId(sid), &Default::default());
+            let cs = pagenor_compose::compose_story(d, pagenor_doc::StoryId(sid), &Default::default());
             let l = &cs.frames[0].lines[0];
             json!([l.end_x + 2.0, l.baseline - 3.0])
         };
@@ -1179,7 +1179,7 @@ mod drag_text_tests {
         assert_eq!(r["dragging"], true);
         s.execute("text.extendTo", &json!({"frame": fid, "point": end(&s)})).unwrap();
         s.execute("text.release", &json!({"frame": fid, "point": end(&s), "moved": true})).unwrap();
-        let text = |s: &Session| s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
+        let text = |s: &Session| s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text.clone();
         assert_eq!(text(&s), "Hello worldbrave ");
         // Alt-drag copies (the moved text is still selected).
         s.execute("text.placeCaret", &json!({"frame": fid, "point": at(&s, 12)})).unwrap();
@@ -1208,7 +1208,7 @@ mod nested_line_style_tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": text})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
         s.execute("type.para", &json!({"nestedLineStyles": [{"style": "Lead", "lines": 1}]})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
         let lines = &cs.frames[0].lines;
         assert!(lines.len() >= 3);
@@ -1219,7 +1219,7 @@ mod nested_line_style_tests {
             "the whole first line"
         );
         assert_eq!(size_of(1), 12.0, "the next lines");
-        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+        let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         let st = back.stories.values().find(|st| st.text.starts_with("The opening")).unwrap();
         let nl = st.paras[0].para.nested_line_styles.clone().unwrap_or_default();
         assert_eq!((nl.len(), nl.first().map(|n| n.lines)), (1, Some(1)), "IDML AllNestedLineStyles");
@@ -1242,7 +1242,7 @@ mod border_tests {
         s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
         s.execute("type.para", &json!({"borderOn": true, "borderWeights": [2, 1, 2, 1], "borderOffsets": [4, 4, 4, 4], "borderColor": "[Black]", "shadingOn": true, "shadingOffsets": [4, 4, 4, 4]})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
         let decos = &cs.frames[0].decos;
         let shading: Vec<_> = decos.iter().filter(|d| d.tint < 0.5).collect();
@@ -1252,7 +1252,7 @@ mod border_tests {
         let top = decos.iter().filter(|d| d.tint >= 0.5).map(|d| d.rect).fold(f64::MAX, |a, r| a.min(r.y0));
         let first_line = &cs.frames[0].lines[0];
         assert!((top - (first_line.baseline - first_line.ascent - 4.0 - 2.0)).abs() < 1e-6, "offset 4 + weight 2 above the text");
-        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+        let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         let p = &back.stories.values().find(|st| st.text.starts_with("word")).unwrap().paras[0].para;
         assert_eq!(
             (p.border_on, p.border_weights, p.shading_offsets),
@@ -1273,7 +1273,7 @@ mod autocorrect_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
         let text = |s: &Session| s.doc().unwrap().doc.stories[&sid].text.clone();
         // Off by default.
@@ -1305,7 +1305,7 @@ mod language_tests {
         let sid = r["story"].as_u64().unwrap();
         s.execute("type.char", &json!({"attrs": {"language": "German: 2006 Reform"}})).unwrap();
         s.execute("text.insert", &json!({"text": "\"Wort\" ist's"})).unwrap();
-        let text = s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].text.clone();
+        let text = s.doc().unwrap().doc.stories[&pagenor_doc::StoryId(sid)].text.clone();
         assert_eq!(text, "\u{201E}Wort\u{201C} ist\u{2019}s");
         // German words aren't English misspellings.
         let st = s.execute("spelling.check", &json!({"story": sid})).unwrap();
@@ -1326,7 +1326,7 @@ mod language_tests {
         assert_eq!(quote_marks("zh-TW"), ['\u{300C}', '\u{300D}', '\u{300E}', '\u{300F}']);
         assert_eq!(quote_marks("ja_JP"), ['\u{300C}', '\u{300D}', '\u{300E}', '\u{300F}']);
         for l in ["Japanese", "Korean", "Chinese", "Chinese: Simplified", "Chinese: Traditional"] {
-            assert!(!designcraft_compose::is_english(l), "{l}: no English hyphenation or spelling");
+            assert!(!pagenor_compose::is_english(l), "{l}: no English hyphenation or spelling");
         }
     }
 
@@ -1358,7 +1358,7 @@ mod language_tests {
             ("[No Language]", ENGLISH, false),
         ] {
             assert_eq!(quote_marks(language), quotes, "{language}");
-            assert_eq!(designcraft_compose::is_english(language), english, "{language}");
+            assert_eq!(pagenor_compose::is_english(language), english, "{language}");
         }
     }
 
@@ -1366,13 +1366,13 @@ mod language_tests {
     fn idml_language_names_keep_their_spelling_and_pick_the_language() {
         use std::io::Read;
         // A stand-in for Songti SC (first in the Simplified Chinese chain; the real one when installed).
-        designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with("Songti SC", &['直']).unwrap());
+        pagenor_fonts::FontDb::global().add_font(pagenor_fonts::testing::font_with("Songti SC", &['直']).unwrap());
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "直"})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 3})).unwrap();
         s.execute("type.char", &json!({"attrs": {"language": "Simplified Chinese"}})).unwrap();
-        let idml = designcraft_idml::export_idml(&s.doc().unwrap().doc);
+        let idml = pagenor_idml::export_idml(&s.doc().unwrap().doc);
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(idml.clone())).unwrap();
         let stories: String = (0..z.len())
             .map(|i| {
@@ -1386,12 +1386,12 @@ mod language_tests {
             .collect();
         assert!(stories.contains(r#"AppliedLanguage="$ID/Simplified Chinese""#), "{stories}");
         // The name comes back as written and sets the text as Simplified Chinese.
-        let mut back = designcraft_idml::import_idml(&idml).unwrap();
+        let mut back = pagenor_idml::import_idml(&idml).unwrap();
         back.settings.glyph_fallback = true;
         let st = back.stories.values().find(|st| st.text.contains('直')).unwrap();
         let (_, base) = back.styles.resolve_para(&st.paras[0]);
         assert_eq!(back.styles.resolve_char(&base, st.char_format_at(0)).language, "Simplified Chinese");
-        let cs = designcraft_compose::compose_story(&back, st.id, &Default::default());
+        let cs = pagenor_compose::compose_story(&back, st.id, &Default::default());
         let face = cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap().face;
         assert_eq!(face.family, "Songti SC");
     }
@@ -1411,7 +1411,7 @@ mod tcy_tests {
         let sid = r["story"].as_u64().unwrap();
         let at = "令和".len();
         s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at + 2})).unwrap();
-        let get = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(at + 1).over.tate_chu_yoko;
+        let get = |s: &Session| s.doc().unwrap().doc.stories[&pagenor_doc::StoryId(sid)].char_format_at(at + 1).over.tate_chu_yoko;
         s.execute("type.tateChuYoko", &json!({})).unwrap();
         assert_eq!(get(&s), Some(true));
         s.execute("type.tateChuYoko", &json!({})).unwrap();
@@ -1429,7 +1429,7 @@ mod tcy_tests {
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": "漢字".len()})).unwrap();
         s.execute("type.ruby", &json!({"text": "かんじ"})).unwrap();
         s.execute("type.kenten", &json!({})).unwrap();
-        let f = |s: &Session| s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(sid)].char_format_at(1).over.clone();
+        let f = |s: &Session| s.doc().unwrap().doc.stories[&pagenor_doc::StoryId(sid)].char_format_at(1).over.clone();
         assert_eq!(f(&s).ruby.as_deref(), Some("かんじ"));
         assert_eq!(f(&s).kenten, Some(true));
         s.execute("type.kenten", &json!({})).unwrap();
@@ -1475,12 +1475,12 @@ mod arabic_tests {
         let sid = StoryId(r["story"].as_u64().unwrap());
         let before = s.cache.get(&s.doc().unwrap().doc, sid, None);
         s.execute("story.setDirection", &json!({"story": sid.0, "direction": "rightToLeft"})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, pagenor_doc::TextDirection::RightToLeft);
         let after = s.cache.get(&s.doc().unwrap().doc, sid, None);
         assert!(!std::sync::Arc::ptr_eq(&before, &after));
         assert!(s.execute("story.setDirection", &json!({"story": sid.0, "direction": "unknown"})).is_err());
         s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::LeftToRight);
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, pagenor_doc::TextDirection::LeftToRight);
     }
 }
 
@@ -1495,7 +1495,7 @@ mod korean_breaks_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "한국어 문장"})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         s.execute("type.para", &json!({"attrs": {"koreanCharBreaks": true}})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().paras[0].para.korean_char_breaks, Some(true));
         s.execute("style.paragraph.create", &json!({"name": "Korean", "para": {"koreanCharBreaks": true}})).unwrap();
@@ -1505,7 +1505,7 @@ mod korean_breaks_tests {
 
 #[cfg(test)]
 mod story_direction_tests {
-    use designcraft_doc::{ItemId, StoryId};
+    use pagenor_doc::{ItemId, StoryId};
     use serde_json::json;
 
     use crate::Session;
@@ -1563,7 +1563,7 @@ mod story_direction_tests {
 
 #[cfg(test)]
 mod vertical_caret_tests {
-    use designcraft_doc::StoryId;
+    use pagenor_doc::StoryId;
     use serde_json::json;
 
     use crate::Session;

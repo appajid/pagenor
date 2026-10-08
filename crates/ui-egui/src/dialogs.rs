@@ -1,7 +1,7 @@
 //! Modal dialogs. Each dialog keeps its fields in a JSON map so the control channel can set them
 //! (`ui.dialog.set {field, value}`) and confirm them (`ui.dialog.confirm`) like a user would.
 
-use designcraft_geom::{Unit, format_measure, units::parse_measure};
+use pagenor_geom::{Unit, format_measure, units::parse_measure};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -181,7 +181,7 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
     }
     let ql = q.to_lowercase();
-    let mut rows: Vec<(String, String, String)> = designcraft_engine::command_specs()
+    let mut rows: Vec<(String, String, String)> = pagenor_engine::command_specs()
         .iter()
         .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
         .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
@@ -340,12 +340,11 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page Size")).font(semibold(12.0)));
     let (w, h) = (d.m("width").unwrap_or(612.0), d.m("height").unwrap_or(792.0));
-    let preset =
-        designcraft_doc::build::PRESETS.iter().find(|p| (p.width - w).abs() < 0.5 && (p.height - h).abs() < 0.5).map_or("Custom", |p| p.name);
+    let preset = pagenor_doc::build::PRESETS.iter().find(|p| (p.width - w).abs() < 0.5 && (p.height - h).abs() < 0.5).map_or("Custom", |p| p.name);
     egui::Grid::new("ds_size").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Size:"));
         egui::ComboBox::from_id_salt("ds_preset").selected_text(preset).width(140.0).show_ui(ui, |ui| {
-            for p in designcraft_doc::build::PRESETS {
+            for p in pagenor_doc::build::PRESETS {
                 if ui.selectable_label(p.name == preset, p.name).clicked() {
                     d.fields.insert("width".into(), json!(format_measure(p.width, p.units)));
                     d.fields.insert("height".into(), json!(format_measure(p.height, p.units)));
@@ -830,7 +829,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
         "colorPicker" => crate::i18n::tr(&app.ui.language, "Color Picker"),
-        id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
+        id => match id.strip_prefix("cmd:").and_then(pagenor_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
         },
@@ -855,12 +854,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Preset"));
                     let cur = d.s("preset");
                     egui::ComboBox::from_id_salt("preset").selected_text(&cur).width(180.0).show_ui(ui, |ui| {
-                        for p in designcraft_doc::build::PRESETS {
+                        for p in pagenor_doc::build::PRESETS {
                             if ui.selectable_label(cur == p.name, p.name).clicked() {
                                 d.fields.insert("preset".into(), json!(p.name));
                                 d.fields.insert("width".into(), json!(format_measure(p.width, p.units)));
                                 d.fields.insert("height".into(), json!(format_measure(p.height, p.units)));
-                                d.fields.insert("facingPages".into(), json!(p.intent == designcraft_doc::Intent::Print));
+                                d.fields.insert("facingPages".into(), json!(p.intent == pagenor_doc::Intent::Print));
                             }
                         }
                     });
@@ -1116,9 +1115,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Intent:"));
                     let cur = d.s("intent");
                     egui::ComboBox::from_id_salt("ws_intent")
-                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, designcraft_color::cms::Intent::parse(&cur).map_or("", |i| i.label()))))
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, pagenor_color::cms::Intent::parse(&cur).map_or("", |i| i.label()))))
                         .show_ui(ui, |ui| {
-                            for i in designcraft_color::cms::Intent::ALL {
+                            for i in pagenor_color::cms::Intent::ALL {
                                 if ui.selectable_label(i.id() == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, i.label()))).clicked() {
                                     d.fields.insert("intent".into(), json!(i.id()));
                                 }
@@ -1492,7 +1491,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "colorSettings" => {
             let r = app.run("color.settings", json!({"rgb": d.s("rgb"), "cmyk": d.s("cmyk"), "intent": d.s("intent"), "bpc": d.b("bpc")}))?;
-            app.ui.color_settings = Some(designcraft_color::cms::active_settings());
+            app.ui.color_settings = Some(pagenor_color::cms::active_settings());
             app.canvas.shown = None;
             Ok(r)
         }
@@ -1673,7 +1672,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         "findChange" => app.run("find.change", json!({"find": d.s("find"), "change": d.s("change"), "grep": d.b("grep"), "caseSensitive": d.b("caseSensitive"), "wholeWord": d.b("wholeWord"), "scope": d.s("scope")})),
         id if id.starts_with("cmd:") => {
             let cid = &id[4..];
-            let doc = designcraft_engine::find_command(cid).map_or("", |c| c.params);
+            let doc = pagenor_engine::find_command(cid).map_or("", |c| c.params);
             let mut p = Map::new();
             for f in command_fields(doc) {
                 match d.fields.get(&f.key) {
@@ -2013,12 +2012,12 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             "indents" => {
                 egui::Grid::new("psi").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Alignment:"));
-                    let a: designcraft_doc::Align = serde_json::from_value(cur(d, "p.align", &pv["align"])).unwrap_or_default();
+                    let a: pagenor_doc::Align = serde_json::from_value(cur(d, "p.align", &pv["align"])).unwrap_or_default();
                     egui::ComboBox::from_id_salt("psalign")
                         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, a.label())))
                         .width(240.0)
                         .show_ui(ui, |ui| {
-                            for al in designcraft_doc::Align::ALL {
+                            for al in pagenor_doc::Align::ALL {
                                 if ui.selectable_label(al == a, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, al.label()))).clicked() {
                                     d.fields.insert("p.align".into(), serde_json::to_value(al).unwrap_or_default());
                                 }
@@ -2202,8 +2201,8 @@ fn style_combo(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, ch
         })
         .unwrap_or_default();
     let mut opts: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), crate::i18n::style_name(&app.ui.language, n))).collect();
-    if character && !names.iter().any(|n| n == designcraft_doc::NO_CHAR_STYLE) {
-        opts.insert(0, (designcraft_doc::NO_CHAR_STYLE, crate::i18n::style_name(&app.ui.language, designcraft_doc::NO_CHAR_STYLE)));
+    if character && !names.iter().any(|n| n == pagenor_doc::NO_CHAR_STYLE) {
+        opts.insert(0, (pagenor_doc::NO_CHAR_STYLE, crate::i18n::style_name(&app.ui.language, pagenor_doc::NO_CHAR_STYLE)));
     }
     combo(ui, d, key, &opts);
 }
@@ -2436,7 +2435,7 @@ fn humanize(key: &str) -> String {
 
 /// A form for any command, from its parameter documentation.
 fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let doc = designcraft_engine::find_command(&d.id[4..]).map_or("", |c| c.params);
+    let doc = pagenor_engine::find_command(&d.id[4..]).map_or("", |c| c.params);
     let fields = command_fields(doc);
     let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
     egui::Grid::new("cmdform").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -2523,7 +2522,7 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                             if cur_style != all && st.paras[pi].style != cur_style {
                                 continue;
                             }
-                            let text = designcraft_doc::xref::clean(&st.text[r]);
+                            let text = pagenor_doc::xref::clean(&st.text[r]);
                             if text.is_empty() {
                                 continue;
                             }
@@ -2557,7 +2556,7 @@ fn insert_xref(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 /// Color Picker: saturation/brightness field and hue slider, with RGB, CMYK and hex fields.
 fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
     let hex = d.s("hex");
-    let mut c = designcraft_color::Color::from_hex(&hex).map(|c| c.to_rgb()).map_or(egui::Color32::BLACK, |[r, g, b]| {
+    let mut c = pagenor_color::Color::from_hex(&hex).map(|c| c.to_rgb()).map_or(egui::Color32::BLACK, |[r, g, b]| {
         egui::Color32::from_rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
     });
     let before = c;
@@ -2573,7 +2572,7 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             });
             c = egui::Color32::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8);
-            let col = designcraft_color::Color::rgb8(c.r(), c.g(), c.b());
+            let col = pagenor_color::Color::rgb8(c.r(), c.g(), c.b());
             let [cc, m, y, k] = col.to_cmyk();
             ui.add_space(6.0);
             ui.label(format!("C {:.0}%  M {:.0}%  Y {:.0}%  K {:.0}%", cc * 100.0, m * 100.0, y * 100.0, k * 100.0));
@@ -2582,7 +2581,7 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
                 ui.label("#");
                 let mut h = format!("{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
                 if ui.add(egui::TextEdit::singleline(&mut h).desired_width(70.0)).changed()
-                    && let Some(n) = designcraft_color::Color::from_hex(&h)
+                    && let Some(n) = pagenor_color::Color::from_hex(&h)
                 {
                     let [r, g, b] = n.to_rgb();
                     c = egui::Color32::from_rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
@@ -2677,7 +2676,7 @@ mod tests {
         assert_eq!(f[0].hint, "%");
         assert_eq!(f[2].hint, "parent items (default: all)");
         // Every command with a "…" label parses without panicking.
-        for c in designcraft_engine::command_specs() {
+        for c in pagenor_engine::command_specs() {
             let _ = command_fields(c.params);
         }
     }

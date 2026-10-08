@@ -42,8 +42,8 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999);
     let printer = str_param(p, "printer").map(str::to_string);
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pdf = designcraft_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let file = std::env::temp_dir().join(format!("designcraft-print-{}-{}.pdf", std::process::id(), d.title.replace(['/', '\\'], "_")));
+    let pdf = pagenor_pdf::export_pdf(d, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let file = std::env::temp_dir().join(format!("pagenor-print-{}-{}.pdf", std::process::id(), d.title.replace(['/', '\\'], "_")));
     let mut cmd: Vec<String> = vec!["lpr".into()];
     if let Some(pr) = &printer {
         cmd.extend(["-P".into(), pr.clone()]);

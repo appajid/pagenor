@@ -2,7 +2,7 @@
 
 **Professional Publishing & Page Layout**
 
-Pagenor is an independent derivative of DesignCraft, initially pinned to
+Pagenor is an independent derivative of Pagenor, initially pinned to
 `f4a4c9709b7c552800f15ba3d1f0f68dd75fa165`.
 
 The project retains the upstream MIT/Apache-2.0 licensing and attribution.
@@ -13,7 +13,7 @@ covering major Indic scripts and multilingual publishing.
 
 ## The sample magazine
 
-Every page below was laid out by DesignCraft from code (`crates/engine/src/sample.rs`) and exported
+Every page below was laid out by Pagenor from code (`crates/engine/src/sample.rs`) and exported
 by its own renderer. Try it yourself with `File → New → Sample Document`, or start the app with
 `--sample`.
 
@@ -28,7 +28,7 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 </tr>
 </table>
 
-## Why DesignCraft
+## Why Pagenor
 
 - **Familiar.** InDesign's layout, tools, menus, panels and shortcuts: spreads and parent pages,
   frames and threaded stories, the Control panel, paragraph and character styles, swatches, text
@@ -50,11 +50,11 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 ## Quick start
 
 ```sh
-cargo run --release -p designcraft                         # desktop app (start screen)
-cargo run --release -p designcraft -- --sample             # open the sample magazine
-cargo run --release -p designcraft -- --sample --control 7979   # + JSON control channel
-cargo run --release -p designcraft-cli -- run --sample --all-pages out/       # headless: render every page to PNG
-cargo run --release -p designcraft-cli -- commands         # list every command
+cargo run --release -p pagenor                         # desktop app (start screen)
+cargo run --release -p pagenor -- --sample             # open the sample magazine
+cargo run --release -p pagenor -- --sample --control 7979   # + JSON control channel
+cargo run --release -p pagenor-cli -- run --sample --all-pages out/       # headless: render every page to PNG
+cargo run --release -p pagenor-cli -- commands         # list every command
 cargo xtask ci                                             # fmt, clippy, tests, assets, layering, wasm
 ```
 
@@ -65,7 +65,7 @@ files are never committed here; see craftrules
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
-CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p designcraft   # absolute path
+CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p pagenor   # absolute path
 ```
 
 Without it, Japanese falls back to the system's fonts (none on the web). Release builds always
@@ -77,8 +77,8 @@ To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is des
 ### Web
 
 ```sh
-cd apps/designcraft-web && trunk build --release          # → dist/web (serve it with any static server)
-cd apps/designcraft-web && trunk serve --release          # http://127.0.0.1:8767
+cd apps/pagenor-web && trunk build --release          # → dist/web (serve it with any static server)
+cd apps/pagenor-web && trunk serve --release          # http://127.0.0.1:8767
 ```
 
 You need [trunk](https://trunkrs.dev) and the `wasm32-unknown-unknown` target. The same app runs
@@ -88,7 +88,7 @@ Save and Export download the file. The web build has no control channel.
 
 ## Architecture
 
-DesignCraft is an engine-first Cargo workspace with enforced layering (`cargo xtask layers`). The
+Pagenor is an engine-first Cargo workspace with enforced layering (`cargo xtask layers`). The
 egui frontend is a separate crate, so the UI can be swapped without touching the engine.
 
 | Layer | Crates |
@@ -100,16 +100,16 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 | L4 | `tools` (pointer events → commands + overlays) |
 | L5 | `engine` (session, history, command registry) |
 | L6 | `ui-egui` (InDesign-style UI, control channel) |
-| L7 | `apps/designcraft`, `apps/designcraft-cli`, `apps/designcraft-web` |
+| L7 | `apps/pagenor`, `apps/pagenor-cli`, `apps/pagenor-web` |
 
 - **Status and milestones:** [ROADMAP.md](ROADMAP.md)
 - **Contributor and agent rules** (clean-room, asset policy, quality gates): [`AGENTS.md`](AGENTS.md)
 - **Bundled assets:** every one is listed with its licence in [`ASSETS.md`](ASSETS.md)
-- **App icon and colour:** a calico cat in a polka-dot scarf on DesignCraft green `#7bb51c`; see [`assets/app-icon/`](assets/app-icon/README.md)
+- **App icon and colour:** a calico cat in a polka-dot scarf on Pagenor green `#7bb51c`; see [`assets/app-icon/`](assets/app-icon/README.md)
 
 ## The Crafting Apps
 
-DesignCraft is one of the **Crafting Apps**: free, open-source creative tools from the
+Pagenor is one of the **Crafting Apps**: free, open-source creative tools from the
 [ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
 stand on its own.
 
@@ -121,7 +121,7 @@ stand on its own.
 | <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | **Page layout and publishing · you are here** | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/pagenor/main/assets/app-icon/hicolor/64x64/apps/org.pagenor.app.png" alt="" width="32" height="32"> | **Pagenor** | **Page layout and publishing · you are here** | [GitHub](https://github.com/storytold/pagenor) | [Website](https://getartcraft.com/apps/pagenor) |
 
 And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
 
@@ -144,13 +144,13 @@ And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video stud
   <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
   <a href="https://getartcraft.com/">getartcraft.com</a> ·
   <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/designcraft">DesignCraft</a>
+  <a href="https://getartcraft.com/apps/pagenor">Pagenor</a>
 </p>
 
 ## License and credits
 
-DesignCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the DesignCraft contributors. Required notices are in [NOTICE](NOTICE).
+Pagenor is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Copyright (c) 2026 ArtCraft Team and the Pagenor contributors. Required notices are in [NOTICE](NOTICE).
 
 Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
 with its author, source and license in [ASSETS.md](ASSETS.md).
@@ -160,10 +160,10 @@ Font License; all UI icons are drawn in code and are original.
 
 The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
 ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and DesignCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
+part of this repository and Pagenor, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
 Forks and modified versions must remove them.
 
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. DesignCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
+<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. Pagenor is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <br>
 

@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use designcraft_compose::ComposedStory;
-use designcraft_doc::{AssetId, Document};
-use designcraft_fonts::{FaceRef, FontFace, FontSource};
+use pagenor_compose::ComposedStory;
+use pagenor_doc::{AssetId, Document};
+use pagenor_fonts::{FaceRef, FontFace, FontSource};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -86,7 +86,7 @@ fn write_links(d: &Document, dir: &Path, only: Option<&[AssetId]>) -> Result<(Do
 /// report adds after the font's name (nothing when copied).
 fn copy_font(face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
-        FontSource::Bundled => return " — included with DesignCraft".into(),
+        FontSource::Bundled => return " — included with Pagenor".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
         FontSource::Installed(p) | FontSource::Document(p) => p,
     };
@@ -142,12 +142,12 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
     let d = s.doc()?.doc.clone();
     let (packed, mut files) = write_links(&d, &dir.join("Links"), None)?;
-    let doc_path = dir.join(format!("{title}.designcraft"));
+    let doc_path = dir.join(format!("{title}.pagenor"));
     std::fs::write(&doc_path, super::to_bytes(&packed)).map_err(|e| EngineError::Other(format!("{}: {e}", doc_path.display())))?;
     files.insert(0, doc_path);
     // The font files, and what the report says about each font.
-    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
-    let (fonts_dir, mut copied, mut taken) = (dir.join(designcraft_fonts::DOCUMENT_FONTS_FOLDER), Vec::new(), Vec::new());
+    let db = pagenor_fonts::FontDb::global().scoped(d.font_scope);
+    let (fonts_dir, mut copied, mut taken) = (dir.join(pagenor_fonts::DOCUMENT_FONTS_FOLDER), Vec::new(), Vec::new());
     let (mut font_lines, mut named) = (Vec::new(), Vec::new());
     for f in fonts.as_array().into_iter().flatten() {
         let (family, style) = (f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));
@@ -169,12 +169,12 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         drawn.iter().map(|f| format!("  {} {}{}\n", f.family, f.style, copy_font(f, &fonts_dir, &mut copied, &mut taken, &mut files))).collect();
     if p.get("idml").and_then(Value::as_bool).unwrap_or(true) {
         let path = dir.join(format!("{title}.idml"));
-        std::fs::write(&path, designcraft_idml::export_idml(&packed)).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+        std::fs::write(&path, pagenor_idml::export_idml(&packed)).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
         files.push(path);
     }
     if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
         let path = dir.join(format!("{title}.pdf"));
-        let bytes = designcraft_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?;
+        let bytes = pagenor_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?;
         std::fs::write(&path, bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
         files.push(path);
     }
@@ -235,7 +235,7 @@ mod tests {
         let out = dir.join("Pkg");
         let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
         let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
-        assert!(files.iter().any(|f| f.ends_with(".designcraft")));
+        assert!(files.iter().any(|f| f.ends_with(".pagenor")));
         assert!(files.iter().any(|f| f.ends_with(".idml")));
         assert!(files.iter().any(|f| f.ends_with(".pdf")));
         assert!(out.join("Links").join("logo.svg").exists());
@@ -243,7 +243,7 @@ mod tests {
         assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
         assert!(report.contains("Preflight:"), "{report}");
         // The packaged document links to its Links folder.
-        let doc_file = files.iter().find(|f| f.ends_with(".designcraft")).unwrap();
+        let doc_file = files.iter().find(|f| f.ends_with(".pagenor")).unwrap();
         let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
         let link = packed.assets.values().next().unwrap().link.clone().unwrap();
         assert!(link.contains("Links"), "{link}");
@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn package_copies_the_fonts_their_licences_allow() {
-        use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        use designcraft_fonts::testing::{font_with, with_fs_type};
+        use pagenor_fonts::DOCUMENT_FONTS_FOLDER;
+        use pagenor_fonts::testing::{font_with, with_fs_type};
         const FREE: &str = "DocFont Package Free";
         const RESTRICTED: &str = "DocFont Package Restricted";
         let dir = std::env::temp_dir().join(format!("dc-package-fonts-{}", std::process::id()));
@@ -274,7 +274,7 @@ mod tests {
             s.execute("text.select", &json!({"story": r["story"], "anchor": a, "focus": b})).unwrap();
             s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
         }
-        let src = dir.join("src").join("Fonts.designcraft");
+        let src = dir.join("src").join("Fonts.pagenor");
         s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
         let mut s = Session::new();
         assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 2);
@@ -288,7 +288,7 @@ mod tests {
         let report = r["report"].as_str().unwrap();
         assert!(report.contains(&format!("{RESTRICTED} Regular — not copied: its licence doesn't allow it")), "{report}");
         assert!(report.contains(&format!("{FREE} Regular\n")), "{report}");
-        assert!(report.contains(&format!("{} Regular — included with DesignCraft", designcraft_fonts::DEFAULT_FAMILY)), "{report}");
+        assert!(report.contains(&format!("{} Regular — included with Pagenor", pagenor_fonts::DEFAULT_FAMILY)), "{report}");
         // The packaged document opens with its fonts.
         let doc = r["files"][0].as_str().unwrap().to_string();
         assert_eq!(Session::new().execute("file.open", &json!({"path": doc})).unwrap()["documentFonts"], 1);
@@ -301,8 +301,8 @@ mod tests {
 
     #[test]
     fn package_copies_the_fallback_fonts_that_draw_text() {
-        use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        use designcraft_fonts::testing::{font_with, with_fs_type};
+        use pagenor_fonts::DOCUMENT_FONTS_FOLDER;
+        use pagenor_fonts::testing::{font_with, with_fs_type};
         const NAMED: &str = "DocFont Fallback Named";
         const HELPER: &str = "DocFont Fallback Helper";
         const RESTRICTED: &str = "DocFont Fallback Restricted";
@@ -323,7 +323,7 @@ mod tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": text.len()})).unwrap();
         s.execute("type.char", &json!({"fontFamily": NAMED, "fontStyle": "Regular"})).unwrap();
-        let src = dir.join("src").join("Fallback.designcraft");
+        let src = dir.join("src").join("Fallback.pagenor");
         s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
         let mut s = Session::new();
         assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 3);

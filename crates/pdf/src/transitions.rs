@@ -2,7 +2,7 @@
 //! as an incremental update: each page with a transition is re-stated with a `/Trans` entry, with
 //! a new cross-reference section pointing back at the original.
 
-use designcraft_doc::{PageTransition, TransitionKind};
+use pagenor_doc::{PageTransition, TransitionKind};
 
 /// The `/Trans` dictionary for a transition.
 fn trans_dict(t: &PageTransition) -> String {

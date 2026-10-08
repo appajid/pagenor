@@ -1,12 +1,12 @@
 //! IDML round-trip tests (the sample magazine) and the interchange commands.
 
-use designcraft_doc::{Document, ItemId};
+use pagenor_doc::{Document, ItemId};
 use serde_json::json;
 
 use crate::Session;
 
 /// Every item of a spread list in order, flattened (pre-order).
-fn items(spreads: &[std::sync::Arc<designcraft_doc::Spread>]) -> Vec<(ItemId, designcraft_geom::Rect)> {
+fn items(spreads: &[std::sync::Arc<pagenor_doc::Spread>]) -> Vec<(ItemId, pagenor_geom::Rect)> {
     let mut v = Vec::new();
     for sp in spreads {
         for it in &sp.items {
@@ -25,8 +25,8 @@ fn positions(d: &Document) -> Vec<Vec<usize>> {
 #[test]
 fn magazine_round_trips_through_idml() {
     let d = crate::sample::magazine();
-    let bytes = designcraft_idml::export_idml(&d);
-    let back = designcraft_idml::import_idml(&bytes).unwrap();
+    let bytes = pagenor_idml::export_idml(&d);
+    let back = pagenor_idml::import_idml(&bytes).unwrap();
     assert_eq!(back.page_count(), d.page_count());
     assert_eq!(back.spreads.len(), d.spreads.len());
     assert_eq!(back.parents.len(), d.parents.len());
@@ -51,7 +51,7 @@ fn magazine_round_trips_through_idml() {
     // Styles and swatches by name.
     for s in &d.styles.paragraph {
         let b = back.styles.para(&s.name).unwrap_or_else(|| panic!("paragraph style {}", s.name));
-        if s.name != designcraft_doc::NO_PARA_STYLE {
+        if s.name != pagenor_doc::NO_PARA_STYLE {
             assert_eq!(b.chars, s.chars, "{}", s.name);
             assert_eq!(b.para, s.para, "{}", s.name);
         }
@@ -87,7 +87,7 @@ fn magazine_round_trips_through_idml() {
         assert_eq!(a.pixels, b.pixels);
     }
     // A second round trip is stable.
-    let again = designcraft_idml::import_idml(&designcraft_idml::export_idml(&back)).unwrap();
+    let again = pagenor_idml::import_idml(&pagenor_idml::export_idml(&back)).unwrap();
     assert_eq!(items(&again.spreads).len(), items(&back.spreads).len());
 }
 
@@ -124,7 +124,7 @@ fn gradient_vector_round_trips_through_idml() {
     s.execute("object.gradient", &json!({"from": [120, 180], "to": [280, 120]})).unwrap();
     let d = s.doc().unwrap().doc.clone();
     let v = d.item(ItemId(id)).unwrap().fill.gradient_vector.unwrap();
-    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+    let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap();
     let it = back.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.fill.gradient_vector.is_some()).expect("a gradient item");
     let w = it.fill.gradient_vector.unwrap();
     for k in 0..4 {
@@ -142,15 +142,15 @@ fn open_type_features_round_trip_through_idml() {
     s.execute("type.openType", &json!({"feature": "frac"})).unwrap();
     s.execute("type.openType", &json!({"figures": "tabularOldstyle", "stylisticSets": [3]})).unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+    let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap();
     let st = back.stories.values().find(|st| st.text.starts_with("1/2")).unwrap();
     let f = st.format_after(0).over.otf_features.clone().unwrap_or_default();
-    assert!(designcraft_doc::otf::is_on(&f, "frac"), "{f:?}");
-    assert_eq!(designcraft_doc::otf::figures(&f), "tabularOldstyle");
-    assert_eq!(designcraft_doc::otf::stylistic_sets(&f), 0b100);
+    assert!(pagenor_doc::otf::is_on(&f, "frac"), "{f:?}");
+    assert_eq!(pagenor_doc::otf::figures(&f), "tabularOldstyle");
+    assert_eq!(pagenor_doc::otf::stylistic_sets(&f), 0b100);
     // Text after the selection has no features of its own.
     let after = st.format_after(5).over.otf_features.clone().unwrap_or_default();
-    assert!(!designcraft_doc::otf::is_on(&after, "frac") && designcraft_doc::otf::stylistic_sets(&after) == 0, "{after:?}");
+    assert!(!pagenor_doc::otf::is_on(&after, "frac") && pagenor_doc::otf::stylistic_sets(&after) == 0, "{after:?}");
 }
 
 #[test]
@@ -163,19 +163,19 @@ fn underline_options_render_and_round_trip() {
     s.execute("type.char", &json!({"attrs": {"underline": true, "underlineWeight": 3, "underlineOffset": 4, "underlineColor": "C=100 M=0 Y=0 K=0"}}))
         .unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let cs = designcraft_compose::compose_story(&d, designcraft_doc::StoryId(sid), &Default::default());
+    let cs = pagenor_compose::compose_story(&d, pagenor_doc::StoryId(sid), &Default::default());
     let st = cs.styles.iter().find(|st| st.underline).unwrap();
     assert_eq!((st.underline_rule.weight, st.underline_rule.offset), (3.0, 4.0));
     assert_eq!(st.underline_rule.color, "C=100 M=0 Y=0 K=0");
     // Drawn in cyan, 4–7 pt under the baseline.
     let l = &cs.frames[0].lines[0];
-    let mut rr = designcraft_render::Renderer::new();
+    let mut rr = pagenor_render::Renderer::new();
     rr.threads = 0;
     let img = rr.render_page(&d, &s.cache, 0, 1.0, false, &Default::default()).unwrap();
     let x = l.glyphs[2].x as u32;
     let p = img.pixel(x, (l.baseline + 5.5) as u32);
     assert!(p[0] < 80 && p[2] > 150, "cyan underline: {p:?}");
-    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+    let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap();
     let story = back.stories.values().find(|x| x.text.starts_with("Underlined")).unwrap();
     let f = story.format_after(0);
     assert_eq!(f.over.underline_weight, Some(Some(3.0)));
@@ -208,12 +208,12 @@ fn newer_features_round_trip_through_idml() {
     let line = s.execute("line.create", &json!({"a": [100, 500], "b": [400, 500]})).unwrap()["id"].as_u64().unwrap();
     s.execute("type.onPath", &json!({"id": line, "text": "On the line", "start": 12, "flip": true, "align": "center"})).unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+    let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap();
     let intro = back.styles.para("Intro").unwrap();
     let ns = intro.para.nested_styles.clone().unwrap();
     assert_eq!(ns[0].style, "Lead");
     assert_eq!((ns[0].through, ns[0].count), (false, 2));
-    assert_eq!(ns[0].until, designcraft_doc::NestedUntil::Chars(":".into()));
+    assert_eq!(ns[0].until, pagenor_doc::NestedUntil::Chars(":".into()));
     assert_eq!(intro.para.grep_styles.clone().unwrap()[0].pattern, "\\d+");
     let head = back.styles.cell.iter().find(|c| c.name == "Head").unwrap();
     assert_eq!((head.fill.as_deref(), head.insets, head.paragraph_style.as_deref()), (Some("[Black]"), Some([5.0; 4]), Some("Intro")));
@@ -228,11 +228,11 @@ fn newer_features_round_trip_through_idml() {
         .iter()
         .flat_map(|sp| sp.items.iter())
         .find_map(|it| match &it.content {
-            designcraft_doc::Content::Text(tf) => tf.options.path.clone().map(|p| (p, tf.story)),
+            pagenor_doc::Content::Text(tf) => tf.options.path.clone().map(|p| (p, tf.story)),
             _ => None,
         })
         .expect("type on a path");
-    assert_eq!((pt.0.start, pt.0.flip, pt.0.align), (12.0, true, designcraft_doc::PathAlign::Center));
+    assert_eq!((pt.0.start, pt.0.flip, pt.0.align), (12.0, true, pagenor_doc::PathAlign::Center));
     assert_eq!(back.story(pt.1).unwrap().text, "On the line");
 }
 
@@ -245,8 +245,8 @@ fn named_lists_round_trip_through_idml() {
     s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 3})).unwrap();
     s.execute("type.para", &json!({"attrs": {"listType": "numbers", "listName": "Steps", "startAt": 5}})).unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
-    assert_eq!(back.settings.lists, vec![designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: false }]);
+    let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap();
+    assert_eq!(back.settings.lists, vec![pagenor_doc::NumberedList { name: "Steps".into(), continue_across_stories: false }]);
     let st = back.stories.values().find(|st| st.text.starts_with("One")).unwrap();
     assert_eq!(st.paras[0].para.list_name.as_deref(), Some("Steps"));
     assert_eq!(st.paras[0].para.start_at, Some(Some(5)));

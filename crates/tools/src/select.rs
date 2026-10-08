@@ -4,8 +4,8 @@
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
 //! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool.
 
-use designcraft_doc::{ItemId, SpreadRef};
-use designcraft_geom::{Affine, Point, Rect, Vec2};
+use pagenor_doc::{ItemId, SpreadRef};
+use pagenor_geom::{Affine, Point, Rect, Vec2};
 use serde_json::{Value, json};
 
 use crate::{Action, Cursor, Gesture, Mods, Overlay, PointerEvent, PointerKind, SnapRequest, Tool, ToolContext, ToolKey, rect_json, spread_json};
@@ -57,7 +57,7 @@ pub fn anchor_at(cx: &ToolContext, p: Point) -> Option<(u64, usize, usize, Optio
 }
 
 /// [`anchor_at`] over the given items.
-pub fn anchor_at_in(cx: &ToolContext, ids: &[designcraft_doc::ItemId], p: Point) -> Option<(u64, usize, usize, Option<&'static str>)> {
+pub fn anchor_at_in(cx: &ToolContext, ids: &[pagenor_doc::ItemId], p: Point) -> Option<(u64, usize, usize, Option<&'static str>)> {
     let tol = cx.tol(5.0);
     for id in ids {
         let (Some(it), Some(xf)) = (cx.doc.item(*id), cx.item_canvas_xf(*id)) else { continue };

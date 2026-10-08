@@ -2,8 +2,8 @@
 //! Enter/Esc (or switching tools) to finish an open path. Each anchor is its own undo step, as in
 //! InDesign.
 
-use designcraft_doc::SpreadRef;
-use designcraft_geom::{BezPath, Point};
+use pagenor_doc::SpreadRef;
+use pagenor_geom::{BezPath, Point};
 use serde_json::{Value, json};
 
 use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, ToolContext, ToolKey, spread_json};
@@ -38,7 +38,7 @@ impl PenTool {
     /// Shift constrains first. The stored point is the snapped spread point. Guides are already canvas.
     fn snap_click(&mut self, cx: &ToolContext, spread: SpreadRef, mut p: Point, shift: bool) -> Point {
         if shift && let Some(last) = self.anchors.last() {
-            p = last.0 + designcraft_geom::constrain_angle(p - last.0, 45.0);
+            p = last.0 + pagenor_geom::constrain_angle(p - last.0, 45.0);
         }
         let (p, guides) = crate::snap::snap_point(cx, spread, p);
         self.guides = guides;

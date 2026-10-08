@@ -1,7 +1,7 @@
-//! The native `.designcraft` format: a zip archive holding
+//! The native `.pagenor` format: a zip archive holding
 //!
-//! - `mimetype` (stored first, uncompressed): `application/vnd.designcraft+zip`
-//! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `designcraft-doc`)
+//! - `mimetype` (stored first, uncompressed): `application/vnd.pagenor+zip`
+//! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `pagenor-doc`)
 //! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte
 //! - `meta.json`: format version and generator
 //!
@@ -13,17 +13,17 @@ use std::collections::HashSet;
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
-use designcraft_doc::{AssetId, Document};
+use pagenor_doc::{AssetId, Document};
 use serde_json::{Value, json};
 
-pub const MIME: &str = "application/vnd.designcraft+zip";
+pub const MIME: &str = "application/vnd.pagenor+zip";
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
-    #[error("not a DesignCraft document: {0}")]
+    #[error("not a Pagenor document: {0}")]
     NotOurs(String),
-    #[error("document is from a newer DesignCraft (format {0}); please update")]
+    #[error("document is from a newer Pagenor (format {0}); please update")]
     TooNew(u32),
     #[error("{0}")]
     Io(String),
@@ -42,7 +42,7 @@ fn ext_for(mime: &str) -> &'static str {
     }
 }
 
-/// Serialize a document to `.designcraft` bytes.
+/// Serialize a document to `.pagenor` bytes.
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let mut buf = Cursor::new(Vec::new());
@@ -53,7 +53,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
         z.start_file("mimetype", stored).map_err(io)?;
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
-        let meta = json!({"format": "designcraft", "version": VERSION, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
+        let meta = json!({"format": "pagenor", "version": VERSION, "generator": concat!("Pagenor ", env!("CARGO_PKG_VERSION"))});
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("document.json", deflate).map_err(io)?;
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
@@ -72,7 +72,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     Ok(buf.into_inner())
 }
 
-/// Read `.designcraft` bytes (zip, or the legacy single JSON file).
+/// Read `.pagenor` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     if bytes.starts_with(b"PK") {
         return load_zip(bytes);
@@ -201,9 +201,9 @@ fn base64_decode(s: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use designcraft_doc::build::NewDocument;
-    use designcraft_doc::geom::Rect;
-    use designcraft_doc::{Asset, ParaFormat, SpreadRef};
+    use pagenor_doc::build::NewDocument;
+    use pagenor_doc::geom::Rect;
+    use pagenor_doc::{Asset, ParaFormat, SpreadRef};
 
     #[test]
     fn roundtrip_with_assets() {

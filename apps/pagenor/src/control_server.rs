@@ -1,5 +1,5 @@
 //! Loopback JSON-lines control server: one request per line, one reply per line.
-//! This is the transport the MCP server (`designcraft mcp --connect`) wraps.
+//! This is the transport the MCP server (`pagenor mcp --connect`) wraps.
 //!
 //! The server only ever reads requests: a line that is not a JSON object with a string `method`
 //! (an HTTP request line from a browser's cross-origin `fetch`, a stray `nc`, binary junk) gets
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use designcraft_ui_egui::ControlRequest;
+use pagenor_ui_egui::ControlRequest;
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Requests are small JSON objects;
@@ -28,11 +28,11 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("designcraft: control server failed to bind 127.0.0.1:{port}: {e}");
+            eprintln!("pagenor: control server failed to bind 127.0.0.1:{port}: {e}");
             return rx;
         }
     };
-    eprintln!("designcraft: control server listening on 127.0.0.1:{port}");
+    eprintln!("pagenor: control server listening on 127.0.0.1:{port}");
     std::thread::spawn(move || accept_loop(listener, tx, ctx));
     rx
 }

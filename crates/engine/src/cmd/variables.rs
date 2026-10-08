@@ -1,6 +1,6 @@
 //! Type → Text Variables: define, list, delete and insert variables.
 
-use designcraft_doc::vars::{TextVariable, VarKind, var_char};
+use pagenor_doc::vars::{TextVariable, VarKind, var_char};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -49,10 +49,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     let ids: Vec<_> = d.stories.keys().copied().collect();
                     for sid in ids {
                         let Some(st) = d.story(sid) else { continue };
-                        if !st.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
+                        if !st.text.chars().any(|c| pagenor_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
                             continue;
                         }
-                        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                        let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
                         let target = var_char(i).unwrap_or(' ').to_string();
                         while let Some(pos) = st.text.find(&target) {
                             st.replace(pos..pos + target.len(), &value);
@@ -99,7 +99,7 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
         "outputDate" => VarKind::OutputDate { format: fmt() },
         "runningHeader" => VarKind::RunningHeader {
             style: str_param(p, "style").ok_or_else(|| bad("variables.define", "runningHeader needs `style`"))?.into(),
-            use_: if str_param(p, "use") == Some("lastOnPage") { designcraft_doc::vars::Use::LastOnPage } else { Default::default() },
+            use_: if str_param(p, "use") == Some("lastOnPage") { pagenor_doc::vars::Use::LastOnPage } else { Default::default() },
             character: p.get("character").and_then(Value::as_bool).unwrap_or(false),
         },
         t => return Err(bad("variables.define", format!("unknown type `{t}`"))),
@@ -114,7 +114,7 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
                 i
             }
             None => {
-                if d.text_variables.len() >= designcraft_doc::vars::VAR_MAX {
+                if d.text_variables.len() >= pagenor_doc::vars::VAR_MAX {
                     return Err(bad("variables.define", "too many variables"));
                 }
                 d.text_variables.push(v.clone());
@@ -138,7 +138,7 @@ mod tests {
         for (page, text) in [(0, "Alpha"), (2, "Epsilon")] {
             let sp = s.doc().unwrap().doc.page_loc(page).unwrap().0;
             let r = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 200, 400, 260], "content": "text", "text": text})).unwrap();
-            let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+            let sid = s.doc().unwrap().doc.item(pagenor_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
             s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 1})).unwrap();
             s.execute("style.paragraph.apply", &json!({"name": "Heading"})).unwrap();
         }
@@ -148,14 +148,14 @@ mod tests {
         let r = s
             .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 30, 500, 60], "content": "text", "text": ""}))
             .unwrap();
-        let fid = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        let fid = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
         let sid = s.doc().unwrap().doc.item(fid).unwrap().text_frame().unwrap().story;
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
         s.execute("variables.insert", &json!({"name": "Chapter Head"})).unwrap();
         s.execute("text.insert", &json!({"text": " · "})).unwrap();
         s.execute("variables.insert", &json!({"name": "Last Page Number"})).unwrap();
         let d = s.doc().unwrap().doc.clone();
-        assert!(matches!(d.find(fid).unwrap().spread, designcraft_doc::SpreadRef::Parent(0)));
+        assert!(matches!(d.find(fid).unwrap().spread, pagenor_doc::SpreadRef::Parent(0)));
         // Visible glyphs of the header composed for each page: "Alpha · 3" vs "Epsilon · 3".
         let shown = |page: usize| -> usize {
             let cs = s.cache.get(&d, sid, Some(&d.page_name(page)));

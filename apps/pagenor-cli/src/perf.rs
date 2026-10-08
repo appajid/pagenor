@@ -1,4 +1,4 @@
-//! `designcraft-cli perf` / `bench`: the performance budgets (plan/architecture.md §9) measured on
+//! `pagenor-cli perf` / `bench`: the performance budgets (plan/architecture.md §9) measured on
 //! a synthetic stress document, or on a given file.
 //!
 //! Each row is the median of several runs. Timings are wall-clock: on a busy machine (load
@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use designcraft_color::{Color, Gradient, GradientKind, GradientStop, Swatch, SwatchValue};
-use designcraft_compose::Cache;
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Asset, AssetId, Content, Document, Fill, Graphic, Item, ItemId, ParaFormat, Shape, SpreadRef, StoryId};
-use designcraft_geom::{Affine, Rect, Vec2, shapes};
-use designcraft_render::{Placed, RenderOptions, Renderer};
+use pagenor_color::{Color, Gradient, GradientKind, GradientStop, Swatch, SwatchValue};
+use pagenor_compose::Cache;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Asset, AssetId, Content, Document, Fill, Graphic, Item, ItemId, ParaFormat, Shape, SpreadRef, StoryId};
+use pagenor_geom::{Affine, Rect, Vec2, shapes};
+use pagenor_render::{Placed, RenderOptions, Renderer};
 
 /// Device pixels per point at 100% (HiDPI canvas).
 const HIDPI: f64 = 2.0;
@@ -135,7 +135,7 @@ fn art_png(w: u32, h: u32, seed: f32) -> Vec<u8> {
             px.extend([(v * 255.0) as u8, ((1.0 - fy) * 200.0) as u8, ((fx * 0.6 + seed * 0.1).fract() * 255.0) as u8, 255]);
         }
     }
-    designcraft_render::Rendered { width: w, height: h, pixels: px }.to_png()
+    pagenor_render::Rendered { width: w, height: h, pixels: px }.to_png()
 }
 
 /// Parameters of the synthetic stress document.
@@ -243,7 +243,7 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
                 asset,
                 size: (nw, nh),
                 xf: Affine::translate((r.x0 + (r.width() - nw * s) / 2.0, r.y0 + (r.height() - nh * s) / 2.0)) * Affine::scale(s),
-                auto_fit: designcraft_doc::Fitting::FillProportionally,
+                auto_fit: pagenor_doc::Fitting::FillProportionally,
                 fit_align: 4,
                 crop: [0.0; 4],
             });
@@ -308,13 +308,13 @@ fn layout(doc: &Document) -> Vec<(Placed, Rect)> {
             let b = sp.bounds();
             let offset = Vec2::new(-b.center().x, y - b.y0);
             y += b.height() + 36.0;
-            (Placed { spread: SpreadRef::Doc(i), xf: designcraft_geom::Affine::translate(offset) }, b + offset)
+            (Placed { spread: SpreadRef::Doc(i), xf: pagenor_geom::Affine::translate(offset) }, b + offset)
         })
         .collect()
 }
 
 /// View transform showing canvas point `c` at the centre of the image at `scale` px/pt.
-fn view_at(c: designcraft_geom::Point, scale: f64) -> Affine {
+fn view_at(c: pagenor_geom::Point, scale: f64) -> Affine {
     Affine::translate((W as f64 / 2.0, H as f64 / 2.0)) * Affine::scale(scale) * Affine::translate(-c.to_vec2())
 }
 
@@ -363,8 +363,8 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
         let s = ((W as f64 - 80.0) / b.width()).min((H as f64 - 80.0) / b.height());
         (s, view_at(centre, s))
     };
-    let dump = std::env::var("DESIGNCRAFT_PERF_DUMP").ok();
-    let save = |name: &str, img: designcraft_render::Rendered| {
+    let dump = std::env::var("PAGENOR_PERF_DUMP").ok();
+    let save = |name: &str, img: pagenor_render::Rendered| {
         if let Some(d) = &dump {
             let _ = std::fs::create_dir_all(d);
             let _ = std::fs::write(format!("{d}/{name}.png"), img.to_png());
@@ -426,7 +426,7 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
             drop(r.render(&d, &cache, &all, W, H, v, &greek(HIDPI)));
         });
         row(&mut rows, "keystroke: recompose story + full repaint at 100%", ms, None);
-        // What the canvas does: repaint only the damaged region (designcraft_render::damage).
+        // What the canvas does: repaint only the damaged region (pagenor_render::damage).
         let ms = median_ms(runs, || {
             let old = d.clone();
             if let Some(st) = d.stories.get_mut(&sid) {
@@ -440,10 +440,10 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
                 st.rev += 1;
                 k += 1;
             }
-            let screen = designcraft_geom::Rect::new(0.0, 0.0, W as f64, H as f64);
-            let mut px: Option<designcraft_geom::Rect> = None;
-            for (sr, rect) in designcraft_render::damage::damage_with(&old, &d, Some(&cache)).unwrap_or_default() {
-                let m = all.iter().find(|p| p.spread == sr).map_or(designcraft_geom::Affine::IDENTITY, |p| p.xf);
+            let screen = pagenor_geom::Rect::new(0.0, 0.0, W as f64, H as f64);
+            let mut px: Option<pagenor_geom::Rect> = None;
+            for (sr, rect) in pagenor_render::damage::damage_with(&old, &d, Some(&cache)).unwrap_or_default() {
+                let m = all.iter().find(|p| p.spread == sr).map_or(pagenor_geom::Affine::IDENTITY, |p| p.xf);
                 let r = v.transform_rect_bbox(m.transform_rect_bbox(rect)).intersect(screen);
                 if r.width() > 0.0 && r.height() > 0.0 {
                     px = Some(px.map_or(r, |p| p.union(r)));
@@ -470,26 +470,26 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
     let mut bytes = vec![];
     row(
         &mut rows,
-        format!("save .designcraft ({} pages)", doc.page_count()),
-        median_ms(runs.min(3), || match designcraft_format::save(doc) {
+        format!("save .pagenor ({} pages)", doc.page_count()),
+        median_ms(runs.min(3), || match pagenor_format::save(doc) {
             Ok(b) => bytes = b,
             Err(e) => failed = Some(format!("save: {e}")),
         }),
         Some(300.0),
     );
     let open_ms = median_ms(runs.min(3), || {
-        if let Err(e) = designcraft_format::load(&bytes) {
+        if let Err(e) = pagenor_format::load(&bytes) {
             failed = Some(format!("open: {e}"));
         }
     });
-    row(&mut rows, "open .designcraft", open_ms, Some(300.0));
+    row(&mut rows, "open .pagenor", open_ms, Some(300.0));
     let n = doc.page_count().min(100);
-    let pdf = designcraft_pdf::PdfOptions { pages: Some((0..n).collect()), ..Default::default() };
+    let pdf = pagenor_pdf::PdfOptions { pages: Some((0..n).collect()), ..Default::default() };
     row(
         &mut rows,
         format!("PDF export {n} pages"),
         median_ms(1, || {
-            if let Err(e) = designcraft_pdf::export_pdf(doc, &cache, &pdf) {
+            if let Err(e) = pagenor_pdf::export_pdf(doc, &cache, &pdf) {
                 failed = Some(format!("PDF export: {e}"));
             }
         }),
@@ -533,18 +533,14 @@ fn header() -> (usize, bool) {
     let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
     let load = load_average();
     let noisy = load.is_some_and(|l| l > cores as f64 * 0.75);
-    outln!(
-        "{cores} cores, load average {}, render threads {}",
-        load.map_or("?".into(), |l| format!("{l:.1}")),
-        designcraft_render::default_threads()
-    );
+    outln!("{cores} cores, load average {}, render threads {}", load.map_or("?".into(), |l| format!("{l:.1}")), pagenor_render::default_threads());
     if noisy {
         outln!("WARNING: the machine is busy (load average above ¾ of the cores); wall-clock timings below are not trustworthy.");
     }
     (cores, noisy)
 }
 
-/// `designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]`.
+/// `pagenor-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]`.
 pub fn perf(args: &[String]) -> Result<(), String> {
     let mut spec = Spec::default();
     let mut runs = 7usize;
@@ -567,7 +563,7 @@ pub fn perf(args: &[String]) -> Result<(), String> {
     let doc = synthetic(&spec)?;
     let frames = spec.pages * spec.frames_per_page;
     outln!(
-        "DesignCraft performance budgets — synthetic: {} pages, {frames} text frames in {} threaded stories, {}k chars, {} images ({} assets), {} gradients (built in {:.0} ms)",
+        "Pagenor performance budgets — synthetic: {} pages, {frames} text frames in {} threaded stories, {}k chars, {} images ({} assets), {} gradients (built in {:.0} ms)",
         spec.pages,
         doc.stories.len(),
         doc.stories.values().map(|s| s.text.len()).sum::<usize>() / 1000,
@@ -582,7 +578,7 @@ pub fn perf(args: &[String]) -> Result<(), String> {
     if strict && over > 0 && !noisy { Err(format!("{over} budget(s) exceeded")) } else { Ok(()) }
 }
 
-/// `designcraft-cli bench FILE [--runs N]`: the same measurements on one document.
+/// `pagenor-cli bench FILE [--runs N]`: the same measurements on one document.
 pub fn bench(args: &[String]) -> Result<(), String> {
     let mut file = None;
     let mut runs = 5usize;
@@ -594,9 +590,9 @@ pub fn bench(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown bench option `{other}`")),
         }
     }
-    let file = file.ok_or("usage: designcraft-cli bench FILE [--runs N]")?;
+    let file = file.ok_or("usage: pagenor-cli bench FILE [--runs N]")?;
     let (_, noisy) = header();
-    let mut s = designcraft_engine::Session::new();
+    let mut s = pagenor_engine::Session::new();
     let t = Instant::now();
     s.execute("file.open", &serde_json::json!({"path": file})).map_err(|e| e.to_string())?;
     let open = t.elapsed().as_secs_f64() * 1000.0;

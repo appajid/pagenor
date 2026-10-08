@@ -34,7 +34,7 @@ fn insert_type_in_cells_and_tab() {
     assert_eq!(t["cells"][1]["text"], "Value");
     // The story text holds only the anchor.
     let story = s.execute("story.get", &json!({"story": sid})).unwrap();
-    assert!(story["text"].as_str().unwrap().contains(designcraft_doc::TABLE_ANCHOR));
+    assert!(story["text"].as_str().unwrap().contains(pagenor_doc::TABLE_ANCHOR));
     assert!(!story["text"].as_str().unwrap().contains("Name"));
     // Backspace edits the cell.
     s.execute("text.delete", &json!({})).unwrap();
@@ -118,11 +118,11 @@ fn convert_text_to_table_and_back() {
     let t = s.execute("table.get", &json!({"table": r["table"]})).unwrap();
     assert_eq!(t["columns"].as_array().unwrap().len(), 2);
     assert_eq!(t["cells"][3]["text"], "80%");
-    let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-    assert_eq!(story, format!("{}\nAfter", designcraft_doc::TABLE_ANCHOR));
+    let story = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text.clone();
+    assert_eq!(story, format!("{}\nAfter", pagenor_doc::TABLE_ANCHOR));
     s.execute("table.convertToText", &json!({"table": r["table"]})).unwrap();
     check(&s);
-    assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, "Ink\tCoverage\nPlum\t80%\nSunset\t45%\nAfter");
+    assert_eq!(s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text, "Ink\tCoverage\nPlum\t80%\nSunset\t45%\nAfter");
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn caret_placement_in_cells_and_cell_formatting() {
     // Click inside cell (1,1): spread coordinates = frame inner space here.
     let (rect, _) = {
         let st = s.doc().unwrap();
-        let cs = s.cache.get(&st.doc, designcraft_doc::StoryId(sid), None);
+        let cs = s.cache.get(&st.doc, pagenor_doc::StoryId(sid), None);
         let c = cs.frames[0].tables[0].cell(1, 1).unwrap().clone();
         (c.rect, c)
     };
@@ -153,15 +153,15 @@ fn caret_placement_in_cells_and_cell_formatting() {
     s.execute("table.select", &json!({"table": tid, "what": "table"})).unwrap();
     s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
     let st = s.doc().unwrap();
-    let t = &st.doc.story(designcraft_doc::StoryId(sid)).unwrap().tables[&tid];
-    assert!(t.cells.iter().all(|c| c.text.paras[0].para.align == Some(designcraft_doc::Align::Center)));
+    let t = &st.doc.story(pagenor_doc::StoryId(sid)).unwrap().tables[&tid];
+    assert!(t.cells.iter().all(|c| c.text.paras[0].para.align == Some(pagenor_doc::Align::Center)));
     // Typing after the table starts a new paragraph instead of hiding text in the anchor paragraph.
-    let a = st.doc.story(designcraft_doc::StoryId(sid)).unwrap().table_anchor(tid).unwrap();
+    let a = st.doc.story(pagenor_doc::StoryId(sid)).unwrap().table_anchor(tid).unwrap();
     s.execute("text.select", &json!({"story": sid, "anchor": a + 3, "focus": a + 3})).unwrap();
     s.execute("text.insert", &json!({"text": "Tail"})).unwrap();
     check(&s);
-    let text = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-    assert!(text.contains(&format!("{}\nTail", designcraft_doc::TABLE_ANCHOR)), "{text:?}");
+    let text = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text.clone();
+    assert!(text.contains(&format!("{}\nTail", pagenor_doc::TABLE_ANCHOR)), "{text:?}");
 }
 
 #[test]
@@ -173,6 +173,6 @@ fn file_roundtrip_keeps_tables() {
     let bytes = crate::cmd::file_bytes(&d);
     let back = crate::cmd::file_from(&bytes).unwrap();
     back.check().unwrap();
-    let st = back.story(designcraft_doc::StoryId(sid)).unwrap();
+    let st = back.story(pagenor_doc::StoryId(sid)).unwrap();
     assert_eq!(st.tables.values().next().unwrap().cells[0].text.text, "A1");
 }

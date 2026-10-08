@@ -1,5 +1,5 @@
 //! Books (File › New / Open Book): an ordered list of documents with continuous page numbers,
-//! styles synchronised from a style source, and one PDF for the whole book. Saved as `.dcbook`.
+//! styles synchronised from a style source, and one PDF for the whole book. Saved as `.pbook`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -36,7 +36,7 @@ fn save(_: &Book) -> Result<()> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
-fn load(path: &str) -> Result<designcraft_doc::Document> {
+fn load(path: &str) -> Result<pagenor_doc::Document> {
     #[cfg(not(target_arch = "wasm32"))]
     let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     #[cfg(target_arch = "wasm32")]
@@ -45,12 +45,12 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         vec![]
     };
     if path.to_lowercase().ends_with(".idml") {
-        return designcraft_idml::import_idml(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")));
+        return pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
     super::file::from_bytes(&bytes)
 }
 
-fn store(path: &str, d: &designcraft_doc::Document) -> Result<()> {
+fn store(path: &str, d: &pagenor_doc::Document) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     return std::fs::write(path, super::file::to_bytes(d)).map_err(|e| EngineError::Other(format!("{path}: {e}")));
     #[cfg(target_arch = "wasm32")]
@@ -61,11 +61,11 @@ fn store(path: &str, d: &designcraft_doc::Document) -> Result<()> {
 }
 
 /// Make page numbering of `d` start at `n` (the first section).
-fn start_at(d: &mut designcraft_doc::Document, n: u32) {
+fn start_at(d: &mut pagenor_doc::Document, n: u32) {
     if !d.sections.iter().any(|x| x.start == 0) {
         d.sections.insert(
             0,
-            designcraft_doc::Section {
+            pagenor_doc::Section {
                 start: 0,
                 start_number: None,
                 style: Default::default(),
@@ -82,7 +82,7 @@ fn start_at(d: &mut designcraft_doc::Document, n: u32) {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(noundo "book.new", "New Book", ["File", "New"], None, "{path} — an empty book file (.dcbook)", always, |s, p| {
+        cmd!(noundo "book.new", "New Book", ["File", "New"], None, "{path} — an empty book file (.pbook)", always, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("book.new", "`path` required"))?.to_string();
             let b = Book { path, ..Default::default() };
             save(&b)?;
@@ -199,14 +199,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut d = load(path)?;
                 // The chapter's own fonts, for this export (skipped font files are logged).
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
-                let cache = designcraft_compose::Cache::new();
-                let r = designcraft_pdf::export_pdf_with_report(&d, &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-                let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
-                let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
+                let cache = pagenor_compose::Cache::new();
+                let r = pagenor_pdf::export_pdf_with_report(&d, &cache, &pagenor_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
+                let n = pagenor_render::pdf_page_count(&r.bytes).unwrap_or(0);
+                let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| pagenor_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();
-            let bytes = designcraft_pdf::merge_pdfs(&parts, None).map_err(|e| EngineError::Other(e.to_string()))?;
+            let bytes = pagenor_pdf::merge_pdfs(&parts, None).map_err(|e| EngineError::Other(e.to_string()))?;
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -231,28 +231,28 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = |n: &str| dir.join(n).to_string_lossy().to_string();
         let mut s = Session::new();
-        for (name, pages, style) in [("a.designcraft", 3, "Chapter Head"), ("b.designcraft", 2, "Other")] {
+        for (name, pages, style) in [("a.pagenor", 3, "Chapter Head"), ("b.pagenor", 2, "Other")] {
             s.execute("file.new", &json!({"pages": pages})).unwrap();
             s.execute("style.paragraph.create", &json!({"name": style, "chars": {"size": 20}})).unwrap();
             s.execute("file.saveAs", &json!({"path": p(name)})).unwrap();
         }
-        s.execute("book.new", &json!({"path": p("book.dcbook")})).unwrap();
-        s.execute("book.add", &json!({"path": p("a.designcraft")})).unwrap();
-        s.execute("book.add", &json!({"path": p("b.designcraft")})).unwrap();
+        s.execute("book.new", &json!({"path": p("book.pbook")})).unwrap();
+        s.execute("book.add", &json!({"path": p("a.pagenor")})).unwrap();
+        s.execute("book.add", &json!({"path": p("b.pagenor")})).unwrap();
         let l = s.execute("book.list", &json!({})).unwrap();
         assert_eq!(l["documents"][1]["firstPage"], 4);
         assert_eq!(s.execute("book.paginate", &json!({})).unwrap()["pages"], 5);
-        let b = super::load(&p("b.designcraft")).unwrap();
+        let b = super::load(&p("b.pagenor")).unwrap();
         assert_eq!(b.page_name(0), "4", "continues after the first document");
         assert_eq!(s.execute("book.syncStyles", &json!({})).unwrap()["synced"], 1);
-        assert!(super::load(&p("b.designcraft")).unwrap().styles.para("Chapter Head").is_some());
+        assert!(super::load(&p("b.pagenor")).unwrap().styles.para("Chapter Head").is_some());
         let r = s.execute("book.exportPdf", &json!({})).unwrap();
         assert_eq!(r["pages"], 5);
         let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
-        assert_eq!(designcraft_render::pdf_page_count(&bytes), Some(5));
+        assert_eq!(pagenor_render::pdf_page_count(&bytes), Some(5));
         // A fresh session reopens the book.
         let mut t = Session::new();
-        assert_eq!(t.execute("book.open", &json!({"path": p("book.dcbook")})).unwrap()["documents"], 2);
+        assert_eq!(t.execute("book.open", &json!({"path": p("book.pbook")})).unwrap()["documents"], 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

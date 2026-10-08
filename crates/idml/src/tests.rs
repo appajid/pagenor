@@ -1,9 +1,9 @@
 use std::io::Write;
 
-use designcraft_color::{Color, Swatch, SwatchValue};
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{CharAttrs, Document, Fill, ParaFormat, Shape, SpreadRef, story as st};
-use designcraft_geom::{Rect, shapes};
+use pagenor_color::{Color, Swatch, SwatchValue};
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{CharAttrs, Document, Fill, ParaFormat, Shape, SpreadRef, story as st};
+use pagenor_geom::{Rect, shapes};
 
 use super::*;
 
@@ -203,8 +203,8 @@ fn imports_hand_written_fixture() {
     assert_eq!(d.settings.bleed[0], 9.0);
     assert_eq!(d.page_count(), 2);
     let sp = &d.spreads[0];
-    assert_eq!(sp.pages[0].side, designcraft_doc::PageSide::Left);
-    assert_eq!(sp.pages[1].side, designcraft_doc::PageSide::Right);
+    assert_eq!(sp.pages[0].side, pagenor_doc::PageSide::Left);
+    assert_eq!(sp.pages[1].side, pagenor_doc::PageSide::Right);
     assert_eq!(sp.pages[1].x, 500.0);
     assert_eq!(sp.pages[0].margins.inside, 20.0);
     assert_eq!(sp.pages[0].columns.count, 3);
@@ -219,10 +219,10 @@ fn imports_hand_written_fixture() {
     assert_eq!(d.layers[0].name, "Art");
     assert_eq!(d.layers[0].color, [255, 0, 0]);
     // Swatches.
-    assert!(matches!(d.swatch("Brand").unwrap().value, SwatchValue::Color { color_type: designcraft_color::ColorType::Spot, .. }));
+    assert!(matches!(d.swatch("Brand").unwrap().value, SwatchValue::Color { color_type: pagenor_color::ColorType::Spot, .. }));
     assert!(matches!(&d.swatch("Brand 50%").unwrap().value, SwatchValue::Tint { base, tint } if base == "Brand" && *tint == 0.5));
     let SwatchValue::Gradient { gradient } = &d.swatch("Fade").unwrap().value else { panic!("gradient") };
-    assert_eq!(gradient.kind, designcraft_color::GradientKind::Radial);
+    assert_eq!(gradient.kind, pagenor_color::GradientKind::Radial);
     assert_eq!(gradient.stops[1].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
     assert!((gradient.stops[0].midpoint - 0.3).abs() < 1e-6);
     // The parent rectangle used an unnamed colour → value-named swatch.
@@ -233,8 +233,8 @@ fn imports_hand_written_fixture() {
     let body = d.styles.para("Text/Body").expect("grouped style");
     assert_eq!(body.based_on.as_deref(), Some(st::BASIC_PARAGRAPH));
     assert_eq!(body.chars.size, Some(10.0));
-    assert_eq!(body.chars.leading, Some(designcraft_doc::Leading::Points(13.0)));
-    assert_eq!(body.para.align, Some(designcraft_doc::Align::LeftJustified));
+    assert_eq!(body.chars.leading, Some(pagenor_doc::Leading::Points(13.0)));
+    assert_eq!(body.para.align, Some(pagenor_doc::Align::LeftJustified));
     assert_eq!(d.styles.char_style("Strong").unwrap().chars.font_style.as_deref(), Some("Bold"));
     // Frames, threads, text.
     let story = d.stories.values().next().unwrap();
@@ -242,7 +242,7 @@ fn imports_hand_written_fixture() {
     assert_eq!(story.paras.len(), 2);
     assert_eq!(story.paras[0].style, "Text/Body");
     assert_eq!(story.paras[1].style, st::BASIC_PARAGRAPH);
-    assert_eq!(story.paras[1].para.align, Some(designcraft_doc::Align::Center));
+    assert_eq!(story.paras[1].para.align, Some(pagenor_doc::Align::Center));
     let bold = story.runs().find(|(r, _)| story.text[r.clone()].starts_with("bold")).unwrap().1;
     assert_eq!(bold.style, "Strong");
     assert_eq!(bold.over.size, Some(14.0));
@@ -408,10 +408,10 @@ fn small_doc() -> Document {
         let end = s.len();
         s.insert(end, &format!(" {}", st::COLUMN_BREAK));
     }
-    let id = designcraft_doc::ItemId(d.alloc());
-    let mut it = designcraft_doc::Item::new(id, lid, Shape::Oval, shapes::ellipse(Rect::new(650.0, 300.0, 750.0, 380.0)));
+    let id = pagenor_doc::ItemId(d.alloc());
+    let mut it = pagenor_doc::Item::new(id, lid, Shape::Oval, shapes::ellipse(Rect::new(650.0, 300.0, 750.0, 380.0)));
     it.fill = Fill::swatch("Brand 30");
-    it.xf = designcraft_geom::Affine::rotate_about(0.3, designcraft_geom::Point::new(700.0, 340.0));
+    it.xf = pagenor_geom::Affine::rotate_about(0.3, pagenor_geom::Point::new(700.0, 340.0));
     it.opacity = 0.5;
     d.insert_item(SpreadRef::Doc(1), it, None).unwrap();
     d
@@ -467,16 +467,16 @@ fn round_trips_tables() {
     d.swatches.push(Swatch::color("Brand", Color::rgb(1.0, 0.0, 0.0)));
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Intro\nOutro", ParaFormat::default()).unwrap();
-    let mut t = designcraft_doc::Table::new(d.alloc(), 3, 3, 1, 0, 300.0);
+    let mut t = pagenor_doc::Table::new(d.alloc(), 3, 3, 1, 0, 300.0);
     t.cell_mut(0, 0).unwrap().text.insert(0, "Head");
     t.cell_mut(0, 0).unwrap().fill = "Brand".into();
     t.cell_mut(1, 2).unwrap().text.insert(0, "Body\nTwo");
-    t.cell_mut(2, 1).unwrap().vj = designcraft_doc::VerticalJustification::Center;
-    t.rows[2].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.cell_mut(2, 1).unwrap().vj = pagenor_doc::VerticalJustification::Center;
+    t.rows[2].mode = pagenor_doc::RowHeightMode::Exactly;
     t.rows[2].height = 30.0;
     t.columns[0].width = 50.0;
-    t.merge(designcraft_doc::CellRange::new(2, 1, 3, 2)).unwrap();
-    t.options.alt_rows = Some(designcraft_doc::AltFills { first: 1, first_color: "Brand".into(), first_tint: 0.2, ..Default::default() });
+    t.merge(pagenor_doc::CellRange::new(2, 1, 3, 2)).unwrap();
+    t.options.alt_rows = Some(pagenor_doc::AltFills { first: 1, first_color: "Brand".into(), first_tint: 0.2, ..Default::default() });
     d.story_mut(sid).unwrap().insert_table(5, t.clone());
     d.check().unwrap();
     let back = import_idml(&export_idml(&d)).unwrap();
@@ -488,9 +488,9 @@ fn round_trips_tables() {
     assert_eq!(bt.cell(0, 0).unwrap().text.text, "Head");
     assert_eq!(bt.cell(0, 0).unwrap().fill, "Brand");
     assert_eq!(bt.cell(1, 2).unwrap().text.text, "Body\nTwo");
-    assert_eq!(bt.cell(2, 1).unwrap().vj, designcraft_doc::VerticalJustification::Center);
+    assert_eq!(bt.cell(2, 1).unwrap().vj, pagenor_doc::VerticalJustification::Center);
     assert_eq!((bt.cell(2, 1).unwrap().row_span, bt.cell(2, 1).unwrap().col_span), (2, 2));
-    assert_eq!(bt.rows[2].mode, designcraft_doc::RowHeightMode::Exactly);
+    assert_eq!(bt.rows[2].mode, pagenor_doc::RowHeightMode::Exactly);
     assert!((bt.rows[2].height - 30.0).abs() < 1e-6);
     assert!((bt.columns[0].width - 50.0).abs() < 1e-6);
     assert_eq!(bt.options.alt_rows.as_ref().map(|a| a.first_color.as_str()), Some("Brand"));
@@ -540,9 +540,9 @@ fn round_trips_footnotes_and_options() {
         s.insert_note(4, "First note.", ParaFormat::default());
         s.insert_note(9, "Second\nnote.", ParaFormat::default());
     }
-    d.footnote_options.style = designcraft_doc::NumberStyle::LowerRoman;
-    d.footnote_options.restart = designcraft_doc::notes::NoteRestart::Page;
-    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+    d.footnote_options.style = pagenor_doc::NumberStyle::LowerRoman;
+    d.footnote_options.restart = pagenor_doc::notes::NoteRestart::Page;
+    d.footnote_options.affix_in = pagenor_doc::notes::AffixIn::Both;
     d.footnote_options.prefix = "[".into();
     d.footnote_options.rule.width = 100.0;
     d.footnote_options.space_before = 4.0;
@@ -574,7 +574,7 @@ fn imports_indesign_style_footnote() {
     let d = import_idml(&fixture_with_story(story)).unwrap();
     d.check().unwrap();
     let s = d.stories.values().find(|s| !s.notes.is_empty()).expect("story with a footnote");
-    assert_eq!(s.text, format!("Body text with a{} note here.", designcraft_doc::FOOTNOTE_REF));
+    assert_eq!(s.text, format!("Body text with a{} note here.", pagenor_doc::FOOTNOTE_REF));
     assert_eq!(s.notes[0].text.text, "A source note.");
     // One run: the reference takes its position from the options, not an override.
     assert_eq!(s.chars.len(), 1);
@@ -588,8 +588,8 @@ fn round_trips_cross_references() {
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results: found\nSee .", ParaFormat::default()).unwrap();
     let target = d.paragraph_anchor(sid, 0).unwrap();
     let at = d.story(sid).unwrap().text.find(" .").unwrap() + 1;
-    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into() });
-    d.xref_formats.push(designcraft_doc::XrefFormat {
+    d.story_mut(sid).unwrap().insert_xref(at, pagenor_doc::CrossRef { target, format: "Paragraph Text".into() });
+    d.xref_formats.push(pagenor_doc::XrefFormat {
         name: "Mine".into(),
         definition: "(<partialPara delim=\":\" includeDelim=\"true\" />, p. <pageNum />)".into(),
     });
@@ -609,7 +609,7 @@ fn round_trips_cross_references() {
 
 #[test]
 fn round_trips_index_references() {
-    use designcraft_doc::index::IndexRange;
+    use pagenor_doc::index::IndexRange;
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d
@@ -617,12 +617,9 @@ fn round_trips_index_references() {
         .unwrap();
     {
         let s = d.story_mut(sid).unwrap();
-        s.insert_index_ref(
-            0,
-            designcraft_doc::IndexRef { topics: vec!["Type".into(), "Kerning".into()], sort: vec![], range: IndexRange::CurrentPage },
-        );
-        s.insert_index_ref(5, designcraft_doc::IndexRef { topics: vec!["Pairs".into()], sort: vec![], range: IndexRange::NextParagraphs(2) });
-        s.insert_index_ref(9, designcraft_doc::IndexRef { topics: vec!["Spacing".into()], sort: vec![], range: IndexRange::See("Type".into()) });
+        s.insert_index_ref(0, pagenor_doc::IndexRef { topics: vec!["Type".into(), "Kerning".into()], sort: vec![], range: IndexRange::CurrentPage });
+        s.insert_index_ref(5, pagenor_doc::IndexRef { topics: vec!["Pairs".into()], sort: vec![], range: IndexRange::NextParagraphs(2) });
+        s.insert_index_ref(9, pagenor_doc::IndexRef { topics: vec!["Spacing".into()], sort: vec![], range: IndexRange::See("Type".into()) });
     }
     d.check().unwrap();
     let back = import_idml(&export_idml(&d)).unwrap();
@@ -640,21 +637,20 @@ fn round_trips_index_references() {
     );
     // The text survives; page references keep their places (See references, which InDesign keeps
     // on topics rather than in text, come back at the story start).
-    assert_eq!(s.text.replace(designcraft_doc::INDEX_MARK, ""), "Kerning adjusts pairs.\nMore.");
-    assert!(s.text.starts_with(&format!("{0}{0}Ke{0}rning", designcraft_doc::INDEX_MARK)), "{:?}", s.text);
+    assert_eq!(s.text.replace(pagenor_doc::INDEX_MARK, ""), "Kerning adjusts pairs.\nMore.");
+    assert!(s.text.starts_with(&format!("{0}{0}Ke{0}rning", pagenor_doc::INDEX_MARK)), "{:?}", s.text);
 }
 
 #[test]
 fn round_trips_anchored_objects() {
-    use designcraft_doc::{AnchorPosition, AnchoredObject, anchored::AnchorAlign};
+    use pagenor_doc::{AnchorPosition, AnchoredObject, anchored::AnchorAlign};
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) =
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Inline here.\nAbove.", ParaFormat::default()).unwrap();
-    let mut a =
-        designcraft_doc::Item::new(designcraft_doc::ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 16.0)));
-    a.fill = Fill::swatch(designcraft_color::swatch::BLACK);
-    let b = designcraft_doc::Item::new(designcraft_doc::ItemId(d.alloc()), lid, Shape::Oval, shapes::ellipse(Rect::new(0.0, 0.0, 60.0, 30.0)));
+    let mut a = pagenor_doc::Item::new(pagenor_doc::ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 16.0)));
+    a.fill = Fill::swatch(pagenor_color::swatch::BLACK);
+    let b = pagenor_doc::Item::new(pagenor_doc::ItemId(d.alloc()), lid, Shape::Oval, shapes::ellipse(Rect::new(0.0, 0.0, 60.0, 30.0)));
     {
         let s = d.story_mut(sid).unwrap();
         s.insert_object(7, AnchoredObject::new(a, AnchorPosition::Inline { y_offset: 2.0 }));
@@ -670,7 +666,7 @@ fn round_trips_anchored_objects() {
     let (w, h) = s.objects[0].size();
     assert!((w - 20.0).abs() < 1e-6 && (h - 16.0).abs() < 1e-6);
     assert_eq!(s.objects[0].position, AnchorPosition::Inline { y_offset: 2.0 });
-    assert_eq!(s.objects[0].item.fill.swatch, designcraft_color::swatch::BLACK);
+    assert_eq!(s.objects[0].item.fill.swatch, pagenor_color::swatch::BLACK);
     assert_eq!(s.objects[1].item.shape, Shape::Oval);
     assert_eq!(s.objects[1].position, AnchorPosition::AboveLine { align: AnchorAlign::Center, space_before: 3.0, space_after: 4.0 });
 }
@@ -679,14 +675,10 @@ fn round_trips_anchored_objects() {
 fn round_trips_frames_with_pasted_in_items() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
-    let inner = designcraft_doc::Item::new(designcraft_doc::ItemId(d.alloc()), lid, Shape::Oval, shapes::ellipse(Rect::new(0.0, 0.0, 300.0, 300.0)));
-    let mut frame = designcraft_doc::Item::new(
-        designcraft_doc::ItemId(d.alloc()),
-        lid,
-        Shape::Rectangle,
-        shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)),
-    );
-    frame.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(inner)] };
+    let inner = pagenor_doc::Item::new(pagenor_doc::ItemId(d.alloc()), lid, Shape::Oval, shapes::ellipse(Rect::new(0.0, 0.0, 300.0, 300.0)));
+    let mut frame =
+        pagenor_doc::Item::new(pagenor_doc::ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    frame.content = pagenor_doc::Content::Group { items: vec![std::sync::Arc::new(inner)] };
     d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
     let back = import_idml(&export_idml(&d)).unwrap();
     let f = &back.spreads[0].items[0];
@@ -707,9 +699,9 @@ fn vertical_story_orientation_round_trips() {
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(450.0, 72.0, 550.0, 400.0), lid, "横", ParaFormat::default()).unwrap();
     d.story_mut(sid).unwrap().vertical = true;
     // Orientation and column direction are separate settings of the story.
-    d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    d.story_mut(sid).unwrap().direction = pagenor_doc::TextDirection::RightToLeft;
     let back = import_idml(&export_idml(&d)).unwrap();
-    use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+    use pagenor_doc::TextDirection::{LeftToRight, RightToLeft};
     let directions: Vec<_> = back.stories.values().map(|s| (s.frames.len(), s.vertical, s.direction)).collect();
     assert!(directions.contains(&(2, true, RightToLeft)) && directions.contains(&(1, false, LeftToRight)), "{directions:?}");
     let frames: Vec<bool> = back.spreads[0].items.iter().map(|i| back.frame_vertical(i)).collect();
@@ -730,7 +722,7 @@ fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
     assert_eq!(a.jidori, Some(4));
     assert_eq!(a.tsume, Some(0.2));
     assert_eq!(a.kenten_character.as_deref(), Some("○"));
-    assert_eq!(a.leading_model, Some(designcraft_doc::cjk::LeadingModel::Center));
+    assert_eq!(a.leading_model, Some(pagenor_doc::cjk::LeadingModel::Center));
     assert_eq!(st.paras[0].para.bunri_kinshi, Some(true));
     assert_eq!(st.paras[0].para.rensuuji, Some(false));
     let back = import_idml(&export_idml(&doc)).unwrap();
@@ -745,9 +737,9 @@ fn cjk_character_attributes_import_from_independent_xml_and_round_trip() {
 #[test]
 fn automatic_kerning_does_not_import_inactive_numeric_values() {
     for (attributes, expected) in [
-        (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(designcraft_doc::Kerning::Optical)),
-        (r#"KerningMethod="$ID/Metrics" KerningValue="0""#, Some(designcraft_doc::Kerning::Metrics)),
-        (r#"KerningValue="-40""#, Some(designcraft_doc::Kerning::Manual(-40.0))),
+        (r#"KerningMethod="$ID/Optical" KerningValue="1e+11""#, Some(pagenor_doc::Kerning::Optical)),
+        (r#"KerningMethod="$ID/Metrics" KerningValue="0""#, Some(pagenor_doc::Kerning::Metrics)),
+        (r#"KerningValue="-40""#, Some(pagenor_doc::Kerning::Manual(-40.0))),
         (r#"KerningValue="1e+11""#, None),
     ] {
         let story = format!(
@@ -827,11 +819,11 @@ fn arabic_controls_import_independent_xml_and_round_trip() {
     assert_eq!(st.paras[0].para.kashidas, Some(false));
     assert_eq!(st.paras[0].para.arabic_justification.as_deref(), Some("NaskhJustification"));
     let a = &st.runs().next().unwrap().1.over;
-    assert_eq!(a.character_direction, Some(designcraft_doc::arabic::CharacterDirection::LeftToRight));
+    assert_eq!(a.character_direction, Some(pagenor_doc::arabic::CharacterDirection::LeftToRight));
     assert_eq!(a.allow_kashidas, Some(false));
     assert_eq!(a.diacritic_x_offset, Some(150.0));
     assert_eq!(a.diacritic_y_offset, Some(-100.0));
-    assert_eq!(a.digits, Some(designcraft_doc::Digits::Farsi));
+    assert_eq!(a.digits, Some(pagenor_doc::Digits::Farsi));
     let back = import_idml(&export_idml(&d)).unwrap();
     let b = back.stories.values().find(|s| s.text.contains('ب')).unwrap();
     let attrs = &b.runs().next().unwrap().1.over;
@@ -848,12 +840,12 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     let mut d = Document::new(&NewDocument::default());
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
     let st = d.story_mut(sid).unwrap();
-    st.direction = designcraft_doc::TextDirection::RightToLeft;
-    let mut t = designcraft_doc::Table::new(42, 1, 2, 0, 0, 200.0);
-    t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+    st.direction = pagenor_doc::TextDirection::RightToLeft;
+    let mut t = pagenor_doc::Table::new(42, 1, 2, 0, 0, 200.0);
+    t.options.direction = pagenor_doc::TextDirection::RightToLeft;
     st.insert_table(0, t);
     let back = import_idml(&export_idml(&d)).unwrap();
     let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
-    assert_eq!(st.direction, designcraft_doc::TextDirection::RightToLeft);
-    assert_eq!(st.tables.values().next().unwrap().options.direction, designcraft_doc::TextDirection::RightToLeft);
+    assert_eq!(st.direction, pagenor_doc::TextDirection::RightToLeft);
+    assert_eq!(st.tables.values().next().unwrap().options.direction, pagenor_doc::TextDirection::RightToLeft);
 }

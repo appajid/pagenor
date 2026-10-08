@@ -1,4 +1,4 @@
-# Build with: trunk build --release   (from apps/designcraft-web)
+# Build with: trunk build --release   (from apps/pagenor-web)
 [build]
 target = "index.html"
 dist = "../../dist/web"

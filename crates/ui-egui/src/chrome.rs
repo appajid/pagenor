@@ -1,8 +1,8 @@
 //! Window chrome: application bar (with menus), Control panel, document tabs, status bar, start screen.
 
-use designcraft_doc::{Align, Content};
-use designcraft_geom::Unit;
 use egui::{Color32, Sense, Stroke, vec2};
+use pagenor_doc::{Align, Content};
+use pagenor_geom::Unit;
 use serde_json::json;
 
 use crate::panels::{self, SelInfo};
@@ -105,8 +105,8 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             });
             // Centred title.
             let title = match app.session.active() {
-                Some(d) => format!("DesignCraft — {}", crate::rtl::isolate(&d.title())),
-                None => "DesignCraft".to_string(),
+                Some(d) => format!("Pagenor — {}", crate::rtl::isolate(&d.title())),
+                None => "Pagenor".to_string(),
             };
             // Centred between the menus and the right-hand controls; left out when it won't fit.
             let galley = crate::rtl::plain(ui.ctx(), &title, egui::FontId::proportional(11.5), t.text);
@@ -591,7 +591,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
         |ui| {
             ui.label(crate::rtl::widget(
                 ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Welcome to DesignCraft")).font(semibold(28.0)).color(t.text_strong),
+                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Welcome to Pagenor")).font(semibold(28.0)).color(t.text_strong),
             ));
             ui.label(crate::rtl::widget(
                 ui,
@@ -648,7 +648,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
             ));
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                for p in designcraft_doc::build::PRESETS.iter().take(10) {
+                for p in pagenor_doc::build::PRESETS.iter().take(10) {
                     let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
                     let hov = resp.hovered();
                     ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
@@ -659,7 +659,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                     ui.painter().text(
                         egui::pos2(cr.center().x, cr.max.y - 11.0),
                         egui::Align2::CENTER_CENTER,
-                        format!("{} × {}", designcraft_geom::format_measure(p.width, p.units), designcraft_geom::format_measure(p.height, p.units)),
+                        format!("{} × {}", pagenor_geom::format_measure(p.width, p.units), pagenor_geom::format_measure(p.height, p.units)),
                         egui::FontId::proportional(10.0),
                         t.text_dim,
                     );
@@ -695,8 +695,8 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    for (text, id) in [("DesignCraft page", "help.appPage"), ("GitHub", "help.github"), ("getartcraft.com", "help.website")] {
-                        let url = designcraft_engine::links::get(&id[5..]).unwrap_or_default();
+                    for (text, id) in [("Pagenor page", "help.appPage"), ("GitHub", "help.github"), ("getartcraft.com", "help.website")] {
+                        let url = pagenor_engine::links::get(&id[5..]).unwrap_or_default();
                         let l = ui
                             .add(egui::Label::new(egui::RichText::new(text).size(12.0).color(t.accent).underline()).sense(Sense::click()))
                             .on_hover_text(url)

@@ -2,7 +2,7 @@
 //! Unicode (`\uN`) and hex (`\'hh`) characters. Destinations that aren't body text (font and
 //! colour tables, stylesheet, info, pictures, `\*` groups) are skipped.
 
-use designcraft_doc::{CharAttrs, CharFormat, Story, StoryId};
+use pagenor_doc::{CharAttrs, CharFormat, Story, StoryId};
 
 use crate::{ImportError, Imported};
 
@@ -28,7 +28,7 @@ impl State {
             _ => None,
         };
         CharFormat {
-            style: designcraft_doc::story::NO_CHAR_STYLE.into(),
+            style: pagenor_doc::story::NO_CHAR_STYLE.into(),
             over: CharAttrs {
                 font_style,
                 underline: self.underline.then_some(true),
@@ -194,10 +194,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                         let len = st.len();
                         st.insert_with(len, "\n", fmt.clone());
                     }
-                    "line" => buf.push(designcraft_doc::FORCED_LINE_BREAK),
+                    "line" => buf.push(pagenor_doc::FORCED_LINE_BREAK),
                     "tab" => buf.push('\t'),
-                    "page" => buf.push(designcraft_doc::PAGE_BREAK),
-                    "column" => buf.push(designcraft_doc::COLUMN_BREAK),
+                    "page" => buf.push(pagenor_doc::PAGE_BREAK),
+                    "column" => buf.push(pagenor_doc::COLUMN_BREAK),
                     "emdash" => buf.push('\u{2014}'),
                     "endash" => buf.push('\u{2013}'),
                     "bullet" => buf.push('\u{2022}'),

@@ -1,7 +1,7 @@
 //! Edit → Find/Change: plain text and GREP (regular expressions) with InDesign's metacharacters,
 //! optional formatting in the change, scoped to the document, a story or the selection.
 
-use designcraft_doc::{StoryId, TextSel, story};
+use pagenor_doc::{StoryId, TextSel, story};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, str_param};
@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let ids = find_objects(&s.doc()?.doc, p);
             if p.get("select").and_then(Value::as_bool).unwrap_or(true) && !ids.is_empty() {
                 let st = s.doc_mut()?;
-                st.selection = designcraft_doc::Selection::items(ids.clone());
+                st.selection = pagenor_doc::Selection::items(ids.clone());
                 st.revision += 1;
             }
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
@@ -37,7 +37,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     for id in &ids {
                         let Some(it) = d.item_mut(*id) else { continue };
                         if let Some(f) = ch.get("fill").and_then(Value::as_str) {
-                            it.fill = designcraft_doc::Fill::swatch(f);
+                            it.fill = pagenor_doc::Fill::swatch(f);
                         }
                         if let Some(c) = ch.get("stroke").and_then(Value::as_str) {
                             it.stroke.swatch = c.to_string();
@@ -173,7 +173,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let rep = replacement(p);
     let first_only = bool_or(p, "first", false);
     let attrs = p.get("attrs").cloned();
-    let mut over = designcraft_doc::CharAttrs::default();
+    let mut over = pagenor_doc::CharAttrs::default();
     if let Some(o) = attrs.as_ref().and_then(Value::as_object) {
         for (k, v) in o {
             over.set_json(k, v).map_err(|e| bad("find.change", e))?;
@@ -240,7 +240,7 @@ fn find_next(s: &mut Session, p: &Value) -> Result<Value> {
     let Some((sid, a, b)) = hit else { return Ok(Value::Null) };
     let frame = st.doc.story(sid).and_then(|x| x.frames.first().copied());
     let stm = s.doc_mut()?;
-    stm.selection = designcraft_doc::Selection::text(TextSel { story: sid, anchor: a, focus: b, frame, cell: None });
+    stm.selection = pagenor_doc::Selection::text(TextSel { story: sid, anchor: a, focus: b, frame, cell: None });
     stm.revision += 1;
     let _ = story::PAGE_NUMBER;
     Ok(json!({"story": sid.0, "start": a, "end": b}))
@@ -278,8 +278,8 @@ mod tests {
 }
 
 /// Objects matching Find/Change › Object criteria, in document order (nested ones included).
-fn find_objects(d: &designcraft_doc::Document, p: &Value) -> Vec<designcraft_doc::ItemId> {
-    use designcraft_doc::{Content, Shape};
+fn find_objects(d: &pagenor_doc::Document, p: &Value) -> Vec<pagenor_doc::ItemId> {
+    use pagenor_doc::{Content, Shape};
     let fill = str_param(p, "fill");
     let stroke = str_param(p, "stroke");
     let weight = p.get("strokeWeight").and_then(Value::as_f64);

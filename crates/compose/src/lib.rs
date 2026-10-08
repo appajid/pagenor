@@ -1,4 +1,4 @@
-//! DesignCraft text composition.
+//! Pagenor text composition.
 //!
 //! [`compose_story`] lays a story out through its chain of threaded frames:
 //! style resolution → shaping ([`shape`]) → line breaking ([`breaker`]: the paragraph composer is
@@ -26,12 +26,12 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use designcraft_doc::{
+use pagenor_doc::{
     Align, Composer, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
     VerticalJustification, WrapMode, story,
 };
-use designcraft_fonts::{FontDb, ScopedFonts};
-use designcraft_geom::{Point, Rect};
+use pagenor_fonts::{FontDb, ScopedFonts};
+use pagenor_geom::{Point, Rect};
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::Cache;
@@ -94,7 +94,7 @@ impl RunStyle {
 /// A positioned glyph. `x` is absolute in frame inner space; `y` is relative to the line baseline.
 #[derive(Clone, Debug)]
 pub struct PlacedGlyph {
-    pub face: designcraft_fonts::FaceRef,
+    pub face: pagenor_fonts::FaceRef,
     pub gid: u32,
     pub x: f64,
     pub y: f64,
@@ -116,17 +116,17 @@ pub struct PlacedGlyph {
 
 impl PlacedGlyph {
     /// In a vertical frame, the turn that sets this glyph upright, applied after drawing it at `x`
-    /// on `baseline`: it hangs from its vertical origin ([`designcraft_fonts::FontFace::v_origin`],
+    /// on `baseline`: it hangs from its vertical origin ([`pagenor_fonts::FontFace::v_origin`],
     /// centred across) at `x` on the line's centre, the middle of the font's em box; a tate-chu-yoko
     /// group sits across that centre.
-    pub fn vertical_xf(&self, baseline: f64) -> Option<designcraft_geom::Affine> {
+    pub fn vertical_xf(&self, baseline: f64) -> Option<pagenor_geom::Affine> {
         let turn = -std::f64::consts::FRAC_PI_2;
         // The em box centre above the baseline, in ems.
         let (top, bottom) = self.face.em_box();
         let centre = (top + bottom) / 2.0 / self.face.units_per_em();
         if let Some([along, across, em]) = self.tcy {
             let c = Point::new(self.x + along, baseline + self.y - em * centre);
-            return Some(designcraft_geom::Affine::rotate_about(turn, c) * designcraft_geom::Affine::translate((c.x + across - self.x, 0.0)));
+            return Some(pagenor_geom::Affine::rotate_about(turn, c) * pagenor_geom::Affine::translate((c.x + across - self.x, 0.0)));
         }
         if !self.upright {
             return None;
@@ -137,7 +137,7 @@ impl PlacedGlyph {
         let origin = self.face.v_origin(self.gid) * self.sy;
         let mid = centre * self.face.units_per_em() * self.sy;
         let c = Point::new(self.x + (origin - mid + half) / 2.0, baseline + self.y + (half - mid - origin) / 2.0);
-        Some(designcraft_geom::Affine::rotate_about(turn, c))
+        Some(pagenor_geom::Affine::rotate_about(turn, c))
     }
 }
 
@@ -297,13 +297,13 @@ impl FrameSpec {
         let a = self.area;
         let n = self.opts.columns.max(1);
         match self.opts.columns_kind {
-            designcraft_doc::ColumnsKind::FixedWidth if self.opts.column_width > 0.0 => (0..n)
+            pagenor_doc::ColumnsKind::FixedWidth if self.opts.column_width > 0.0 => (0..n)
                 .map(|i| {
                     let x = a.x0 + i as f64 * (self.opts.column_width + self.opts.gutter);
                     Rect::new(x, a.y0, x + self.opts.column_width, a.y1)
                 })
                 .collect(),
-            _ => designcraft_doc::page::column_rects(a, n, self.opts.gutter),
+            _ => pagenor_doc::page::column_rects(a, n, self.opts.gutter),
         }
     }
 }
@@ -353,13 +353,13 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             }
         }
         let (page_name, page, left_page) = match (loc.spread, spread) {
-            (designcraft_doc::SpreadRef::Doc(si), Some(sp)) => {
+            (pagenor_doc::SpreadRef::Doc(si), Some(sp)) => {
                 let c = item.bounds().center();
                 let pi = sp.page_at_x(c.x).unwrap_or(0);
                 let abs = doc.first_page_of_spread(si) + pi;
-                (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == designcraft_doc::PageSide::Left))
+                (Some(doc.page_name(abs)), Some(abs), sp.pages.get(pi).is_some_and(|p| p.side == pagenor_doc::PageSide::Left))
             }
-            (designcraft_doc::SpreadRef::Parent(pi), Some(sp)) => {
+            (pagenor_doc::SpreadRef::Parent(pi), Some(sp)) => {
                 let prefix = sp.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_else(|| "A".into());
                 let _ = pi;
                 (Some(prefix), None, false)
@@ -382,7 +382,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         // Type on a path: one line as long as the path (from the start offset).
         let (area, opts) = match &tf.options.path {
             Some(pt) => {
-                let len = designcraft_geom::warp::PathWarp::new(&item.path.to_bezpath(), false).length();
+                let len = pagenor_geom::warp::PathWarp::new(&item.path.to_bezpath(), false).length();
                 let size = st
                     .paras
                     .first()
@@ -392,7 +392,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
                 let opts = TextFrameOptions {
                     columns: 1,
                     inset: [0.0; 4],
-                    first_baseline: designcraft_doc::FirstBaseline::Ascent,
+                    first_baseline: pagenor_doc::FirstBaseline::Ascent,
                     path: None,
                     ..tf.options.clone()
                 };
@@ -403,7 +403,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         // Vertical type: composed in the turned box; wraps and page rects turned with it.
         let vertical = doc.frame_vertical(item);
         let (area, exclusions, grid, page_rect) = if vertical {
-            let v = designcraft_doc::vertical_text_xf(area).inverse();
+            let v = pagenor_doc::vertical_text_xf(area).inverse();
             let ex = exclusions.into_iter().map(|e| Exclusion { rect: v.transform_rect_bbox(e.rect), ..e }).collect();
             let pr = page_rect.map(|(a, b)| (v.transform_rect_bbox(a), v.transform_rect_bbox(b)));
             (Rect::new(0.0, 0.0, area.height(), area.width()), ex, None, pr)
@@ -451,7 +451,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         .iter()
         .map(|f| {
             let mut columns = f.columns();
-            if story.direction == designcraft_doc::TextDirection::RightToLeft && !f.vertical {
+            if story.direction == pagenor_doc::TextDirection::RightToLeft && !f.vertical {
                 columns.reverse();
             }
             columns
@@ -475,7 +475,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             .iter()
             .map(|p| {
                 let (pp, _) = doc.styles.resolve_para(p);
-                if pp.list_type != designcraft_doc::ListType::Numbers || pp.list_name.is_empty() {
+                if pp.list_type != pagenor_doc::ListType::Numbers || pp.list_name.is_empty() {
                     return None;
                 }
                 let c = counters.entry(pp.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &pp.list_name));
@@ -558,20 +558,20 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         };
         if !story.endnotes.is_empty() {
             // Endnote reference numbers continue through the document.
-            let first = doc.endnote_start(story.id) + story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32;
-            for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
+            let first = doc.endnote_start(story.id) + story.text[..prange.start].matches(pagenor_doc::ENDNOTE_REF).count() as u32;
+            for (k, (i, _)) in story.text[prange.clone()].match_indices(pagenor_doc::ENDNOTE_REF).enumerate() {
                 sub.notes.insert(prange.start + i, doc.endnote_options.label(first + k as u32));
             }
         }
         if !story.objects.is_empty() {
-            let before = story.text[..prange.start].matches(designcraft_doc::OBJECT_MARK).count();
-            for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::OBJECT_MARK).enumerate() {
+            let before = story.text[..prange.start].matches(pagenor_doc::OBJECT_MARK).count();
+            for (k, (i, _)) in story.text[prange.clone()].match_indices(pagenor_doc::OBJECT_MARK).enumerate() {
                 let Some(o) = story.objects.get(before + k) else { continue };
                 let (w, h) = o.size();
                 let (y_offset, space, custom) = match &o.position {
-                    designcraft_doc::AnchorPosition::Inline { y_offset } => (Some(*y_offset), 0.0, false),
-                    designcraft_doc::AnchorPosition::AboveLine { space_before, space_after, .. } => (None, space_before + space_after, false),
-                    designcraft_doc::AnchorPosition::Custom { .. } => (Some(0.0), 0.0, true),
+                    pagenor_doc::AnchorPosition::Inline { y_offset } => (Some(*y_offset), 0.0, false),
+                    pagenor_doc::AnchorPosition::AboveLine { space_before, space_after, .. } => (None, space_before + space_after, false),
+                    pagenor_doc::AnchorPosition::Custom { .. } => (Some(0.0), 0.0, true),
                 };
                 sub.objects.insert(prange.start + i, shape::ObjectSpec { index: before + k, w, h, y_offset, space, custom });
             }
@@ -629,7 +629,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         break;
                     }
                     let end = line + nl.lines as usize;
-                    if !nl.style.is_empty() && nl.style != designcraft_doc::NO_CHAR_STYLE {
+                    if !nl.style.is_empty() && nl.style != pagenor_doc::NO_CHAR_STYLE {
                         want.push((byte_at(line)..byte_at(end).max(byte_at(line)), nl.style.clone()));
                     }
                     line = end;
@@ -657,22 +657,22 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
         match pp.list_type {
-            designcraft_doc::ListType::Numbers if !pp.list_name.is_empty() => {
+            pagenor_doc::ListType::Numbers if !pp.list_name.is_empty() => {
                 // A named list: carries on past other paragraphs (and from earlier stories).
                 let n = named_numbers.get(pi).copied().flatten().unwrap_or(1);
                 let label = format!("{}.{}", pp.number_style.format(n), pp.list_separator);
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
-            designcraft_doc::ListType::Numbers => {
+            pagenor_doc::ListType::Numbers => {
                 list_counter = pp.start_at.map_or(list_counter + 1, |s| s.max(1));
                 let label = format!("{}.{}", pp.number_style.format(list_counter), pp.list_separator);
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
-            designcraft_doc::ListType::Bullets => {
+            pagenor_doc::ListType::Bullets => {
                 let label = format!("{}{}", pp.bullet_char, pp.list_separator);
                 prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
             }
-            designcraft_doc::ListType::None => list_counter = 0,
+            pagenor_doc::ListType::None => list_counter = 0,
         }
         if pi == 0
             && let Some(label) = &opts.label
@@ -683,15 +683,15 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
         let bidi_info = unicode_bidi::BidiInfo::new(
             &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
+            Some(if pp.direction == pagenor_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
         );
         bidi::resolve_mirroring(&mut glyphs, &bidi_info);
         apply_desired_spacing(&mut glyphs, &pp);
         let hyph_after = hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
         let base_size = base_chars.size;
         let base_leading = match base_chars.leading {
-            designcraft_doc::Leading::Auto => base_size * pp.auto_leading,
-            designcraft_doc::Leading::Points(v) => v,
+            pagenor_doc::Leading::Auto => base_size * pp.auto_leading,
+            pagenor_doc::Leading::Points(v) => v,
         };
         let spacing = spacing_for(&pp, base_size);
         // Paragraph start options.
@@ -879,7 +879,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 if !sub_objects.is_empty() {
                     let ft = &mut out.frames[cur.fi];
                     let li = ft.lines.len() - 1;
-                    let text_ascent = line_glyphs.iter().filter(|g| g.ch != designcraft_doc::OBJECT_MARK).map(|g| g.ascent).fold(0.0, f64::max);
+                    let text_ascent = line_glyphs.iter().filter(|g| g.ch != pagenor_doc::OBJECT_MARK).map(|g| g.ascent).fold(0.0, f64::max);
                     let text_ascent = if text_ascent > 0.0 { text_ascent } else { base_chars.size * 0.75 };
                     for g in ft.lines[li].glyphs.iter().filter(|g| g.len > 0) {
                         if let Some(o) = sub_objects.get(&g.byte) {
@@ -984,16 +984,16 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let Some(obj) = story.objects.get(o.index) else { continue };
                 let (w, h) = o.size;
                 o.origin = match &obj.position {
-                    designcraft_doc::AnchorPosition::Inline { y_offset } => Point::new(o.x, l.baseline - y_offset - h),
-                    designcraft_doc::AnchorPosition::AboveLine { align, space_after, .. } => {
+                    pagenor_doc::AnchorPosition::Inline { y_offset } => Point::new(o.x, l.baseline - y_offset - h),
+                    pagenor_doc::AnchorPosition::AboveLine { align, space_after, .. } => {
                         let x = match align {
-                            designcraft_doc::anchored::AnchorAlign::Left => l.x0,
-                            designcraft_doc::anchored::AnchorAlign::Center => (l.x0 + l.x1 - w) / 2.0,
-                            designcraft_doc::anchored::AnchorAlign::Right => l.x1 - w,
+                            pagenor_doc::anchored::AnchorAlign::Left => l.x0,
+                            pagenor_doc::anchored::AnchorAlign::Center => (l.x0 + l.x1 - w) / 2.0,
+                            pagenor_doc::anchored::AnchorAlign::Right => l.x1 - w,
                         };
                         Point::new(x, l.baseline - o.text_ascent - space_after - h)
                     }
-                    designcraft_doc::AnchorPosition::Custom {
+                    pagenor_doc::AnchorPosition::Custom {
                         x_relative,
                         y_relative,
                         x_offset,
@@ -1002,7 +1002,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         ref_point,
                         keep_within_column,
                     } => {
-                        use designcraft_doc::anchored::AnchorRelative as R;
+                        use pagenor_doc::anchored::AnchorRelative as R;
                         let col = ft.columns.get(l.column as usize).copied().unwrap_or(f.area);
                         let area = |r: R| match r {
                             R::Anchor => None,
@@ -1159,7 +1159,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
     for i in 0..glyphs.len() {
         let (left, right) = glyphs.split_at_mut(i + 1);
         let Some(g) = left.last_mut() else { continue };
-        if pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None && pp.kinsoku.as_ref().is_some_and(|k| k.hanging.contains(g.ch)) {
+        if pp.kinsoku_hang != pagenor_doc::cjk::KinsokuHang::None && pp.kinsoku.as_ref().is_some_and(|k| k.hanging.contains(g.ch)) {
             g.cjk_hang = g.adv;
         }
         g.ideographic_space_elastic = pp.treat_ideographic_space_as_space;
@@ -1400,7 +1400,7 @@ fn cjk_em_box(g: &Glyph) -> (f64, f64) {
     (top, top + height)
 }
 fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
-    use designcraft_doc::cjk::CharacterAlignment as A;
+    use pagenor_doc::cjk::CharacterAlignment as A;
     let (t, b) = cjk_em_box(g);
     let (rt, rb) = cjk_em_box(reference);
     match g.character_alignment {
@@ -1413,7 +1413,7 @@ fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
     }
 }
 fn cjk_line_reference(line: &[Glyph]) -> f64 {
-    use designcraft_doc::cjk::LeadingModel as L;
+    use pagenor_doc::cjk::LeadingModel as L;
     let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return 0.0 };
     let (top, bottom) = cjk_em_box(g);
     match g.leading_model {
@@ -1431,7 +1431,7 @@ fn line_metrics(
     base_leading: f64,
     base_size: f64,
     db: &ScopedFonts<'_>,
-    base: &designcraft_doc::CharProps,
+    base: &pagenor_doc::CharProps,
 ) -> (f64, f64, f64) {
     let src: &[Glyph] = if line.is_empty() { all.get(s..(s + 1).min(all.len())).unwrap_or(&[]) } else { line };
     if src.is_empty() {
@@ -1606,13 +1606,13 @@ fn layout_line(
     let has_tab = line.iter().any(|g| g.ch == '\t' || g.ch == story::RIGHT_INDENT_TAB);
     // Optical margin alignment: the measure grows by the hang of the edge glyphs.
     let (mut x0, mut measure) = (x0, measure);
-    if (sp.optical || pp.kinsoku_hang != designcraft_doc::cjk::KinsokuHang::None) && !has_tab {
+    if (sp.optical || pp.kinsoku_hang != pagenor_doc::cjk::KinsokuHang::None) && !has_tab {
         let first = line.iter().find(|g| g.adv > 0.0 && !g.is_space());
         let lastg = line.iter().rev().find(|g| g.adv > 0.0 && !g.is_space());
         let hl = if sp.optical { first.map_or(0.0, |g| breaker::hang(g.ch).0 * g.adv) } else { 0.0 };
         let optical_right = if sp.optical { lastg.map_or(0.0, |g| breaker::hang(g.ch).1 * g.adv) } else { 0.0 };
         let cjk_right = lastg.map_or(0.0, |g| g.cjk_hang);
-        let cjk_right = if pp.kinsoku_hang == designcraft_doc::cjk::KinsokuHang::Regular {
+        let cjk_right = if pp.kinsoku_hang == pagenor_doc::cjk::KinsokuHang::Regular {
             cjk_right.min((line.iter().map(|g| g.adv).sum::<f64>() - measure).max(0.0))
         } else {
             cjk_right
@@ -1753,7 +1753,7 @@ fn layout_line(
     for (i, l) in kashidas {
         let first = (0..=i).rev().take_while(|&j| line[j].byte == line[i].byte).last().unwrap_or(i);
         let (g, at) = (&line[i], out[first].x - line[first].dx - l);
-        let gid = designcraft_fonts::first_glyph(&g.face, &['\u{0640}']);
+        let gid = pagenor_fonts::first_glyph(&g.face, &['\u{0640}']);
         let w = g.face.advance(gid) * g.sx;
         if gid == 0 || w <= 0.0 {
             continue;
@@ -1853,7 +1853,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     let glyphs: Vec<(u32, f64)> = leader
         .chars()
         .map(|c| {
-            let gid = designcraft_fonts::first_glyph(&tab.face, &[c]);
+            let gid = pagenor_fonts::first_glyph(&tab.face, &[c]);
             (gid, tab.face.advance(gid) * tab.sx)
         })
         .collect();
@@ -1992,14 +1992,14 @@ fn prepend_label(
     glyphs: &mut Vec<Glyph>,
     label: &str,
     at: usize,
-    base: &designcraft_doc::CharProps,
+    base: &pagenor_doc::CharProps,
     env: shape::TypeEnv,
     table: &mut StyleTable<'_>,
 ) {
     // Shape the label as a tiny standalone story so it uses the paragraph's base character style.
     let mut tmp = Story::new(StoryId(0));
     tmp.insert(0, label);
-    let styles = designcraft_doc::Styles::default();
+    let styles = pagenor_doc::Styles::default();
     let shaped = shape::shape_para(db, &styles, &tmp, 0, 0..label.len(), base, env, &SubstCtx::default(), table, &[], &[], &[]);
     let mut pre: Vec<Glyph> = shaped
         .glyphs
@@ -2018,18 +2018,18 @@ type LimitsKey = (usize, usize, usize, bool);
 
 /// Mark glyphs after which a hyphen may be inserted (dictionary/pattern points within the
 /// paragraph's limits; words with discretionary hyphens break only there).
-/// Whether a language (a name or locale code, see [`designcraft_doc::language_tag`]) uses the
+/// Whether a language (a name or locale code, see [`pagenor_doc::language_tag`]) uses the
 /// English hyphenation and spelling dictionaries.
 pub fn is_english(language: &str) -> bool {
     // InDesign's English names first: composition asks this for every run.
-    language.starts_with("English") || designcraft_doc::language_tag(language).is_some_and(|t| designcraft_doc::language_subtag(t) == "en")
+    language.starts_with("English") || pagenor_doc::language_tag(language).is_some_and(|t| pagenor_doc::language_subtag(t) == "en")
 }
 
 /// Byte ranges of paragraph `prange` set in a language other than English (no English
 /// hyphenation there).
-fn foreign_ranges(doc: &Document, story: &designcraft_doc::Story, prange: Range<usize>, base: &designcraft_doc::CharProps) -> Vec<Range<usize>> {
+fn foreign_ranges(doc: &Document, story: &pagenor_doc::Story, prange: Range<usize>, base: &pagenor_doc::CharProps) -> Vec<Range<usize>> {
     if is_english(&base.language)
-        && story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == designcraft_doc::story::NO_CHAR_STYLE)
+        && story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == pagenor_doc::story::NO_CHAR_STYLE)
     {
         return vec![];
     }
@@ -2267,19 +2267,19 @@ mod tests;
 pub fn path_glyphs(
     cs: &ComposedStory,
     ft: &FrameText,
-    path: &designcraft_geom::BezPath,
-    pt: &designcraft_doc::PathType,
-) -> Vec<(u32, designcraft_geom::BezPath)> {
-    let db = designcraft_fonts::FontDb::global();
-    let warp = designcraft_geom::warp::PathWarp::new(path, pt.flip);
-    let mut runs: Vec<(u32, designcraft_geom::BezPath)> = Vec::new();
+    path: &pagenor_geom::BezPath,
+    pt: &pagenor_doc::PathType,
+) -> Vec<(u32, pagenor_geom::BezPath)> {
+    let db = pagenor_fonts::FontDb::global();
+    let warp = pagenor_geom::warp::PathWarp::new(path, pt.flip);
+    let mut runs: Vec<(u32, pagenor_geom::BezPath)> = Vec::new();
     for l in &ft.lines {
         // The part of the type that sits on the path.
         let on = match pt.align {
-            designcraft_doc::PathAlign::Baseline => l.baseline,
-            designcraft_doc::PathAlign::Ascender => l.baseline - l.ascent,
-            designcraft_doc::PathAlign::Descender => l.baseline + l.descent,
-            designcraft_doc::PathAlign::Center => l.baseline - (l.ascent - l.descent) / 2.0,
+            pagenor_doc::PathAlign::Baseline => l.baseline,
+            pagenor_doc::PathAlign::Ascender => l.baseline - l.ascent,
+            pagenor_doc::PathAlign::Descender => l.baseline + l.descent,
+            pagenor_doc::PathAlign::Center => l.baseline - (l.ascent - l.descent) / 2.0,
         };
         for g in l.glyphs.iter().filter(|g| g.visible) {
             let outline = db.outline(&g.face, g.gid);
@@ -2289,20 +2289,17 @@ pub fn path_glyphs(
             let style = &cs.styles[g.style as usize];
             let mid = g.x + g.adv / 2.0;
             let Some((p, a)) = warp.at(pt.start + mid) else { continue };
-            let place = designcraft_geom::Affine::translate(p.to_vec2())
-                * designcraft_geom::Affine::rotate(a)
-                * designcraft_geom::Affine::translate((-mid, -on));
+            let place = pagenor_geom::Affine::translate(p.to_vec2()) * pagenor_geom::Affine::rotate(a) * pagenor_geom::Affine::translate((-mid, -on));
             let skew = if style.skew != 0.0 {
-                designcraft_geom::Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0])
+                pagenor_geom::Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0])
             } else {
-                designcraft_geom::Affine::IDENTITY
+                pagenor_geom::Affine::IDENTITY
             };
-            let m =
-                place * designcraft_geom::Affine::translate((g.x, l.baseline + g.y)) * skew * designcraft_geom::Affine::scale_non_uniform(g.sx, g.sy);
+            let m = place * pagenor_geom::Affine::translate((g.x, l.baseline + g.y)) * skew * pagenor_geom::Affine::scale_non_uniform(g.sx, g.sy);
             let k = match runs.iter().position(|r| r.0 == g.style) {
                 Some(k) => k,
                 None => {
-                    runs.push((g.style, designcraft_geom::BezPath::new()));
+                    runs.push((g.style, pagenor_geom::BezPath::new()));
                     runs.len() - 1
                 }
             };

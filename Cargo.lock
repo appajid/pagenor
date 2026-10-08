@@ -854,291 +854,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "designcraft"
-version = "0.2.1"
-dependencies = [
- "designcraft-engine",
- "designcraft-ui-egui",
- "eframe",
- "egui",
- "log",
- "muda",
- "rfd",
- "serde_json",
- "winit",
- "winresource",
-]
-
-[[package]]
-name = "designcraft-cli"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-engine",
- "designcraft-format",
- "designcraft-geom",
- "designcraft-mcp",
- "designcraft-pdf",
- "designcraft-render",
- "serde_json",
-]
-
-[[package]]
-name = "designcraft-color"
-version = "0.2.1"
-dependencies = [
- "kurbo",
- "moxcms",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "designcraft-compose"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-doc",
- "designcraft-fonts",
- "designcraft-geom",
- "log",
- "miniz_oxide 0.8.9",
- "proptest",
- "regex",
- "unicode-bidi",
- "unicode-bidi-mirroring",
-]
-
-[[package]]
-name = "designcraft-doc"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-geom",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "designcraft-engine"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-epub",
- "designcraft-fonts",
- "designcraft-format",
- "designcraft-geom",
- "designcraft-idml",
- "designcraft-images",
- "designcraft-pdf",
- "designcraft-render",
- "designcraft-textimport",
- "designcraft-tools",
- "hayro-cmap",
- "hayro-interpret",
- "hayro-syntax",
- "kurbo",
- "log",
- "quick-xml 0.38.4",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "zip",
-]
-
-[[package]]
-name = "designcraft-epub"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-doc",
- "zip",
-]
-
-[[package]]
-name = "designcraft-fonts"
-version = "0.2.1"
-dependencies = [
- "harfrust 0.13.3",
- "kurbo",
- "log",
- "skrifa 0.47.0",
- "unicode-bidi",
- "unicode-script",
-]
-
-[[package]]
-name = "designcraft-format"
-version = "0.2.1"
-dependencies = [
- "designcraft-doc",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "zip",
-]
-
-[[package]]
-name = "designcraft-geom"
-version = "0.2.1"
-dependencies = [
- "flo_curves",
- "kurbo",
- "proptest",
- "qrcodegen",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "designcraft-idml"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-doc",
- "designcraft-geom",
- "quick-xml 0.38.4",
- "thiserror 2.0.21",
- "zip",
-]
-
-[[package]]
-name = "designcraft-images"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-fonts",
- "image",
- "resvg",
- "tiff",
-]
-
-[[package]]
-name = "designcraft-mcp"
-version = "0.2.1"
-dependencies = [
- "designcraft-engine",
- "designcraft-geom",
- "designcraft-render",
- "designcraft-tools",
- "image",
- "log",
- "serde_json",
-]
-
-[[package]]
-name = "designcraft-pdf"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-fonts",
- "designcraft-geom",
- "designcraft-images",
- "hayro-cmap",
- "hayro-interpret",
- "hayro-syntax",
- "image",
- "krilla",
- "krilla-svg",
- "kurbo",
- "log",
- "thiserror 2.0.21",
- "tiff",
-]
-
-[[package]]
-name = "designcraft-render"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-fonts",
- "designcraft-geom",
- "designcraft-images",
- "hayro",
- "image",
- "log",
- "serde",
- "vello_common 0.2.0",
- "vello_cpu 0.2.0",
-]
-
-[[package]]
-name = "designcraft-textimport"
-version = "0.2.1"
-dependencies = [
- "designcraft-doc",
- "quick-xml 0.38.4",
- "zip",
-]
-
-[[package]]
-name = "designcraft-tools"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-geom",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "designcraft-ui-egui"
-version = "0.2.1"
-dependencies = [
- "designcraft-color",
- "designcraft-compose",
- "designcraft-doc",
- "designcraft-engine",
- "designcraft-fonts",
- "designcraft-geom",
- "designcraft-render",
- "designcraft-tools",
- "egui",
- "egui_kittest",
- "log",
- "regex",
- "serde",
- "serde_json",
- "toml",
- "unicode-bidi",
- "unicode-bidi-mirroring",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "designcraft-web"
-version = "0.2.1"
-dependencies = [
- "designcraft-engine",
- "designcraft-ui-egui",
- "eframe",
- "egui",
- "js-sys",
- "log",
- "rfd",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "dify"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3092,6 +2807,291 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "pagenor"
+version = "0.2.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "log",
+ "muda",
+ "pagenor-engine",
+ "pagenor-ui-egui",
+ "rfd",
+ "serde_json",
+ "winit",
+ "winresource",
+]
+
+[[package]]
+name = "pagenor-cli"
+version = "0.2.1"
+dependencies = [
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-engine",
+ "pagenor-format",
+ "pagenor-geom",
+ "pagenor-mcp",
+ "pagenor-pdf",
+ "pagenor-render",
+ "serde_json",
+]
+
+[[package]]
+name = "pagenor-color"
+version = "0.2.1"
+dependencies = [
+ "kurbo",
+ "moxcms",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pagenor-compose"
+version = "0.2.1"
+dependencies = [
+ "log",
+ "miniz_oxide 0.8.9",
+ "pagenor-color",
+ "pagenor-doc",
+ "pagenor-fonts",
+ "pagenor-geom",
+ "proptest",
+ "regex",
+ "unicode-bidi",
+ "unicode-bidi-mirroring",
+]
+
+[[package]]
+name = "pagenor-doc"
+version = "0.2.1"
+dependencies = [
+ "pagenor-color",
+ "pagenor-geom",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pagenor-engine"
+version = "0.2.1"
+dependencies = [
+ "hayro-cmap",
+ "hayro-interpret",
+ "hayro-syntax",
+ "kurbo",
+ "log",
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-epub",
+ "pagenor-fonts",
+ "pagenor-format",
+ "pagenor-geom",
+ "pagenor-idml",
+ "pagenor-images",
+ "pagenor-pdf",
+ "pagenor-render",
+ "pagenor-textimport",
+ "pagenor-tools",
+ "quick-xml 0.38.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "pagenor-epub"
+version = "0.2.1"
+dependencies = [
+ "pagenor-color",
+ "pagenor-doc",
+ "zip",
+]
+
+[[package]]
+name = "pagenor-fonts"
+version = "0.2.1"
+dependencies = [
+ "harfrust 0.13.3",
+ "kurbo",
+ "log",
+ "skrifa 0.47.0",
+ "unicode-bidi",
+ "unicode-script",
+]
+
+[[package]]
+name = "pagenor-format"
+version = "0.2.1"
+dependencies = [
+ "pagenor-doc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "pagenor-geom"
+version = "0.2.1"
+dependencies = [
+ "flo_curves",
+ "kurbo",
+ "proptest",
+ "qrcodegen",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pagenor-idml"
+version = "0.2.1"
+dependencies = [
+ "pagenor-color",
+ "pagenor-doc",
+ "pagenor-geom",
+ "quick-xml 0.38.4",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "pagenor-images"
+version = "0.2.1"
+dependencies = [
+ "image",
+ "pagenor-color",
+ "pagenor-fonts",
+ "resvg",
+ "tiff",
+]
+
+[[package]]
+name = "pagenor-mcp"
+version = "0.2.1"
+dependencies = [
+ "image",
+ "log",
+ "pagenor-engine",
+ "pagenor-geom",
+ "pagenor-render",
+ "pagenor-tools",
+ "serde_json",
+]
+
+[[package]]
+name = "pagenor-pdf"
+version = "0.2.1"
+dependencies = [
+ "hayro-cmap",
+ "hayro-interpret",
+ "hayro-syntax",
+ "image",
+ "krilla",
+ "krilla-svg",
+ "kurbo",
+ "log",
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-fonts",
+ "pagenor-geom",
+ "pagenor-images",
+ "thiserror 2.0.21",
+ "tiff",
+]
+
+[[package]]
+name = "pagenor-render"
+version = "0.2.1"
+dependencies = [
+ "hayro",
+ "image",
+ "log",
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-fonts",
+ "pagenor-geom",
+ "pagenor-images",
+ "serde",
+ "vello_common 0.2.0",
+ "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "pagenor-textimport"
+version = "0.2.1"
+dependencies = [
+ "pagenor-doc",
+ "quick-xml 0.38.4",
+ "zip",
+]
+
+[[package]]
+name = "pagenor-tools"
+version = "0.2.1"
+dependencies = [
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-geom",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pagenor-ui-egui"
+version = "0.2.1"
+dependencies = [
+ "egui",
+ "egui_kittest",
+ "log",
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-engine",
+ "pagenor-fonts",
+ "pagenor-geom",
+ "pagenor-render",
+ "pagenor-tools",
+ "regex",
+ "serde",
+ "serde_json",
+ "toml",
+ "unicode-bidi",
+ "unicode-bidi-mirroring",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "pagenor-web"
+version = "0.2.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "js-sys",
+ "log",
+ "pagenor-engine",
+ "pagenor-ui-egui",
+ "rfd",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

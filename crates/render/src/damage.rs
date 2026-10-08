@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_doc::{Document, Item, ItemId, SpreadRef, Story, StoryId};
-use designcraft_geom::Rect;
+use pagenor_doc::{Document, Item, ItemId, SpreadRef, Story, StoryId};
+use pagenor_geom::Rect;
 
 /// Changed regions in spread coordinates, or `None` when the whole view must be repainted.
 pub fn damage(old: &Document, new: &Document) -> Option<Vec<(SpreadRef, Rect)>> {
@@ -18,7 +18,7 @@ pub fn damage(old: &Document, new: &Document) -> Option<Vec<(SpreadRef, Rect)>> 
 
 /// [`damage`] using the composition cache: of a changed story, only the frames whose composed
 /// text actually changed are damaged (typing on page 40 of a chapter repaints page 40).
-pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_compose::Cache>) -> Option<Vec<(SpreadRef, Rect)>> {
+pub fn damage_with(old: &Document, new: &Document, cache: Option<&pagenor_compose::Cache>) -> Option<Vec<(SpreadRef, Rect)>> {
     if std::ptr::eq(old, new) {
         return Some(vec![]);
     }
@@ -97,7 +97,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             && let Some(prev) = c.composed_for(old, sid)
         {
             let cur = c.get(new, sid, None);
-            let changed = designcraft_compose::Cache::changed_frames(&prev, &cur);
+            let changed = pagenor_compose::Cache::changed_frames(&prev, &cur);
             for f in changed {
                 for d in [old, new] {
                     if d.find(f).is_some() {
@@ -140,7 +140,7 @@ fn text_stories(it: &Item) -> Vec<StoryId> {
 
 /// Does the story show text generated from other stories or pages?
 fn shows_other_text(d: &Document, s: &Story) -> bool {
-    !s.xrefs.is_empty() || s.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some()) || d.toc.as_ref().is_some_and(|t| t.story == s.id)
+    !s.xrefs.is_empty() || s.text.chars().any(|c| pagenor_doc::vars::var_index(c).is_some()) || d.toc.as_ref().is_some_and(|t| t.story == s.id)
 }
 
 /// Area an item paints (spread coordinates), or None when it can't be bounded cheaply.
@@ -148,7 +148,7 @@ fn item_area(it: &Item) -> Option<Rect> {
     let mut ok = true;
     it.walk(&mut |i| {
         // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.wrap.mode != designcraft_doc::WrapMode::None {
+        if i.effects.any() || i.wrap.mode != pagenor_doc::WrapMode::None {
             ok = false;
         }
     });
@@ -171,8 +171,8 @@ fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use designcraft_doc::ParaFormat;
-    use designcraft_doc::build::NewDocument;
+    use pagenor_doc::ParaFormat;
+    use pagenor_doc::build::NewDocument;
 
     #[test]
     fn typing_damages_only_the_frame() {
@@ -184,12 +184,12 @@ mod tests {
         d.story_mut(sid).unwrap().insert(5, " world");
         let dmg = damage(&old, &d).unwrap();
         assert!(!dmg.is_empty());
-        assert!(dmg.iter().all(|(r, rect)| *r == SpreadRef::Doc(0) && rect.contains(designcraft_geom::Point::new(100.0, 100.0))));
+        assert!(dmg.iter().all(|(r, rect)| *r == SpreadRef::Doc(0) && rect.contains(pagenor_geom::Point::new(100.0, 100.0))));
         // Nothing changed.
         assert_eq!(damage(&d, &d.clone()).unwrap().len(), 0);
         // A style change repaints everything.
         let old = d.clone();
-        d.styles_mut().paragraph.push(designcraft_doc::ParagraphStyle {
+        d.styles_mut().paragraph.push(pagenor_doc::ParagraphStyle {
             name: "X".into(),
             based_on: None,
             next_style: None,
@@ -201,20 +201,20 @@ mod tests {
         // Moving an item damages where it was and where it is.
         let old = d.clone();
         let id = d.spreads[0].items[0].id;
-        d.item_mut(id).unwrap().xf = designcraft_geom::Affine::translate((100.0, 0.0));
+        d.item_mut(id).unwrap().xf = pagenor_geom::Affine::translate((100.0, 0.0));
         let dmg = damage(&old, &d).unwrap();
-        assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(100.0, 100.0))));
-        assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(350.0, 100.0))));
+        assert!(dmg.iter().any(|(_, r)| r.contains(pagenor_geom::Point::new(100.0, 100.0))));
+        assert!(dmg.iter().any(|(_, r)| r.contains(pagenor_geom::Point::new(350.0, 100.0))));
     }
 
     #[test]
     fn patched_render_equals_full_render() {
         use crate::{Placed, RenderOptions, Renderer};
-        use designcraft_geom::{Affine, Vec2};
+        use pagenor_geom::{Affine, Vec2};
         let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
         let lid = d.default_layer();
         let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "Hello there", ParaFormat::default()).unwrap();
-        let cache = designcraft_compose::Cache::new();
+        let cache = pagenor_compose::Cache::new();
         let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }];
         let (w, h) = (400u32, 300u32);
         let view = Affine::scale(1.3);
@@ -254,7 +254,7 @@ mod tests {
         let (f3, _) = d.add_text_frame(SpreadRef::Doc(2), Rect::new(72.0, 72.0, 300.0, 300.0), lid, "", ParaFormat::default()).unwrap();
         d.thread(f1, f2).unwrap();
         d.thread(f2, f3).unwrap();
-        let cache = designcraft_compose::Cache::new();
+        let cache = pagenor_compose::Cache::new();
         let _ = cache.get(&d, sid, None);
         // Change a word in the last frame's text (same length): only that frame changes.
         let old = d.clone();
@@ -277,7 +277,7 @@ mod tests {
         let old = d.clone();
         let _ = cache.get(&d, sid, None);
         let it = d.item_mut(f1).unwrap();
-        it.path = designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 300.0, 150.0));
+        it.path = pagenor_geom::shapes::rectangle(Rect::new(72.0, 72.0, 300.0, 150.0));
         let dmg = damage_with(&old, &d, Some(&cache)).unwrap();
         let spreads: Vec<SpreadRef> = dmg.iter().map(|(r, _)| *r).collect();
         assert!(spreads.contains(&SpreadRef::Doc(1)), "{dmg:?}");

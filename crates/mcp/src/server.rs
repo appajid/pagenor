@@ -18,7 +18,7 @@ const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 const RESOURCE_NOT_FOUND: i64 = -32002;
 
-const INSTRUCTIONS: &str = "DesignCraft is a page-layout app (an InDesign clone). Coordinates are points in spread \
+const INSTRUCTIONS: &str = "Pagenor is a page-layout app (an InDesign clone). Coordinates are points in spread \
 space (y down; on a single-page spread the page's top-left is (0,0); a default Letter page is 612×792). Every action \
 is a command: find ids and parameters with list_commands and run them with execute (or several with batch). Typical \
 flow: new_document → execute frame.create {rect:[x0,y0,x1,y1], content:\"text\", text:\"…\"} → set_story_text / \
@@ -26,8 +26,8 @@ execute type.char / style.paragraph.apply → render_page to look at the result.
 (ids, bounds), stories (overset) and styles. place_image puts a picture on the page.";
 
 /// Resource URIs.
-pub const DOC_URI: &str = "designcraft://document";
-pub const COMMANDS_URI: &str = "designcraft://commands";
+pub const DOC_URI: &str = "pagenor://document";
+pub const COMMANDS_URI: &str = "pagenor://commands";
 
 /// An MCP server bound to one backend.
 pub struct Server {
@@ -134,13 +134,13 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "designcraft", "title": "DesignCraft", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": designcraft_engine::links::APP_PAGE},
+                    "serverInfo": {"name": "pagenor", "title": "Pagenor", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": pagenor_engine::links::APP_PAGE},
                     "instructions": format!(
                         "{INSTRUCTIONS} Backend: {}. Community: {} (Discord), {} (app page), {} (source). The `app.links` command returns these links.",
                         self.backend.describe(),
-                        designcraft_engine::links::DISCORD,
-                        designcraft_engine::links::APP_PAGE,
-                        designcraft_engine::links::GITHUB
+                        pagenor_engine::links::DISCORD,
+                        pagenor_engine::links::APP_PAGE,
+                        pagenor_engine::links::GITHUB
                     ),
                 }))
             }

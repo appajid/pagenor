@@ -2,7 +2,7 @@
 //! empty canvas to draw a new text frame. Keys move the caret / delete; typing goes through
 //! `text.insert` (sent by the UI as text input).
 
-use designcraft_geom::Point;
+use pagenor_geom::Point;
 use serde_json::json;
 
 use crate::{Action, Cursor, Mods, PointerEvent, PointerKind, Tool, ToolContext, ToolKey, frame::drag_rect, rect_json, spread_json};
@@ -47,7 +47,7 @@ impl Tool for TypeTool {
                 self.cell_drag = None;
                 if let Some((_, id)) = cx.hit(ev.pos)
                     && let Some(it) = cx.doc.item(id)
-                    && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
+                    && !matches!(it.content, pagenor_doc::Content::Graphic(_) | pagenor_doc::Content::Group { .. })
                 {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
                     // Whole rows/columns selected: wait to see whether this is a drag.

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use designcraft_color::BlendMode;
-use designcraft_geom::corners::CornerOptions;
-use designcraft_geom::{Affine, PathData, Point, Rect};
+use pagenor_color::BlendMode;
+use pagenor_geom::corners::CornerOptions;
+use pagenor_geom::{Affine, PathData, Point, Rect};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AssetId, ItemId, LayerId, StoryId};
@@ -33,13 +33,13 @@ impl Default for Fill {
 
 impl Fill {
     pub fn none() -> Self {
-        Fill { swatch: designcraft_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
+        Fill { swatch: pagenor_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
     }
     pub fn swatch(name: &str) -> Self {
         Fill { swatch: name.into(), ..Fill::none() }
     }
     pub fn is_none(&self) -> bool {
-        self.swatch == designcraft_color::swatch::NONE
+        self.swatch == pagenor_color::swatch::NONE
     }
 }
 
@@ -133,8 +133,8 @@ impl StrokeType {
 
     /// The filled area for types drawn as fills (stripes, wavy, hash); `None` for solid, dashed
     /// and dotted strokes (and unresolved named styles).
-    pub fn outline(&self, bp: &designcraft_geom::BezPath, weight: f64, tol: f64) -> Option<designcraft_geom::BezPath> {
-        use designcraft_geom::stroke_style as ss;
+    pub fn outline(&self, bp: &pagenor_geom::BezPath, weight: f64, tol: f64) -> Option<pagenor_geom::BezPath> {
+        use pagenor_geom::stroke_style as ss;
         match self {
             StrokeType::Wavy => Some(ss::wavy(bp, weight, tol)),
             StrokeType::Hashed => Some(ss::hashed(bp, weight, tol)),
@@ -230,7 +230,7 @@ impl Default for Stroke {
     /// InDesign's default for drawn shapes: 1 pt black.
     fn default() -> Self {
         Stroke {
-            swatch: designcraft_color::swatch::BLACK.into(),
+            swatch: pagenor_color::swatch::BLACK.into(),
             tint: 1.0,
             weight: 1.0,
             kind: StrokeType::Solid,
@@ -240,7 +240,7 @@ impl Default for Stroke {
             miter_limit: 4.0,
             start: Arrowhead::None,
             end: Arrowhead::None,
-            gap_swatch: designcraft_color::swatch::NONE.into(),
+            gap_swatch: pagenor_color::swatch::NONE.into(),
             gap_tint: 1.0,
             overprint: false,
             gap_overprint: false,
@@ -255,10 +255,10 @@ impl Stroke {
     }
 
     pub fn none() -> Self {
-        Stroke { swatch: designcraft_color::swatch::NONE.into(), ..Stroke::default() }
+        Stroke { swatch: pagenor_color::swatch::NONE.into(), ..Stroke::default() }
     }
     pub fn is_none(&self) -> bool {
-        self.swatch == designcraft_color::swatch::NONE || self.weight <= 0.0
+        self.swatch == pagenor_color::swatch::NONE || self.weight <= 0.0
     }
 }
 
@@ -374,7 +374,7 @@ impl Default for TextFrameOptions {
             auto_size_ref: 1,
             column_rule: false,
             column_rule_weight: 1.0,
-            column_rule_color: designcraft_color::swatch::BLACK.into(),
+            column_rule_color: pagenor_color::swatch::BLACK.into(),
             baseline_grid: None,
             path: None,
         }
@@ -689,7 +689,7 @@ impl Default for DropShadow {
     fn default() -> Self {
         DropShadow {
             on: false,
-            color: designcraft_color::swatch::BLACK.into(),
+            color: pagenor_color::swatch::BLACK.into(),
             opacity: 0.75,
             angle: 135.0,
             distance: 7.0,
@@ -721,7 +721,7 @@ impl Default for InnerShadow {
     fn default() -> Self {
         InnerShadow {
             on: false,
-            color: designcraft_color::swatch::BLACK.into(),
+            color: pagenor_color::swatch::BLACK.into(),
             opacity: 0.75,
             angle: 135.0,
             distance: 7.0,
@@ -746,7 +746,7 @@ pub struct OuterGlow {
 
 impl Default for OuterGlow {
     fn default() -> Self {
-        OuterGlow { on: false, color: designcraft_color::swatch::BLACK.into(), opacity: 0.75, size: 7.0, spread: 0.0 }
+        OuterGlow { on: false, color: pagenor_color::swatch::BLACK.into(), opacity: 0.75, size: 7.0, spread: 0.0 }
     }
 }
 
@@ -803,7 +803,7 @@ pub struct InnerGlow {
 
 impl Default for InnerGlow {
     fn default() -> Self {
-        InnerGlow { on: false, color: designcraft_color::swatch::PAPER.into(), opacity: 0.75, size: 7.0, choke: 0.0, center: false }
+        InnerGlow { on: false, color: pagenor_color::swatch::PAPER.into(), opacity: 0.75, size: 7.0, choke: 0.0, center: false }
     }
 }
 
@@ -832,9 +832,9 @@ impl Default for Bevel {
             depth: 100.0,
             angle: 120.0,
             global_light: true,
-            highlight: designcraft_color::swatch::PAPER.into(),
+            highlight: pagenor_color::swatch::PAPER.into(),
             highlight_opacity: 0.75,
-            shadow: designcraft_color::swatch::BLACK.into(),
+            shadow: pagenor_color::swatch::BLACK.into(),
             shadow_opacity: 0.75,
         }
     }
@@ -855,7 +855,7 @@ pub struct Satin {
 
 impl Default for Satin {
     fn default() -> Self {
-        Satin { on: false, color: designcraft_color::swatch::BLACK.into(), opacity: 0.5, angle: 120.0, distance: 7.0, size: 7.0, invert: false }
+        Satin { on: false, color: pagenor_color::swatch::BLACK.into(), opacity: 0.5, angle: 120.0, distance: 7.0, size: 7.0, invert: false }
     }
 }
 
@@ -883,8 +883,8 @@ impl Default for GradientFeather {
 
 impl GradientFeather {
     /// The gradient's two points in item space for an object with inner bounds `b`.
-    pub fn points(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, designcraft_geom::Point) {
-        use designcraft_geom::{Point, Vec2};
+    pub fn points(&self, b: pagenor_geom::Rect) -> (pagenor_geom::Point, pagenor_geom::Point) {
+        use pagenor_geom::{Point, Vec2};
         if let Some([x0, y0, x1, y1]) = self.vector {
             return (Point::new(x0, y0), Point::new(x1, y1));
         }
@@ -1179,7 +1179,7 @@ impl Item {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use designcraft_geom::shapes;
+    use pagenor_geom::shapes;
 
     #[test]
     fn bounds_and_text_area() {

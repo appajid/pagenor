@@ -1,6 +1,6 @@
 //! Hand (H) and Zoom (Z) tools.
 
-use designcraft_geom::Point;
+use pagenor_geom::Point;
 use serde_json::json;
 
 use crate::{Action, Cursor, Mods, PointerEvent, PointerKind, Tool, ToolContext};
@@ -135,14 +135,11 @@ impl Tool for PlaceGun {
                 let b = cx.layout.to_spread(sr, ev.pos);
                 if (ev.pos - a).hypot() < cx.tol(3.0)
                     && let Some((_, id)) = cx.hit(a)
-                    && cx
-                        .doc
-                        .item(id)
-                        .is_some_and(|i| matches!(i.content, designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_)))
+                    && cx.doc.item(id).is_some_and(|i| matches!(i.content, pagenor_doc::Content::Unassigned | pagenor_doc::Content::Graphic(_)))
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
-                let r = designcraft_geom::Rect::from_points(sa, b);
+                let r = pagenor_geom::Rect::from_points(sa, b);
                 vec![Action::Exec(
                     "place.drop".into(),
                     json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y, "rect": [r.x0, r.y0, r.x1, r.y1]}),
@@ -153,7 +150,7 @@ impl Tool for PlaceGun {
     }
     fn overlays(&self, _cx: &ToolContext) -> Vec<crate::Overlay> {
         match self.start {
-            Some(a) => vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))],
+            Some(a) => vec![crate::Overlay::Marquee(pagenor_geom::Rect::from_points(a, self.cur))],
             None => vec![],
         }
     }
@@ -174,7 +171,7 @@ impl Tool for PageTool {
         if ev.kind != PointerKind::Up {
             return vec![];
         }
-        let Some((designcraft_doc::SpreadRef::Doc(si), sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
+        let Some((pagenor_doc::SpreadRef::Doc(si), sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
         let Some(spread) = cx.doc.spreads.get(si) else { return vec![] };
         let Some(pi) = spread.pages.iter().position(|p| p.bounds().contains(sp)) else { return vec![] };
         let pg = &spread.pages[pi];
@@ -201,7 +198,7 @@ impl Tool for PathTypeTool {
         let Some((_, id)) = cx.hit(ev.pos) else { return vec![] };
         let Some(it) = cx.doc.item(id) else { return vec![] };
         match &it.content {
-            designcraft_doc::Content::Unassigned => vec![Action::Exec("type.onPath".into(), json!({"id": id.0})), Action::SwitchTool("type".into())],
+            pagenor_doc::Content::Unassigned => vec![Action::Exec("type.onPath".into(), json!({"id": id.0})), Action::SwitchTool("type".into())],
             _ => vec![],
         }
     }
@@ -215,7 +212,7 @@ impl Tool for PathTypeTool {
 #[derive(Default)]
 pub struct GapTool {
     /// Spread, its spread → canvas transform and the press point in spread coordinates.
-    start: Option<(designcraft_doc::SpreadRef, designcraft_geom::Affine, Point)>,
+    start: Option<(pagenor_doc::SpreadRef, pagenor_geom::Affine, Point)>,
     active: bool,
 }
 

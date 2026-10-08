@@ -1,5 +1,5 @@
 //! IDML enum mappings for CJK character formatting.
-use designcraft_doc::cjk::{CharacterAlignment as A, LeadingModel as L};
+use pagenor_doc::cjk::{CharacterAlignment as A, LeadingModel as L};
 pub(crate) fn leading_in(v: &str) -> Option<L> {
     Some(match v {
         "LeadingModelRoman" => L::Roman,

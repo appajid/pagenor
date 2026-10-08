@@ -46,7 +46,7 @@ fn tool_gesture_creates_one_undo_step() {
     let mut s = session();
     s.set_tool("rectangle");
     let v = ViewInfo::at_zoom(1.0);
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     s.pointer(&PointerEvent::new(PointerKind::Down, 10.0, 10.0), v).unwrap();
     for i in 1..10 {
         s.pointer(&PointerEvent::new(PointerKind::Drag, 10.0 + i as f64 * 10.0, 10.0 + i as f64 * 5.0), v).unwrap();
@@ -55,7 +55,7 @@ fn tool_gesture_creates_one_undo_step() {
     let st = s.doc().unwrap();
     assert_eq!(st.history.undo.len(), 1);
     assert_eq!(st.doc.spreads[0].items.len(), 1);
-    assert_eq!(st.doc.spreads[0].items[0].bounds(), designcraft_geom::Rect::new(10.0, 10.0, 100.0, 55.0));
+    assert_eq!(st.doc.spreads[0].items[0].bounds(), pagenor_geom::Rect::new(10.0, 10.0, 100.0, 55.0));
     // Move with the selection tool.
     s.set_tool("selection");
     s.pointer(&PointerEvent::new(PointerKind::Down, 50.0, 30.0), v).unwrap();
@@ -77,13 +77,13 @@ fn tool_gesture_creates_one_undo_step() {
 
 #[test]
 fn shift_move_does_not_take_the_other_axis() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [80.0, 100.0, 140.0, 140.0], "content": "unassigned"})).unwrap();
     s.execute("guide.add", &json!({"orientation": "horizontal", "position": 102.0, "page": 0})).unwrap();
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
-    let shift = designcraft_tools::Mods { shift: true, ..Default::default() };
+    let shift = pagenor_tools::Mods { shift: true, ..Default::default() };
     s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 120.0).with_mods(shift), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Drag, 160.0, 121.0).with_mods(shift), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Up, 160.0, 121.0).with_mods(shift), v).unwrap();
@@ -94,13 +94,13 @@ fn shift_move_does_not_take_the_other_axis() {
 
 #[test]
 fn cmd_move_does_not_snap() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [80.0, 100.0, 140.0, 140.0], "content": "unassigned"})).unwrap();
     s.execute("guide.add", &json!({"orientation": "horizontal", "position": 102.0, "page": 0})).unwrap();
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
-    let cmd = designcraft_tools::Mods { cmd: true, shift: false, ..Default::default() };
+    let cmd = pagenor_tools::Mods { cmd: true, shift: false, ..Default::default() };
     s.pointer(&PointerEvent::new(PointerKind::Down, 110.0, 120.0).with_mods(cmd), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Drag, 160.0, 121.0).with_mods(cmd), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Up, 160.0, 121.0).with_mods(cmd), v).unwrap();
@@ -111,15 +111,15 @@ fn cmd_move_does_not_snap() {
 
 #[test]
 fn cmd_resize_still_snaps_to_a_guide() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [100.0, 100.0, 200.0, 180.0], "content": "unassigned"})).unwrap();
     s.execute("guide.add", &json!({"orientation": "vertical", "position": 250.0, "page": 0})).unwrap();
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
     let b0 = s.doc().unwrap().doc.spreads[0].items[0].bounds();
-    let right = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(b0.x1, b0.center().y));
-    let cmd = designcraft_tools::Mods { cmd: true, ..Default::default() };
+    let right = s.layout().to_canvas(pagenor_doc::SpreadRef::Doc(0), pagenor_geom::Point::new(b0.x1, b0.center().y));
+    let cmd = pagenor_tools::Mods { cmd: true, ..Default::default() };
     s.pointer(&PointerEvent::new(PointerKind::Down, right.x, right.y).with_mods(cmd), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Drag, right.x + 47.0, right.y).with_mods(cmd), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Up, right.x + 47.0, right.y).with_mods(cmd), v).unwrap();
@@ -133,7 +133,7 @@ fn cmd_resize_still_snaps_to_a_guide() {
 
 #[test]
 fn shift_move_on_a_turned_spread_stays_on_the_line() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [80.0, 100.0, 140.0, 140.0], "content": "unassigned"})).unwrap();
     s.execute("layout.rotateSpreadView", &json!({"angle": 90})).unwrap();
@@ -142,8 +142,8 @@ fn shift_move_on_a_turned_spread_stays_on_the_line() {
     s.set_tool("selection");
     let v = ViewInfo::at_zoom(1.0);
     let b0 = s.doc().unwrap().doc.spreads[0].items[0].bounds();
-    let c = s.layout().to_canvas(designcraft_doc::SpreadRef::Doc(0), b0.center());
-    let shift = designcraft_tools::Mods { shift: true, ..Default::default() };
+    let c = s.layout().to_canvas(pagenor_doc::SpreadRef::Doc(0), b0.center());
+    let shift = pagenor_tools::Mods { shift: true, ..Default::default() };
     s.pointer(&PointerEvent::new(PointerKind::Down, c.x, c.y).with_mods(shift), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Drag, c.x + 60.0, c.y + 1.0).with_mods(shift), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Up, c.x + 60.0, c.y + 1.0).with_mods(shift), v).unwrap();
@@ -200,19 +200,19 @@ fn align_and_distribute() {
     }
     s.execute("object.align", &json!({"ids": ids, "edge": "top"})).unwrap();
     let st = s.doc().unwrap();
-    let tops: Vec<f64> = ids.iter().map(|i| st.doc.item(designcraft_doc::ItemId(*i)).unwrap().bounds().y0).collect();
+    let tops: Vec<f64> = ids.iter().map(|i| st.doc.item(pagenor_doc::ItemId(*i)).unwrap().bounds().y0).collect();
     assert!(tops.iter().all(|t| (*t - 51.0).abs() < 1e-9), "{tops:?}");
     s.execute("object.distribute", &json!({"ids": ids, "by": "spacing"})).unwrap();
     let st = s.doc().unwrap();
-    let b: Vec<designcraft_geom::Rect> = ids.iter().map(|i| st.doc.item(designcraft_doc::ItemId(*i)).unwrap().bounds()).collect();
+    let b: Vec<pagenor_geom::Rect> = ids.iter().map(|i| st.doc.item(pagenor_doc::ItemId(*i)).unwrap().bounds()).collect();
     assert!(((b[1].x0 - b[0].x1) - (b[2].x0 - b[1].x1)).abs() < 1e-9);
     s.execute("object.align", &json!({"ids": [ids[0]], "edge": "left", "to": "margins"})).unwrap();
-    assert_eq!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(ids[0])).unwrap().bounds().x0, 36.0);
+    assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(ids[0])).unwrap().bounds().x0, 36.0);
 }
 
 #[test]
 fn pen_draws_and_direct_selection_edits() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     let v = ViewInfo::at_zoom(1.0);
     s.set_tool("pen");
@@ -242,7 +242,7 @@ fn pen_draws_and_direct_selection_edits() {
     let a = s.doc().unwrap().doc.item(id).unwrap().path.subpaths[0].anchors[0].p;
     // The pen placed this anchor on the baseline at y 96. Dragging toward (90, 80)
     // proposes y 76, and the baseline at 72 is inside the zone, so the anchor lands at (90, 72).
-    assert_eq!(a, designcraft_geom::Point::new(90.0, 72.0));
+    assert_eq!(a, pagenor_geom::Point::new(90.0, 72.0));
 }
 
 #[test]
@@ -252,22 +252,22 @@ fn rotate_scale_shear_and_eyedropper() {
     s.execute("object.fill", &json!({"swatch": "C=100 M=0 Y=0 K=0"})).unwrap();
     let b = s.execute("frame.create", &json!({"rect": [300, 100, 340, 140], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
     s.execute("transform.rotate", &json!({"ids": [a], "angle": 90})).unwrap();
-    let r = s.doc().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().bounds();
+    let r = s.doc().unwrap().doc.item(pagenor_doc::ItemId(a)).unwrap().bounds();
     assert!((r.width() - 50.0).abs() < 1e-6 && (r.height() - 100.0).abs() < 1e-6, "{r:?}");
     s.execute("transform.scale", &json!({"ids": [b], "sx": 2.0})).unwrap();
-    let r = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds();
+    let r = s.doc().unwrap().doc.item(pagenor_doc::ItemId(b)).unwrap().bounds();
     assert!((r.width() - 80.0).abs() < 1e-6, "{r:?}");
     s.execute("selection.set", &json!({"ids": [b]})).unwrap();
     s.execute("object.matchAttributes", &json!({"from": a})).unwrap();
-    assert_eq!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().fill.swatch, "C=100 M=0 Y=0 K=0");
+    assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(b)).unwrap().fill.swatch, "C=100 M=0 Y=0 K=0");
     s.execute("transform.shear", &json!({"ids": [b], "angle": 20})).unwrap();
 }
 
 #[test]
 fn place_gun_click_drag_and_into_frame() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
-    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
     let b64 = cmd::base64_encode(&png);
     s.execute("place.load", &json!({"base64": b64, "name": "a.png"})).unwrap();
     assert_eq!(s.tool_id(), "placeGun");
@@ -278,13 +278,13 @@ fn place_gun_click_drag_and_into_frame() {
     let st = s.doc().unwrap();
     let it = st.doc.spreads[0].items.last().unwrap();
     // Dragged 80×200 → fit proportionally: 80×40.
-    assert_eq!(it.bounds(), designcraft_geom::Rect::new(100.0, 100.0, 180.0, 140.0));
+    assert_eq!(it.bounds(), pagenor_geom::Rect::new(100.0, 100.0, 180.0, 140.0));
     assert_eq!(s.tool_id(), "selection");
     // Into an empty frame.
     let f = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
     s.execute("place.load", &json!({"base64": b64})).unwrap();
     s.execute("place.drop", &json!({"frame": f})).unwrap();
-    assert!(matches!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+    assert!(matches!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).unwrap().content, pagenor_doc::Content::Graphic(_)));
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn hyperlinks_and_bookmarks_reach_the_pdf() {
     let mut s = Session::new();
     s.execute("file.newSample", &json!({})).unwrap();
     s.execute("selection.set", &json!({"ids": [39]})).unwrap();
-    s.execute("hyperlink.create", &json!({"url": "https://example.com/designcraft"})).unwrap();
+    s.execute("hyperlink.create", &json!({"url": "https://example.com/pagenor"})).unwrap();
     let d = s.execute("document.inspect", &json!({})).unwrap();
     let sid = d["stories"][0]["id"].as_u64().unwrap();
     s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 3})).unwrap();
@@ -380,7 +380,7 @@ fn snippets_roundtrip_between_documents() {
     let snip = s.execute("snippet.export", &json!({})).unwrap();
     s.execute("file.new", &json!({})).unwrap();
     let r = s.execute("snippet.place", &json!({"base64": snip["base64"], "x": 36.0, "y": 36.0})).unwrap();
-    let id = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+    let id = pagenor_doc::ItemId(r["ids"][0].as_u64().unwrap());
     let st = s.doc().unwrap();
     let it = st.doc.item(id).unwrap();
     assert_eq!(it.bounds().x0, 36.0);
@@ -400,7 +400,7 @@ fn object_styles_create_and_apply() {
     let b = s.execute("frame.create", &json!({"rect": [200, 36, 300, 136], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
     s.execute("style.object.apply", &json!({"name": "Magenta Box"})).unwrap();
     let d = &s.doc().unwrap().doc;
-    let (ia, ib) = (d.item(designcraft_doc::ItemId(a)).unwrap(), d.item(designcraft_doc::ItemId(b)).unwrap());
+    let (ia, ib) = (d.item(pagenor_doc::ItemId(a)).unwrap(), d.item(pagenor_doc::ItemId(b)).unwrap());
     assert_eq!(ia.fill, ib.fill);
     assert_eq!(ib.stroke.weight, 4.0);
     assert_eq!(ib.object_style, "Magenta Box");
@@ -477,7 +477,7 @@ fn object_set_flags_and_wrap_invert() {
     let mut s = session();
     let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200]})).unwrap();
     let id = r["id"].as_u64().unwrap();
-    let item = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).cloned().unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).cloned().unwrap();
     s.execute("object.setFlags", &json!({"ids": [id], "hidden": true})).unwrap();
     assert!(item(&s).hidden);
     s.execute("object.setFlags", &json!({"ids": [id], "hidden": false, "locked": true})).unwrap();
@@ -491,7 +491,7 @@ fn object_set_flags_and_wrap_invert() {
 
 #[test]
 fn gridify_while_drawing_frames() {
-    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    use pagenor_tools::{Mods, PointerEvent, PointerKind, ToolKey};
     let mut s = session();
     let n0 = s.doc().unwrap().doc.spreads[0].items.len();
     s.set_tool("rectangleFrame");
@@ -512,7 +512,7 @@ fn gridify_while_drawing_frames() {
 
 #[test]
 fn gap_tool_drag_moves_the_gap() {
-    use designcraft_tools::{PointerEvent, PointerKind};
+    use pagenor_tools::{PointerEvent, PointerKind};
     let mut s = session();
     let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 300]})).unwrap()["id"].as_u64().unwrap();
     s.set_tool("gap");
@@ -521,7 +521,7 @@ fn gap_tool_drag_moves_the_gap() {
     s.pointer(&PointerEvent::new(PointerKind::Drag, 270.0, 205.0), v).unwrap();
     s.pointer(&PointerEvent::new(PointerKind::Up, 270.0, 205.0), v).unwrap();
     // The gap between the frame and the page's right edge: the frame's right side moved 20.
-    let b = s.doc().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().bounds();
+    let b = s.doc().unwrap().doc.item(pagenor_doc::ItemId(a)).unwrap().bounds();
     assert_eq!(b.x1, 220.0, "{b:?}");
     assert_eq!(s.doc().unwrap().history.undo.len(), 2, "create + one gap move");
 }

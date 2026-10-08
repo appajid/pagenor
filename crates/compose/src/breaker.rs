@@ -190,7 +190,7 @@ fn korean_letter(g: &Glyph) -> bool {
     let c = g.ch as u32;
     let hangul = matches!(c, 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF);
     let han = matches!(c, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3FFFF);
-    hangul || (han && g.lang.is_some_and(|t| designcraft_doc::language_subtag(t) == "ko"))
+    hangul || (han && g.lang.is_some_and(|t| pagenor_doc::language_subtag(t) == "ko"))
 }
 
 /// Is the place between glyphs `a` and `b` one where CJK text may break (next to an ideograph, kana
@@ -207,7 +207,7 @@ fn cjk_break(a: &Glyph, b: &Glyph, sp: &Spacing) -> bool {
 }
 
 pub fn is_forced(c: char) -> bool {
-    use designcraft_doc::story::*;
+    use pagenor_doc::story::*;
     matches!(c, FORCED_LINE_BREAK | COLUMN_BREAK | FRAME_BREAK | PAGE_BREAK)
 }
 
@@ -248,7 +248,7 @@ fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
     let units = match cache.iter().find(|c| c.0 == id) {
         Some(c) => c.1,
         None => {
-            let gid = designcraft_fonts::first_glyph(&g.face, &['-', '\u{2010}']);
+            let gid = pagenor_fonts::first_glyph(&g.face, &['-', '\u{2010}']);
             let u = g.face.advance(gid);
             cache.push((id, u));
             u

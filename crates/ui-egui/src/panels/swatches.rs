@@ -1,7 +1,7 @@
 //! Swatches and Color panels.
 
-use designcraft_color::{ColorType, SwatchValue};
 use egui::{Sense, vec2};
+use pagenor_color::{ColorType, SwatchValue};
 use serde_json::json;
 
 use crate::theme::Tokens;
@@ -117,8 +117,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 fn swatch_row(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
-    doc: &designcraft_doc::Document,
-    sw: &designcraft_color::swatch::Swatch,
+    doc: &pagenor_doc::Document,
+    sw: &pagenor_color::swatch::Swatch,
     indent: f32,
     fill_cur: Option<&str>,
     text: bool,
@@ -138,9 +138,9 @@ fn swatch_row(
     let kind = match &sw.value {
         SwatchValue::Color { color, color_type } => {
             let m = match color {
-                designcraft_color::Color::Cmyk { .. } => "CMYK",
-                designcraft_color::Color::Rgb { .. } => "RGB",
-                designcraft_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
+                pagenor_color::Color::Cmyk { .. } => "CMYK",
+                pagenor_color::Color::Rgb { .. } => "RGB",
+                pagenor_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
             };
             format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
         }
@@ -210,7 +210,7 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let stroke_id = egui::Id::new("color_panel_stroke");
     let mode_id = egui::Id::new("color_panel_mode");
     let mut stroke: bool = ui.data(|d| d.get_temp(stroke_id)).unwrap_or(false);
-    let default_mode = if doc.settings.intent == designcraft_doc::Intent::Print { ColorMode::Cmyk } else { ColorMode::Rgb };
+    let default_mode = if doc.settings.intent == pagenor_doc::Intent::Print { ColorMode::Cmyk } else { ColorMode::Rgb };
     let mut mode: ColorMode = ui.data(|d| d.get_temp(mode_id)).unwrap_or(default_mode);
     let target = if stroke { "stroke" } else { "fill" };
     let name = if stroke { i.stroke.clone() } else { i.fill.clone() };
@@ -358,7 +358,7 @@ fn channel(ui: &mut egui::Ui, label: &str, v: &mut f32, scale: f32, suffix: &str
 fn cmyk_ramp(k: usize, x: f32) -> egui::Color32 {
     let mut v = [0.0f32; 4];
     v[k] = x;
-    let [r, g, b] = designcraft_color::Color::cmyk(v[0], v[1], v[2], v[3]).to_rgb();
+    let [r, g, b] = pagenor_color::Color::cmyk(v[0], v[1], v[2], v[3]).to_rgb();
     egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
@@ -389,7 +389,7 @@ fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
 }
 
 /// Stops in `object.gradient` form.
-fn stops_json(g: &designcraft_color::Gradient) -> Vec<serde_json::Value> {
+fn stops_json(g: &pagenor_color::Gradient) -> Vec<serde_json::Value> {
     g.stops
         .iter()
         .map(|s| json!({"location": s.offset as f64 * 100.0, "color": s.color.to_hex(), "opacity": s.opacity as f64 * 100.0, "midpoint": s.midpoint as f64 * 100.0}))
@@ -409,14 +409,14 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     };
     let fill = it.fill.clone();
-    let Some(g) = designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned() else {
+    let Some(g) = pagenor_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned() else {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "The fill isn't a gradient.")).color(t.text_dim));
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Gradient"))).clicked() {
             let _ = app.run("object.gradient", json!({}));
         }
         return;
     };
-    let radial = g.kind == designcraft_color::GradientKind::Radial;
+    let radial = g.kind == pagenor_color::GradientKind::Radial;
     ui.horizontal(|ui| {
         crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Type:"));
         egui::ComboBox::from_id_salt("grad_type")

@@ -1,35 +1,35 @@
 # MCP server
 
-`designcraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that lets Claude and
-other agents drive DesignCraft: create documents, lay out frames and text, apply styles, place images, and look at
+`pagenor-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that lets Claude and
+other agents drive Pagenor: create documents, lay out frames and text, apply styles, place images, and look at
 the result as PNG images. It speaks newline-delimited JSON-RPC 2.0 on stdin/stdout (protocol `2025-06-18`, also
-`2025-03-26` and `2024-11-05`); logs go to stderr. The implementation is the `designcraft-mcp` crate.
+`2025-03-26` and `2024-11-05`); logs go to stderr. The implementation is the `pagenor-mcp` crate.
 
 ## Register it
 
-Build the CLI (`cargo build --release -p designcraft-cli`), then:
+Build the CLI (`cargo build --release -p pagenor-cli`), then:
 
 ```sh
 # Headless: an in-process engine, no window
-claude mcp add designcraft -- /path/to/target/release/designcraft-cli mcp
+claude mcp add pagenor -- /path/to/target/release/pagenor-cli mcp
 
 # Drive the running desktop app (start it first with a control port)
-designcraft --control 7979
-claude mcp add designcraft-app -- /path/to/target/release/designcraft-cli mcp --connect 7979
+pagenor --control 7979
+claude mcp add pagenor-app -- /path/to/target/release/pagenor-cli mcp --connect 7979
 ```
 
 Other MCP clients use the same command line, e.g. in a JSON config:
 
 ```json
-{"mcpServers": {"designcraft": {"command": "/path/to/designcraft-cli", "args": ["mcp"]}}}
+{"mcpServers": {"pagenor": {"command": "/path/to/pagenor-cli", "args": ["mcp"]}}}
 ```
 
 ## Modes
 
 | | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |
 |---|---|---|
-| Engine | In-process `designcraft_engine::Session`, starts with an empty Letter document (`--sample` opens the sample magazine) | The app's session, through its loopback control channel ([control-protocol.md](control-protocol.md)) |
-| Rendering | `designcraft-render` (CPU) | The app's renderer |
+| Engine | In-process `pagenor_engine::Session`, starts with an empty Letter document (`--sample` opens the sample magazine) | The app's session, through its loopback control channel ([control-protocol.md](control-protocol.md)) |
+| Rendering | `pagenor-render` (CPU) | The app's renderer |
 | Window tools (`screenshot`, `click`, `drag`, `menu_list`, `ui_inspect`, `ui_set`, `dialog_*`) | Return an error explaining how to connect | Work |
 | UI-only commands (`view.*`, `window.*`, `app.*`) via `execute` | Error | Work |
 
@@ -54,7 +54,7 @@ see `ui_inspect` → `canvasRect`).
 | `get_story` | Text, frames, paragraphs, lines, overset of a story (`story` or text `frame`) |
 | `set_story_text` | Replace a story's text (`\n` = new paragraph) |
 | `new_document` | `file.new` (preset, width, height, pages, facingPages, columns, gutter, margins, bleed, title) or `sample: true` |
-| `open_document` / `save_document` | Native `.designcraft` files |
+| `open_document` / `save_document` | Native `.pagenor` files |
 | `place_image` | Image from `path` or `base64` into `frame`, the selected frame, or a new frame at x, y, width |
 | `render_page` | Render a page → MCP image content (PNG, base64); optional `path` to also save it |
 | `export_png` | Write a page as PNG (or JPEG by extension) |
@@ -68,7 +68,7 @@ see `ui_inspect` → `canvasRect`).
 | `dialog_set` / `dialog_confirm` / `dialog_cancel` | Fill in and close the open dialog (connected only) |
 
 Tool failures come back as results with `isError: true` and a message the model can act on; protocol errors use
-JSON-RPC error codes. Resources: `designcraft://document` (document.inspect) and `designcraft://commands`.
+JSON-RPC error codes. Resources: `pagenor://document` (document.inspect) and `pagenor://commands`.
 
 ## Example
 
@@ -93,4 +93,4 @@ key        {"key": "Escape"}
 
 ## Community links
 
-`app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), DesignCraft's app page (https://getartcraft.com/apps/designcraft), its GitHub repository (https://github.com/storytold/designcraft) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The server's `serverInfo.websiteUrl` is the app page.
+`app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), Pagenor's app page (https://getartcraft.com/apps/pagenor), its GitHub repository (https://github.com/storytold/pagenor) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The server's `serverInfo.websiteUrl` is the app page.

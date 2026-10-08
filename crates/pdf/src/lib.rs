@@ -1,7 +1,7 @@
-//! DesignCraft PDF export (print), written with `krilla`.
+//! Pagenor PDF export (print), written with `krilla`.
 //!
 //! [`export_pdf`] writes one PDF page per document page (or per spread) and mirrors the renderer's
-//! walk (`designcraft-render`): layers back to front, parent items first (with page-number markers
+//! walk (`pagenor-render`): layers back to front, parent items first (with page-number markers
 //! resolved for each page), then the spread's own items. What goes into the file:
 //!
 //! - **Boxes:** MediaBox = trim + bleed (+ room for printer's marks), TrimBox = the page, BleedBox =

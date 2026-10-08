@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use designcraft_doc::build::{NewDocument, PRESETS};
-use designcraft_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Selection, Shape};
-use designcraft_geom::{Affine, Rect, shapes};
+use pagenor_doc::build::{NewDocument, PRESETS};
+use pagenor_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Selection, Shape};
+use pagenor_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, cmd, f64_or, has_doc, ok, str_param};
@@ -18,9 +18,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
+            "{path} — .pagenor or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor JSON or an IDML package", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -43,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p)?;
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
-        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .designcraft file", has_doc, |s, _| {
+        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .pagenor file", has_doc, |s, _| {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
@@ -60,12 +60,12 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(query "snippet.export", "Export Selection as Snippet", ["File", "Export"], None,
-            "{path?} — the selected items (with their stories, styles and images) as a .designcraft snippet; no path: {base64}", super::has_selection, snippet_export),
+            "{path?} — the selected items (with their stories, styles and images) as a .pagenor snippet; no path: {base64}", super::has_selection, snippet_export),
         cmd!(query "place.styles", "Import Options: Styles", [], None,
         "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
-            let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
+            let imp = pagenor_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
             let st = &s.doc()?.doc.styles;
             let conflicts: Vec<&str> = imp
                 .para_styles
@@ -100,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .pagenor: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -108,11 +108,11 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 pub fn to_bytes(d: &Document) -> Vec<u8> {
-    designcraft_format::save(d).unwrap_or_default()
+    pagenor_format::save(d).unwrap_or_default()
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
-    designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))
+    pagenor_format::load(b).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
@@ -128,7 +128,7 @@ fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     nd.gutter = f64_or(p, "gutter", nd.gutter);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(false);
     match p.get("margins") {
-        Some(Value::Number(n)) => nd.margins = designcraft_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
+        Some(Value::Number(n)) => nd.margins = pagenor_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
         Some(v @ Value::Object(_)) => {
             if let Ok(m) = serde_json::from_value(v.clone()) {
                 nd.margins = m;
@@ -184,9 +184,9 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<crate::FontScope>>, usize, Vec<String>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+        use pagenor_fonts::DOCUMENT_FONTS_FOLDER;
         let Some(folder) = std::path::Path::new(path).parent().map(|d| d.join(DOCUMENT_FONTS_FOLDER)) else { return (None, 0, Vec::new()) };
-        let r = designcraft_fonts::FontDb::global().load_document_fonts(&folder);
+        let r = pagenor_fonts::FontDb::global().load_document_fonts(&folder);
         d.font_scope = r.scope;
         let scope = (r.scope != 0).then(|| Arc::new(crate::FontScope(r.scope)));
         (scope, r.faces, r.skipped.into_iter().map(|s| format!("{DOCUMENT_FONTS_FOLDER}: {s}")).collect())
@@ -201,7 +201,7 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
     // IDML packages are recognised by their stored `mimetype` first entry.
-    if designcraft_idml::is_idml(&b) {
+    if pagenor_idml::is_idml(&b) {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;
@@ -255,30 +255,30 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
     };
-    // A page of another layout (IDML or DesignCraft): its objects, as one group.
+    // A page of another layout (IDML or Pagenor): its objects, as one group.
     let lname = name.to_lowercase();
-    if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
+    if lname.ends_with(".idml") || lname.ends_with(".pagenor") {
         return place_layout_page(s, p, &name, &bytes);
     }
     // EPS: shown and printed through its preview (or a placeholder) at its bounding box size.
-    let (bytes, eps_size) = if designcraft_images::is_eps(&bytes) {
-        let (proxy, size) = designcraft_images::eps_proxy(&bytes).ok_or_else(|| bad("file.place", "the EPS has no bounding box"))?;
+    let (bytes, eps_size) = if pagenor_images::is_eps(&bytes) {
+        let (proxy, size) = pagenor_images::eps_proxy(&bytes).ok_or_else(|| bad("file.place", "the EPS has no bounding box"))?;
         (proxy, Some(size))
     } else {
         (bytes, None)
     };
     // Video and sound: a media frame (Window › Interactive › Media).
-    if let Some(mime) = designcraft_doc::media_mime(&name) {
+    if let Some(mime) = pagenor_doc::media_mime(&name) {
         return super::media::place_media(s, p, name, mime, bytes, link);
     }
     // Text files (plain, Word, RTF) flow into frames.
-    if designcraft_textimport::is_text_file(&name) {
+    if pagenor_textimport::is_text_file(&name) {
         return super::place_text::place_text(s, p, &name, &bytes);
     }
     // Image Import Options: which page of a PDF (1-based).
     let pdf_page = match p.get("pdfPage").and_then(Value::as_u64) {
-        Some(n) if designcraft_render::is_pdf(&bytes) => {
-            let count = designcraft_render::pdf_page_count(&bytes).unwrap_or(1);
+        Some(n) if pagenor_render::is_pdf(&bytes) => {
+            let count = pagenor_render::pdf_page_count(&bytes).unwrap_or(1);
             if n == 0 || n as usize > count {
                 return Err(bad("file.place", format!("the PDF has {count} page(s)")));
             }
@@ -287,8 +287,8 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         _ => 0,
     };
     let (pw, ph) = match pdf_page {
-        0 => designcraft_render::image_size(&bytes).ok_or_else(|| bad("file.place", "unsupported or corrupt image"))?,
-        n => designcraft_render::pdf_page_size(&bytes, n as usize)
+        0 => pagenor_render::image_size(&bytes).ok_or_else(|| bad("file.place", "unsupported or corrupt image"))?,
+        n => pagenor_render::pdf_page_size(&bytes, n as usize)
             .map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32))
             .ok_or_else(|| bad("file.place", "can't read that PDF page"))?,
     };
@@ -296,11 +296,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let (nw, nh) = eps_size.unwrap_or((pw as f64, ph as f64));
     // Image Import Options › Crop to: the frame shows that box of the PDF page.
     let crop_box = match str_param(p, "pdfCrop") {
-        Some(k) if designcraft_render::is_pdf(&bytes) => {
+        Some(k) if pagenor_render::is_pdf(&bytes) => {
             if !["crop", "trim", "bleed", "art", "media"].contains(&k) {
                 return Err(bad("file.place", format!("unknown pdfCrop `{k}` (crop, trim, bleed, art, media)")));
             }
-            designcraft_render::pdf_page_box(&bytes, pdf_page as usize, k).filter(|b| b.2 > 0.0 && b.3 > 0.0)
+            pagenor_render::pdf_page_box(&bytes, pdf_page as usize, k).filter(|b| b.2 > 0.0 && b.3 > 0.0)
         }
         Some(_) => None,
         None => None,
@@ -316,7 +316,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let want_w = p.get("width").and_then(Value::as_f64);
     s.edit(|d, sel| {
         let aid = AssetId(d.alloc());
-        let mime = designcraft_render::image_mime(&bytes).to_string();
+        let mime = pagenor_render::image_mime(&bytes).to_string();
         d.assets.insert(aid, Arc::new(Asset { page: pdf_page, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)) }));
         // The width the whole page (or image) gets; the height follows the proportions.
         let w = match want_w {
@@ -327,7 +327,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             }
         };
         let id = if let Some(fid) = target_frame {
-            let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
+            let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
             let r = it.inner_bounds();
             // Fill frame proportionally.
             let k = (r.width() / nw).max(r.height() / nh);
@@ -336,7 +336,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
                 asset: aid,
                 size: (nw, nh),
                 xf: Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k),
-                auto_fit: designcraft_doc::Fitting::FillProportionally,
+                auto_fit: pagenor_doc::Fitting::FillProportionally,
                 fit_align: 4,
                 crop: [0.0; 4],
             });
@@ -418,10 +418,10 @@ pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)
 
 fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, link) = read_source(p)?;
-    let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
+    let (pw, ph) = pagenor_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
     let aid = s.edit(|d, _| {
         let aid = AssetId(d.alloc());
-        let mime = designcraft_render::image_mime(&bytes).to_string();
+        let mime = pagenor_render::image_mime(&bytes).to_string();
         d.assets.insert(
             aid,
             Arc::new(Asset { page: 0, id: aid, name: name.clone(), mime, link: link.clone(), data: Arc::new(bytes), pixels: Some((pw, ph)) }),
@@ -443,14 +443,14 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     let r = s.edit(|d, sel| {
         let id = match frame {
             Some(fid) => {
-                let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
+                let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
                 let r = it.inner_bounds();
                 let k = (r.width() / nw).max(r.height() / nh);
                 it.content = Content::Graphic(Graphic {
                     asset: aid,
                     size: (nw, nh),
                     xf: Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k),
-                    auto_fit: designcraft_doc::Fitting::FillProportionally,
+                    auto_fit: pagenor_doc::Fitting::FillProportionally,
                     fit_align: 4,
                     crop: [0.0; 4],
                 });
@@ -488,7 +488,7 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// The selection as `.designcraft` snippet bytes.
+/// The selection as `.pagenor` snippet bytes.
 pub(crate) fn snippet_bytes(s: &mut Session) -> Result<Vec<u8>> {
     Ok(to_bytes(&super::edit::clip_doc(s)?))
 }
@@ -506,12 +506,12 @@ fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,
+/// File › Place of an IDML or Pagenor document: the objects of one page (`layoutPage`,
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
     const ID: &str = "file.place";
     let src = if name.to_lowercase().ends_with(".idml") {
-        designcraft_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?
+        pagenor_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?
     };
@@ -529,8 +529,8 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
     }
     let to = super::spread_param(p, "spread");
     let off = match (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64)) {
-        (Some(x), Some(y)) => designcraft_geom::Vec2::new(x - pr.x0, y - pr.y0),
-        _ => designcraft_geom::Vec2::new(-pr.x0, -pr.y0),
+        (Some(x), Some(y)) => pagenor_geom::Vec2::new(x - pr.x0, y - pr.y0),
+        _ => pagenor_geom::Vec2::new(-pr.x0, -pr.y0),
     };
     let placed = s.edit(|d, sel| {
         for sw in &src.swatches {
@@ -566,8 +566,8 @@ pub(crate) fn snippet_place(s: &mut Session, p: &Value) -> Result<Value> {
     let sr = super::spread_param(p, "spread");
     let bounds = ids.iter().filter_map(|i| src.item(*i).map(|it| it.bounds())).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO);
     let off = match (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64)) {
-        (Some(x), Some(y)) => designcraft_geom::Vec2::new(x - bounds.x0, y - bounds.y0),
-        _ => designcraft_geom::Vec2::ZERO,
+        (Some(x), Some(y)) => pagenor_geom::Vec2::new(x - bounds.x0, y - bounds.y0),
+        _ => pagenor_geom::Vec2::ZERO,
     };
     s.edit(|d, sel| {
         // Bring over styles and swatches the snippet uses that this document lacks.
@@ -617,7 +617,7 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let mut d = if path.to_ascii_lowercase().ends_with(".idml") {
             let bytes = std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-            designcraft_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?
+            pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?
         } else {
             from_bytes(&std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?)?
         };
@@ -659,7 +659,7 @@ mod pdf_crop_tests {
         let size = |t: &mut Session, crop: &str| {
             t.execute("edit.deselectAll", &json!({})).unwrap();
             let r = t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": crop, "width": 630, "x": 0, "y": 0})).unwrap();
-            let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+            let id = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
             t.doc().unwrap().doc.item(id).unwrap().bounds()
         };
         let full = size(&mut t, "crop");
@@ -682,14 +682,14 @@ mod layout_place_tests {
         a.execute("file.new", &json!({"pages": 2})).unwrap();
         a.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "text", "text": "From page one", "caret": false})).unwrap();
         a.execute("frame.create", &json!({"rect": [300, 400, 350, 450]})).unwrap();
-        let idml = designcraft_idml::export_idml(&a.doc().unwrap().doc);
+        let idml = pagenor_idml::export_idml(&a.doc().unwrap().doc);
         let b64 = super::base64_encode(&idml);
         let mut b = Session::new();
         b.execute("file.new", &json!({})).unwrap();
         let r = b.execute("file.place", &json!({"base64": b64, "name": "src.idml", "layoutPage": 1, "x": 0, "y": 0})).unwrap();
         assert_eq!(r["items"], 2);
         let d = &b.doc().unwrap().doc;
-        let g = d.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap();
+        let g = d.item(pagenor_doc::ItemId(r["id"].as_u64().unwrap())).unwrap();
         assert_eq!(g.children().len(), 2, "one group");
         let bb = g.bounds();
         assert!((bb.x0 - 100.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "page top-left at 0,0: {bb:?}");
@@ -702,8 +702,8 @@ mod layout_place_tests {
 mod document_fonts_tests {
     use std::path::{Path, PathBuf};
 
-    use designcraft_fonts::testing::font_with;
-    use designcraft_fonts::{DOCUMENT_FONTS_FOLDER, FaceRef, FontDb, FontSource};
+    use pagenor_fonts::testing::font_with;
+    use pagenor_fonts::{DOCUMENT_FONTS_FOLDER, FaceRef, FontDb, FontSource};
     use serde_json::{Value, json};
 
     use crate::Session;
@@ -732,7 +732,7 @@ mod document_fonts_tests {
         let mut s = Session::new();
         new_document(&mut s, family, text);
         if path.extension().is_some_and(|e| e == "idml") {
-            std::fs::write(path, designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+            std::fs::write(path, pagenor_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         } else {
             s.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
         }
@@ -763,11 +763,11 @@ mod document_fonts_tests {
     #[test]
     fn opening_a_document_loads_its_document_fonts() {
         const FAMILY: &str = "DocFont Open Test";
-        let dir = temp_dir("designcraft");
+        let dir = temp_dir("pagenor");
         let fonts = dir.join(DOCUMENT_FONTS_FOLDER);
         std::fs::write(fonts.join("open.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
         std::fs::write(fonts.join("broken.otf"), b"not a font").unwrap();
-        let path = dir.join("Brochure.designcraft");
+        let path = dir.join("Brochure.pagenor");
         write_document(&path, FAMILY);
         assert!(!FontDb::global().has_family(FAMILY));
 
@@ -800,8 +800,8 @@ mod document_fonts_tests {
         let dir = std::env::temp_dir().join(format!("dc-open-docfonts-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("Plain.designcraft");
-        write_document(&path, designcraft_fonts::DEFAULT_FAMILY);
+        let path = dir.join("Plain.pagenor");
+        write_document(&path, pagenor_fonts::DEFAULT_FAMILY);
         let r = Session::new().execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
         assert_eq!((r["documentFonts"].clone(), r["warnings"].clone()), (json!(0), json!([])), "{r}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -811,12 +811,12 @@ mod document_fonts_tests {
         const FAMILY: &str = "DocFont Scoped";
         let (a, b) = (temp_dir("scoped-a"), temp_dir("scoped-b"));
         std::fs::write(a.join(DOCUMENT_FONTS_FOLDER).join("scoped.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
-        write_document(&a.join("A.designcraft"), FAMILY);
-        write_document(&b.join("B.designcraft"), FAMILY);
+        write_document(&a.join("A.pagenor"), FAMILY);
+        write_document(&b.join("B.pagenor"), FAMILY);
 
         let mut s = Session::new();
-        assert_eq!(open(&mut s, &a.join("A.designcraft"))["documentFonts"], 1);
-        assert_eq!(open(&mut s, &b.join("B.designcraft"))["documentFonts"], 0);
+        assert_eq!(open(&mut s, &a.join("A.pagenor"))["documentFonts"], 1);
+        assert_eq!(open(&mut s, &b.join("B.pagenor"))["documentFonts"], 0);
         // B, open at the same time, doesn't have A's font.
         assert_eq!(font_entry(&mut s, FAMILY)["missing"], true);
         assert!(glyph_faces(&s).iter().all(|(_, f)| f.family != FAMILY), "{:?}", glyph_faces(&s));
@@ -836,12 +836,12 @@ mod document_fonts_tests {
         std::fs::write(&a_font, font_with(FAMILY, &['a', 'b']).unwrap()).unwrap();
         std::fs::write(&b_font, font_with(FAMILY, &['b']).unwrap()).unwrap();
         // The same words in both: the word cache must not hand one document's shaping to the other.
-        write_document_with(&a.join("A.designcraft"), FAMILY, "ab ab ab");
-        write_document_with(&b.join("B.designcraft"), FAMILY, "ab ab ab");
+        write_document_with(&a.join("A.pagenor"), FAMILY, "ab ab ab");
+        write_document_with(&b.join("B.pagenor"), FAMILY, "ab ab ab");
 
         let mut s = Session::new();
-        open(&mut s, &a.join("A.designcraft"));
-        open(&mut s, &b.join("B.designcraft"));
+        open(&mut s, &a.join("A.pagenor"));
+        open(&mut s, &b.join("B.pagenor"));
         // Fallback fonts for the `a` B's font lacks: never A's font.
         s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
         let in_b = glyph_faces(&s);
@@ -866,7 +866,7 @@ mod document_fonts_tests {
         const FAMILY: &str = "DocFont Closed";
         let dir = temp_dir("closed");
         std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("closed.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
-        let path = dir.join("Closed.designcraft");
+        let path = dir.join("Closed.pagenor");
         write_document(&path, FAMILY);
 
         let mut s = Session::new();
@@ -889,7 +889,7 @@ mod document_fonts_tests {
         const FAMILY: &str = "DocFont Reverted";
         let dir = temp_dir("revert");
         std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("revert.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
-        let path = dir.join("Revert.designcraft");
+        let path = dir.join("Revert.pagenor");
         write_document(&path, FAMILY);
 
         let mut s = Session::new();

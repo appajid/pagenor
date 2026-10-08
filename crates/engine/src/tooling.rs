@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use designcraft_geom::Unit;
-pub use designcraft_tools::SnapView;
-use designcraft_tools::{Action, CanvasLayout, Cursor, Mods, Overlay, PointerEvent, ToolContext, ToolKey};
+use pagenor_geom::Unit;
+pub use pagenor_tools::SnapView;
+use pagenor_tools::{Action, CanvasLayout, Cursor, Mods, Overlay, PointerEvent, ToolContext, ToolKey};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -58,7 +58,7 @@ impl Session {
         if self.tool.id() == id {
             return;
         }
-        self.tool = designcraft_tools::create(id);
+        self.tool = pagenor_tools::create(id);
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
             && let Some(st) = self.active_mut()
@@ -77,7 +77,7 @@ impl Session {
         }
     }
 
-    fn with_ctx<T>(&mut self, view: ViewInfo, f: impl FnOnce(&mut dyn designcraft_tools::Tool, &ToolContext) -> T) -> Option<T> {
+    fn with_ctx<T>(&mut self, view: ViewInfo, f: impl FnOnce(&mut dyn pagenor_tools::Tool, &ToolContext) -> T) -> Option<T> {
         let st = self.active()?;
         let doc = st.doc.clone();
         let sel = st.selection.clone();
@@ -113,7 +113,7 @@ impl Session {
         self.with_ctx(view, |t, cx| t.overlays(cx)).unwrap_or_default()
     }
 
-    pub fn cursor(&mut self, p: designcraft_geom::Point, mods: Mods, view: ViewInfo) -> Cursor {
+    pub fn cursor(&mut self, p: pagenor_geom::Point, mods: Mods, view: ViewInfo) -> Cursor {
         self.with_ctx(view, |t, cx| t.cursor(cx, p, mods)).unwrap_or_default()
     }
 

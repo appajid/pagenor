@@ -10,19 +10,19 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use designcraft_compose::{ComposedStory, FrameText, PlacedGlyph};
-use designcraft_fonts::{FontDb, FontFace};
-use designcraft_geom::kurbo::Shape as _;
-use designcraft_geom::{Affine, BezPath, Rect};
 use krilla::geom::Point;
 use krilla::paint::Stroke;
 use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, SpanTag};
 use krilla::text::{Font, GlyphId, KrillaGlyph};
+use pagenor_compose::{ComposedStory, FrameText, PlacedGlyph};
+use pagenor_fonts::{FontDb, FontFace};
+use pagenor_geom::kurbo::Shape as _;
+use pagenor_geom::{Affine, BezPath, Rect};
 
 use crate::export::{Exporter, solid_fill, tf, to_path};
 
-/// Private-use characters DesignCraft stores for markers (page numbers, section markers, breaks).
+/// Private-use characters Pagenor stores for markers (page numbers, section markers, breaks).
 fn is_marker(c: char) -> bool {
     ('\u{E000}'..='\u{E1FF}').contains(&c)
 }
@@ -108,7 +108,7 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
-        let mut deco: Vec<(designcraft_compose::Rule, Rect)> = Vec::new();
+        let mut deco: Vec<(pagenor_compose::Rule, Rect)> = Vec::new();
         for l in &ft.lines {
             let gs = &l.glyphs;
             let mut i = 0;
@@ -193,14 +193,14 @@ impl Exporter<'_> {
                 let st = &seg.stroke;
                 let Some(col) = self.swatch_color(&st.color, st.tint) else { continue };
                 let (cap, dash) = match &st.kind {
-                    designcraft_doc::StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
+                    pagenor_doc::StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
                         let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                         if pat.len() % 2 == 1 {
                             pat.extend(pat.clone());
                         }
                         (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
                     }
-                    designcraft_doc::StrokeType::Dotted => {
+                    pagenor_doc::StrokeType::Dotted => {
                         (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
                     }
                     _ => (krilla::paint::LineCap::Square, None),
@@ -271,7 +271,7 @@ impl Exporter<'_> {
         let st = &cs.styles[g0.style as usize];
         let fill = self.swatch_color(&st.fill, st.fill_tint);
         let stroke =
-            if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 { self.swatch_color(&st.stroke, st.stroke_tint) } else { None };
+            if st.stroke != pagenor_color::swatch::NONE && st.stroke_weight > 0.0 { self.swatch_color(&st.stroke, st.stroke_tint) } else { None };
         if fill.is_none() && stroke.is_none() {
             return;
         }
@@ -344,9 +344,9 @@ impl Exporter<'_> {
 
     /// One line of plain text in the bundled UI face (page information mark).
     pub(crate) fn plain_text(&mut self, s: &mut Surface, text: &str, at: (f64, f64), size: f64, color: krilla::color::Color) {
-        let face = FontDb::global().face(designcraft_fonts::FALLBACK_FAMILY, "Regular");
+        let face = FontDb::global().face(pagenor_fonts::FALLBACK_FAMILY, "Regular");
         let Some(font) = self.font(&face) else { return };
-        let shaped = designcraft_fonts::shape(&face, text, &[], |c| c);
+        let shaped = pagenor_fonts::shape(&face, text, &[], |c| c);
         let upem = face.upem as f32;
         let glyphs: Vec<KrillaGlyph> = shaped
             .iter()

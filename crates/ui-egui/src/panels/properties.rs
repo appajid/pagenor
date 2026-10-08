@@ -2,10 +2,10 @@
 //! sections per selection state — `plan/indesign/11-observed-ui.md` §4.1) and small
 //! single-purpose panels (Stroke, Character, Paragraph, Text Wrap, Align, Links, Info).
 
-use designcraft_doc::{Align, Arrowhead, Cap, Join, StrokeAlign, StrokeType};
-use designcraft_geom::Unit;
-use designcraft_geom::corners::CornerShape;
 use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use pagenor_doc::{Align, Arrowhead, Cap, Join, StrokeAlign, StrokeType};
+use pagenor_geom::Unit;
+use pagenor_geom::corners::CornerShape;
 use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
@@ -248,7 +248,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(p) = d.page(cur).cloned() {
         let linked = temp_bool(ui, "margins_linked", true);
         let b = block(ui, 2.0 * FIELD_H + 5.0);
-        let mut set: Option<designcraft_doc::Margins> = None;
+        let mut set: Option<pagenor_doc::Margins> = None;
         let fields = [
             ("margin-top", "Top", p.margins.top, 0.0, 0.0),
             ("margin-bottom", "Bottom", p.margins.bottom, 0.0, 26.0),
@@ -267,7 +267,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             if let Some(nv) = nv {
                 let mut m = p.margins;
                 if linked {
-                    m = designcraft_doc::Margins { top: nv, bottom: nv, inside: nv, outside: nv };
+                    m = pagenor_doc::Margins { top: nv, bottom: nv, inside: nv, outside: nv };
                 } else {
                     match k {
                         0 => m.top = nv,
@@ -663,7 +663,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
 }
 
 /// Swatch list popup attached to `resp`.
-fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &designcraft_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
+fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
     let mut picked = None;
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
@@ -851,7 +851,7 @@ fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
         let Some(st) = app.session.active() else { return };
         if tab == 0 {
             (
-                st.doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| n != designcraft_doc::NO_PARA_STYLE).collect(),
+                st.doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| n != pagenor_doc::NO_PARA_STYLE).collect(),
                 a["paragraphStyle"].as_str().unwrap_or("").to_string(),
             )
         } else {
@@ -934,7 +934,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let c = &a["chars"];
     for (k, (key, label)) in [("fill", "Fill"), ("stroke", "Stroke")].into_iter().enumerate() {
-        let sw = c[key].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
+        let sw = c[key].as_str().unwrap_or(pagenor_color::swatch::NONE).to_string();
         let b = block(ui, FIELD_H);
         let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
         let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
@@ -1367,7 +1367,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// The Character panel's OpenType menu: feature toggles, figure styles and stylistic sets.
 pub fn open_type_menu(app: &mut DesignApp, ui: &mut egui::Ui, features: &[String]) {
-    use designcraft_doc::otf;
+    use pagenor_doc::otf;
     ui.set_min_width(220.0);
     for (tag, label, _) in otf::TOGGLES {
         let mut on = otf::is_on(features, tag);
@@ -1646,7 +1646,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// A short line ending in arrowhead `a` (pointing left for Start, right for End).
 fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Color32) {
-    use designcraft_geom::kurbo;
+    use pagenor_geom::kurbo;
     let (r, _) = ui.allocate_exact_size(vec2(56.0, 14.0), Sense::hover());
     let mut line = kurbo::BezPath::new();
     let (y, x0, x1) = (r.center().y as f64, r.left() as f64 + 6.0, r.right() as f64 - 6.0);
@@ -1657,8 +1657,8 @@ fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Colo
         line.move_to((x0, y));
         line.line_to((x1, y));
     }
-    let st = designcraft_doc::Stroke { weight: 1.5, end: a, ..Default::default() };
-    let (line, heads) = designcraft_doc::arrow::apply(&line, &st, false).unwrap_or((line, vec![]));
+    let st = pagenor_doc::Stroke { weight: 1.5, end: a, ..Default::default() };
+    let (line, heads) = pagenor_doc::arrow::apply(&line, &st, false).unwrap_or((line, vec![]));
     let pts = |p: &kurbo::BezPath| {
         let mut v = Vec::new();
         kurbo::flatten(p.iter(), 0.1, |el| match el {
@@ -1905,7 +1905,7 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     match sel_info(app) {
         Some(i) => {
-            let f = |v: f64| designcraft_geom::format_measure(v, u);
+            let f = |v: f64| pagenor_geom::format_measure(v, u);
             crate::rtl::label(ui, format!("X: {}   Y: {}", f(i.page_rect.x0), f(i.page_rect.y0)));
             crate::rtl::label(ui, format!("W: {}   H: {}", f(i.page_rect.width()), f(i.page_rect.height())));
             crate::rtl::label(
@@ -1942,7 +1942,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
     };
-    use designcraft_color::BlendMode as B;
+    use pagenor_color::BlendMode as B;
     const MODES: [B; 16] = [
         B::Normal,
         B::Multiply,
@@ -2023,7 +2023,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = designcraft_engine::cmd::preflight::check(&app.session, 150.0);
+    let issues = pagenor_engine::cmd::preflight::check(&app.session, 150.0);
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
@@ -2100,7 +2100,7 @@ fn variable_font_axes(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, styl
     if axes.is_empty() {
         return;
     }
-    let base = designcraft_fonts::base_style(style).to_string();
+    let base = pagenor_fonts::base_style(style).to_string();
     let face = db.face(family, style);
     let cur = |tag: &str, default: f32| face.coords.iter().find(|(t, _)| t == tag.as_bytes()).map_or(default, |c| c.1);
     let mut values: Vec<(String, f32)> = axes.iter().map(|a| (a.0.clone(), cur(&a.0, a.3))).collect();

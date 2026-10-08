@@ -46,12 +46,12 @@ jobs:
           }
       - name: XML, desktop entry, AppStream, Flatpak manifest
         run: |
-          xmllint --noout packaging/windows/designcraft.wxs packaging/macos/*.plist* packaging/linux/*.xml*
+          xmllint --noout packaging/windows/pagenor.wxs packaging/macos/*.plist* packaging/linux/*.xml*
           # Windows Installer needs Icon ids ending in .ico or .exe, or shortcuts show a blank icon.
-          if grep -oE '<Icon Id="[^"]*"' packaging/windows/designcraft.wxs | grep -vE '\.(ico|exe)"$'; then
+          if grep -oE '<Icon Id="[^"]*"' packaging/windows/pagenor.wxs | grep -vE '\.(ico|exe)"$'; then
             echo "::error::Icon Id must end in .ico or .exe"; exit 1
           fi
-          desktop-file-validate packaging/linux/ai.storyteller.designcraft.desktop
-          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' packaging/linux/ai.storyteller.designcraft.metainfo.xml.in >"$RUNNER_TEMP/ai.storyteller.designcraft.metainfo.xml"
-          appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.storyteller.designcraft.metainfo.xml"
-          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.storyteller.designcraft.yml')); assert m['id'] == 'ai.storyteller.designcraft' and m['command'] == 'designcraft'"
+          desktop-file-validate packaging/linux/org.pagenor.app.desktop
+          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' packaging/linux/org.pagenor.app.metainfo.xml.in >"$RUNNER_TEMP/org.pagenor.app.metainfo.xml"
+          appstreamcli validate --no-net --explain "$RUNNER_TEMP/org.pagenor.app.metainfo.xml"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/org.pagenor.app.yml')); assert m['id'] == 'org.pagenor.app' and m['command'] == 'pagenor'"

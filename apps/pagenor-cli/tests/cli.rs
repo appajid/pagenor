@@ -4,14 +4,14 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_designcraft-cli"))
+    Command::new(env!("CARGO_BIN_EXE_pagenor-cli"))
 }
 
 #[test]
 fn script_from_stdin_with_references_saves_and_exports() {
     let dir = std::env::temp_dir().join(format!("dc-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (doc, png) = (dir.join("a.designcraft"), dir.join("a.png"));
+    let (doc, png) = (dir.join("a.pagenor"), dir.join("a.png"));
     let mut child = cli()
         .args(["script", "-", "--save", doc.to_str().unwrap(), "--export", png.to_str().unwrap()])
         .stdin(Stdio::piped())
@@ -67,7 +67,7 @@ fn run_cmd_references_and_describe() {
     assert!(v.as_array().unwrap().iter().all(|c| c.to_string().contains("footnote")));
 }
 
-/// `designcraft-cli commands | head -1` panicked with "failed printing to
+/// `pagenor-cli commands | head -1` panicked with "failed printing to
 /// stdout: Broken pipe (os error 32)" and exit status 101.
 #[test]
 fn closed_stdout_ends_quietly() {

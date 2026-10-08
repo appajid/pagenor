@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use designcraft_doc::{AssetId, Content, Document, ItemId, Selection};
+use pagenor_doc::{AssetId, Content, Document, ItemId, Selection};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -89,7 +89,7 @@ fn uses(d: &Document, aid: AssetId) -> Vec<ItemId> {
 }
 
 /// Link status of an asset.
-pub fn status(a: &designcraft_doc::Asset) -> &'static str {
+pub fn status(a: &pagenor_doc::Asset) -> &'static str {
     let Some(path) = &a.link else { return "embedded" };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -129,7 +129,7 @@ fn list(d: &Document) -> Vec<Value> {
                         }
                         let (pw, _) = a.pixels?;
                         let xf = d.parent_xf(&loc) * it.xf * g.xf;
-                        let shown_w = xf.transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1)).width();
+                        let shown_w = xf.transform_rect_bbox(pagenor_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1)).width();
                         (shown_w > 0.0).then(|| (pw as f64 / (shown_w / 72.0)).round())
                     })();
                     let page = d.page_of_item(id).map(|p| d.page_name(p));
@@ -144,7 +144,7 @@ fn list(d: &Document) -> Vec<Value> {
 #[cfg(not(target_arch = "wasm32"))]
 fn reload(path: &str) -> Result<(Vec<u8>, (u32, u32))> {
     let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let px = designcraft_render::image_size(&b).ok_or_else(|| bad("links", format!("{path}: unsupported or corrupt image")))?;
+    let px = pagenor_render::image_size(&b).ok_or_else(|| bad("links", format!("{path}: unsupported or corrupt image")))?;
     Ok((b, px))
 }
 
@@ -161,7 +161,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, _| {
         let a = d.assets.get_mut(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
         let a = Arc::make_mut(a);
-        a.mime = designcraft_render::image_mime(&bytes).to_string();
+        a.mime = pagenor_render::image_mime(&bytes).to_string();
         a.data = Arc::new(bytes.clone());
         a.pixels = Some(px);
         a.name = name.clone();
@@ -240,7 +240,7 @@ mod tests {
     use super::*;
 
     fn png(w: u32, h: u32) -> Vec<u8> {
-        designcraft_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
+        pagenor_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
     }
 
     #[test]

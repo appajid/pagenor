@@ -30,7 +30,7 @@ impl Class {
     }
 }
 
-/// The layering table. Names are package names without the `designcraft-`
+/// The layering table. Names are package names without the `pagenor-`
 /// prefix.
 pub const TABLE: &[(&str, Class)] = &[
     ("geom", Class::Layer(0)),
@@ -51,7 +51,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("mcp", Class::Layer(6)),
     ("testkit", Class::Testkit),
     // L7 apps and tooling
-    ("designcraft", Class::Exempt),
+    ("pagenor", Class::Exempt),
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
     ("xtask", Class::Exempt),
@@ -79,7 +79,7 @@ pub const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "egui_kittest", "rfd
 pub const UI_MIN_LAYER: u8 = 6;
 
 pub fn short_name(pkg: &str) -> &str {
-    pkg.strip_prefix("designcraft-").unwrap_or(pkg)
+    pkg.strip_prefix("pagenor-").unwrap_or(pkg)
 }
 
 pub fn classify(pkg: &str) -> Option<Class> {
@@ -137,7 +137,7 @@ impl std::fmt::Display for Violation {
                 write!(f, "{krate}: standalone crate must not depend on workspace crate {dep}")
             }
             Violation::TestkitAsNormalDep { krate } => {
-                write!(f, "{krate}: designcraft-testkit may only be a dev-dependency")
+                write!(f, "{krate}: pagenor-testkit may only be a dev-dependency")
             }
             Violation::UiBelowL6 { krate, dep, layer } => {
                 write!(f, "{krate} (L{layer}) depends on UI crate `{dep}`; UI toolkits are only allowed in L6+")
@@ -245,76 +245,76 @@ mod tests {
     #[test]
     fn clean_downward_graph_passes() {
         let g = [
-            c("designcraft-geom", &[("kurbo", Normal, false)]),
-            c("designcraft-doc", &[("designcraft-geom", Normal, true)]),
-            c("designcraft-engine", &[("designcraft-doc", Normal, true), ("designcraft-testkit", Dev, true)]),
-            c("designcraft-ui-egui", &[("designcraft-engine", Normal, true), ("egui", Normal, false)]),
-            c("designcraft-cli", &[("designcraft-ui-egui", Normal, true)]),
+            c("pagenor-geom", &[("kurbo", Normal, false)]),
+            c("pagenor-doc", &[("pagenor-geom", Normal, true)]),
+            c("pagenor-engine", &[("pagenor-doc", Normal, true), ("pagenor-testkit", Dev, true)]),
+            c("pagenor-ui-egui", &[("pagenor-engine", Normal, true), ("egui", Normal, false)]),
+            c("pagenor-cli", &[("pagenor-ui-egui", Normal, true)]),
         ];
         assert!(check(&g).is_empty(), "{:?}", check(&g));
     }
 
     #[test]
     fn upward_dependency_flagged() {
-        let v = check(&[c("designcraft-doc", &[("designcraft-engine", Normal, true)])]);
+        let v = check(&[c("pagenor-doc", &[("pagenor-engine", Normal, true)])]);
         assert!(matches!(v[..], [Violation::Upward { from: 1, to: 5, .. }]));
     }
 
     #[test]
     fn sideways_dependency_flagged() {
-        let v = check(&[c("designcraft-compose", &[("designcraft-images", Normal, true)])]);
+        let v = check(&[c("pagenor-compose", &[("pagenor-images", Normal, true)])]);
         assert!(matches!(v[..], [Violation::Upward { from: 2, to: 2, .. }]));
     }
 
     #[test]
     fn l0_foundation_chain_allowed_one_way() {
-        assert!(check(&[c("designcraft-color", &[("designcraft-geom", Normal, true)])]).is_empty());
-        let v = check(&[c("designcraft-geom", &[("designcraft-color", Normal, true)])]);
+        assert!(check(&[c("pagenor-color", &[("pagenor-geom", Normal, true)])]).is_empty());
+        let v = check(&[c("pagenor-geom", &[("pagenor-color", Normal, true)])]);
         assert!(matches!(v[..], [Violation::Upward { from: 0, to: 0, .. }]));
     }
 
     #[test]
     fn self_dev_dependency_ignored() {
-        assert!(check(&[c("designcraft-doc", &[("designcraft-doc", Dev, true)])]).is_empty());
+        assert!(check(&[c("pagenor-doc", &[("pagenor-doc", Dev, true)])]).is_empty());
     }
 
     #[test]
     fn upward_dev_dependency_flagged() {
-        let v = check(&[c("designcraft-geom", &[("designcraft-doc", Dev, true)])]);
+        let v = check(&[c("pagenor-geom", &[("pagenor-doc", Dev, true)])]);
         assert!(matches!(v[..], [Violation::Upward { kind: Dev, .. }]));
     }
 
     #[test]
     fn ui_crates_below_l6_flagged() {
         for dep in ["egui", "eframe", "winit", "egui_kittest", "rfd", "bevy_ecs", "bevy"] {
-            let v = check(&[c("designcraft-engine", &[(dep, Normal, false)])]);
+            let v = check(&[c("pagenor-engine", &[(dep, Normal, false)])]);
             assert!(matches!(v[..], [Violation::UiBelowL6 { layer: 5, .. }]), "{dep}");
         }
-        assert!(check(&[c("designcraft-engine", &[("egui_extras_not", Normal, false)])]).is_empty());
-        assert!(check(&[c("designcraft-mcp", &[("winit", Normal, false)])]).is_empty());
+        assert!(check(&[c("pagenor-engine", &[("egui_extras_not", Normal, false)])]).is_empty());
+        assert!(check(&[c("pagenor-mcp", &[("winit", Normal, false)])]).is_empty());
     }
 
     #[test]
     fn unregistered_crate_is_error() {
-        let v = check(&[c("designcraft-mystery", &[])]);
-        assert!(matches!(&v[..], [Violation::Unregistered { krate }] if krate == "designcraft-mystery"));
+        let v = check(&[c("pagenor-mystery", &[])]);
+        assert!(matches!(&v[..], [Violation::Unregistered { krate }] if krate == "pagenor-mystery"));
         assert!(v[0].to_string().contains("register"));
     }
 
     #[test]
     fn testkit_only_as_dev_dependency() {
-        let v = check(&[c("designcraft-render", &[("designcraft-testkit", Normal, true)])]);
+        let v = check(&[c("pagenor-render", &[("pagenor-testkit", Normal, true)])]);
         assert!(matches!(v[..], [Violation::TestkitAsNormalDep { .. }]));
-        assert!(check(&[c("designcraft-render", &[("designcraft-testkit", Dev, true)])]).is_empty());
+        assert!(check(&[c("pagenor-render", &[("pagenor-testkit", Dev, true)])]).is_empty());
         // testkit itself may use anything up to L5 but not L6 crates.
-        assert!(check(&[c("designcraft-testkit", &[("designcraft-engine", Normal, true)])]).is_empty());
-        assert!(!check(&[c("designcraft-testkit", &[("designcraft-ui-egui", Normal, true)])]).is_empty());
+        assert!(check(&[c("pagenor-testkit", &[("pagenor-engine", Normal, true)])]).is_empty());
+        assert!(!check(&[c("pagenor-testkit", &[("pagenor-ui-egui", Normal, true)])]).is_empty());
     }
 
     #[test]
     fn apps_and_xtask_exempt() {
-        for app in ["designcraft", "designcraft-cli", "designcraft-web", "xtask"] {
-            assert!(check(&[c(app, &[("egui", Normal, false), ("designcraft-ui-egui", Normal, true)])]).is_empty());
+        for app in ["pagenor", "pagenor-cli", "pagenor-web", "xtask"] {
+            assert!(check(&[c(app, &[("egui", Normal, false), ("pagenor-ui-egui", Normal, true)])]).is_empty());
         }
     }
 
@@ -322,17 +322,17 @@ mod tests {
     fn metadata_parsing() {
         let meta: Value = serde_json::from_str(
             r#"{"packages":[
-                {"name":"designcraft-doc","dependencies":[
-                    {"name":"designcraft-geom","kind":null,"path":"/x/crates/geom"},
+                {"name":"pagenor-doc","dependencies":[
+                    {"name":"pagenor-geom","kind":null,"path":"/x/crates/geom"},
                     {"name":"serde","kind":null},
                     {"name":"proptest","kind":"dev"}]},
-                {"name":"designcraft-geom","dependencies":[]}
+                {"name":"pagenor-geom","dependencies":[]}
             ]}"#,
         )
         .unwrap();
         let g = from_metadata(&meta).unwrap();
         assert_eq!(g.len(), 2);
-        let doc = g.iter().find(|c| c.name == "designcraft-doc").unwrap();
+        let doc = g.iter().find(|c| c.name == "pagenor-doc").unwrap();
         assert!(doc.deps[0].workspace && !doc.deps[1].workspace);
         assert_eq!(doc.deps[2].kind, Dev);
         assert!(check(&g).is_empty());

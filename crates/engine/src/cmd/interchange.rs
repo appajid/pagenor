@@ -1,6 +1,6 @@
 //! Interchange formats: IDML (InDesign Markup Language) import and export.
 
-use designcraft_doc::Document;
+use pagenor_doc::Document;
 use serde_json::{Value, json};
 
 use super::file::{base64_decode, base64_encode};
@@ -20,8 +20,8 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
-    let bytes = designcraft_idml::export_idml_with(&st.doc, &opts);
+    let opts = pagenor_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
+    let bytes = pagenor_idml::export_idml_with(&st.doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -49,7 +49,7 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
             None
         }
     };
-    let document = designcraft_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    let document = pagenor_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
     #[cfg(not(target_arch = "wasm32"))]
     let document = {
         let mut document = document;
@@ -133,7 +133,7 @@ mod tests {
     use super::*;
 
     fn linked_idml(link: &str) -> Result<(Vec<u8>, Vec<u8>)> {
-        let png = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();
+        let png = pagenor_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();
         let mut session = Session::new();
         session.execute("file.new", &json!({}))?;
         session.execute("file.place", &json!({"base64": base64_encode(&png), "name": "logo.png"}))?;
@@ -142,7 +142,7 @@ mod tests {
             Arc::make_mut(asset).link = Some(link.into());
             Ok(Value::Null)
         })?;
-        let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images: false });
+        let bytes = pagenor_idml::export_idml_with(&session.doc()?.doc, &pagenor_idml::ExportOptions { embed_images: false });
         Ok((bytes, png))
     }
 

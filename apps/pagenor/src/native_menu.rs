@@ -1,14 +1,14 @@
-//! macOS: DesignCraft's menu tree as the native system menu bar (like InDesign on the Mac).
+//! macOS: Pagenor's menu tree as the native system menu bar (like InDesign on the Mac).
 //! Items dispatch through the same command path as the in-window menus; enablement and check
 //! marks are refreshed a few times per second.
 
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use designcraft_ui_egui::DesignApp;
-use designcraft_ui_egui::menus::{self, Item};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use pagenor_ui_egui::DesignApp;
+use pagenor_ui_egui::menus::{self, Item};
 use serde_json::Value;
 
 enum Handle {
@@ -36,9 +36,9 @@ impl NativeMenu {
         let mut items = HashMap::new();
         let mut counter = 0usize;
         // Application menu.
-        let app_menu = Submenu::new("DesignCraft", true);
+        let app_menu = Submenu::new("Pagenor", true);
         // Our own About splash (with the community links) instead of the stock panel.
-        let about = MenuItem::with_id("dc-about", "About DesignCraft", true, None);
+        let about = MenuItem::with_id("dc-about", "About Pagenor", true, None);
         let discord = MenuItem::with_id("dc-discord", "Join the ArtCraft Discord…", true, None);
         let _ = app_menu.append_items(&[
             &about,
@@ -56,7 +56,7 @@ impl NativeMenu {
         items.insert("dc-discord".into(), ("help.discord".into(), serde_json::Value::Null, Handle::Plain(discord)));
         let _ = menu.append(&app_menu);
         for (title, entries) in menus::menu_tree() {
-            let sub = Submenu::new(designcraft_ui_egui::i18n::tr(&app.ui.language, title), true);
+            let sub = Submenu::new(pagenor_ui_egui::i18n::tr(&app.ui.language, title), true);
             build(app, &sub, &entries, &mut items, &mut counter);
             let _ = menu.append(&sub);
         }
@@ -65,7 +65,7 @@ impl NativeMenu {
         app.native_shortcuts = items
             .values()
             .filter_map(|(id, p, _)| {
-                let sc = menus::ui_label(id).and_then(|(_, sc)| sc).or_else(|| designcraft_engine::find_command(id).and_then(|c| c.shortcut))?;
+                let sc = menus::ui_label(id).and_then(|(_, sc)| sc).or_else(|| pagenor_engine::find_command(id).and_then(|c| c.shortcut))?;
                 (p.is_null() && accel(sc).is_some()).then(|| id.clone())
             })
             .collect();
@@ -75,10 +75,10 @@ impl NativeMenu {
     pub fn poll(&mut self, app: &mut DesignApp) {
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if let Some((cmd, params, _)) = self.items.get(ev.id.as_ref()) {
-                designcraft_ui_egui::menus::activate(app, &cmd.clone(), &params.clone());
+                pagenor_ui_egui::menus::activate(app, &cmd.clone(), &params.clone());
             }
         }
-        let now = designcraft_ui_egui::now_ms();
+        let now = pagenor_ui_egui::now_ms();
         if now - self.last_refresh < 250.0 {
             return;
         }
@@ -103,7 +103,7 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
                 let _ = parent.append(&PredefinedMenuItem::separator());
             }
             Item::Sub(label, children) => {
-                let sub = Submenu::new(designcraft_ui_egui::i18n::tr(&app.ui.language, label), true);
+                let sub = Submenu::new(pagenor_ui_egui::i18n::tr(&app.ui.language, label), true);
                 build(app, &sub, children, items, counter);
                 let _ = parent.append(&sub);
             }
@@ -111,7 +111,7 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
                 *counter += 1;
                 let mid = format!("dc{counter}");
                 let sc = if params.is_null() { shortcut.and_then(accel) } else { None };
-                let label = designcraft_ui_egui::i18n::tr(&app.ui.language, label);
+                let label = pagenor_ui_egui::i18n::tr(&app.ui.language, label);
                 let handle = if menus::checked(app, id, params).is_some() {
                     let c = CheckMenuItem::with_id(mid.clone(), label, true, false, sc);
                     let _ = parent.append(&c);

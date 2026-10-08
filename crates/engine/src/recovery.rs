@@ -3,7 +3,7 @@
 //! closing a document removes its file; after a crash `file.recovery.open` reopens what was left
 //! there as unsaved documents that remember where they were saved.
 //!
-//! A recovery entry is `<uid>.designcraft` (the document) plus `<uid>.json` (`{"path", "title",
+//! A recovery entry is `<uid>.pagenor` (the document) plus `<uid>.json` (`{"path", "title",
 //! "saved"}`: the original file, the title, and when it was written).
 
 use std::path::{Path, PathBuf};
@@ -16,16 +16,16 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn default_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
-        return home.map(|h| h.join("Library/Application Support/DesignCraft/Recovery"));
+        return home.map(|h| h.join("Library/Application Support/Pagenor/Recovery"));
     }
     if cfg!(target_os = "windows") {
-        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("DesignCraft").join("Recovery"));
+        return std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Pagenor").join("Recovery"));
     }
-    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/share"))).map(|d| d.join("designcraft/recovery"))
+    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/share"))).map(|d| d.join("pagenor/recovery"))
 }
 
 fn files(dir: &Path, uid: u64) -> (PathBuf, PathBuf) {
-    (dir.join(format!("{uid}.designcraft")), dir.join(format!("{uid}.json")))
+    (dir.join(format!("{uid}.pagenor")), dir.join(format!("{uid}.json")))
 }
 
 /// Remove a document's recovery entry (it was saved or closed).
@@ -50,7 +50,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
         // Write then rename, so a crash mid-write never leaves a torn file.
         let tmp = doc.with_extension("tmp");
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &doc)).map_err(|e| EngineError::Other(format!("{}: {e}", doc.display())))?;
-        let m = json!({"path": d.path, "title": d.title(), "saved": designcraft_doc::vars::now()});
+        let m = json!({"path": d.path, "title": d.title(), "saved": pagenor_doc::vars::now()});
         std::fs::write(&meta, m.to_string()).map_err(|e| EngineError::Other(format!("{}: {e}", meta.display())))?;
         n += 1;
     }
@@ -63,7 +63,7 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
     let Ok(rd) = std::fs::read_dir(dir) else { return out };
     for e in rd.flatten() {
         let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("designcraft") {
+        if p.extension().and_then(|x| x.to_str()) != Some("pagenor") {
             continue;
         }
         let Some(uid) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
@@ -130,7 +130,7 @@ mod tests {
         // Saving a document drops its entry.
         s.recovery_dir = Some(dir.clone());
         assert_eq!(save(&s, &dir).unwrap(), 1);
-        let path = dir.join("saved.designcraft");
+        let path = dir.join("saved.pagenor");
         s.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
         assert!(list(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -148,7 +148,7 @@ mod file_tests {
         let dir = std::env::temp_dir().join(format!("dc-recovery-corrupt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("7.designcraft"), b"not a document").unwrap();
+        std::fs::write(dir.join("7.pagenor"), b"not a document").unwrap();
         std::fs::write(dir.join("7.json"), b"[1, 2]").unwrap();
         let mut s = Session::new();
         s.recovery_dir = Some(dir.clone());
@@ -161,7 +161,7 @@ mod file_tests {
     fn revert_and_save_a_copy() {
         let dir = std::env::temp_dir().join(format!("dc-revert-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (a, copy) = (dir.join("a.designcraft"), dir.join("copy.designcraft"));
+        let (a, copy) = (dir.join("a.pagenor"), dir.join("copy.pagenor"));
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         assert!(s.execute("file.revert", &json!({})).is_err(), "never saved");

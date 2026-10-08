@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 
-use designcraft_color::{Color, ColorType, GradientKind, SwatchValue, swatch};
-use designcraft_doc::{
+use pagenor_color::{Color, ColorType, GradientKind, SwatchValue, swatch};
+use pagenor_doc::{
     CharAttrs, CharFormat, ColumnsKind, Content, Document, Item, ListType, PageSide, ParaAttrs, ParaFormat, Rule, Shape, SpanColumns, Spread, Story,
     TextFrameOptions, story as st,
 };
-use designcraft_geom::{Affine, PathData, Rect};
+use pagenor_geom::{Affine, PathData, Rect};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
 use crate::xml::{El, Node, document, document_with_pi};
@@ -382,7 +382,7 @@ impl<'a> Ex<'a> {
         if secs.is_empty() || secs[0].start != 0 {
             secs.insert(
                 0,
-                designcraft_doc::Section {
+                pagenor_doc::Section {
                     start: 0,
                     start_number: Some(1),
                     style: Default::default(),
@@ -634,14 +634,14 @@ impl<'a> Ex<'a> {
             let id = format!("CustomStrokeStyle/{}", st.name);
             let pcts = |v: &[f64]| v.iter().map(|x| num(x * 100.0)).collect::<Vec<_>>().join(" ");
             let el = match &st.kind {
-                designcraft_doc::StrokeType::Stripes { bands } => {
+                pagenor_doc::StrokeType::Stripes { bands } => {
                     let flat: Vec<f64> = bands.iter().flat_map(|(a, w)| [*a, a + w]).collect();
                     Some(El::new("StripedStrokeStyle").attr("StripeArray", pcts(&flat)))
                 }
-                designcraft_doc::StrokeType::Dashed { pattern } => {
+                pagenor_doc::StrokeType::Dashed { pattern } => {
                     Some(El::new("DashedStrokeStyle").attr("DashArray", pattern.iter().map(|x| num(*x)).collect::<Vec<_>>().join(" ")))
                 }
-                designcraft_doc::StrokeType::Dotted => Some(El::new("DottedStrokeStyle").attr("DotArray", "0 200")),
+                pagenor_doc::StrokeType::Dotted => Some(El::new("DottedStrokeStyle").attr("DotArray", "0 200")),
                 _ => None,
             };
             if let Some(el) = el {
@@ -746,9 +746,9 @@ impl<'a> Ex<'a> {
                 .attr(
                     "Intent",
                     match s.intent {
-                        designcraft_doc::Intent::Print => "PrintIntent",
-                        designcraft_doc::Intent::Web => "WebIntent",
-                        designcraft_doc::Intent::Mobile => "MobileIntent",
+                        pagenor_doc::Intent::Print => "PrintIntent",
+                        pagenor_doc::Intent::Web => "WebIntent",
+                        pagenor_doc::Intent::Mobile => "MobileIntent",
                     },
                 )
                 .attr("CreatePrimaryTextFrame", bool_s(s.primary_text_frame))
@@ -782,8 +782,8 @@ impl<'a> Ex<'a> {
                 .attr(
                     "BaselineGridRelativeOption",
                     match bg.relative_to {
-                        designcraft_doc::GridRelative::TopOfPage => "TopOfPageOfBaselineGridRelativeOption",
-                        designcraft_doc::GridRelative::TopMargin => "TopOfMarginOfBaselineGridRelativeOption",
+                        pagenor_doc::GridRelative::TopOfPage => "TopOfPageOfBaselineGridRelativeOption",
+                        pagenor_doc::GridRelative::TopMargin => "TopOfMarginOfBaselineGridRelativeOption",
                     },
                 ),
         );
@@ -792,8 +792,8 @@ impl<'a> Ex<'a> {
         root.push(El::new("TransparencyPreference").attr(
             "BlendingSpace",
             match s.blend_space {
-                designcraft_doc::BlendSpace::Cmyk => "CMYK",
-                designcraft_doc::BlendSpace::Rgb => "RGB",
+                pagenor_doc::BlendSpace::Cmyk => "CMYK",
+                pagenor_doc::BlendSpace::Rgb => "RGB",
             },
         ));
         let a = &s.advanced_type;
@@ -842,17 +842,17 @@ impl<'a> Ex<'a> {
             let mut el =
                 El::new("ParagraphStyle").attr("Self", &id).attr("Name", names::style_name_out(PARA_BUILTINS, &ps.name)).attr("Imported", "false");
             let mut props = Vec::new();
-            let (pa, ca) = if ps.name == designcraft_doc::NO_PARA_STYLE {
+            let (pa, ca) = if ps.name == pagenor_doc::NO_PARA_STYLE {
                 // The root style carries the complete attribute set.
-                let mut pa = designcraft_doc::ParaProps::common([&designcraft_doc::ParaProps::default()]);
+                let mut pa = pagenor_doc::ParaProps::common([&pagenor_doc::ParaProps::default()]);
                 pa.merge(&ps.para);
-                let mut ca = designcraft_doc::CharProps::common([&designcraft_doc::CharProps::default()]);
+                let mut ca = pagenor_doc::CharProps::common([&pagenor_doc::CharProps::default()]);
                 ca.merge(&ps.chars);
                 (pa, ca)
             } else {
                 let next = ps.next_style.as_deref().unwrap_or(&ps.name);
                 el.set("NextStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, next));
-                match ps.based_on.as_deref().filter(|b| *b != designcraft_doc::NO_PARA_STYLE) {
+                match ps.based_on.as_deref().filter(|b| *b != pagenor_doc::NO_PARA_STYLE) {
                     Some(b) => props.push(p("BasedOn", "object", names::style_self("ParagraphStyle", PARA_BUILTINS, b))),
                     None => props.push(p("BasedOn", "string", "$ID/[No paragraph style]")),
                 }
@@ -870,7 +870,7 @@ impl<'a> Ex<'a> {
         let mut cells = El::new("RootCellStyleGroup")
             .attr("Self", self.fresh())
             .child(El::new("CellStyle").attr("Self", "CellStyle/$ID/[None]").attr("AppliedParagraphStyle", NO_PARA_ID).attr("Name", "$ID/[None]"));
-        for cs in styles.cell.iter().filter(|c| c.name != designcraft_doc::NO_CELL_STYLE) {
+        for cs in styles.cell.iter().filter(|c| c.name != pagenor_doc::NO_CELL_STYLE) {
             let mut el = El::new("CellStyle")
                 .attr("Self", names::style_self("CellStyle", names::CELL_BUILTINS, &cs.name))
                 .attr("Name", names::style_name_out(names::CELL_BUILTINS, &cs.name));
@@ -906,7 +906,7 @@ impl<'a> Ex<'a> {
                 El::new("TableStyle").attr("Self", "TableStyle/$ID/[Basic Table]").attr("Name", "$ID/[Basic Table]"),
                 vec![p("BasedOn", "string", "$ID/[No table style]")],
             ));
-        for ts in styles.table.iter().filter(|t| t.name != designcraft_doc::BASIC_TABLE) {
+        for ts in styles.table.iter().filter(|t| t.name != pagenor_doc::BASIC_TABLE) {
             let mut el = El::new("TableStyle")
                 .attr("Self", names::style_self("TableStyle", names::TABLE_BUILTINS, &ts.name))
                 .attr("Name", names::style_name_out(names::TABLE_BUILTINS, &ts.name));
@@ -957,8 +957,8 @@ impl<'a> Ex<'a> {
         // Object styles.
         let mut og = Group::default();
         let mut have: Vec<&str> = styles.object.iter().map(|o| o.name.as_str()).collect();
-        let defaults = designcraft_doc::Styles::default();
-        let mut all: Vec<designcraft_doc::ObjectStyle> = styles.object.clone();
+        let defaults = pagenor_doc::Styles::default();
+        let mut all: Vec<pagenor_doc::ObjectStyle> = styles.object.clone();
         for b in &defaults.object {
             if !have.contains(&b.name.as_str()) {
                 all.push(b.clone());
@@ -969,8 +969,8 @@ impl<'a> Ex<'a> {
             let id = names::style_self("ObjectStyle", OBJECT_BUILTINS, &os.name);
             let mut el = El::new("ObjectStyle").attr("Self", &id).attr("Name", names::style_name_out(OBJECT_BUILTINS, &os.name));
             let mut props = Vec::new();
-            if os.name != designcraft_doc::NO_OBJECT_STYLE {
-                match os.based_on.as_deref().filter(|b| *b != designcraft_doc::NO_OBJECT_STYLE) {
+            if os.name != pagenor_doc::NO_OBJECT_STYLE {
+                match os.based_on.as_deref().filter(|b| *b != pagenor_doc::NO_OBJECT_STYLE) {
                     Some(b) => props.push(p("BasedOn", "object", names::style_self("ObjectStyle", OBJECT_BUILTINS, b))),
                     None => props.push(p("BasedOn", "string", "$ID/[None]")),
                 }
@@ -1037,10 +1037,10 @@ impl<'a> Ex<'a> {
         }
         if let Some(k) = a.kerning {
             match k {
-                designcraft_doc::Kerning::Metrics => el.set("KerningMethod", "$ID/Metrics"),
-                designcraft_doc::Kerning::Optical => el.set("KerningMethod", "$ID/Optical"),
-                designcraft_doc::Kerning::None => el.set("KerningMethod", "None"),
-                designcraft_doc::Kerning::Manual(v) => el.set("KerningValue", num(v)),
+                pagenor_doc::Kerning::Metrics => el.set("KerningMethod", "$ID/Metrics"),
+                pagenor_doc::Kerning::Optical => el.set("KerningMethod", "$ID/Optical"),
+                pagenor_doc::Kerning::None => el.set("KerningMethod", "None"),
+                pagenor_doc::Kerning::Manual(v) => el.set("KerningValue", num(v)),
             }
         }
         if let Some(v) = a.tracking {
@@ -1106,14 +1106,14 @@ impl<'a> Ex<'a> {
             }
         }
         if let Some(list) = &a.otf_features {
-            for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
-                el.set(attr, bool_s(designcraft_doc::otf::is_on(list, tag)));
+            for (tag, _, attr) in pagenor_doc::otf::TOGGLES {
+                el.set(attr, bool_s(pagenor_doc::otf::is_on(list, tag)));
             }
-            let fig = designcraft_doc::otf::figures(list);
-            if let Some(f) = designcraft_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
+            let fig = pagenor_doc::otf::figures(list);
+            if let Some(f) = pagenor_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
                 el.set("OTFFigureStyle", f.3);
             }
-            el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
+            el.set("OTFStylisticSets", pagenor_doc::otf::stylistic_sets(list).to_string());
         }
         if let Some(v) = &a.glyph_form {
             el.set("GlyphForm", v);
@@ -1183,9 +1183,9 @@ impl<'a> Ex<'a> {
             el.set(
                 "KinsokuHangType",
                 match v {
-                    designcraft_doc::cjk::KinsokuHang::None => "None",
-                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
-                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
+                    pagenor_doc::cjk::KinsokuHang::None => "None",
+                    pagenor_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
+                    pagenor_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
                 },
             );
         }
@@ -1283,10 +1283,7 @@ impl<'a> Ex<'a> {
             el.set("Justification", names::align_out(v));
         }
         if let Some(v) = a.direction {
-            el.set(
-                "ParagraphDirection",
-                if v == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
-            );
+            el.set("ParagraphDirection", if v == pagenor_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" });
         }
         if let Some(v) = a.kashidas {
             el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
@@ -1307,12 +1304,12 @@ impl<'a> Ex<'a> {
         n!(drop_cap_chars, "DropCapCharacters");
         if let Some(g) = a.grid_align {
             match g {
-                designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
-                designcraft_doc::GridAlign::AllLines => {
+                pagenor_doc::GridAlign::None => el.set("GridAlignment", "None"),
+                pagenor_doc::GridAlign::AllLines => {
                     el.set("GridAlignment", "AlignToBaseline");
                     el.set("GridAlignFirstLineOnly", "false");
                 }
-                designcraft_doc::GridAlign::FirstLineOnly => {
+                pagenor_doc::GridAlign::FirstLineOnly => {
                     el.set("GridAlignment", "AlignToBaseline");
                     el.set("GridAlignFirstLineOnly", "true");
                 }
@@ -1322,8 +1319,8 @@ impl<'a> Ex<'a> {
             el.set(
                 "Composer",
                 match c {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
+                    pagenor_doc::Composer::Paragraph => "HL Composer",
+                    pagenor_doc::Composer::SingleLine => "HL Single",
                 },
             );
         }
@@ -1445,7 +1442,7 @@ impl<'a> Ex<'a> {
         props.push(p(&format!("{k}Color"), "object", self.sw(&r.color)));
     }
 
-    fn stroke_attrs(&self, el: &mut El, s: &designcraft_doc::Stroke) {
+    fn stroke_attrs(&self, el: &mut El, s: &pagenor_doc::Stroke) {
         el.set("StrokeColor", self.sw(&s.swatch));
         el.set("StrokeWeight", num(if s.is_none() { 0.0 } else { s.weight }));
         el.set("StrokeTint", pct(s.tint as f64));
@@ -1538,7 +1535,7 @@ impl<'a> Ex<'a> {
             && let Some(pt) = &t.options.path
         {
             // Type on a path: a TextPath child holds the story.
-            let len = designcraft_geom::warp::PathWarp::new(&it.path.to_bezpath(), false).length();
+            let len = pagenor_geom::warp::PathWarp::new(&it.path.to_bezpath(), false).length();
             el.push(
                 El::new("TextPath")
                     .attr("Self", format!("{}tp", uid(it.id.0)))
@@ -1573,7 +1570,7 @@ impl<'a> Ex<'a> {
         el.set("Visible", bool_s(!it.hidden));
         el.set("Locked", bool_s(it.locked));
         el.set("Nonprinting", bool_s(it.nonprinting));
-        let os = if it.object_style.is_empty() { designcraft_doc::NO_OBJECT_STYLE } else { &it.object_style };
+        let os = if it.object_style.is_empty() { pagenor_doc::NO_OBJECT_STYLE } else { &it.object_style };
         el.set("AppliedObjectStyle", names::style_self("ObjectStyle", OBJECT_BUILTINS, os));
         el.set("ItemTransform", affine_s(xf));
         el.set("FillColor", self.sw(&it.fill.swatch));
@@ -1604,7 +1601,7 @@ impl<'a> Ex<'a> {
         let mut el = with_props(el, props);
         // Transparency.
         let ds = &it.effects.drop_shadow;
-        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 {
+        if it.opacity < 1.0 || it.blend != pagenor_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 {
             let mut t = El::new("TransparencySetting");
             t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
             if ds.on {
@@ -1659,10 +1656,10 @@ impl<'a> Ex<'a> {
                 }
             }
             Content::Graphic(g) => {
-                if g.auto_fit != designcraft_doc::Fitting::None || g.fit_align != 4 || g.crop != [0.0; 4] {
+                if g.auto_fit != pagenor_doc::Fitting::None || g.fit_align != 4 || g.crop != [0.0; 4] {
                     el.push(
                         El::new("FrameFittingOption")
-                            .attr("AutoFit", bool_s(g.auto_fit != designcraft_doc::Fitting::None))
+                            .attr("AutoFit", bool_s(g.auto_fit != pagenor_doc::Fitting::None))
                             .attr("TopCrop", num(g.crop[0]))
                             .attr("LeftCrop", num(g.crop[1]))
                             .attr("BottomCrop", num(g.crop[2]))
@@ -1681,7 +1678,7 @@ impl<'a> Ex<'a> {
         el
     }
 
-    fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
+    fn image_el(&mut self, asset: &pagenor_doc::Asset, g: &pagenor_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
         let mut el = El::new(if is_pdf { "PDF" } else { "Image" }).attr("Self", self.fresh());
         if let Some((pw, ph)) = asset.pixels
@@ -1846,7 +1843,7 @@ impl<'a> Ex<'a> {
                 .attr("StoryOrientation", if s.vertical { "Vertical" } else { "Horizontal" })
                 .attr(
                     "StoryDirection",
-                    if s.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
+                    if s.direction == pagenor_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
                 ),
         );
         for psr in self.story_paras(s) {
@@ -1921,10 +1918,10 @@ impl<'a> Ex<'a> {
                         if let Some(t) = s.para_table(pi) {
                             out.push(Node::El(self.table_el(t)));
                         }
-                    } else if ch == designcraft_doc::ANCHOR_MARK {
+                    } else if ch == pagenor_doc::ANCHOR_MARK {
                         flush_text(&mut cur, &mut pending);
                         flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
+                        let k = s.text[..seg_start + ci].matches(pagenor_doc::ANCHOR_MARK).count();
                         if let Some(a) = s.anchors.get(k) {
                             out.push(Node::El(
                                 El::new("HyperlinkTextDestination")
@@ -1934,19 +1931,19 @@ impl<'a> Ex<'a> {
                                     .attr("DestinationUniqueKey", a.id & 0xFFFF_FFFF),
                             ));
                         }
-                    } else if ch == designcraft_doc::OBJECT_MARK {
+                    } else if ch == pagenor_doc::OBJECT_MARK {
                         // An anchored object: the item inside the range with its anchoring settings.
                         flush_text(&mut cur, &mut pending);
                         flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::OBJECT_MARK).count();
+                        let k = s.text[..seg_start + ci].matches(pagenor_doc::OBJECT_MARK).count();
                         if let Some(o) = s.objects.get(k) {
                             let mut e = self.item_el(&o.item, o.item.xf);
-                            use designcraft_doc::anchored::AnchorAlign as A;
+                            use pagenor_doc::anchored::AnchorAlign as A;
                             let setting = match &o.position {
-                                designcraft_doc::AnchorPosition::Inline { y_offset } => {
+                                pagenor_doc::AnchorPosition::Inline { y_offset } => {
                                     El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", num(*y_offset))
                                 }
-                                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
+                                pagenor_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
                                     .attr("AnchoredPosition", "AboveLine")
                                     .attr(
                                         "HorizontalAlignment",
@@ -1958,7 +1955,7 @@ impl<'a> Ex<'a> {
                                     )
                                     .attr("AnchorSpaceAbove", num(*space_before))
                                     .attr("AnchorYoffset", num(*space_after)),
-                                designcraft_doc::AnchorPosition::Custom {
+                                pagenor_doc::AnchorPosition::Custom {
                                     x_relative,
                                     y_relative,
                                     x_offset,
@@ -1980,12 +1977,12 @@ impl<'a> Ex<'a> {
                             e.push(setting);
                             out.push(Node::El(e));
                         }
-                    } else if ch == designcraft_doc::INDEX_MARK {
+                    } else if ch == pagenor_doc::INDEX_MARK {
                         flush_text(&mut cur, &mut pending);
                         flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::INDEX_MARK).count();
+                        let k = s.text[..seg_start + ci].matches(pagenor_doc::INDEX_MARK).count();
                         if let Some(r) = s.index_refs.get(k).filter(|r| !r.topics.is_empty()) {
-                            use designcraft_doc::index::IndexRange as R;
+                            use pagenor_doc::index::IndexRange as R;
                             for n in 1..=r.topics.len() {
                                 self.index_topics.insert(r.topics[..n].to_vec());
                             }
@@ -2015,7 +2012,7 @@ impl<'a> Ex<'a> {
                                 out.push(Node::El(el));
                             }
                         }
-                    } else if ch == designcraft_doc::XREF_MARK {
+                    } else if ch == pagenor_doc::XREF_MARK {
                         // A source wrapping its current text (InDesign regenerates it on update).
                         flush_text(&mut cur, &mut pending);
                         flush_content(&mut pending, &mut out);
@@ -2024,13 +2021,13 @@ impl<'a> Ex<'a> {
                             c.children.append(&mut out);
                             csrs.push(c);
                         }
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::XREF_MARK).count();
+                        let k = s.text[..seg_start + ci].matches(pagenor_doc::XREF_MARK).count();
                         if let Some(x) = s.xrefs.get(k) {
                             let me = self.fresh();
                             let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
                             let text = self.d.xref_values(x.target).map_or("??".into(), |mut v| {
                                 v.page = "?".into();
-                                designcraft_doc::xref::expand(self.d.xref_format(&x.format).map_or("<fullPara />", |ff| ff.definition.as_str()), &v)
+                                pagenor_doc::xref::expand(self.d.xref_format(&x.format).map_or("<fullPara />", |ff| ff.definition.as_str()), &v)
                             });
                             let mut c = self.csr_el(&f);
                             let mut content = El::new("Content");
@@ -2045,12 +2042,12 @@ impl<'a> Ex<'a> {
                             csrs.push(src);
                             self.xref_sources.push((me, x.target));
                         }
-                    } else if ch == designcraft_doc::NOTE_MARK {
+                    } else if ch == pagenor_doc::NOTE_MARK {
                         // Editorial notes aren't written to IDML yet.
-                    } else if ch == designcraft_doc::ENDNOTE_REF {
+                    } else if ch == pagenor_doc::ENDNOTE_REF {
                         // Endnotes aren't written to IDML yet: the endnote frame keeps their text
                         // (numbers included) and the references are left out.
-                    } else if ch == designcraft_doc::FOOTNOTE_REF {
+                    } else if ch == pagenor_doc::FOOTNOTE_REF {
                         // The reference: its own range carrying the reference position.
                         flush_text(&mut cur, &mut pending);
                         flush_content(&mut pending, &mut out);
@@ -2062,7 +2059,7 @@ impl<'a> Ex<'a> {
                         if let Some(n) = s.notes.get(s.notes_before(seg_start + ci)) {
                             let mut c = self.csr_el(&f);
                             let pos = self.d.footnote_options.ref_position;
-                            if pos != designcraft_doc::Position::Normal {
+                            if pos != pagenor_doc::Position::Normal {
                                 c.set("Position", names::position_out(pos));
                             }
                             c.push(self.footnote_el(&n.text));
@@ -2104,7 +2101,7 @@ impl<'a> Ex<'a> {
         paras
     }
 
-    fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &designcraft_doc::CellStroke) {
+    fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &pagenor_doc::CellStroke) {
         el.set(&format!("{prefix}StrokeWeight"), num(s.weight));
         el.set(&format!("{prefix}StrokeColor"), self.sw(&s.color));
         el.set(&format!("{prefix}StrokeTint"), pct(s.tint as f64));
@@ -2112,7 +2109,7 @@ impl<'a> Ex<'a> {
     }
 
     /// `<Table>` with rows, columns and cells (cell names are `column:row`).
-    fn table_el(&mut self, t: &designcraft_doc::Table) -> El {
+    fn table_el(&mut self, t: &pagenor_doc::Table) -> El {
         let id = uid(t.id);
         let (h, f) = (t.header_rows(), t.footer_rows());
         let mut el = El::new("Table")
@@ -2123,11 +2120,11 @@ impl<'a> Ex<'a> {
             .attr("ColumnCount", t.ncols())
             .attr(
                 "AppliedTableStyle",
-                names::style_self("TableStyle", names::TABLE_BUILTINS, if t.style.is_empty() { designcraft_doc::BASIC_TABLE } else { &t.style }),
+                names::style_self("TableStyle", names::TABLE_BUILTINS, if t.style.is_empty() { pagenor_doc::BASIC_TABLE } else { &t.style }),
             )
             .attr(
                 "TableDirection",
-                if t.options.direction == designcraft_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
+                if t.options.direction == pagenor_doc::TextDirection::RightToLeft { "RightToLeftDirection" } else { "LeftToRightDirection" },
             )
             .attr("SpaceBefore", num(t.options.space_before))
             .attr("SpaceAfter", num(t.options.space_after))
@@ -2149,7 +2146,7 @@ impl<'a> Ex<'a> {
             }
         }
         for (r, row) in t.rows.iter().enumerate() {
-            let exact = row.mode == designcraft_doc::RowHeightMode::Exactly;
+            let exact = row.mode == pagenor_doc::RowHeightMode::Exactly;
             el.push(
                 El::new("Row")
                     .attr("Self", format!("{id}Row{r}"))
@@ -2170,10 +2167,10 @@ impl<'a> Ex<'a> {
                 }
                 let Some(cell) = t.cell(r, c) else { continue };
                 let vj = match cell.vj {
-                    designcraft_doc::VerticalJustification::Top => "TopAlign",
-                    designcraft_doc::VerticalJustification::Center => "CenterAlign",
-                    designcraft_doc::VerticalJustification::Bottom => "BottomAlign",
-                    designcraft_doc::VerticalJustification::Justify => "JustifyAlign",
+                    pagenor_doc::VerticalJustification::Top => "TopAlign",
+                    pagenor_doc::VerticalJustification::Center => "CenterAlign",
+                    pagenor_doc::VerticalJustification::Bottom => "BottomAlign",
+                    pagenor_doc::VerticalJustification::Justify => "JustifyAlign",
                 };
                 let mut ce = El::new("Cell")
                     .attr("Self", format!("{id}i{}", r * t.ncols() + c))
@@ -2185,7 +2182,7 @@ impl<'a> Ex<'a> {
                         names::style_self(
                             "CellStyle",
                             names::CELL_BUILTINS,
-                            if cell.style.is_empty() { designcraft_doc::NO_CELL_STYLE } else { &cell.style },
+                            if cell.style.is_empty() { pagenor_doc::NO_CELL_STYLE } else { &cell.style },
                         ),
                     )
                     .attr("FillColor", self.sw(&cell.fill))
@@ -2271,9 +2268,9 @@ impl Group {
     }
 }
 
-fn margin_el(pg: &designcraft_doc::Page) -> El {
+fn margin_el(pg: &pagenor_doc::Page) -> El {
     let m = pg.margin_rect();
-    let cols = designcraft_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter);
+    let cols = pagenor_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter);
     let pos: Vec<String> = cols.iter().flat_map(|c| [num(c.x0), num(c.x1)]).collect();
     El::new("MarginPreference")
         .attr("ColumnCount", pg.columns.count.max(1))
@@ -2412,7 +2409,7 @@ fn xref_format_self(i: usize) -> String {
 }
 
 /// A cross-reference format as InDesign building blocks.
-fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
+fn xref_format_el(i: usize, f: &pagenor_doc::XrefFormat) -> El {
     let me = xref_format_self(i);
     let mut el = El::new("CrossReferenceFormat").attr("Self", &me).attr("Name", &f.name).attr("AppliedCharacterStyle", "n");
     let mut k = 0;

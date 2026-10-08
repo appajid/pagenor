@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build and package DesignCraft for Linux (<arch> is x86_64 or aarch64):
+# Build and package Pagenor for Linux (<arch> is x86_64 or aarch64):
 #
-#   $DIST/designcraft-<version>-linux-<arch>.AppImage  any distro with glibc >= the build host's
-#   $DIST/designcraft-<version>-linux-<arch>.deb       Debian, Ubuntu, Mint, Pop!_OS, ...
-#   $DIST/designcraft-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
-#   $DIST/designcraft-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
+#   $DIST/pagenor-<version>-linux-<arch>.AppImage  any distro with glibc >= the build host's
+#   $DIST/pagenor-<version>-linux-<arch>.deb       Debian, Ubuntu, Mint, Pop!_OS, ...
+#   $DIST/pagenor-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
+#   $DIST/pagenor-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
 #
 # Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
 #
@@ -15,7 +15,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.designcraft
+APP_ID=org.pagenor.app
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
@@ -34,13 +34,13 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export DESIGNCRAFT_MAINTAINER="${DESIGNCRAFT_MAINTAINER:-DesignCraft maintainers <designcraft@storyteller.ai>}"
-BASENAME="designcraft-$VERSION-linux-$ARCH"
+export PAGENOR_MAINTAINER="${PAGENOR_MAINTAINER:-Pagenor maintainers <pagenor@storyteller.ai>}"
+BASENAME="pagenor-$VERSION-linux-$ARCH"
 
-echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS)"
+echo "==> Pagenor $VERSION for Linux $ARCH ($FORMATS)"
 
 if [ "$SKIP_BUILD" = 0 ]; then
-  (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
+  (cd "$ROOT" && cargo build --release --locked -p pagenor -p pagenor-cli)
 fi
 BIN="$CARGO_TARGET_DIR/release"
 WORK="$CARGO_TARGET_DIR/linux-package"
@@ -48,18 +48,18 @@ STAGE="$WORK/root"
 rm -rf "$WORK"
 
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
-install -Dm755 "$BIN/designcraft" "$STAGE/usr/bin/designcraft"
-install -Dm755 "$BIN/designcraft-cli" "$STAGE/usr/bin/designcraft-cli"
-strip "$STAGE/usr/bin/designcraft" "$STAGE/usr/bin/designcraft-cli" 2>/dev/null || true
+install -Dm755 "$BIN/pagenor" "$STAGE/usr/bin/pagenor"
+install -Dm755 "$BIN/pagenor-cli" "$STAGE/usr/bin/pagenor-cli"
+strip "$STAGE/usr/bin/pagenor" "$STAGE/usr/bin/pagenor-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
-sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$DESIGNCRAFT_BUILD_DATE/g" \
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$PAGENOR_BUILD_DATE/g" \
   "$HERE/$APP_ID.metainfo.xml.in" >"$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 mkdir -p "$STAGE/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
-mkdir -p "$STAGE/usr/share/doc/designcraft"
-copy_docs "$STAGE/usr/share/doc/designcraft"
+mkdir -p "$STAGE/usr/share/doc/pagenor"
+copy_docs "$STAGE/usr/share/doc/pagenor"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -92,10 +92,10 @@ fi
 
 # ---- AppImage -----------------------------------------------------------------------------------
 if has appimage; then
-  APPDIR="$WORK/DesignCraft.AppDir"
+  APPDIR="$WORK/Pagenor.AppDir"
   cp -R "$STAGE" "$APPDIR"
   mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
-  ln -s usr/bin/designcraft "$APPDIR/AppRun"
+  ln -s usr/bin/pagenor "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
   cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
   ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
@@ -115,6 +115,6 @@ if has appimage; then
   echo "wrote $OUT"
 fi
 
-"$STAGE/usr/bin/designcraft-cli" --version
+"$STAGE/usr/bin/pagenor-cli" --version
 echo "==> done"
 ls -lh "$DIST"

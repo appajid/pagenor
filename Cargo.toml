@@ -1,34 +1,34 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
-default-members = ["crates/*", "apps/designcraft", "apps/designcraft-cli", "xtask"]
+default-members = ["crates/*", "apps/pagenor", "apps/pagenor-cli", "xtask"]
 
 [workspace.package]
 version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
-repository = "https://github.com/storytold/designcraft"
+# repository = set when the Pagenor repository is published
 
 [workspace.dependencies]
 # internal
-designcraft-geom = { path = "crates/geom" }
-designcraft-color = { path = "crates/color" }
-designcraft-doc = { path = "crates/doc" }
-designcraft-fonts = { path = "crates/fonts" }
-designcraft-compose = { path = "crates/compose" }
-designcraft-images = { path = "crates/images" }
-designcraft-render = { path = "crates/render" }
-designcraft-pdf = { path = "crates/pdf" }
-designcraft-idml = { path = "crates/idml" }
-designcraft-epub = { path = "crates/epub" }
-designcraft-textimport = { path = "crates/textimport" }
-designcraft-format = { path = "crates/format" }
-designcraft-tools = { path = "crates/tools" }
-designcraft-engine = { path = "crates/engine" }
-designcraft-ui-egui = { path = "crates/ui-egui" }
-designcraft-mcp = { path = "crates/mcp" }
-designcraft-testkit = { path = "crates/testkit" }
+pagenor-geom = { path = "crates/geom" }
+pagenor-color = { path = "crates/color" }
+pagenor-doc = { path = "crates/doc" }
+pagenor-fonts = { path = "crates/fonts" }
+pagenor-compose = { path = "crates/compose" }
+pagenor-images = { path = "crates/images" }
+pagenor-render = { path = "crates/render" }
+pagenor-pdf = { path = "crates/pdf" }
+pagenor-idml = { path = "crates/idml" }
+pagenor-epub = { path = "crates/epub" }
+pagenor-textimport = { path = "crates/textimport" }
+pagenor-format = { path = "crates/format" }
+pagenor-tools = { path = "crates/tools" }
+pagenor-engine = { path = "crates/engine" }
+pagenor-ui-egui = { path = "crates/ui-egui" }
+pagenor-mcp = { path = "crates/mcp" }
+pagenor-testkit = { path = "crates/testkit" }
 
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }

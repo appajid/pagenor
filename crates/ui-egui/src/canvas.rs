@@ -1,12 +1,12 @@
-//! The document canvas: pasteboard, spreads (rendered by `designcraft-render`), guides, frame edges,
+//! The document canvas: pasteboard, spreads (rendered by `pagenor-render`), guides, frame edges,
 //! selection, text ports and threads, the text caret, rulers, and pointer/keyboard input.
 
-use designcraft_compose as compose;
-use designcraft_doc::{Content, Document, Item, PageSide, SpreadRef};
-use designcraft_engine::doc::Selection;
-use designcraft_geom::{Affine, Point, Rect as DRect, Vec2 as DVec2};
-use designcraft_tools::{CanvasLayout, Cursor, Mods, Overlay, PointerEvent, PointerKind, ToolKey};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use pagenor_compose as compose;
+use pagenor_doc::{Content, Document, Item, PageSide, SpreadRef};
+use pagenor_engine::doc::Selection;
+use pagenor_geom::{Affine, Point, Rect as DRect, Vec2 as DVec2};
+use pagenor_tools::{CanvasLayout, Cursor, Mods, Overlay, PointerEvent, PointerKind, ToolKey};
 use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
@@ -101,7 +101,7 @@ pub fn fit(app: &mut DesignApp, rect: Rect, what: &str) {
     }
     if what == "selection" {
         // Fit Selection in Window: the selected objects (on their spread's slot).
-        let sel: Vec<designcraft_geom::Rect> = st
+        let sel: Vec<pagenor_geom::Rect> = st
             .selection
             .items
             .iter()
@@ -298,8 +298,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         {
             let col = Color32::from_rgb(74, 227, 255);
             let (a, b) = match g.orientation {
-                designcraft_doc::Orientation::Horizontal => (pos2(rect.min.x, p.y), pos2(rect.max.x, p.y)),
-                designcraft_doc::Orientation::Vertical => (pos2(p.x, rect.min.y), pos2(p.x, rect.max.y)),
+                pagenor_doc::Orientation::Horizontal => (pos2(rect.min.x, p.y), pos2(rect.max.x, p.y)),
+                pagenor_doc::Orientation::Vertical => (pos2(p.x, rect.min.y), pos2(p.x, rect.max.y)),
             };
             painter.line_segment([a, b], Stroke::new(1.0, col));
         }
@@ -408,12 +408,11 @@ fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf,
     let zoom_same = app.canvas.shown.is_some_and(|s| (s.zoom - xf.zoom).abs() < 1e-9);
     let job = |app: &DesignApp| {
         let st = app.session.active()?;
-        let placed: Vec<designcraft_render::Placed> =
-            layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
+        let placed: Vec<pagenor_render::Placed> = layout.slots.iter().map(|s| pagenor_render::Placed { spread: s.spread, xf: s.xf }).collect();
         let w = (target.size.0 as f64 * ppp).round().max(1.0) as u32;
         let h = (target.size.1 as f64 * ppp).round().max(1.0) as u32;
         let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-target.origin.x, -target.origin.y));
-        let opts = designcraft_render::RenderOptions {
+        let opts = pagenor_render::RenderOptions {
             printing_only: preview,
             greek_below_px: 3.0 * ppp,
             highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
@@ -489,7 +488,7 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         return false;
     }
     let new = st.doc.clone();
-    let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
+    let Some(regions) = pagenor_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
     let t0 = crate::now_ms();
     let (tw, th) = ((sh.size.0 as f64 * ppp).round() as i64, (sh.size.1 as f64 * ppp).round() as i64);
     let k = sh.zoom * ppp;
@@ -521,12 +520,12 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     if ((x1 - x0) * (y1 - y0)) as f64 > 0.5 * (tw * th) as f64 {
         return false;
     }
-    let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
+    let placed: Vec<pagenor_render::Placed> = layout.slots.iter().map(|s| pagenor_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let view = Affine::translate((-(x0 as f64), -(y0 as f64)))
         * Affine::scale(ppp)
         * Affine::scale(sh.zoom)
         * Affine::translate((-sh.origin.x, -sh.origin.y));
-    let opts = designcraft_render::RenderOptions {
+    let opts = pagenor_render::RenderOptions {
         printing_only: preview,
         greek_below_px: 3.0 * ppp,
         highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
@@ -557,19 +556,19 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_worker_spawn(ctx: &egui::Context) -> Option<crate::render_worker::Worker> {
-    if std::env::var_os("DESIGNCRAFT_SYNC_RENDER").is_some() {
+    if std::env::var_os("PAGENOR_SYNC_RENDER").is_some() {
         return None;
     }
     crate::render_worker::Worker::spawn(ctx.clone())
 }
 
-fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render::Rendered) {
+fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: pagenor_render::Rendered) {
     if app.ui.proof_colors {
-        designcraft_render::proof_view(&mut img, &app.ui.proof_setup);
+        pagenor_render::proof_view(&mut img, &app.ui.proof_setup);
     }
     // Plates render from source colours; the ink limit is estimated from the composite.
     if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
-        designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
+        pagenor_render::separation_view(&mut img, None, app.ui.ink_limit);
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     match &mut app.canvas.texture {
@@ -637,8 +636,8 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
                 // Spread guides cross the pasteboard; page guides their page.
                 let span = if g.spread { pasteboard } else { pr };
                 let (a, bb) = match g.orientation {
-                    designcraft_doc::Orientation::Horizontal => (Point::new(span.x0, g.position), Point::new(span.x1, g.position)),
-                    designcraft_doc::Orientation::Vertical => {
+                    pagenor_doc::Orientation::Horizontal => (Point::new(span.x0, g.position), Point::new(span.x1, g.position)),
+                    pagenor_doc::Orientation::Vertical => {
                         let span = if g.spread { sp.bounds().inflate(0.0, 36.0) } else { pr };
                         (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
                     }
@@ -657,7 +656,7 @@ fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
 }
 
 /// Spread-space → canvas transform for an item at `loc`.
-fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
+fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: pagenor_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
     Some((layout.xf(loc.spread) * doc.parent_xf(&loc), ""))
 }
@@ -667,8 +666,8 @@ fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
     let full = a * it.xf;
     let mut out = Vec::new();
     let mut cur: Vec<Pos2> = Vec::new();
-    designcraft_geom::kurbo::flatten(&bp, 0.25 / xf.zoom.max(0.01), |el| {
-        use designcraft_geom::PathEl::*;
+    pagenor_geom::kurbo::flatten(&bp, 0.25 / xf.zoom.max(0.01), |el| {
+        use pagenor_geom::PathEl::*;
         match el {
             MoveTo(p) => {
                 if cur.len() > 1 {
@@ -761,7 +760,7 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
         }
     }
     // Empty graphic frame: the X.
-    if it.object_style == designcraft_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, Content::Unassigned) {
+    if it.object_style == pagenor_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, Content::Unassigned) {
         let r = it.inner_bounds();
         let m = a * it.xf;
         let p = |x: f64, y: f64| xf.to_screen(m * Point::new(x, y));
@@ -850,14 +849,13 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
         let hs = 6.5;
         // Centre point and the live-corner widget.
         painter.rect_filled(Rect::from_center_size(u.center(), vec2(3.5, 3.5)), 0.0, color);
-        if sel.items.len() == 1
-            && doc.item(sel.items[0]).is_some_and(|i| matches!(i.shape, designcraft_doc::Shape::Rectangle) && i.children().is_empty())
+        if sel.items.len() == 1 && doc.item(sel.items[0]).is_some_and(|i| matches!(i.shape, pagenor_doc::Shape::Rectangle) && i.children().is_empty())
         {
             let lc = Rect::from_center_size(pos2(u.max.x, u.min.y + 11.5), vec2(6.0, 6.0));
             painter.rect_filled(lc, 0.0, Color32::from_rgb(0xff, 0xe5, 0x00));
             painter.rect_stroke(lc, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
         }
-        for h in designcraft_tools::select::handles(DRect::new(u.min.x as f64, u.min.y as f64, u.max.x as f64, u.max.y as f64)) {
+        for h in pagenor_tools::select::handles(DRect::new(u.min.x as f64, u.min.y as f64, u.max.x as f64, u.max.y as f64)) {
             let r = Rect::from_center_size(pos2(h.x as f32, h.y as f32), vec2(hs, hs));
             painter.rect_filled(r, 0.0, Color32::WHITE);
             painter.rect_stroke(r, 0.0, Stroke::new(hair(painter), color), StrokeKind::Inside);
@@ -884,7 +882,7 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
 }
 
 /// Port location (canvas): out port at bottom-right, in port at top-left.
-fn port_pos(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId, out: bool) -> Option<Point> {
+fn port_pos(doc: &Document, layout: &CanvasLayout, id: pagenor_doc::ItemId, out: bool) -> Option<Point> {
     let it = doc.item(id)?;
     let (a, _) = item_canvas_xf(doc, layout, id)?;
     let r = it.inner_bounds();
@@ -900,7 +898,7 @@ fn draw_ports(
     doc: &Document,
     layout: &CanvasLayout,
     it: &Item,
-    sid: designcraft_doc::StoryId,
+    sid: pagenor_doc::StoryId,
     a: Affine,
     color: Color32,
 ) {
@@ -937,8 +935,8 @@ fn draw_text_selection(
     xf: &Xf,
     doc: &Document,
     layout: &CanvasLayout,
-    ts: designcraft_doc::TextSel,
-    cells: Option<designcraft_doc::TableSel>,
+    ts: pagenor_doc::TextSel,
+    cells: Option<pagenor_doc::TableSel>,
 ) {
     let cs = app.session.cache.get(doc, ts.story, None);
     let range = ts.range();
@@ -1049,8 +1047,8 @@ fn draw_cell_selection(
     doc: &Document,
     layout: &CanvasLayout,
     cs: &compose::ComposedStory,
-    ts: designcraft_doc::TextSel,
-    cell: designcraft_doc::CellAddr,
+    ts: pagenor_doc::TextSel,
+    cell: pagenor_doc::CellAddr,
 ) {
     // Footnote text or a cell: its composed story and where it sits in the frame.
     let found = match cell.footnote_id() {
@@ -1060,7 +1058,7 @@ fn draw_cell_selection(
     let Some((fi, origin, text)) = found else { return };
     let Some(ft) = cs.frames.get(fi) else { return };
     let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { return };
-    let m = a * doc.text_xf(it) * designcraft_geom::Affine::translate(origin.to_vec2());
+    let m = a * doc.text_xf(it) * pagenor_geom::Affine::translate(origin.to_vec2());
     let range = ts.range();
     if !range.is_empty()
         && let Some(cft) = text.frames.first()
@@ -1109,10 +1107,10 @@ fn draw_inverse_highlight(
     xf: &Xf,
     doc: &Document,
     cs: &compose::ComposedStory,
-    story: designcraft_doc::StoryId,
+    story: pagenor_doc::StoryId,
     runs: &[(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)],
 ) {
-    use designcraft_render::vello_cpu::{self, kurbo, peniko};
+    use pagenor_render::vello_cpu::{self, kurbo, peniko};
     let ctx = painter.ctx();
     let ppp = ctx.pixels_per_point();
     let to_screen = |m: Affine, p: Point| xf.to_screen(m * p);
@@ -1158,7 +1156,7 @@ fn draw_inverse_highlight(
                     rc.fill_path(&bp);
                 }
             }
-            let db = designcraft_fonts::FontDb::global();
+            let db = pagenor_fonts::FontDb::global();
             for (fi, m, _, glyphs) in runs {
                 let Some(ft) = cs.frames.get(*fi) else { continue };
                 for &(li, gi) in glyphs {
@@ -1193,7 +1191,7 @@ fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, xf: &Xf) {
     if let (Some((z, c)), Some(rect)) = (app.power_zoom, app.canvas_rect) {
         // The view that releasing returns to.
         let (w, h) = (rect.width() as f64 / z, rect.height() as f64 / z);
-        let r = xf.rect(designcraft_geom::Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0));
+        let r = xf.rect(pagenor_geom::Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0));
         painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5, Color32::from_rgb(230, 40, 40)), egui::StrokeKind::Middle);
     }
     let tok = Tokens::get(painter.ctx());
@@ -1535,7 +1533,7 @@ fn draw_flattener_preview(painter: &egui::Painter, xf: &Xf, doc: &Document, layo
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
         for it in sp.items.iter().filter(|it| !it.hidden && transparent(it)) {
-            let r = it.bounds().inflate(designcraft_render::effect_outset(it), designcraft_render::effect_outset(it));
+            let r = it.bounds().inflate(pagenor_render::effect_outset(it), pagenor_render::effect_outset(it));
             painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(r)), 0.0, red);
         }
     }
@@ -1549,7 +1547,7 @@ fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::P
         let bad: std::sync::Arc<Vec<std::ops::Range<usize>>> = match ctx.data(|d| d.get_temp(key)) {
             Some(v) => v,
             None => {
-                let v = std::sync::Arc::new(designcraft_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
+                let v = std::sync::Arc::new(pagenor_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
                 ctx.data_mut(|d| d.insert_temp(key, v.clone()));
                 v
             }
@@ -1590,7 +1588,7 @@ pub fn selected_text(app: &DesignApp) -> Option<String> {
     if s.is_empty() {
         return None;
     }
-    Some(s.replace(designcraft_doc::story::FORCED_LINE_BREAK, "\n"))
+    Some(s.replace(pagenor_doc::story::FORCED_LINE_BREAK, "\n"))
 }
 
 /// One device pixel, the width InDesign uses for guides and frame edges.
@@ -1603,14 +1601,14 @@ const GUIDE_DRAG: &str = "canvas_guide_drag";
 /// A ruler guide being dragged: out of a ruler (`from` None) or an existing one.
 #[derive(Clone, Debug)]
 struct GuideDrag {
-    orientation: designcraft_doc::Orientation,
-    from: Option<(designcraft_doc::SpreadRef, usize, usize)>,
+    orientation: pagenor_doc::Orientation,
+    from: Option<(pagenor_doc::SpreadRef, usize, usize)>,
     /// Pointer position (screen).
     at: Option<Pos2>,
 }
 
 /// The guide under a screen point (within 3 px), as (spread, page, index, orientation).
-fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft_doc::SpreadRef, usize, usize, designcraft_doc::Orientation)> {
+fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(pagenor_doc::SpreadRef, usize, usize, pagenor_doc::Orientation)> {
     let st = app.session.active()?;
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);
     let cp = xf.to_canvas(p);
@@ -1626,8 +1624,8 @@ fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft_doc::Sprea
                 }
                 let r = if g.spread { pr } else { pg.bounds() };
                 let hit = match g.orientation {
-                    designcraft_doc::Orientation::Horizontal => (local.y - g.position).abs() <= tol && local.x >= r.x0 && local.x <= r.x1,
-                    designcraft_doc::Orientation::Vertical => (local.x - g.position).abs() <= tol && local.y >= r.y0 - tol && local.y <= r.y1 + tol,
+                    pagenor_doc::Orientation::Horizontal => (local.y - g.position).abs() <= tol && local.x >= r.x0 && local.x <= r.x1,
+                    pagenor_doc::Orientation::Vertical => (local.x - g.position).abs() <= tol && local.y >= r.y0 - tol && local.y <= r.y1 + tol,
                 };
                 if hit && !g.locked {
                     return Some((slot.spread, pi, gi, g.orientation));
@@ -1651,9 +1649,9 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
         if full.contains(o) && !rect.contains(o) {
             // In a ruler (not the corner).
             let orientation = if o.y < rect.min.y && o.x >= rect.min.x {
-                Some(designcraft_doc::Orientation::Horizontal)
+                Some(pagenor_doc::Orientation::Horizontal)
             } else if o.x < rect.min.x && o.y >= rect.min.y {
-                Some(designcraft_doc::Orientation::Vertical)
+                Some(pagenor_doc::Orientation::Vertical)
             } else {
                 None
             };
@@ -1668,7 +1666,7 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
             let over_item = app.session.active().is_some_and(|st| {
                 let layout = CanvasLayout::new(&st.doc, st.editing_parents);
                 layout.spread_at(xf.to_canvas(o)).is_some_and(|(sr, p)| match sr {
-                    designcraft_doc::SpreadRef::Doc(si) => st.doc.hit_item(si, p, 3.0 / xf.zoom).is_some(),
+                    pagenor_doc::SpreadRef::Doc(si) => st.doc.hit_item(si, p, 3.0 / xf.zoom).is_some(),
                     _ => false,
                 })
             });
@@ -1683,8 +1681,8 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     }
     if !released {
         ui.ctx().set_cursor_icon(match g.orientation {
-            designcraft_doc::Orientation::Horizontal => egui::CursorIcon::ResizeVertical,
-            designcraft_doc::Orientation::Vertical => egui::CursorIcon::ResizeHorizontal,
+            pagenor_doc::Orientation::Horizontal => egui::CursorIcon::ResizeVertical,
+            pagenor_doc::Orientation::Vertical => egui::CursorIcon::ResizeHorizontal,
         });
         ui.data_mut(|d| d.insert_temp(id, g));
         return true;
@@ -1700,12 +1698,12 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
         Some((r, sp, on_page))
     });
     let pos_of = |sp: Point| match g.orientation {
-        designcraft_doc::Orientation::Horizontal => sp.y,
-        designcraft_doc::Orientation::Vertical => sp.x,
+        pagenor_doc::Orientation::Horizontal => sp.y,
+        pagenor_doc::Orientation::Vertical => sp.x,
     };
     let orient = match g.orientation {
-        designcraft_doc::Orientation::Horizontal => "horizontal",
-        designcraft_doc::Orientation::Vertical => "vertical",
+        pagenor_doc::Orientation::Horizontal => "horizontal",
+        pagenor_doc::Orientation::Vertical => "vertical",
     };
     match (g.from, on_canvas, target) {
         // Dropped back on a ruler: delete.

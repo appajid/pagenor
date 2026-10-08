@@ -34,7 +34,7 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
         g
     };
     for n in names.iter().filter(|n| !n.contains('/')) {
-        if para && n == designcraft_doc::NO_PARA_STYLE {
+        if para && n == pagenor_doc::NO_PARA_STYLE {
             continue;
         }
         style_row(app, ui, para, n, current.as_deref(), &groups, &t);

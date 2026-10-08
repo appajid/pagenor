@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use designcraft_compose::Cache;
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Document, Guide, Item, ItemId, Orientation, ParaFormat, Selection, Shape, SpreadRef, Stroke};
-use designcraft_geom::shapes;
-use designcraft_geom::{Point, Rect, Unit};
+use pagenor_compose::Cache;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Document, Guide, Item, ItemId, Orientation, ParaFormat, Selection, Shape, SpreadRef, Stroke};
+use pagenor_geom::shapes;
+use pagenor_geom::{Point, Rect, Unit};
 
 use super::*;
 
@@ -53,10 +53,10 @@ fn selection_click_and_marquee() {
 #[test]
 fn resize_rect_modifiers() {
     let r = Rect::new(0.0, 0.0, 100.0, 50.0);
-    assert_eq!(select::resize_rect(r, 4, designcraft_geom::Point::new(200.0, 80.0), Mods::default()), Rect::new(0.0, 0.0, 200.0, 80.0));
-    let p = select::resize_rect(r, 4, designcraft_geom::Point::new(200.0, 60.0), Mods { shift: true, ..Default::default() });
+    assert_eq!(select::resize_rect(r, 4, pagenor_geom::Point::new(200.0, 80.0), Mods::default()), Rect::new(0.0, 0.0, 200.0, 80.0));
+    let p = select::resize_rect(r, 4, pagenor_geom::Point::new(200.0, 60.0), Mods { shift: true, ..Default::default() });
     assert_eq!(p, Rect::new(0.0, 0.0, 200.0, 100.0));
-    let c = select::resize_rect(r, 3, designcraft_geom::Point::new(150.0, 25.0), Mods { alt: true, ..Default::default() });
+    let c = select::resize_rect(r, 3, pagenor_geom::Point::new(150.0, 25.0), Mods { alt: true, ..Default::default() });
     assert_eq!(c, Rect::new(-50.0, 0.0, 150.0, 50.0));
 }
 
@@ -241,14 +241,14 @@ fn page_tool_opens_page_size() {
 fn type_on_path_tool_targets_paths() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
-    let id = designcraft_doc::ItemId(d.alloc());
-    let mut it = designcraft_doc::Item::new(
+    let id = pagenor_doc::ItemId(d.alloc());
+    let mut it = pagenor_doc::Item::new(
         id,
         lid,
-        designcraft_doc::Shape::GraphicLine,
-        designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 100.0), designcraft_geom::Point::new(300.0, 100.0)),
+        pagenor_doc::Shape::GraphicLine,
+        pagenor_geom::shapes::line(pagenor_geom::Point::new(100.0, 100.0), pagenor_geom::Point::new(300.0, 100.0)),
     );
-    it.stroke = designcraft_doc::Stroke::default();
+    it.stroke = pagenor_doc::Stroke::default();
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
     let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
     let cx = ctx(&d, &s, &c, &l);
@@ -282,7 +282,7 @@ fn turned_spread_maps_points_both_ways() {
     let slot = l.slots[0];
     let b = d.spreads[0].bounds();
     assert!((slot.bounds.width() - b.height()).abs() < 1e-6);
-    let p = designcraft_geom::Point::new(b.x0 + 10.0, b.y0 + 20.0);
+    let p = pagenor_geom::Point::new(b.x0 + 10.0, b.y0 + 20.0);
     let c = slot.to_canvas(p);
     let back = slot.to_spread(c);
     assert!((back - p).hypot() < 1e-9);
@@ -292,7 +292,7 @@ fn turned_spread_maps_points_both_ways() {
     assert_eq!(sr, SpreadRef::Doc(0));
     assert!((sp - p).hypot() < 1e-9);
     // A canvas drag rightwards is a drag down the spread.
-    let dv = slot.delta_to_spread(designcraft_geom::Vec2::new(10.0, 0.0));
+    let dv = slot.delta_to_spread(pagenor_geom::Vec2::new(10.0, 0.0));
     assert!(dv.x.abs() < 1e-9 && (dv.y + 10.0).abs() < 1e-9 || (dv.y - 10.0).abs() < 1e-9, "{dv:?}");
 }
 
@@ -534,7 +534,7 @@ fn drag_onto_the_next_spread_snaps_to_that_guide() {
     let raw_top = 50.0;
     let corner0 = layout.to_canvas(SpreadRef::Doc(0), Point::new(item.x0, item.y0));
     let corner_raw = layout.to_canvas(SpreadRef::Doc(1), Point::new(item.x0, raw_top));
-    let travel = designcraft_geom::Vec2::new(corner_raw.x - corner0.x, corner_raw.y - corner0.y);
+    let travel = pagenor_geom::Vec2::new(corner_raw.x - corner0.x, corner_raw.y - corner0.y);
     let origin_top = item.y0 + layout.delta_to_spread(SpreadRef::Doc(0), travel).y;
     Arc::make_mut(&mut doc.spreads[0]).pages[0].guides.push(guide(origin_top - 4.0));
     let mut cx = ctx(&doc, &sel, &cache, &layout);
@@ -672,7 +672,7 @@ fn add_rotated(doc: &mut Document, rect: Rect, degrees: f64) -> ItemId {
     let layer = doc.default_layer();
     let id = ItemId(doc.alloc());
     let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
-    item.xf = designcraft_geom::Affine::rotate((-degrees).to_radians());
+    item.xf = pagenor_geom::Affine::rotate((-degrees).to_radians());
     doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
     id
 }

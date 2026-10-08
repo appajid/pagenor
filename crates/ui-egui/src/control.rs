@@ -19,7 +19,7 @@
 
 use std::sync::mpsc::Sender;
 
-use designcraft_tools::{Mods, PointerEvent, PointerKind};
+use pagenor_tools::{Mods, PointerEvent, PointerKind};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
@@ -120,7 +120,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
-        "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
+        "ui.tool.list" => ok(serde_json::to_value(pagenor_tools::TOOL_GROUPS).unwrap_or_default()),
         "ui.pointer" => {
             let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
             let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
@@ -143,7 +143,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                         None => return err("no canvas yet"),
                     }
                 } else {
-                    designcraft_geom::Point::new(x, y)
+                    pagenor_geom::Point::new(x, y)
                 };
                 let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
                 if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods }, view) {
@@ -321,7 +321,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 page,
                 scale,
                 p.get("bleed").and_then(Value::as_bool).unwrap_or(false),
-                &designcraft_render::RenderOptions { printing_only: true, ..Default::default() },
+                &pagenor_render::RenderOptions { printing_only: true, ..Default::default() },
             ) else {
                 return err("no such page");
             };
@@ -331,7 +331,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                     Some(w) => wrap(w(path, &png).map(|_| json!({"path": path, "width": img.width, "height": img.height}))),
                     None => err("no writer"),
                 },
-                None => ok(json!({"width": img.width, "height": img.height, "pngBase64": designcraft_engine::cmd::base64_encode(&png)})),
+                None => ok(json!({"width": img.width, "height": img.height, "pngBase64": pagenor_engine::cmd::base64_encode(&png)})),
             }
         }
         "app.open" => wrap(app.run("file.open", json!({"path": s("path")}))),
@@ -351,7 +351,7 @@ pub fn save_screenshot(app: &mut DesignApp, image: &egui::ColorImage, path: Opti
         return json!({"ok": true, "result": {"width": w, "height": h}});
     };
     let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
-    let img = designcraft_render::Rendered { width: w as u32, height: h as u32, pixels: rgba };
+    let img = pagenor_render::Rendered { width: w as u32, height: h as u32, pixels: rgba };
     let png = img.to_png();
     match app.services.write.as_mut() {
         Some(wr) => match wr(path, &png) {

@@ -1,9 +1,9 @@
-use designcraft_color::swatch::{ColorType, SwatchValue};
-use designcraft_color::{Color, Swatch};
-use designcraft_compose::Cache;
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Document, Fill, Item, ItemId, ParaFormat, SpreadRef};
-use designcraft_geom::Rect;
+use pagenor_color::swatch::{ColorType, SwatchValue};
+use pagenor_color::{Color, Swatch};
+use pagenor_compose::Cache;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Document, Fill, Item, ItemId, ParaFormat, SpreadRef};
+use pagenor_geom::Rect;
 
 use crate::*;
 
@@ -17,7 +17,7 @@ fn doc_with_text(text: &str) -> Document {
 fn add_box(d: &mut Document, r: Rect, swatch: &str) {
     let lid = d.default_layer();
     let id = ItemId(d.alloc());
-    let mut b = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    let mut b = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
     b.fill = Fill::swatch(swatch);
     d.insert_item(SpreadRef::Doc(0), b, None).unwrap();
 }
@@ -69,7 +69,7 @@ pub(crate) fn extract_text(bytes: &[u8]) -> Vec<String> {
 
 #[test]
 fn exports_valid_pdf_with_one_page_per_page() {
-    let d = doc_with_text("Hello DesignCraft");
+    let d = doc_with_text("Hello Pagenor");
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert!(bytes.starts_with(b"%PDF-1.7"));
     let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("parse");
@@ -78,7 +78,7 @@ fn exports_valid_pdf_with_one_page_per_page() {
 
 #[test]
 fn text_is_real_text() {
-    let d = doc_with_text("Hello DesignCraft — efficient affine");
+    let d = doc_with_text("Hello Pagenor — efficient affine");
     let s = uncompressed(&d, PdfOptions::default());
     assert!(s.contains("/FontFile2") || s.contains("/FontFile3"), "font embedded");
     assert!(s.contains("/ToUnicode"));
@@ -87,7 +87,7 @@ fn text_is_real_text() {
     let text = extract_text(&bytes);
     let flat: String = text[0].split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains("Hello"), "{flat}");
-    assert!(text[0].contains("DesignCraft"), "{text:?}");
+    assert!(text[0].contains("Pagenor"), "{text:?}");
     assert!(text[0].contains("efficient") && text[0].contains("affine"), "ligatures map back: {text:?}");
 }
 
@@ -120,7 +120,7 @@ fn paper_prints_as_no_ink() {
     assert!(s.contains("0 0 0 0 k"), "CMYK, no ink");
     assert!(!s.contains("1 1 1 rg"), "no RGB white");
     // A web document keeps the paper colour.
-    d.settings.intent = designcraft_doc::Intent::Web;
+    d.settings.intent = pagenor_doc::Intent::Web;
     assert!(uncompressed(&d, PdfOptions::default()).contains("1 1 1 rg"));
     // PDF/X has a CMYK output intent whatever the document's intent.
     assert!(!uncompressed(&d, PdfOptions { standard: Standard::PdfX4, ..Default::default() }).contains("1 1 1 rg"));
@@ -175,7 +175,7 @@ fn standards() {
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     assert!(crate::check_pdfx4(&r.bytes).is_empty());
     let text = String::from_utf8_lossy(&r.bytes).to_string();
-    assert!(text.contains("/OutputIntents[") && text.contains("DesignCraft Generic CMYK"));
+    assert!(text.contains("/OutputIntents[") && text.contains("Pagenor Generic CMYK"));
     // A plain export fails the checks; both read with the same pages.
     let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert_eq!(hayro_syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(), hayro_syntax::Pdf::new(plain.clone()).unwrap().pages().len());
@@ -189,7 +189,7 @@ fn tables_export_cell_text() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "Before", ParaFormat::default()).unwrap();
-    let mut t = designcraft_doc::Table::new(9, 2, 2, 1, 0, 300.0);
+    let mut t = pagenor_doc::Table::new(9, 2, 2, 1, 0, 300.0);
     t.cell_mut(0, 0).unwrap().text.insert(0, "Ink");
     t.cell_mut(0, 0).unwrap().fill = "C=100 M=0 Y=0 K=0".into();
     t.cell_mut(1, 1).unwrap().text.insert(0, "Plum");
@@ -212,11 +212,11 @@ fn cmyk_tiff() -> (Vec<u8>, Vec<u8>) {
 }
 
 fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
-    let asset = designcraft_doc::AssetId(d.alloc());
-    let mime = designcraft_images::mime(&data).into();
+    let asset = pagenor_doc::AssetId(d.alloc());
+    let mime = pagenor_images::mime(&data).into();
     d.assets.insert(
         asset,
-        std::sync::Arc::new(designcraft_doc::Asset {
+        std::sync::Arc::new(pagenor_doc::Asset {
             id: asset,
             name: "scan.tif".into(),
             mime,
@@ -228,12 +228,12 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     );
     let lid = d.default_layer();
     let id = ItemId(d.alloc());
-    let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)));
-    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+    let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)));
+    it.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
         asset,
         size: (px.0 as f64, px.1 as f64),
-        xf: designcraft_geom::Affine::translate((72.0, 72.0)) * designcraft_geom::Affine::scale(50.0),
-        auto_fit: designcraft_doc::Fitting::FillProportionally,
+        xf: pagenor_geom::Affine::translate((72.0, 72.0)) * pagenor_geom::Affine::scale(50.0),
+        auto_fit: pagenor_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
     });
@@ -326,10 +326,10 @@ fn missing_glyphs_print_as_boxes() {
     assert_eq!(boxes(&paths), 1, "{paths:?}");
     let a = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { standard: Standard::PdfA2b, ..Default::default() });
     assert!(a.is_ok(), "PDF/A takes the box: {:?}", a.err());
-    // A font whose .notdef is empty: the box DesignCraft draws for it.
+    // A font whose .notdef is empty: the box Pagenor draws for it.
     const FAMILY: &str = "DC Test PDF Empty Notdef";
-    let font = designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'a'), ('b', 'b')]).unwrap();
-    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::with_empty_notdef(font).unwrap());
+    let font = pagenor_fonts::testing::font_mapping(FAMILY, &[('a', 'a'), ('b', 'b')]).unwrap();
+    pagenor_fonts::FontDb::global().add_font(pagenor_fonts::testing::with_empty_notdef(font).unwrap());
     let mut d = doc_with_text("a語b");
     let sid = *d.stories.keys().next().unwrap();
     d.story_mut(sid).unwrap().format_chars(0.."a語b".len(), |f| f.over.font_family = Some(FAMILY.into()));

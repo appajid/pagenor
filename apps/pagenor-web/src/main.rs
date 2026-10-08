@@ -1,13 +1,13 @@
-//! DesignCraft in the browser.
+//! Pagenor in the browser.
 //!
-//! Runs the same [`designcraft_ui_egui::DesignApp`] as the desktop app through eframe's web
+//! Runs the same [`pagenor_ui_egui::DesignApp`] as the desktop app through eframe's web
 //! runner (wgpu: WebGPU where available, WebGL2 otherwise). Build with `trunk build --release`
 //! from this directory (output in `dist/web`).
 //!
 //! Differences from the desktop app:
 //! - no TCP control channel (browsers can't listen on sockets);
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
-//!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
+//!   `Services::inbox` (`.pagenor` → `file.openBytes`, images → `file.place`);
 //! - Save and Export trigger a browser download;
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
 //!
@@ -25,5 +25,5 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    eprintln!("designcraft-web only runs in the browser: build it with `trunk build --release` in apps/designcraft-web");
+    eprintln!("pagenor-web only runs in the browser: build it with `trunk build --release` in apps/pagenor-web");
 }

@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use designcraft_doc::{
+use pagenor_doc::{
     Asset, AssetId, Content, DataField, Fill, Fitting, Graphic, Hyperlink, HyperlinkDest, HyperlinkSource, Item, ItemId, MergeOptions,
     PlaceholderAnchor, PlaceholderRole, Shape, SpreadRef, Story, StoryId,
 };
-use designcraft_geom::{Affine, Rect, Vec2};
+use pagenor_geom::{Affine, Rect, Vec2};
 
 use super::parse::image_candidates;
 use crate::EngineError;
@@ -36,7 +36,7 @@ pub struct FillReport {
 }
 
 /// Document-spread items and their stories, each mapped to itself.
-pub fn identity_map(doc: &designcraft_doc::Document) -> Maps {
+pub fn identity_map(doc: &pagenor_doc::Document) -> Maps {
     let mut maps = Maps::default();
     for sp in &doc.spreads {
         for it in &sp.items {
@@ -53,8 +53,8 @@ pub fn identity_map(doc: &designcraft_doc::Document) -> Maps {
 
 /// Deep-copy one top-level item. Children stay in their own space; only this item is translated.
 pub fn copy_item(
-    dst: &mut designcraft_doc::Document,
-    src: &designcraft_doc::Document,
+    dst: &mut pagenor_doc::Document,
+    src: &pagenor_doc::Document,
     it: &Item,
     to: SpreadRef,
     off: Vec2,
@@ -70,7 +70,7 @@ pub fn copy_item(
     Ok(())
 }
 
-fn renumber(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, it: &mut Item, maps: &mut Maps) {
+fn renumber(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, it: &mut Item, maps: &mut Maps) {
     let old = it.id;
     let new_id = ItemId(dst.alloc());
     maps.items.insert(old, new_id);
@@ -116,7 +116,7 @@ struct Rep {
 
 /// Fill `row` (0-based) into the items `maps` points at. `record` is the 1-based source row.
 pub fn fill_row(
-    doc: &mut designcraft_doc::Document,
+    doc: &mut pagenor_doc::Document,
     fields: &[DataField],
     row: &[String],
     record: u32,
@@ -194,11 +194,11 @@ pub fn fill_row(
 }
 
 fn typed_reps(
-    doc: &designcraft_doc::Document,
+    doc: &pagenor_doc::Document,
     fields: &[DataField],
     row: &[String],
     maps: &Maps,
-    placeholders: &[designcraft_doc::Placeholder],
+    placeholders: &[pagenor_doc::Placeholder],
     reps: &mut Vec<Rep>,
 ) {
     let mut stories: Vec<(StoryId, StoryId)> = maps.stories.iter().map(|(a, b)| (*a, *b)).collect();
@@ -245,7 +245,7 @@ fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
     out
 }
 
-fn apply_reps(doc: &mut designcraft_doc::Document, reps: &[Rep]) {
+fn apply_reps(doc: &mut pagenor_doc::Document, reps: &[Rep]) {
     let mut stories: Vec<StoryId> = reps.iter().map(|r| r.story).collect();
     stories.sort();
     stories.dedup();
@@ -287,7 +287,7 @@ pub fn add_delta(pos: usize, delta: isize) -> usize {
     if delta >= 0 { pos.saturating_add(delta as usize) } else { pos.saturating_sub(delta.unsigned_abs()) }
 }
 
-fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, dest: HyperlinkDest) -> bool {
+fn create_link(doc: &mut pagenor_doc::Document, anchor: PlaceholderAnchor, dest: HyperlinkDest) -> bool {
     let source = match anchor {
         PlaceholderAnchor::Item { id } => {
             if doc.item(id).is_none() {
@@ -313,7 +313,7 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
 }
 
 fn place_image(
-    doc: &mut designcraft_doc::Document,
+    doc: &mut pagenor_doc::Document,
     item: ItemId,
     field: &str,
     cell: &str,
@@ -340,7 +340,7 @@ fn place_image(
         report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
         return;
     };
-    let Some((pw, ph)) = designcraft_render::image_size(&bytes) else {
+    let Some((pw, ph)) = pagenor_render::image_size(&bytes) else {
         if let Some(it) = doc.item_mut(item) {
             it.content = Content::Unassigned;
         }
@@ -363,7 +363,7 @@ fn place_image(
         Arc::new(Asset {
             id: aid,
             name,
-            mime: designcraft_render::image_mime(&bytes).to_string(),
+            mime: pagenor_render::image_mime(&bytes).to_string(),
             link,
             data: Arc::new(bytes),
             pixels: Some((pw, ph)),
@@ -385,7 +385,7 @@ fn place_image(
     }
 }
 
-fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, report: &mut FillReport) {
+fn place_qr(doc: &mut pagenor_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, report: &mut FillReport) {
     if cell.is_empty() {
         report.warnings.push(format!("Record {record}, field {field}: the QR cell is empty."));
         return;
@@ -394,13 +394,13 @@ fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell
         report.warnings.push(format!("Record {record}, field {field}: the QR content does not fit."));
         return;
     };
-    let Some(path) = designcraft_geom::qr::qr_path(cell, it.inner_bounds()) else {
+    let Some(path) = pagenor_geom::qr::qr_path(cell, it.inner_bounds()) else {
         report.warnings.push(format!("Record {record}, field {field}: the QR content does not fit."));
         return;
     };
     let id = ItemId(doc.alloc());
     let mut code = Item::new(id, it.layer, Shape::Path, path);
-    code.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    code.fill = Fill::swatch(pagenor_color::swatch::BLACK);
     code.alt_text = format!("QR code: {cell}");
     if let Some(frame) = doc.item_mut(item) {
         frame.content = Content::Group { items: vec![Arc::new(code)] };
@@ -439,7 +439,7 @@ fn classify_link(cell: &str) -> Option<HyperlinkDest> {
     Some(HyperlinkDest::Url(value.to_string()))
 }
 
-fn anchor_is_parent(doc: &designcraft_doc::Document, anchor: &PlaceholderAnchor) -> bool {
+fn anchor_is_parent(doc: &pagenor_doc::Document, anchor: &PlaceholderAnchor) -> bool {
     match anchor {
         PlaceholderAnchor::Item { id } => matches!(doc.find(*id).map(|l| l.spread), Some(SpreadRef::Parent(_))),
         PlaceholderAnchor::Text { story, .. } => {

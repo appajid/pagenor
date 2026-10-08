@@ -1,6 +1,6 @@
 [package]
-name = "designcraft-web"
-description = "DesignCraft in the browser (eframe web runner, WebGPU with WebGL2 fallback)"
+name = "pagenor-web"
+description = "Pagenor in the browser (eframe web runner, WebGPU with WebGL2 fallback)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,12 +10,12 @@ publish = false
 workspace = true
 
 [[bin]]
-name = "designcraft-web"
+name = "pagenor-web"
 path = "src/main.rs"
 
 [dependencies]
-designcraft-engine = { workspace = true }
-designcraft-ui-egui = { workspace = true }
+pagenor-engine = { workspace = true }
+pagenor-ui-egui = { workspace = true }
 egui = { workspace = true }
 log = { workspace = true }
 serde_json = { workspace = true }

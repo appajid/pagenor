@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 
-use designcraft_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
-use designcraft_doc::{CharAttrs, CharFormat, ParaAttrs, ParaFormat, Story, StoryId, Table};
+use pagenor_doc::story::{BASIC_PARAGRAPH, NO_CHAR_STYLE};
+use pagenor_doc::{CharAttrs, CharFormat, ParaAttrs, ParaFormat, Story, StoryId, Table};
 use quick_xml::events::Event;
 
 use crate::{ImportError, Imported, ImportedStyle};
@@ -173,13 +173,13 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
         a.font_family = Some(f.to_string());
     }
     if r.on("caps") == Some(true) {
-        a.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
+        a.capitalization = Some(pagenor_doc::Capitalization::AllCaps);
     }
     if let Some(v) = r.val("vertAlign") {
         a.position = Some(match v.as_str() {
-            "superscript" => designcraft_doc::Position::Superscript,
-            "subscript" => designcraft_doc::Position::Subscript,
-            _ => designcraft_doc::Position::Normal,
+            "superscript" => pagenor_doc::Position::Superscript,
+            "subscript" => pagenor_doc::Position::Subscript,
+            _ => pagenor_doc::Position::Normal,
         });
     }
     a
@@ -201,10 +201,10 @@ fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     }
     if let Some(j) = p.val("jc") {
         a.align = Some(match j.as_str() {
-            "center" => designcraft_doc::Align::Center,
-            "right" | "end" => designcraft_doc::Align::Right,
-            "both" | "distribute" => designcraft_doc::Align::LeftJustified,
-            _ => designcraft_doc::Align::Left,
+            "center" => pagenor_doc::Align::Center,
+            "right" | "end" => pagenor_doc::Align::Right,
+            "both" | "distribute" => pagenor_doc::Align::LeftJustified,
+            _ => pagenor_doc::Align::Left,
         });
     }
     a
@@ -291,9 +291,9 @@ impl Ctx {
                 "t" => e.text(),
                 "tab" => "\t".into(),
                 "br" => match e.attr("type") {
-                    Some("page") => designcraft_doc::PAGE_BREAK.to_string(),
-                    Some("column") => designcraft_doc::COLUMN_BREAK.to_string(),
-                    _ => designcraft_doc::FORCED_LINE_BREAK.to_string(),
+                    Some("page") => pagenor_doc::PAGE_BREAK.to_string(),
+                    Some("column") => pagenor_doc::COLUMN_BREAK.to_string(),
+                    _ => pagenor_doc::FORCED_LINE_BREAK.to_string(),
                 },
                 "noBreakHyphen" => "\u{2011}".into(),
                 "softHyphen" => "\u{AD}".into(),

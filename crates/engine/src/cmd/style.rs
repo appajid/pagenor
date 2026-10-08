@@ -1,7 +1,7 @@
 //! Paragraph / character styles and swatches.
 
-use designcraft_color::{Swatch, SwatchValue};
-use designcraft_doc::{CharAttrs, CharacterStyle, ParaAttrs, ParagraphStyle, Styles};
+use pagenor_color::{Swatch, SwatchValue};
+use pagenor_doc::{CharAttrs, CharacterStyle, ParaAttrs, ParagraphStyle, Styles};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, has_text_or_frames, ok, str_param};
@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{name, entries: [{name?, characters?, family, style?, relativeSize?, horizontalScale?, verticalScale?, baselineShift?, scaleOption?}]} — replaces a composite font definition; empty characters selects the base entry",
             has_doc,
             |s, p| {
-                let f: designcraft_doc::cjk::CompositeFont =
+                let f: pagenor_doc::cjk::CompositeFont =
                     serde_json::from_value(p.clone()).map_err(|e| bad("style.compositeFont.set", e.to_string()))?;
                 if f.name.trim().is_empty()
                     || f.entries.is_empty()
@@ -207,7 +207,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let inks: Vec<Value> = d
                 .swatches
                 .iter()
-                .filter(|w| matches!(w.value, designcraft_color::swatch::SwatchValue::Color { color_type: designcraft_color::swatch::ColorType::Spot, .. }))
+                .filter(|w| matches!(w.value, pagenor_color::swatch::SwatchValue::Color { color_type: pagenor_color::swatch::ColorType::Spot, .. }))
                 .map(|w| {
                     let alias = d.inks.aliases.iter().find(|(a, _)| *a == w.name).map(|(_, t)| t.clone());
                     json!({"name": w.name, "process": d.inks.resolve(&w.name).1, "alias": alias})
@@ -236,7 +236,7 @@ pub fn specs() -> Vec<CommandSpec> {
                             d.swatch(n).is_some_and(|w| {
                                 matches!(
                                     w.value,
-                                    designcraft_color::swatch::SwatchValue::Color { color_type: designcraft_color::swatch::ColorType::Spot, .. }
+                                    pagenor_color::swatch::SwatchValue::Color { color_type: pagenor_color::swatch::ColorType::Spot, .. }
                                 )
                             })
                         };
@@ -299,7 +299,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     for g in &mut d.color_groups {
                         g.swatches.retain(|w| !names.contains(w));
                     }
-                    d.color_groups.push(designcraft_doc::ColorGroup { name: name.clone(), swatches: names });
+                    d.color_groups.push(pagenor_doc::ColorGroup { name: name.clone(), swatches: names });
                     Ok(json!({"name": name}))
                 })
             }
@@ -417,12 +417,12 @@ fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
         && let Ok(cur) = s.execute("type.selectionAttrs", &json!({}))
         && !cur.is_null()
     {
-        if let Ok(pp) = serde_json::from_value::<designcraft_doc::ParaProps>(cur["para"].clone()) {
+        if let Ok(pp) = serde_json::from_value::<pagenor_doc::ParaProps>(cur["para"].clone()) {
             let mut full = ParaProps_to_attrs(&pp);
             full.merge(&para);
             para = full;
         }
-        if let Ok(cp) = serde_json::from_value::<designcraft_doc::CharProps>(cur["chars"].clone()) {
+        if let Ok(cp) = serde_json::from_value::<pagenor_doc::CharProps>(cur["chars"].clone()) {
             let mut full = CharProps_to_attrs(&cp);
             full.merge(&chars);
             chars = full;
@@ -443,12 +443,12 @@ fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[allow(non_snake_case)]
-fn ParaProps_to_attrs(p: &designcraft_doc::ParaProps) -> ParaAttrs {
-    designcraft_doc::ParaProps::common([p])
+fn ParaProps_to_attrs(p: &pagenor_doc::ParaProps) -> ParaAttrs {
+    pagenor_doc::ParaProps::common([p])
 }
 #[allow(non_snake_case)]
-fn CharProps_to_attrs(p: &designcraft_doc::CharProps) -> CharAttrs {
-    designcraft_doc::CharProps::common([p])
+fn CharProps_to_attrs(p: &pagenor_doc::CharProps) -> CharAttrs {
+    pagenor_doc::CharProps::common([p])
 }
 
 fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
@@ -480,7 +480,7 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Rename a paragraph or character style everywhere it's used.
-fn rename_style(d: &mut designcraft_doc::Document, para: bool, from: &str, to: &str) {
+fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str) {
     let st = d.styles_mut();
     if para {
         for s in &mut st.paragraph {
@@ -546,7 +546,7 @@ fn group_styles(s: &mut Session, p: &Value) -> Result<Value> {
             }
             let base = n.rsplit('/').next().unwrap_or(n);
             let mut to = if group.is_empty() { base.to_string() } else { format!("{group}/{base}") };
-            let taken = |d: &designcraft_doc::Document, x: &str| {
+            let taken = |d: &pagenor_doc::Document, x: &str| {
                 if para { d.styles.para(x).is_some() } else { d.styles.character.iter().any(|c| c.name == x) }
             };
             if to != *n {
@@ -561,7 +561,7 @@ fn group_styles(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn delete_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").unwrap_or("").to_string();
-    let repl = str_param(p, "replaceWith").unwrap_or(designcraft_doc::BASIC_PARAGRAPH).to_string();
+    let repl = str_param(p, "replaceWith").unwrap_or(pagenor_doc::BASIC_PARAGRAPH).to_string();
     if name.starts_with('[') {
         return Err(bad("style.paragraph.delete", "built-in styles can't be deleted"));
     }
@@ -606,7 +606,7 @@ fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
     let color = parse_color(c).ok_or_else(|| bad("swatch.create", "bad color"))?;
     let spot = p.get("spot").and_then(Value::as_bool).unwrap_or(false);
     let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| match color {
-        designcraft_color::Color::Cmyk { c, m, y, k } => designcraft_color::swatch::cmyk_name(c, m, y, k),
+        pagenor_color::Color::Cmyk { c, m, y, k } => pagenor_color::swatch::cmyk_name(c, m, y, k),
         other => {
             let [r, g, b] = other.to_rgb();
             format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
@@ -616,10 +616,7 @@ fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
         let name = Styles::unique_name(|n| d.swatch(n).is_some(), &name);
         d.swatches.push(Swatch {
             name: name.clone(),
-            value: SwatchValue::Color {
-                color,
-                color_type: if spot { designcraft_color::ColorType::Spot } else { designcraft_color::ColorType::Process },
-            },
+            value: SwatchValue::Color { color, color_type: if spot { pagenor_color::ColorType::Spot } else { pagenor_color::ColorType::Process } },
             locked: false,
             named: true,
             hidden: false,
@@ -628,8 +625,8 @@ fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-pub fn parse_color(v: &Value) -> Option<designcraft_color::Color> {
-    use designcraft_color::Color;
+pub fn parse_color(v: &Value) -> Option<pagenor_color::Color> {
+    use pagenor_color::Color;
     match v {
         Value::String(s) => Color::from_hex(s),
         Value::Array(a) if a.len() >= 3 => {
@@ -682,14 +679,14 @@ fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Object Style 1").to_string();
     let from_sel = p.get("fromSelection").and_then(Value::as_bool).unwrap_or(true);
     let src = if from_sel { s.doc()?.selection.items.first().and_then(|i| s.doc().ok()?.doc.item(*i).cloned()) } else { None };
-    let mut os = designcraft_doc::ObjectStyle::default();
+    let mut os = pagenor_doc::ObjectStyle::default();
     if let Some(it) = &src {
         os.fill = Some(it.fill.clone());
         os.stroke = Some(it.stroke.clone());
         os.text_frame = it.text_frame().map(|t| t.options.clone());
     }
     if let Some(sw) = str_param(p, "fill") {
-        os.fill = Some(designcraft_doc::Fill::swatch(sw));
+        os.fill = Some(pagenor_doc::Fill::swatch(sw));
     }
     if let Some(ps) = str_param(p, "paragraphStyle") {
         os.paragraph_style = Some(ps.to_string());
@@ -703,9 +700,9 @@ fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The swatch name of a colour value ("C=… M=… Y=… K=…" / "R=… G=… B=…").
-fn value_name(color: designcraft_color::Color) -> String {
+fn value_name(color: pagenor_color::Color) -> String {
     match color {
-        designcraft_color::Color::Cmyk { c, m, y, k } => designcraft_color::swatch::cmyk_name(c, m, y, k),
+        pagenor_color::Color::Cmyk { c, m, y, k } => pagenor_color::swatch::cmyk_name(c, m, y, k),
         other => {
             let [r, g, b] = other.to_rgb();
             format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
@@ -719,7 +716,7 @@ fn load_swatches(s: &mut Session, p: &Value) -> Result<Value> {
         (Some(path), None) => std::fs::read(path).map_err(|e| bad("swatch.load", format!("{path}: {e}")))?,
         _ => return Err(bad("swatch.load", "give `path` or `base64`")),
     };
-    let incoming = designcraft_color::ase::read(&bytes).map_err(|e| bad("swatch.load", e.to_string()))?;
+    let incoming = pagenor_color::ase::read(&bytes).map_err(|e| bad("swatch.load", e.to_string()))?;
     let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
     s.edit(|d, _| {
         let (mut added, mut replaced) = (0, 0);
@@ -748,7 +745,7 @@ fn save_swatches(s: &mut Session, p: &Value) -> Result<Value> {
     let names: Option<Vec<String>> =
         p.get("names").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
     let chosen: Vec<Swatch> = d.swatches.iter().filter(|w| names.as_ref().is_none_or(|n| n.contains(&w.name))).cloned().collect();
-    let bytes = designcraft_color::ase::write(&chosen);
+    let bytes = pagenor_color::ase::write(&chosen);
     match str_param(p, "path") {
         Some(path) => {
             std::fs::write(path, &bytes).map_err(|e| bad("swatch.save", format!("{path}: {e}")))?;
@@ -758,17 +755,17 @@ fn save_swatches(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-fn gradient_json(name: &str, g: &designcraft_color::Gradient) -> Value {
+fn gradient_json(name: &str, g: &pagenor_color::Gradient) -> Value {
     let stops: Vec<Value> = g
         .stops
         .iter()
         .map(|s| json!({"location": (s.offset as f64 * 1000.0).round() / 10.0, "color": s.color.to_hex(), "opacity": (s.opacity * 100.0).round(), "midpoint": (s.midpoint * 100.0).round()}))
         .collect();
-    json!({"swatch": name, "kind": if g.kind == designcraft_color::GradientKind::Radial { "radial" } else { "linear" }, "stops": stops})
+    json!({"swatch": name, "kind": if g.kind == pagenor_color::GradientKind::Radial { "radial" } else { "linear" }, "stops": stops})
 }
 
 fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
-    use designcraft_color::{GradientKind, GradientStop};
+    use pagenor_color::{GradientKind, GradientStop};
     let kind = match str_param(p, "kind") {
         Some("radial") => Some(GradientKind::Radial),
         Some("linear") => Some(GradientKind::Linear),
@@ -804,7 +801,7 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             let Some(it) = d.item(*id) else { continue };
             let cur_name = it.fill.swatch.clone();
-            let cur = designcraft_color::swatch::resolve_gradient(&d.swatches, &cur_name).cloned();
+            let cur = pagenor_color::swatch::resolve_gradient(&d.swatches, &cur_name).cloned();
             let mut g = cur.clone().unwrap_or_default();
             if let Some(k) = kind {
                 g.kind = k;
@@ -864,7 +861,7 @@ fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
         let existing = d
             .swatches
             .iter()
-            .find(|w| matches!(&w.value, SwatchValue::Color { color: c, color_type: designcraft_color::ColorType::Process } if *c == color))
+            .find(|w| matches!(&w.value, SwatchValue::Color { color: c, color_type: pagenor_color::ColorType::Process } if *c == color))
             .map(|w| w.name.clone());
         let name = match existing {
             Some(n) => n,
@@ -872,7 +869,7 @@ fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
                 let name = Styles::unique_name(|n| d.swatch(n).is_some(), &value_name(color));
                 d.swatches.push(Swatch {
                     name: name.clone(),
-                    value: SwatchValue::Color { color, color_type: designcraft_color::ColorType::Process },
+                    value: SwatchValue::Color { color, color_type: pagenor_color::ColorType::Process },
                     locked: false,
                     named: false,
                     hidden: true,
@@ -938,7 +935,7 @@ fn add_to_swatches(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Point fills and strokes of an item (and its children) at a renamed swatch.
-fn rename_in(it: &mut designcraft_doc::Item, from: &str, to: &str) {
+fn rename_in(it: &mut pagenor_doc::Item, from: &str, to: &str) {
     if it.fill.swatch == from {
         it.fill.swatch = to.to_string();
     }
@@ -969,7 +966,7 @@ mod color_tests {
         let r = s.execute("style.group", &json!({"kind": "paragraph", "names": ["Head", "Sub"], "group": "Titles"})).unwrap();
         assert_eq!(r["renamed"]["Head"], "Titles/Head");
         let d = s.doc().unwrap().doc.clone();
-        assert_eq!(d.story(designcraft_doc::StoryId(sid)).unwrap().paras[0].style, "Titles/Head");
+        assert_eq!(d.story(pagenor_doc::StoryId(sid)).unwrap().paras[0].style, "Titles/Head");
         assert_eq!(d.styles.para("Titles/Sub").unwrap().based_on.as_deref(), Some("Titles/Head"));
         // Out of the group again.
         s.execute("style.group", &json!({"kind": "paragraph", "names": ["Titles/Head"], "group": ""})).unwrap();
@@ -1008,16 +1005,16 @@ mod color_tests {
         s.execute("object.color", &json!({"color": {"c": 10, "m": 20, "y": 30, "k": 0}, "target": "stroke"})).unwrap();
         assert_eq!(s.doc().unwrap().doc.swatches.len(), n);
         let d = &s.doc().unwrap().doc;
-        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+        let it = d.item(pagenor_doc::ItemId(id)).unwrap();
         assert_eq!(it.fill.swatch, it.stroke.swatch);
         // Add to Swatches with a name: listed, and the object follows the rename.
         s.execute("swatch.addToSwatches", &json!({"name": "Sand"})).unwrap();
         assert_eq!(listed(&s), before + 1);
         let d = &s.doc().unwrap().doc;
-        assert_eq!(d.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch, "Sand");
+        assert_eq!(d.item(pagenor_doc::ItemId(id)).unwrap().fill.swatch, "Sand");
         // A colour equal to an existing swatch applies that swatch.
         s.execute("object.color", &json!({"color": {"c": 10, "m": 20, "y": 30, "k": 0}})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch, "Sand");
+        assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap().fill.swatch, "Sand");
     }
 }
 
@@ -1063,8 +1060,8 @@ mod color_group_tests {
         s.execute("swatch.moveToGroup", &json!({"swatches": [b], "group": "Brand"})).unwrap();
         let groups = |s: &Session| s.doc().unwrap().doc.color_groups.clone();
         assert_eq!(groups(&s)[0].swatches, [a.clone(), b.clone()]);
-        let bytes = designcraft_idml::export_idml(&s.doc().unwrap().doc);
-        let back = designcraft_idml::import_idml(&bytes).unwrap();
+        let bytes = pagenor_idml::export_idml(&s.doc().unwrap().doc);
+        let back = pagenor_idml::import_idml(&bytes).unwrap();
         assert_eq!(back.color_groups, groups(&s), "IDML ColorGroup");
         s.execute("swatch.delete", &json!({"name": b})).unwrap();
         assert_eq!(groups(&s)[0].swatches, [a.as_str()]);
@@ -1103,7 +1100,7 @@ mod ink_tests {
         assert!(!pdf(&mut s).contains("Pantone"), "all spots to process");
         let l = s.execute("ink.list", &json!({})).unwrap();
         assert_eq!(l["inks"][0]["alias"], "Pantone B");
-        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+        let back = pagenor_idml::import_idml(&pagenor_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         assert!(back.inks.resolve("Pantone A").1, "IDML ConvertToProcess");
         assert!(back.inks.aliases.iter().any(|(a, b)| a == "Pantone A" && b == "Pantone B"), "IDML AliasInkName");
         assert!(s.execute("ink.options", &json!({"ink": "[Black]", "toProcess": true})).is_err());
@@ -1139,7 +1136,7 @@ mod export_tag_tests {
         let pdf = super::super::file::base64_decode(r["base64"].as_str().unwrap());
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/S/H1") && text.contains("/S/P"), "structure elements");
-        assert!(designcraft_render::pdf_page_count(&pdf) == Some(1));
+        assert!(pagenor_render::pdf_page_count(&pdf) == Some(1));
     }
 }
 
@@ -1151,7 +1148,7 @@ mod cjk_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 150], "content": "text", "text": "AB"})).unwrap();
-        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
         let definition = |scale| json!({"name": "Mixed", "entries": [{"family": "Source Serif 4", "relativeSize": scale}]});
         s.execute("style.compositeFont.set", &definition(1.0)).unwrap();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 2})).unwrap();

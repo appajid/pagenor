@@ -1,4 +1,4 @@
-//! The DesignCraft engine façade.
+//! The Pagenor engine façade.
 //!
 //! Every user-visible action is a command with a stable id (`frame.create`, `text.insert`,
 //! `layout.pages.insert`…) and JSON parameters. The egui UI, the CLI, the control channel and MCP
@@ -19,14 +19,14 @@ mod tooling;
 
 use std::sync::Arc;
 
-use designcraft_compose::Cache;
-use designcraft_doc::{Document, LayerId, Selection};
+use pagenor_compose::Cache;
+use pagenor_doc::{Document, LayerId, Selection};
 use serde_json::Value;
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
-pub use designcraft_compose as compose;
-pub use designcraft_doc as doc;
-pub use designcraft_tools as tools;
+pub use pagenor_compose as compose;
+pub use pagenor_doc as doc;
+pub use pagenor_tools as tools;
 pub use tooling::{SnapView, UiRequest, ViewInfo};
 
 #[derive(Debug, thiserror::Error)]
@@ -46,8 +46,8 @@ pub enum EngineError {
     Internal(String, String),
 }
 
-impl From<designcraft_doc::DocError> for EngineError {
-    fn from(e: designcraft_doc::DocError) -> Self {
+impl From<pagenor_doc::DocError> for EngineError {
+    fn from(e: pagenor_doc::DocError) -> Self {
         EngineError::Other(e.to_string())
     }
 }
@@ -99,7 +99,7 @@ pub struct DocState {
     pub fonts: Option<Arc<FontScope>>,
 }
 
-/// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
+/// A document's font scope ([`pagenor_fonts::FontDb::load_document_fonts`]): its fonts are
 /// found until the document's state (with every copy of it) is gone — closed, reverted, or its
 /// session ended.
 #[derive(Debug)]
@@ -107,7 +107,7 @@ pub struct FontScope(pub u32);
 
 impl Drop for FontScope {
     fn drop(&mut self) {
-        designcraft_fonts::FontDb::global().close_scope(self.0);
+        pagenor_fonts::FontDb::global().close_scope(self.0);
     }
 }
 
@@ -249,22 +249,22 @@ pub struct Session {
     active: Option<usize>,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
-    pub(crate) tool: Box<dyn designcraft_tools::Tool>,
+    pub(crate) tool: Box<dyn pagenor_tools::Tool>,
     pub journal: Vec<(String, Value)>,
     pub clipboard: Option<Arc<Document>>,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
     /// Copied text with its formatting (a frameless story slice) and its plain text.
-    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
+    pub text_clipboard: Option<(Arc<pagenor_doc::Story>, String)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor: (asset, natural size in points).
-    pub loaded: Option<(designcraft_doc::AssetId, (f64, f64))>,
+    pub loaded: Option<(pagenor_doc::AssetId, (f64, f64))>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
     /// tool interaction (its previews replace each other).
-    pub(crate) transforms: (Vec<(String, Value)>, Vec<designcraft_doc::ItemId>, bool),
+    pub(crate) transforms: (Vec<(String, Value)>, Vec<pagenor_doc::ItemId>, bool),
     /// Drag and drop text editing: the press landed in the selected text.
     pub(crate) text_drag: bool,
     /// The open Object Library (File › New / Open Library).
@@ -289,7 +289,7 @@ impl Session {
             active: None,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
-            tool: designcraft_tools::create("selection"),
+            tool: pagenor_tools::create("selection"),
             journal: vec![],
             clipboard: None,
             recovery_dir: None,
@@ -473,7 +473,7 @@ impl Session {
                     break;
                 }
                 let Some(&last) = story.frames.last() else { break };
-                let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+                let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
                 if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
                     break;
                 }

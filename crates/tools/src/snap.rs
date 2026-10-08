@@ -8,9 +8,9 @@
 
 use std::collections::HashSet;
 
-use designcraft_doc::{Item, ItemId, Orientation, PageSide, Selection, SpreadId, SpreadRef, StrokeAlign};
-use designcraft_geom::snap::snap_to_grid;
-use designcraft_geom::{Affine, Point, Rect, Vec2, format_measure};
+use pagenor_doc::{Item, ItemId, Orientation, PageSide, Selection, SpreadId, SpreadRef, StrokeAlign};
+use pagenor_geom::snap::snap_to_grid;
+use pagenor_geom::{Affine, Point, Rect, Vec2, format_measure};
 
 pub use crate::{Gesture, Snap, SnapRequest, SnapView};
 
@@ -308,7 +308,7 @@ fn rotation_of(xf: Affine) -> Option<f64> {
     if !xf_finite(xf) {
         return None;
     }
-    let rotation = designcraft_geom::decompose::decompose(xf).rotation;
+    let rotation = pagenor_geom::decompose::decompose(xf).rotation;
     rotation.is_finite().then_some(rotation)
 }
 
@@ -995,7 +995,7 @@ fn leaf_own_size(item: &Item, abs: Affine) -> Option<(f64, f64)> {
     if !rect_finite(local) {
         return None;
     }
-    let decomposed = designcraft_geom::decompose::decompose(abs);
+    let decomposed = pagenor_geom::decompose::decompose(abs);
     let sx = decomposed.scale_x.abs();
     let sy = decomposed.scale_y.abs();
     if !sx.is_finite() || !sy.is_finite() {
@@ -1434,11 +1434,11 @@ fn push_alignment_guide(out: &mut Vec<Overlay>, cx: &ToolContext, spread: Spread
 mod tests {
     use std::sync::Arc;
 
-    use designcraft_compose::Cache;
-    use designcraft_doc::build::NewDocument;
-    use designcraft_doc::{Document, Guide, Item, Margins, Selection, Shape, Stroke};
-    use designcraft_geom::shapes;
-    use designcraft_geom::{Affine, Unit};
+    use pagenor_compose::Cache;
+    use pagenor_doc::build::NewDocument;
+    use pagenor_doc::{Document, Guide, Item, Margins, Selection, Shape, Stroke};
+    use pagenor_geom::shapes;
+    use pagenor_geom::{Affine, Unit};
 
     use crate::layout::CanvasLayout;
 
@@ -1793,9 +1793,9 @@ mod tests {
         let mut child = Item::new(child_id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 40.0)));
         child.xf = Affine::rotate((-90.0_f64).to_radians());
         let group_id = ItemId(doc.alloc());
-        let mut group = Item::new(group_id, layer, Shape::Group, designcraft_geom::PathData::default());
+        let mut group = Item::new(group_id, layer, Shape::Group, pagenor_geom::PathData::default());
         group.xf = Affine::scale_non_uniform(2.0, 1.0);
-        group.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(child)] };
+        group.content = pagenor_doc::Content::Group { items: vec![std::sync::Arc::new(child)] };
         doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
         let cache = Cache::new();
         let layout = CanvasLayout::new(&doc, false);
@@ -1945,7 +1945,7 @@ mod tests {
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
         item.xf = Affine::translate((center.x, center.y)) * Affine::rotate((-30.0_f64).to_radians()) * Affine::translate((-center.x, -center.y));
         doc.insert_item(SpreadRef::Parent(ppi), item, None).unwrap();
-        assert!(doc.spreads[0].items.iter().all(|it| (designcraft_geom::decompose::decompose(it.xf).rotation - 30.0).abs() > 1.0));
+        assert!(doc.spreads[0].items.iter().all(|it| (pagenor_geom::decompose::decompose(it.xf).rotation - 30.0).abs() > 1.0));
         let cache = Cache::new();
         let layout = CanvasLayout::new(&doc, false);
         let sel = Selection::default();
@@ -1980,10 +1980,10 @@ mod tests {
         let mut child_a = Item::new(ItemId(doc.alloc()), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
         child_a.stroke = Stroke { weight: 2.0, ..Stroke::default() };
         let child_b = Item::new(ItemId(doc.alloc()), layer, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 30.0, 50.0, 40.0)));
-        let mut group = Item::new(ItemId(doc.alloc()), layer, Shape::Group, designcraft_geom::PathData::default());
+        let mut group = Item::new(ItemId(doc.alloc()), layer, Shape::Group, pagenor_geom::PathData::default());
         let xf = Affine::translate((300.0, 400.0)) * Affine::rotate((-45.0_f64).to_radians());
         group.xf = xf;
-        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child_a), Arc::new(child_b)] };
+        group.content = pagenor_doc::Content::Group { items: vec![Arc::new(child_a), Arc::new(child_b)] };
         doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
         let a_vis = Rect::new(-1.0, -1.0, 11.0, 11.0);
         let b_vis = Rect::new(40.0, 30.0, 50.0, 40.0);
@@ -2013,9 +2013,9 @@ mod tests {
         let mut doc = Document::new(&NewDocument::default());
         let layer = doc.default_layer();
         let child = Item::new(ItemId(doc.alloc()), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 40.0, 20.0)));
-        let mut group = Item::new(ItemId(doc.alloc()), layer, Shape::Group, designcraft_geom::PathData::default());
+        let mut group = Item::new(ItemId(doc.alloc()), layer, Shape::Group, pagenor_geom::PathData::default());
         group.xf = Affine::rotate((-30.0_f64).to_radians());
-        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child)] };
+        group.content = pagenor_doc::Content::Group { items: vec![Arc::new(child)] };
         doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
         let cache = Cache::new();
         let layout = CanvasLayout::new(&doc, false);

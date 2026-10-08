@@ -1,8 +1,8 @@
 //! Anchor-point editing (the Pen tool group): Add Anchor Point, Delete Anchor Point and Convert
 //! Direction Point. Positions are in spread coordinates; anchors are `(subpath, index)`.
 
-use designcraft_doc::{Document, ItemId, Shape};
-use designcraft_geom::{Affine, Anchor, AnchorKind, Point};
+use pagenor_doc::{Document, ItemId, Shape};
+use pagenor_geom::{Affine, Anchor, AnchorKind, Point};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, point_param};
@@ -69,9 +69,9 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
         .map(|a| a.iter().filter_map(|v| Some(Point::new(v.get(0)?.as_f64()?, v.get(1)?.as_f64()?))).collect())
         .unwrap_or_default();
     s.edit(|d, _| {
-        let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let inv = to_inner(d, id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let scale = inv.determinant().abs().sqrt().max(1e-9);
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         // Where the drag touched the path, per subpath.
         let mut hits: Vec<(usize, usize, f64)> = Vec::new();
         for q in &pts {
@@ -93,9 +93,9 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
         };
         let sp = it.path.subpaths[si].clone();
         if smooth {
-            it.path.subpaths[si] = designcraft_geom::edit_path::smooth(&sp, a, b, tol * scale);
+            it.path.subpaths[si] = pagenor_geom::edit_path::smooth(&sp, a, b, tol * scale);
         } else {
-            let parts = designcraft_geom::edit_path::erase(&sp, a, b);
+            let parts = pagenor_geom::edit_path::erase(&sp, a, b);
             it.path.subpaths.remove(si);
             for (k, part) in parts.into_iter().enumerate() {
                 it.path.subpaths.insert(si + k, part);
@@ -135,8 +135,8 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let at = point_param(p, "at").ok_or_else(|| bad("path.addAnchor", "missing at"))?;
     let tol = p.get("tolerance").and_then(Value::as_f64).unwrap_or(4.0);
     s.edit(|d, _| {
-        let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let inv = to_inner(d, id).ok_or(pagenor_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let q = inv * at;
         let (si, seg, t, _, dist) = it.path.nearest(q).ok_or_else(|| bad("path.addAnchor", "the object has no path"))?;
         // Tolerance is in spread units; the item space may be scaled.
@@ -154,7 +154,7 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let (id, si, ai) = anchor_param(p, "path.deleteAnchor")?;
     s.edit(|d, sel| {
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let sp = it.path.subpaths.get_mut(si).ok_or_else(|| bad("path.deleteAnchor", "no such subpath"))?;
         if ai >= sp.anchors.len() {
             return Err(bad("path.deleteAnchor", "no such anchor"));
@@ -181,8 +181,8 @@ fn convert_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let to = point_param(p, "to");
     let corner = p.get("corner").and_then(Value::as_bool);
     s.edit(|d, _| {
-        let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+        let inv = to_inner(d, id).ok_or(pagenor_doc::DocError::NoItem(id))?;
+        let it = d.item_mut(id).ok_or(pagenor_doc::DocError::NoItem(id))?;
         let sp = it.path.subpaths.get_mut(si).ok_or_else(|| bad("path.convertAnchor", "no such subpath"))?;
         let n = sp.anchors.len();
         if ai >= n {

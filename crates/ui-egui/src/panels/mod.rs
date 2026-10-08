@@ -13,9 +13,9 @@ pub mod styles;
 pub mod swatches;
 pub mod table;
 
-use designcraft_doc::{Content, StrokeAlign, WrapMode};
-use designcraft_geom::Rect;
 use egui::vec2;
+use pagenor_doc::{Content, StrokeAlign, WrapMode};
+use pagenor_geom::Rect;
 use serde_json::{Value, json};
 
 use crate::DesignApp;
@@ -41,7 +41,7 @@ pub struct SelInfo {
     /// Stroke type id (`solid`, `dashed`, `thickThin`, …).
     pub stroke_kind: String,
     /// Uniform corner (shape, size) — the first corner.
-    pub corner: (designcraft_geom::corners::CornerShape, f64),
+    pub corner: (pagenor_geom::corners::CornerShape, f64),
     pub wrap_invert: bool,
     pub locked: bool,
 }
@@ -105,28 +105,28 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
 /// Resolved attributes at the text selection (or the selected text frames).
 /// The fonts the active document sees: its own (its `Document Fonts` folder) ahead of the shared
 /// ones.
-pub fn fonts(app: &DesignApp) -> designcraft_fonts::ScopedFonts<'static> {
-    designcraft_fonts::FontDb::global().scoped(font_scope(app))
+pub fn fonts(app: &DesignApp) -> pagenor_fonts::ScopedFonts<'static> {
+    pagenor_fonts::FontDb::global().scoped(font_scope(app))
 }
 
 /// The font menus' families in menu order: Western (and other scripts) first, then Japanese,
 /// Simplified Chinese, Traditional Chinese and Korean, each alphabetical by the name shown (CJK
 /// families by their native names unless Show Font Names in English).
-pub fn font_menu(app: &DesignApp) -> Vec<designcraft_fonts::FamilyInfo> {
+pub fn font_menu(app: &DesignApp) -> Vec<pagenor_fonts::FamilyInfo> {
     let mut v = fonts(app).family_infos();
-    designcraft_fonts::sort_for_menu(&mut v, app.session.prefs.show_font_names_in_english);
+    pagenor_fonts::sort_for_menu(&mut v, app.session.prefs.show_font_names_in_english);
     v
 }
 
 /// The name the font menus show for `family` (its native name, see [`font_menu`]).
-pub fn font_label(app: &DesignApp, menu: &[designcraft_fonts::FamilyInfo], family: &str) -> String {
+pub fn font_label(app: &DesignApp, menu: &[pagenor_fonts::FamilyInfo], family: &str) -> String {
     let english = app.session.prefs.show_font_names_in_english;
     menu.iter().find(|f| f.family == family).map_or(family, |f| f.label(english)).to_string()
 }
 
 /// `menu` as rows of a popup or combo box: the name shown (the English name on hover when they
 /// differ), a separator between groups. Returns the family clicked.
-pub fn font_menu_rows(app: &DesignApp, ui: &mut egui::Ui, menu: &[designcraft_fonts::FamilyInfo], current: &str) -> Option<String> {
+pub fn font_menu_rows(app: &DesignApp, ui: &mut egui::Ui, menu: &[pagenor_fonts::FamilyInfo], current: &str) -> Option<String> {
     let english = app.session.prefs.show_font_names_in_english;
     let mut pick = None;
     let mut group = None;
@@ -169,7 +169,7 @@ pub fn preflight_errors(app: &DesignApp) -> usize {
     {
         return n;
     }
-    let n = designcraft_engine::cmd::preflight::check(&app.session, 150.0).iter().filter(|i| i.severity == "error").count();
+    let n = pagenor_engine::cmd::preflight::check(&app.session, 150.0).iter().filter(|i| i.severity == "error").count();
     *g = Some((key, n));
     n
 }
@@ -269,8 +269,7 @@ pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str,
             });
             let q = query.to_lowercase();
             let ppp = ui.ctx().pixels_per_point();
-            let shown: Vec<&designcraft_fonts::FamilyInfo> =
-                menu.iter().filter(|f| f.matches(&q) && (!only_favs || favs.contains(&f.family))).collect();
+            let shown: Vec<&pagenor_fonts::FamilyInfo> = menu.iter().filter(|f| f.matches(&q) && (!only_favs || favs.contains(&f.family))).collect();
             let mut group = None;
             for info in shown {
                 // A separator between the Western fonts and each CJK language's.
@@ -310,7 +309,7 @@ pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str,
                 let key = egui::Id::new(("font_preview", f, scope, (ppp * 100.0) as u32, t.text.to_array()));
                 let tex: Option<egui::TextureHandle> = ui.data(|d| d.get_temp(key));
                 let tex = tex.unwrap_or_else(|| {
-                    let img = designcraft_render::glyphs::text_line(&fonts, f, "Regular", "Sample", (18.0 * ppp) as u32, t.text.to_array());
+                    let img = pagenor_render::glyphs::text_line(&fonts, f, "Regular", "Sample", (18.0 * ppp) as u32, t.text.to_array());
                     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
                     let h = ui.ctx().load_texture(format!("font_preview_{f}"), ci, egui::TextureOptions::LINEAR);
                     ui.data_mut(|d| d.insert_temp(key, h.clone()));
@@ -362,7 +361,7 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
     egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
-        for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
+        for n in names.iter().filter(|n| *n != pagenor_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());
             }
@@ -375,8 +374,8 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
 
 #[cfg(test)]
 mod font_menu_tests {
-    use designcraft_fonts::FontGroup;
-    use designcraft_fonts::testing::{font_with, with_names};
+    use pagenor_fonts::FontGroup;
+    use pagenor_fonts::testing::{font_with, with_names};
 
     use super::*;
 
@@ -385,15 +384,15 @@ mod font_menu_tests {
         const FAMILY: &str = "DC UI Test Mincho";
         let font = font_with(FAMILY, &['a']).unwrap();
         let font = with_names(&font, &[(3, 1, 0x409, 1, FAMILY), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x0411, 1, "UIテスト明朝")]).unwrap();
-        designcraft_fonts::FontDb::global().add_font(font);
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        pagenor_fonts::FontDb::global().add_font(font);
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         let menu = font_menu(&app);
         let at = menu.iter().position(|f| f.family == FAMILY).unwrap();
         assert_eq!(menu[at].group, FontGroup::Japanese);
-        assert!(menu[..at].iter().any(|f| f.family == designcraft_fonts::DEFAULT_FAMILY), "Western fonts first");
+        assert!(menu[..at].iter().any(|f| f.family == pagenor_fonts::DEFAULT_FAMILY), "Western fonts first");
         assert!(menu.windows(2).all(|w| w[0].group <= w[1].group), "grouped");
         assert_eq!(font_label(&app, &menu, FAMILY), "UIテスト明朝");
-        assert_eq!(font_label(&app, &menu, designcraft_fonts::DEFAULT_FAMILY), designcraft_fonts::DEFAULT_FAMILY);
+        assert_eq!(font_label(&app, &menu, pagenor_fonts::DEFAULT_FAMILY), pagenor_fonts::DEFAULT_FAMILY);
         app.run("prefs.set", json!({"showFontNamesInEnglish": true})).unwrap();
         assert_eq!(font_label(&app, &font_menu(&app), FAMILY), FAMILY);
     }

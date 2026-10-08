@@ -3,13 +3,13 @@
 //!
 //! Goldens live in `tests/golden/*.png` and are compared with a tolerance (antialiasing and blur
 //! rounding may differ by a few levels between SIMD levels). Regenerate them after an intended
-//! change with `DESIGNCRAFT_BLESS=1 cargo test -p designcraft-render --test effects`.
+//! change with `PAGENOR_BLESS=1 cargo test -p pagenor-render --test effects`.
 
-use designcraft_compose::Cache;
-use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Document, Fill, Item, ItemId, ParaFormat, Shape, SpreadRef};
-use designcraft_geom::{Affine, Rect, Vec2, shapes};
-use designcraft_render::{Placed, RenderOptions, Rendered, Renderer};
+use pagenor_compose::Cache;
+use pagenor_doc::build::NewDocument;
+use pagenor_doc::{Document, Fill, Item, ItemId, ParaFormat, Shape, SpreadRef};
+use pagenor_geom::{Affine, Rect, Vec2, shapes};
+use pagenor_render::{Placed, RenderOptions, Rendered, Renderer};
 
 const SIZE: u32 = 160;
 
@@ -46,7 +46,7 @@ const WHITE: u32 = 765;
 /// Tolerant comparison with `tests/golden/{name}.png` (written when missing or when blessing).
 fn golden(name: &str, img: &Rendered) {
     let path = format!("{}/tests/golden/{name}.png", env!("CARGO_MANIFEST_DIR"));
-    let bless = std::env::var_os("DESIGNCRAFT_BLESS").is_some();
+    let bless = std::env::var_os("PAGENOR_BLESS").is_some();
     let Ok(bytes) = std::fs::read(&path).map_err(|_| ()).and_then(|b| if bless { Err(()) } else { Ok(b) }) else {
         std::fs::create_dir_all(format!("{}/tests/golden", env!("CARGO_MANIFEST_DIR"))).unwrap();
         std::fs::write(&path, img.to_png()).unwrap();
@@ -68,7 +68,7 @@ fn golden(name: &str, img: &Rendered) {
     let n = (img.width * img.height) as usize;
     let mean = sum as f64 / n as f64;
     if bad * 200 > n || mean > 1.0 {
-        let out = std::env::temp_dir().join(format!("designcraft-golden-{name}.png"));
+        let out = std::env::temp_dir().join(format!("pagenor-golden-{name}.png"));
         let _ = std::fs::write(&out, img.to_png());
         panic!("{name}: {bad} pixels differ by > 8 (worst {worst}, mean {mean:.2}); got {}", out.display());
     }

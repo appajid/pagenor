@@ -1,6 +1,6 @@
 # Contributors in the About window
 
-**About ▸ Contributors** credits everyone who contributed to DesignCraft, and **About ▸ Models** credits
+**About ▸ Contributors** credits everyone who contributed to Pagenor, and **About ▸ Models** credits
 the AI models named in `Co-Authored-By` trailers. This follows the shared craftrules standard
 [`standards/contributors.md`](https://github.com/storytold/craftrules/blob/main/standards/contributors.md);
 this page is the local copy of the decision.
@@ -21,9 +21,9 @@ this page is the local copy of the decision.
   first or last commit date. The name toggle cycles **Username → Display name → Real name**; a
   missing name falls back to `@username`. Alphabetical sorting is case-insensitive and ignores the `@`.
 
-## In DesignCraft
+## In Pagenor
 
-- The About window is `crates/ui-egui/src/about.rs` (Help ▸ About DesignCraft); `help.about {"tab":"contributors"}` opens a tab.
+- The About window is `crates/ui-egui/src/about.rs` (Help ▸ About Pagenor); `help.about {"tab":"contributors"}` opens a tab.
 
 ## Credit yourself
 

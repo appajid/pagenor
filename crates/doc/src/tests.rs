@@ -1,4 +1,4 @@
-use designcraft_geom::Rect;
+use pagenor_geom::Rect;
 
 use super::*;
 use crate::build::NewDocument;
@@ -33,7 +33,7 @@ fn thread_to_empty_frame_converts_it() {
     let lid = d.default_layer();
     let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
     let id = ItemId(d.alloc());
-    let it = Item::new(id, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 200.0, 50.0, 300.0)));
+    let it = Item::new(id, lid, Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 200.0, 50.0, 300.0)));
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
     d.thread(a, id).unwrap();
     assert!(d.item(id).unwrap().is_text_frame());
@@ -109,10 +109,10 @@ fn hit_testing_respects_layers() {
     let mut d = doc();
     let lid = d.default_layer();
     let (a, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
-    assert_eq!(d.hit_item(0, designcraft_geom::Point::new(50.0, 50.0), 2.0), Some(a));
-    assert_eq!(d.hit_item(0, designcraft_geom::Point::new(300.0, 300.0), 2.0), None);
+    assert_eq!(d.hit_item(0, pagenor_geom::Point::new(50.0, 50.0), 2.0), Some(a));
+    assert_eq!(d.hit_item(0, pagenor_geom::Point::new(300.0, 300.0), 2.0), None);
     d.layer_mut(lid).unwrap().locked = true;
-    assert_eq!(d.hit_item(0, designcraft_geom::Point::new(50.0, 50.0), 2.0), None);
+    assert_eq!(d.hit_item(0, pagenor_geom::Point::new(50.0, 50.0), 2.0), None);
 }
 
 #[test]

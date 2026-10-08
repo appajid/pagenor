@@ -1,9 +1,9 @@
 [package]
-name = "designcraft-compose"
+name = "pagenor-compose"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft text composition: paragraph composer (Knuth–Plass), hyphenation, justification, columns, threading, wrap"
+description = "Pagenor text composition: paragraph composer (Knuth–Plass), hyphenation, justification, columns, threading, wrap"
 
 [lints]
 workspace = true
@@ -11,14 +11,14 @@ workspace = true
 [dependencies]
 unicode-bidi = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
-designcraft-geom = { workspace = true }
-designcraft-color = { workspace = true }
-designcraft-doc = { workspace = true }
-designcraft-fonts = { workspace = true }
+pagenor-geom = { workspace = true }
+pagenor-color = { workspace = true }
+pagenor-doc = { workspace = true }
+pagenor-fonts = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
 miniz_oxide = "0.8"
 
 [dev-dependencies]
-designcraft-fonts = { workspace = true, features = ["testing"] }
+pagenor-fonts = { workspace = true, features = ["testing"] }
 proptest = { workspace = true }

@@ -1,15 +1,15 @@
 [package]
-name = "designcraft-format"
+name = "pagenor-format"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft native file format: zip with document.json and embedded assets; versioned"
+description = "Pagenor native file format: zip with document.json and embedded assets; versioned"
 
 [lints]
 workspace = true
 
 [dependencies]
-designcraft-doc = { workspace = true }
+pagenor-doc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zip = { workspace = true }

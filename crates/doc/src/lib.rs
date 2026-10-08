@@ -1,4 +1,4 @@
-//! The DesignCraft document model (pure data + serde).
+//! The Pagenor document model (pure data + serde).
 //!
 //! A [`Document`] holds spreads of pages, parent ("master") spreads, layers, stories, styles,
 //! swatches, sections and embedded assets. Spreads, items and stories are `Arc`-shared so an
@@ -41,8 +41,6 @@ pub use datamerge::{
     DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
     SourceStatus,
 };
-pub use designcraft_color as color;
-pub use designcraft_geom as geom;
 pub use edit::{ItemLoc, ItemPath, SpreadRef, item_hit as edit_hit};
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
 pub use ids::*;
@@ -50,14 +48,16 @@ pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
 pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions};
 pub use page::*;
+pub use pagenor_color as color;
+pub use pagenor_geom as geom;
 pub use selection::*;
 pub use story::*;
 pub use styles::*;
 pub use table::*;
 pub use xref::{ANCHOR_MARK, CrossRef, TextAnchor, XREF_MARK, XrefFormat};
 
-use designcraft_color::Swatch;
-use designcraft_geom::Unit;
+use pagenor_color::Swatch;
+use pagenor_geom::Unit;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -691,8 +691,8 @@ impl Document {
         if global { self.settings.global_light } else { angle }
     }
 
-    pub fn resolve_color(&self, swatch: &str, tint: f32) -> Option<designcraft_color::Color> {
-        designcraft_color::swatch::resolve(&self.swatches, swatch, tint)
+    pub fn resolve_color(&self, swatch: &str, tint: f32) -> Option<pagenor_color::Color> {
+        pagenor_color::swatch::resolve(&self.swatches, swatch, tint)
     }
 
     /// Validate structural invariants (ids unique, threads consistent, stories well-formed).

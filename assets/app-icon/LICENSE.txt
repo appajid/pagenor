@@ -1,9 +1,9 @@
-DesignCraft app icon (designcraft.svg, designcraft-small.svg and every file derived from them in
-this directory: designcraft-1024.png, designcraft-macos-512.png, designcraft.icns, designcraft.ico,
+Pagenor app icon (pagenor.svg, pagenor-small.svg and every file derived from them in
+this directory: pagenor-1024.png, pagenor-macos-512.png, pagenor.icns, pagenor.ico,
 hicolor/).
 
 Original artwork made for this project by the project owner in ArtCraft, then vectorised. No
-third-party material. Licensed like the rest of DesignCraft, under either of
+third-party material. Licensed like the rest of Pagenor, under either of
 
   * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
   * MIT license (https://opensource.org/licenses/MIT)

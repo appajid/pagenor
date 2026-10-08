@@ -1,14 +1,8 @@
-//! Document → PDF. The item walk mirrors `designcraft-render`'s `draw_spread` / `draw_item`.
+//! Document → PDF. The item walk mirrors `pagenor-render`'s `draw_spread` / `draw_item`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_color::swatch::{ColorType, SwatchValue};
-use designcraft_color::{BlendMode as DcBlend, Color, GradientKind};
-use designcraft_compose::Cache;
-use designcraft_doc::{AssetId, Content, Document, Item, PageSide, Spread, StrokeAlign, StrokeType};
-use designcraft_geom::kurbo::{PathEl, Shape as _};
-use designcraft_geom::{Affine, BezPath, Rect, Vec2, corners};
 use krilla::color::{cmyk, luma, rgb};
 use krilla::configure::{Archival, ConfigurationBuilder, PdfVersion};
 use krilla::geom::{Path, PathBuilder, Size, Transform};
@@ -19,6 +13,12 @@ use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LinearGradient, RadialGradient, SpreadMethod, Stop, Stroke, StrokeDash};
 use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, Identifier, Tag, TagGroup, TagTree};
+use pagenor_color::swatch::{ColorType, SwatchValue};
+use pagenor_color::{BlendMode as DcBlend, Color, GradientKind};
+use pagenor_compose::Cache;
+use pagenor_doc::{AssetId, Content, Document, Item, PageSide, Spread, StrokeAlign, StrokeType};
+use pagenor_geom::kurbo::{PathEl, Shape as _};
+use pagenor_geom::{Affine, BezPath, Rect, Vec2, corners};
 
 use crate::{ExportReport, PdfError, PdfOptions, Result, Standard};
 
@@ -117,7 +117,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     let mut pdf = krilla::Document::new_with(settings);
 
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
+    let mut meta = Metadata::new().creator("Pagenor".into()).producer("Pagenor".into());
     if !title.is_empty() {
         meta = meta.title(title.clone());
     }
@@ -206,7 +206,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     let mut bytes = pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
     // Transparency blends in the document's blend space: CMYK for print (and always in PDF/X).
     let mut warnings = ex.warnings;
-    if !ex.rgb_only && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard == Standard::PdfX4) {
+    if !ex.rgb_only && (doc.settings.blend_space == pagenor_doc::BlendSpace::Cmyk || opts.standard == Standard::PdfX4) {
         // The rewrite matches krilla's exact output; in PDF/X-4, `check_pdfx4` reports any
         // group that got past it, with its page.
         crate::pdfx::cmyk_group_spaces(&mut bytes);
@@ -242,7 +242,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
 /// comes with its pages' sizes (points).
 pub fn merge_pdfs(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -> Result<Vec<u8>> {
     let mut pdf = krilla::Document::new_with(krilla::SerializeSettings::default());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
+    let mut meta = Metadata::new().creator("Pagenor".into()).producer("Pagenor".into());
     if let Some(t) = title {
         meta = meta.title(t.to_string());
     }
@@ -307,7 +307,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
     let settings = krilla::SerializeSettings { compress_content_streams: true, ..Default::default() };
     let mut pdf = krilla::Document::new_with(settings);
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
+    let mut meta = Metadata::new().creator("Pagenor".into()).producer("Pagenor".into());
     if !title.is_empty() {
         meta = meta.title(title);
     }
@@ -367,7 +367,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
     }
     ex.check_placed_versions()?;
     let mut bytes = pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
-    if doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk {
+    if doc.settings.blend_space == pagenor_doc::BlendSpace::Cmyk {
         crate::pdfx::cmyk_group_spaces(&mut bytes);
     }
     let mut warnings = ex.warnings;
@@ -416,23 +416,23 @@ pub(crate) struct Exporter<'a> {
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
     too_new: Vec<String>,
     /// Parsed placed SVGs.
-    svgs: HashMap<AssetId, Option<Arc<designcraft_images::usvg::Tree>>>,
+    svgs: HashMap<AssetId, Option<Arc<pagenor_images::usvg::Tree>>>,
     pub fonts: HashMap<u32, Option<krilla::text::Font>>,
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,
     /// Tagged PDF: the structure in reading order (stories gather their frames' content).
     tags: Vec<TagEntry>,
-    story_tags: HashMap<designcraft_doc::StoryId, Vec<Identifier>>,
+    story_tags: HashMap<pagenor_doc::StoryId, Vec<Identifier>>,
     /// While drawing a story's frame for the structure tree: the story (text runs are tagged
     /// per paragraph, everything else in the frame is an artifact).
-    pub(crate) tag_story: Option<designcraft_doc::StoryId>,
+    pub(crate) tag_story: Option<pagenor_doc::StoryId>,
     /// Marked content of each (story, paragraph index).
-    pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
+    pub(crate) para_tags: HashMap<(pagenor_doc::StoryId, usize), Vec<Identifier>>,
 }
 
 enum TagEntry {
-    Story(designcraft_doc::StoryId),
+    Story(pagenor_doc::StoryId),
     Figure(TagGroup),
 }
 
@@ -472,7 +472,7 @@ fn regular(c: &Color, rgb_only: bool) -> krilla::color::RegularColor {
     match *c {
         Color::Rgb { r, g, b } => R::Rgb(rgb::Color::new(q(r), q(g), q(b))),
         Color::Cmyk { c, m, y, k } => R::Cmyk(cmyk::Color::new(q(c), q(m), q(y), q(k))),
-        // DesignCraft grey is ink coverage (0 = white); PDF DeviceGray is lightness.
+        // Pagenor grey is ink coverage (0 = white); PDF DeviceGray is lightness.
         Color::Gray { k } => R::Luma(luma::Color::new(q(1.0 - k))),
     }
 }
@@ -527,7 +527,7 @@ pub(crate) fn solid_fill(c: krilla::color::Color, opacity: f32) -> Fill {
 impl Exporter<'_> {
     /// A print document, or a PDF/X file (whose output intent is CMYK).
     pub(crate) fn for_print(&self) -> bool {
-        self.doc.settings.intent == designcraft_doc::Intent::Print || self.opts.standard == Standard::PdfX4
+        self.doc.settings.intent == pagenor_doc::Intent::Print || self.opts.standard == Standard::PdfX4
     }
 
     pub(crate) fn warn(&mut self, w: impl Into<String>) {
@@ -563,7 +563,7 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { break };
                     if process {
-                        return Some(device(&designcraft_color::swatch::apply_tint(*color, t), self.rgb_only));
+                        return Some(device(&pagenor_color::swatch::apply_tint(*color, t), self.rgb_only));
                     }
                     let space = SeparationSpace::new(SeparationColorant::Custom(target.name.clone()), regular(color, self.rgb_only));
                     return Some(SepColor::new(q(t), space).into());
@@ -883,7 +883,7 @@ impl Exporter<'_> {
                 let cs = self.cache.get(doc, tfr.story, page_name);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
-                    for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, &bp, pt) {
+                    for (si, gp) in pagenor_compose::path_glyphs(&cs, ft, &bp, pt) {
                         let st = &cs.styles[si as usize];
                         if let (Some(c), Some(p)) = (self.swatch_color(&st.fill, st.fill_tint), to_path(&gp)) {
                             s.set_fill(Some(Fill { paint: c.into(), opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
@@ -937,9 +937,9 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&self, fill: &designcraft_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+    fn fill_paint(&self, fill: &pagenor_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
-        if let Some(g) = designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
+        if let Some(g) = pagenor_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
             let mut stops: Vec<Stop> = Vec::new();
             let mut last = 0.0f32;
             for (o, c, a) in g.expanded_stops() {
@@ -955,7 +955,7 @@ impl Exporter<'_> {
             return Some(match g.kind {
                 GradientKind::Radial => {
                     let (c, r) = match v {
-                        Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
+                        Some([x0, y0, x1, y1]) => (pagenor_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
                         None => (c, bounds.width().max(bounds.height()) / 2.0),
                     };
                     let r = r.max(1e-3) as f32;
@@ -979,7 +979,7 @@ impl Exporter<'_> {
                     let half = ((bounds.width() * a.cos().abs() + bounds.height() * a.sin().abs()) / 2.0).max(1e-3);
                     let d = Vec2::new(a.cos(), -a.sin()) * half;
                     let (p0, p1) = match v {
-                        Some([x0, y0, x1, y1]) => (designcraft_geom::Point::new(x0, y0), designcraft_geom::Point::new(x1, y1)),
+                        Some([x0, y0, x1, y1]) => (pagenor_geom::Point::new(x0, y0), pagenor_geom::Point::new(x1, y1)),
                         None => (c - d, c + d),
                     };
                     LinearGradient {
@@ -1004,9 +1004,9 @@ impl Exporter<'_> {
         let Some(c) = self.swatch_color(&st.swatch, st.tint) else { return };
         let closed = it.path.is_closed();
         let mut cap = match st.cap {
-            designcraft_doc::Cap::Butt => krilla::paint::LineCap::Butt,
-            designcraft_doc::Cap::Round => krilla::paint::LineCap::Round,
-            designcraft_doc::Cap::Projecting => krilla::paint::LineCap::Square,
+            pagenor_doc::Cap::Butt => krilla::paint::LineCap::Butt,
+            pagenor_doc::Cap::Round => krilla::paint::LineCap::Round,
+            pagenor_doc::Cap::Projecting => krilla::paint::LineCap::Square,
         };
         let kind = self.doc.stroke_kind(&st.kind);
         // Stripes, wavy and hash strokes: a filled outline (gap colour under it).
@@ -1015,7 +1015,7 @@ impl Exporter<'_> {
         {
             s.set_stroke(None);
             if let Some(g) = self.swatch_color(&st.gap_swatch, st.gap_tint)
-                && st.gap_swatch != designcraft_color::swatch::NONE
+                && st.gap_swatch != pagenor_color::swatch::NONE
             {
                 s.set_stroke(Some(Stroke { paint: g.into(), width: st.weight as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
                 s.set_fill(None);
@@ -1041,7 +1041,7 @@ impl Exporter<'_> {
             }
             _ => None,
         };
-        let arrows = designcraft_doc::arrow::apply(bp, st, closed);
+        let arrows = pagenor_doc::arrow::apply(bp, st, closed);
         let trimmed = arrows.as_ref().and_then(|a| to_path(&a.0));
         let path = trimmed.as_ref().unwrap_or(path);
         let aligned = closed && st.align != StrokeAlign::Center;
@@ -1079,9 +1079,9 @@ impl Exporter<'_> {
             miter_limit: st.miter_limit.max(1.0) as f32,
             line_cap: cap,
             line_join: match st.join {
-                designcraft_doc::Join::Miter => krilla::paint::LineJoin::Miter,
-                designcraft_doc::Join::Round => krilla::paint::LineJoin::Round,
-                designcraft_doc::Join::Bevel => krilla::paint::LineJoin::Bevel,
+                pagenor_doc::Join::Miter => krilla::paint::LineJoin::Miter,
+                pagenor_doc::Join::Round => krilla::paint::LineJoin::Round,
+                pagenor_doc::Join::Bevel => krilla::paint::LineJoin::Bevel,
             },
             opacity: NormalizedF32::ONE,
             dash,
@@ -1113,7 +1113,7 @@ impl Exporter<'_> {
     /// VectorCraft and most tools write 1.7. PDF 1.7 changed nothing in how a page draws, so a 1.7
     /// file goes in as 1.6 (its header relabelled, as `qpdf --force-version=1.6` does). A newer
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
-    fn placed_pdf(&mut self, asset: &designcraft_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
+    fn placed_pdf(&mut self, asset: &pagenor_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
         use hayro_syntax::PdfVersion as V;
         let Ok(pdf) = krilla::pdf::Pdf::new(asset.data.clone()) else {
             self.warn(format!("{}: can't read the placed PDF", asset.name));
@@ -1171,7 +1171,7 @@ impl Exporter<'_> {
             Some(image::ImageFormat::Jpeg) => Image::from_jpeg(data.clone().into(), true).ok(),
             // A CMYK TIFF keeps its ink values (`image` decodes it to RGB, and 100% K would print
             // as four-colour black). PDF/A exports are RGB only.
-            Some(image::ImageFormat::Tiff) if !self.rgb_only && designcraft_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data) {
+            Some(image::ImageFormat::Tiff) if !self.rgb_only && pagenor_images::is_cmyk_tiff(&data) => match cmyk_tiff(&data) {
                 Some(img) => Some(img),
                 None => {
                     self.warn(format!(
@@ -1191,10 +1191,10 @@ impl Exporter<'_> {
         img
     }
 
-    pub(crate) fn graphic(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) {
+    pub(crate) fn graphic(&mut self, s: &mut Surface, g: &pagenor_doc::Graphic) {
         // Video / sound without a poster: a dark frame with a play mark.
         if let Some(asset) = self.doc.assets.get(&g.asset)
-            && designcraft_doc::media_kind(&asset.mime).is_some()
+            && pagenor_doc::media_kind(&asset.mime).is_some()
         {
             let (w, h) = g.size;
             let (cx, cy, r) = (w / 2.0, h / 2.0, w.min(h) * 0.18);
@@ -1238,10 +1238,10 @@ impl Exporter<'_> {
         }
         // Placed SVGs go in as vectors too.
         if let Some(asset) = self.doc.assets.get(&g.asset)
-            && designcraft_images::is_svg(&asset.data)
+            && pagenor_images::is_svg(&asset.data)
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-            let tree = self.svgs.entry(g.asset).or_insert_with(|| designcraft_images::svg_tree(&asset.data).map(Arc::new)).clone();
+            let tree = self.svgs.entry(g.asset).or_insert_with(|| pagenor_images::svg_tree(&asset.data).map(Arc::new)).clone();
             match tree {
                 Some(tree) => {
                     use krilla_svg::SurfaceExt;
@@ -1285,7 +1285,7 @@ fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>) -> Option<Imag
     };
     direct.or_else(|| {
         // TIFF, BMP, PSD composites…
-        let rgba = designcraft_images::decode_rgba(data)?;
+        let rgba = pagenor_images::decode_rgba(data)?;
         let (w, h) = rgba.dimensions();
         Some(Image::from_rgba8(rgba.into_raw(), w, h))
     })
@@ -1296,7 +1296,7 @@ fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>) -> Option<Imag
 /// the output intent's press, and tagging them with another CMYK profile would let a RIP
 /// convert 100% K to four-colour black.
 #[derive(Clone, Hash)]
-struct CmykImage(Arc<designcraft_images::CmykRaster>);
+struct CmykImage(Arc<pagenor_images::CmykRaster>);
 
 impl krilla::image::CustomImage for CmykImage {
     fn color_channel(&self) -> &[u8] {
@@ -1321,7 +1321,7 @@ impl krilla::image::CustomImage for CmykImage {
 
 /// A CMYK TIFF as a DeviceCMYK image. `None` when it can't be read as CMYK.
 fn cmyk_tiff(data: &[u8]) -> Option<Image> {
-    let r = designcraft_images::decode_cmyk_tiff(data)?;
+    let r = pagenor_images::decode_cmyk_tiff(data)?;
     // krilla panics when the channel lengths don't match the size.
     let pixels = usize::try_from(r.width).ok()?.checked_mul(usize::try_from(r.height).ok()?)?;
     if r.cmyk.len() != pixels.checked_mul(4)? || r.alpha.as_ref().is_some_and(|a| a.len() != pixels) {

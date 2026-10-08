@@ -1,0 +1,25 @@
+[package]
+name = "pagenor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pagenor-cli"
+path = "src/main.rs"
+
+[dependencies]
+pagenor-engine = { workspace = true }
+pagenor-render = { workspace = true }
+pagenor-doc = { workspace = true }
+pagenor-geom = { workspace = true }
+pagenor-color = { workspace = true }
+pagenor-compose = { workspace = true }
+pagenor-format = { workspace = true }
+pagenor-pdf = { workspace = true }
+pagenor-mcp = { workspace = true }
+serde_json = { workspace = true }

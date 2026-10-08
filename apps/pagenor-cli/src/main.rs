@@ -1,23 +1,23 @@
-//! Headless DesignCraft.
+//! Headless Pagenor.
 //!
 //! ```text
-//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
-//! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
-//! designcraft-cli describe ID          # one command: label, menu, shortcut, parameters
-//! designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
+//! pagenor-cli run [--in FILE.pagenor|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.pagenor|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
+//! pagenor-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
+//! pagenor-cli describe ID          # one command: label, menu, shortcut, parameters
+//! pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
 //!                                      # run a command script (crates/engine/src/script.rs): `$N.path` references
-//! designcraft-cli app [--port PORT] COMMAND [JSON]   # run a command in the running app (designcraft --control PORT)
-//! designcraft-cli app [--port PORT] --method METHOD [JSON]   # any control-channel method (ui.screenshot, ui.render, …)
-//! designcraft-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
-//! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
-//! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
-//! designcraft-cli links                   # Discord, website, app page and GitHub links
-//! designcraft-cli --version               # print the version
+//! pagenor-cli app [--port PORT] COMMAND [JSON]   # run a command in the running app (pagenor --control PORT)
+//! pagenor-cli app [--port PORT] --method METHOD [JSON]   # any control-channel method (ui.screenshot, ui.render, …)
+//! pagenor-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
+//! pagenor-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
+//! pagenor-cli bench FILE [--runs N]  # the same measurements on one document
+//! pagenor-cli links                   # Discord, website, app page and GitHub links
+//! pagenor-cli --version               # print the version
 //! ```
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 use std::process::ExitCode;
 
-/// `println!` that ends the program quietly when stdout is closed (`designcraft-cli commands |
+/// `println!` that ends the program quietly when stdout is closed (`pagenor-cli commands |
 /// head`) instead of panicking with "failed printing to stdout: Broken pipe (os error 32)".
 macro_rules! outln {
     ($($arg:tt)*) => {{
@@ -30,7 +30,7 @@ macro_rules! outln {
 
 mod perf;
 
-use designcraft_engine::Session;
+use pagenor_engine::Session;
 use serde_json::{Value, json};
 
 /// stdout went away. A reader that stopped early (a closed pipe) ends the program quietly, as
@@ -39,7 +39,7 @@ fn stdout_failed(e: std::io::Error) -> ! {
     if e.kind() == std::io::ErrorKind::BrokenPipe {
         std::process::exit(0);
     }
-    eprintln!("designcraft-cli: can't write to stdout: {e}");
+    eprintln!("pagenor-cli: can't write to stdout: {e}");
     std::process::exit(1);
 }
 
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version" | "-V" | "version") => {
-            outln!("designcraft-cli {}", env!("CARGO_PKG_VERSION"));
+            outln!("pagenor-cli {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("run") => report(run(&args[1..])),
@@ -71,19 +71,19 @@ fn main() -> ExitCode {
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
         Some("links") => {
-            use designcraft_engine::links::*;
+            use pagenor_engine::links::*;
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
             ExitCode::SUCCESS
         }
         _ => {
             eprintln!(
-                "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample]\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version"
+                "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli links\n       pagenor-cli --version"
             );
             eprintln!(
                 "\nCommunity: {}  ·  {}  ·  {}",
-                designcraft_engine::links::DISCORD,
-                designcraft_engine::links::APP_PAGE,
-                designcraft_engine::links::GITHUB
+                pagenor_engine::links::DISCORD,
+                pagenor_engine::links::APP_PAGE,
+                pagenor_engine::links::GITHUB
             );
             ExitCode::FAILURE
         }
@@ -94,16 +94,16 @@ fn report(r: Result<(), String>) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("designcraft-cli: {e}");
+            eprintln!("pagenor-cli: {e}");
             ExitCode::FAILURE
         }
     }
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
-/// started with `designcraft --control PORT`). JSON-RPC on stdin/stdout; logs on stderr.
+/// started with `pagenor --control PORT`). JSON-RPC on stdin/stdout; logs on stderr.
 fn mcp(args: &[String]) -> Result<(), String> {
-    use designcraft_mcp::{Backend, Headless, Remote, Server, control_addr};
+    use pagenor_mcp::{Backend, Headless, Remote, Server, control_addr};
     let mut connect: Option<String> = None;
     let mut sample = false;
     let mut it = args.iter();
@@ -111,7 +111,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--connect" => connect = Some(it.next().cloned().ok_or("--connect needs a port or host:port")?),
             "--sample" => sample = true,
-            other => return Err(format!("unknown mcp option `{other}` (usage: designcraft-cli mcp [--connect PORT] [--sample])")),
+            other => return Err(format!("unknown mcp option `{other}` (usage: pagenor-cli mcp [--connect PORT] [--sample])")),
         }
     }
     let backend: Box<dyn Backend> = match connect {
@@ -119,7 +119,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             let addr = control_addr(&c);
             Box::new(
                 Remote::connect(&addr)
-                    .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
+                    .map_err(|e| format!("cannot connect to the Pagenor app at {addr}: {e} (start it with `pagenor --control PORT`)"))?,
             )
         }
         None => {
@@ -130,7 +130,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             Box::new(h)
         }
     };
-    eprintln!("designcraft-cli: MCP server on stdio ({})", backend.describe());
+    eprintln!("pagenor-cli: MCP server on stdio ({})", backend.describe());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     Server::new(backend).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
@@ -165,7 +165,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 let c = val()?;
                 let (id, p) = c.split_once('=').unwrap_or((&c, "{}"));
                 let p: Value = serde_json::from_str(p).map_err(|e| format!("--cmd {id}: {e}"))?;
-                let p = designcraft_engine::script::resolve(&p, &results).map_err(|e| format!("--cmd {id}: {e}"))?;
+                let p = pagenor_engine::script::resolve(&p, &results).map_err(|e| format!("--cmd {id}: {e}"))?;
                 let r = s.execute(id, &p).map_err(|e| e.to_string())?;
                 results.push(r.clone());
                 if !r.is_null() {
@@ -214,16 +214,16 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
         eprintln!("wrote {out} ({} bytes)", r["bytes"]);
         return Ok(());
     }
-    if out.ends_with(".designcraft") {
+    if out.ends_with(".pagenor") {
         s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
         eprintln!("saved {out}");
         return Ok(());
     }
     let st = s.doc().map_err(|e| e.to_string())?;
-    let mut r = designcraft_render::Renderer::new();
+    let mut r = pagenor_render::Renderer::new();
     let t = std::time::Instant::now();
     let img = r
-        .render_page(&st.doc, &s.cache, page, scale, true, &designcraft_render::RenderOptions { printing_only: true, ..Default::default() })
+        .render_page(&st.doc, &s.cache, page, scale, true, &pagenor_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
     let bytes = if out.ends_with(".jpg") || out.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
     std::fs::write(out, bytes).map_err(|e| format!("{out}: {e}"))?;
@@ -233,7 +233,7 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
 
 /// `describe ID`: one command's documentation.
 fn describe(id: Option<&str>) -> Result<(), String> {
-    let id = id.ok_or("usage: designcraft-cli describe COMMAND")?;
+    let id = id.ok_or("usage: pagenor-cli describe COMMAND")?;
     let s = Session::new();
     let all = serde_json::to_value(s.commands()).map_err(|e| e.to_string())?;
     let c = all.as_array().and_then(|a| a.iter().find(|c| c["id"] == id)).ok_or_else(|| {
@@ -259,7 +259,7 @@ fn describe(id: Option<&str>) -> Result<(), String> {
 
 /// `script`: run a command script headless (or in the running app with `--connect`).
 fn script(args: &[String]) -> Result<(), String> {
-    use designcraft_mcp::{Backend, Headless, Remote, control_addr};
+    use pagenor_mcp::{Backend, Headless, Remote, control_addr};
     let mut file: Option<String> = None;
     let mut setup: Vec<(String, Value)> = Vec::new();
     let mut connect: Option<String> = None;
@@ -292,13 +292,13 @@ fn script(args: &[String]) -> Result<(), String> {
         }
         Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
     };
-    let steps = designcraft_engine::script::parse(&text)?;
+    let steps = pagenor_engine::script::parse(&text)?;
     let mut backend: Box<dyn Backend> = match &connect {
         Some(c) => {
             let addr = control_addr(c);
             Box::new(
                 Remote::connect(&addr)
-                    .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
+                    .map_err(|e| format!("cannot connect to the Pagenor app at {addr}: {e} (start it with `pagenor --control PORT`)"))?,
             )
         }
         None => Box::new(Headless::with_document()),
@@ -312,12 +312,12 @@ fn script(args: &[String]) -> Result<(), String> {
         // Run every step; failures become {"error": …} results.
         let mut results: Vec<Value> = Vec::new();
         for st in &steps {
-            let r = designcraft_engine::script::resolve(&st.params, &results).and_then(|p| exec(b, &st.command, p));
+            let r = pagenor_engine::script::resolve(&st.params, &results).and_then(|p| exec(b, &st.command, p));
             results.push(r.unwrap_or_else(|e| json!({"error": e, "command": st.command})));
         }
-        designcraft_engine::script::Report { results, failed: None }
+        pagenor_engine::script::Report { results, failed: None }
     } else {
-        designcraft_engine::script::run(&steps, |id, p| exec(b, id, p))
+        pagenor_engine::script::run(&steps, |id, p| exec(b, id, p))
     };
     if report.failed.is_none() {
         if let Some(out) = &save {
@@ -347,7 +347,7 @@ fn script(args: &[String]) -> Result<(), String> {
 
 /// `app`: one command or control-channel method in the running app.
 fn app(args: &[String]) -> Result<(), String> {
-    use designcraft_mcp::{Backend, Remote, control_addr};
+    use pagenor_mcp::{Backend, Remote, control_addr};
     let mut port = "7979".to_string();
     let mut method: Option<String> = None;
     let mut rest: Vec<String> = Vec::new();
@@ -360,14 +360,14 @@ fn app(args: &[String]) -> Result<(), String> {
         }
     }
     let addr = control_addr(&port);
-    let mut r = Remote::connect(&addr)
-        .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control {port}`)"))?;
+    let mut r =
+        Remote::connect(&addr).map_err(|e| format!("cannot connect to the Pagenor app at {addr}: {e} (start it with `pagenor --control {port}`)"))?;
     let json_arg =
         |s: Option<&String>| -> Result<Value, String> { s.map_or(Ok(json!({})), |t| serde_json::from_str(t).map_err(|e| format!("bad JSON: {e}"))) };
     let out = match method {
         Some(m) => r.call(&m, json_arg(rest.first())?)?,
         None => {
-            let cmd = rest.first().ok_or("usage: designcraft-cli app [--port PORT] COMMAND [JSON]")?;
+            let cmd = rest.first().ok_or("usage: pagenor-cli app [--port PORT] COMMAND [JSON]")?;
             r.call("engine.execute", json!({"command": cmd, "params": json_arg(rest.get(1))?}))?
         }
     };

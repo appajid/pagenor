@@ -255,7 +255,7 @@ impl Tokens {
 
 /// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
 pub fn install_fonts(ctx: &egui::Context, lang: &str) {
-    ctx.set_fonts(font_definitions(designcraft_fonts::CRAFT_FONTS, lang));
+    ctx.set_fonts(font_definitions(pagenor_fonts::CRAFT_FONTS, lang));
 }
 
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
@@ -263,7 +263,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) {
 /// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
 /// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
 /// without craft-fonts CJK and Arabic UI text has no glyphs.
-fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
+fn font_definitions(craft: &'static [pagenor_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
@@ -274,13 +274,13 @@ fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) 
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "ui".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["ui-semibold".into(), "ui".into()]);
-    let pick = |script: &str| -> Vec<&designcraft_fonts::CraftFont> { craft.iter().filter(|f| f.scripts.contains(&script)).collect() };
+    let pick = |script: &str| -> Vec<&pagenor_fonts::CraftFont> { craft.iter().filter(|f| f.scripts.contains(&script)).collect() };
     let mut japanese = pick("Jpan");
     // BIZ UDPGothic (the UI face) first, Regular before Bold; the semibold family prefers Bold.
     japanese.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Regular"));
     let chinese = pick("Hans");
     let arabic = pick("Arab");
-    let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
+    let name = |f: &pagenor_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
     for f in japanese.iter().chain(&chinese).chain(&arabic) {
         add(&mut fonts, &name(f), f.bytes);
     }
@@ -376,7 +376,7 @@ mod japanese_font_tests {
         [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name("semibold".into())]
     }
 
-    fn ctx_with(craft: &'static [designcraft_fonts::CraftFont]) -> egui::Context {
+    fn ctx_with(craft: &'static [pagenor_fonts::CraftFont]) -> egui::Context {
         let ctx = egui::Context::default();
         ctx.set_fonts(super::font_definitions(craft, "ja"));
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
@@ -386,11 +386,11 @@ mod japanese_font_tests {
 
     #[test]
     fn japanese_ui_glyphs_are_available_in_every_family() {
-        if designcraft_fonts::CRAFT_FONTS.is_empty() {
+        if pagenor_fonts::CRAFT_FONTS.is_empty() {
             eprintln!("skipped: built without craft-fonts (set CRAFT_FONTS_DIR to a checkout)");
             return;
         }
-        let ctx = ctx_with(designcraft_fonts::CRAFT_FONTS);
+        let ctx = ctx_with(pagenor_fonts::CRAFT_FONTS);
         ctx.fonts_mut(|fonts| {
             for family in families() {
                 let font = egui::FontId::new(13.0, family);
@@ -401,7 +401,7 @@ mod japanese_font_tests {
             }
         });
         // The UI face is BIZ UDPGothic, ahead of the Mincho faces.
-        let defs = super::font_definitions(designcraft_fonts::CRAFT_FONTS, "ja");
+        let defs = super::font_definitions(pagenor_fonts::CRAFT_FONTS, "ja");
         let stack = &defs.families[&egui::FontFamily::Proportional];
         assert_eq!(stack.iter().find(|n| n.starts_with("craft-")).map(String::as_str), Some("craft-BIZ UDPGothic-Regular"));
     }
@@ -413,10 +413,10 @@ mod japanese_font_tests {
             // (egui's has_glyph reports false for characters of the face that also supplies the
             // replacement glyph, as Source Sans Semibold does in the semibold stack.)
             let body = egui::FontId::new(13.0, egui::FontFamily::Proportional);
-            assert!(fonts.has_glyphs(&body, "DesignCraft"));
+            assert!(fonts.has_glyphs(&body, "Pagenor"));
             for family in families() {
                 let font = egui::FontId::new(13.0, family);
-                let galley = fonts.layout_no_wrap("日本語 DesignCraft".into(), font, egui::Color32::WHITE);
+                let galley = fonts.layout_no_wrap("日本語 Pagenor".into(), font, egui::Color32::WHITE);
                 assert!(galley.size().x > 0.0);
             }
         });

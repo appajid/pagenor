@@ -1,10 +1,10 @@
-//! Pagenor desktop app (derived from DesignCraft).
+//! Pagenor desktop app (derived from Pagenor).
 //!
-//! Usage: `designcraft [--control <port>] [--sample] [files…]`
+//! Usage: `pagenor [--control <port>] [--sample] [files…]`
 //!
-//! `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
+//! `--control <port>` (or `PAGENOR_CONTROL_PORT`) starts a localhost JSON-lines control server:
 //! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
-//! See `designcraft_ui_egui::control` for the methods.
+//! See `pagenor_ui_egui::control` for the methods.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -12,8 +12,8 @@ mod control_server;
 #[cfg(target_os = "macos")]
 mod native_menu;
 
-use designcraft_engine::Session;
-use designcraft_ui_egui::{DesignApp, Services};
+use pagenor_engine::Session;
+use pagenor_ui_egui::{DesignApp, Services};
 
 struct App(DesignApp, #[cfg(target_os = "macos")] Option<native_menu::NativeMenu>);
 
@@ -21,7 +21,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         {
-            if self.1.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
+            if self.1.is_none() && std::env::var_os("PAGENOR_NO_NATIVE_MENU").is_none() {
                 self.1 = Some(native_menu::NativeMenu::install(&mut self.0));
             }
             if let Some(m) = &mut self.1 {
@@ -56,26 +56,26 @@ fn prefs_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_prefs(app: &mut DesignApp) {
-    if std::env::var_os("DESIGNCRAFT_NO_PREFS").is_some() {
+    if std::env::var_os("PAGENOR_NO_PREFS").is_some() {
         return;
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = serde_json::from_slice::<designcraft_ui_egui::UiState>(&bytes)
+        && let Ok(ui) = serde_json::from_slice::<pagenor_ui_egui::UiState>(&bytes)
     {
         app.ui = ui;
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(prefs) = serde_json::from_slice::<designcraft_engine::Prefs>(&bytes)
+        && let Ok(prefs) = serde_json::from_slice::<pagenor_engine::Prefs>(&bytes)
     {
         app.session.prefs = prefs;
     }
 }
 
 fn save_prefs(app: &DesignApp) {
-    if std::env::var_os("DESIGNCRAFT_NO_PREFS").is_some() {
+    if std::env::var_os("PAGENOR_NO_PREFS").is_some() {
         return;
     }
     if let Some(p) = prefs_path() {
@@ -108,34 +108,8 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter {
                 name: "Graphics and text",
                 extensions: &[
-                    "png",
-                    "jpg",
-                    "jpeg",
-                    "gif",
-                    "webp",
-                    "tif",
-                    "tiff",
-                    "bmp",
-                    "psd",
-                    "svg",
-                    "pdf",
-                    "ai",
-                    "eps",
-                    "txt",
-                    "docx",
-                    "rtf",
-                    "md",
-                    "xlsx",
-                    "idml",
-                    "pagenor", "designcraft",
-                    "mp4",
-                    "m4v",
-                    "mov",
-                    "webm",
-                    "mp3",
-                    "m4a",
-                    "wav",
-                    "ogg",
+                    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps", "txt", "docx", "rtf", "md", "xlsx",
+                    "idml", "pagenor", "pagenor", "mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg",
                 ],
             },
             OpenFilter {
@@ -146,7 +120,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "Pagenor, DesignCraft or IDML", extensions: &["pagenor", "designcraft", "idml"] },
+            OpenFilter { name: "Pagenor, Pagenor or IDML", extensions: &["pagenor", "pagenor", "idml"] },
             OpenFilter { name: "Pagenor", extensions: &["pagenor"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
         ],
@@ -174,7 +148,9 @@ const APP_ID: &str = "org.pagenor.app";
 
 /// The window, Dock, taskbar and Alt-Tab icon. macOS gets Apple's icon grid (transparent margin);
 /// elsewhere the full tile. Regenerate with `packaging/icons.sh`.
-fn app_icon() -> Option<egui::IconData> { None }
+fn app_icon() -> Option<egui::IconData> {
+    None
+}
 
 fn main() -> eframe::Result {
     let mut control_port: Option<u16> = None; // Pagenor: local automation OFF by default
@@ -208,10 +184,10 @@ fn main() -> eframe::Result {
         options.viewport = options.viewport.with_icon(icon);
     }
     // winit has no file drag-and-drop on Wayland (only on X11), so dropping images from the file
-    // manager showed a "no" cursor. Run through XWayland when it's there; DESIGNCRAFT_WAYLAND=1
+    // manager showed a "no" cursor. Run through XWayland when it's there; PAGENOR_WAYLAND=1
     // keeps the native Wayland backend.
     #[cfg(all(unix, not(target_os = "macos")))]
-    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("DESIGNCRAFT_WAYLAND").is_none() {
+    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("PAGENOR_WAYLAND").is_none() {
         options.event_loop_builder = Some(Box::new(|b| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
@@ -223,7 +199,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let mut session = Session::new();
             // Crash recovery: reopen what a previous run left unsaved, then keep it current.
-            session.recovery_dir = designcraft_engine::recovery::default_dir();
+            session.recovery_dir = pagenor_engine::recovery::default_dir();
             let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
             let mut app = DesignApp::new(session, services());
             if let Some(n) = recovered.as_ref().and_then(|r| r["opened"].as_array()).map(Vec::len).filter(|n| *n > 0) {
@@ -240,7 +216,7 @@ fn main() -> eframe::Result {
             }
             for f in files {
                 if let Err(e) = app.run("file.open", serde_json::json!({"path": f})) {
-                    eprintln!("designcraft: {f}: {e}");
+                    eprintln!("pagenor: {f}: {e}");
                 }
             }
             Ok(Box::new(App(
@@ -261,11 +237,11 @@ mod tests {
         for ext in ["csv", "tsv", "tab", "txt", "xlsx"] {
             assert!(exts.contains(&ext), "{ext} is missing from the dataMerge dialog: {exts:?}");
         }
-        assert!(!exts.iter().any(|ext| *ext == "designcraft" || *ext == "idml"), "dataMerge must not fall through to the document filters: {exts:?}");
+        assert!(!exts.iter().any(|ext| *ext == "pagenor" || *ext == "idml"), "dataMerge must not fall through to the document filters: {exts:?}");
         let place = super::open_filters("place");
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
-        assert!(documents.iter().any(|filter| filter.extensions.contains(&"designcraft")));
+        assert!(documents.iter().any(|filter| filter.extensions.contains(&"pagenor")));
     }
 }

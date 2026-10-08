@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use designcraft_doc::{Content, Document, Item, LiquidRule, ObjectLiquid, Orientation, SpreadRef};
-use designcraft_geom::{Affine, Rect};
+use pagenor_doc::{Content, Document, Item, LiquidRule, ObjectLiquid, Orientation, SpreadRef};
+use pagenor_geom::{Affine, Rect};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, has_selection, str_param, targets};
@@ -98,7 +98,7 @@ pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
             super::object::bake(it, inner);
             let ib = it.inner_bounds();
             if let Content::Graphic(g) = &mut it.content {
-                let o = inner * designcraft_geom::Point::ZERO;
+                let o = inner * pagenor_geom::Point::ZERO;
                 g.xf = Affine::translate(o.to_vec2()) * g.xf;
                 if let Some(xf) = g.fitted(ib, g.auto_fit) {
                     g.xf = xf;
@@ -230,7 +230,7 @@ fn create_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
                     g
                 })
                 .collect();
-            let new = super::object::duplicate_from(d, &src, &ids, SpreadRef::Doc(ti), designcraft_geom::Vec2::new(to.x0 - pb.x0, 0.0))?;
+            let new = super::object::duplicate_from(d, &src, &ids, SpreadRef::Doc(ti), pagenor_geom::Vec2::new(to.x0 - pb.x0, 0.0))?;
             // The copies' stories stay linked to the originals (Links panel: update when they change).
             for (old, new) in ids.iter().zip(&new) {
                 let (Some(os), Some(ns)) =
@@ -247,7 +247,7 @@ fn create_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
         let pages: Vec<usize> = (n + 1..=2 * n).collect();
         super::layout::resize_pages(d, &pages, Some(w), Some(h));
         d.sections.retain(|x| x.start != n);
-        d.sections.push(designcraft_doc::Section {
+        d.sections.push(pagenor_doc::Section {
             start: n,
             start_number: Some(1),
             style: Default::default(),
@@ -266,8 +266,8 @@ mod tests {
 
     use crate::Session;
 
-    fn bounds(s: &Session, id: u64) -> designcraft_geom::Rect {
-        s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds()
+    fn bounds(s: &Session, id: u64) -> pagenor_geom::Rect {
+        s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap().bounds()
     }
 
     #[test]

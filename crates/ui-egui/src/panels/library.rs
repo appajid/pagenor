@@ -33,7 +33,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Library…"))).clicked() {
-            let path = app.services.pick_save.as_mut().and_then(|f| f("Library.dclib"));
+            let path = app.services.pick_save.as_mut().and_then(|f| f("Library.plib"));
             let _ = app.run("library.new", json!({"path": path}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
@@ -90,7 +90,7 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked()
-            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.dcbook"))
+            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.pbook"))
             && let Err(e) = app.run("book.new", json!({"path": path}))
         {
             app.status(format!("Book: {e}"));

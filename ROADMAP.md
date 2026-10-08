@@ -1,11 +1,11 @@
-# DesignCraft roadmap
+# Pagenor roadmap
 
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby/warichu remain unfinished.
 
-DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
+Pagenor aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
 ## Status (2026-10-01)
 
@@ -16,8 +16,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - UI (egui): application bar + menus, Control panel (object and text modes), Tools panel with flyouts, document tabs, rulers, pasteboard, guides (margins, columns, bleed, baseline grid), frame edges, selection handles, text ports and threads, Properties / Pages / Layers dock, Swatches, Styles, Character, Paragraph, Stroke, Text Wrap panels, New Document and Preferences dialogs, Quick Apply (⌘Return), 4 brightness themes.
 - Pen tool, Direct Selection anchor/handle editing, rotate from corners, Rotate/Scale/Shear tools, Eyedropper, snapping & smart guides, Align/Distribute, Find/Change (text + GREP), Story Editor, Paragraph Style Options, Effects panel, hidden characters, native macOS menu bar, measured InDesign 2026 look (Medium Dark): Properties sections per selection state, 21 pt spinner fields with arithmetic, Contextual Task Bar, inverse (black) text selection, Pages panel with drag-and-drop reorder / parent apply, Layers panel with per-object rows.
 - Tools: Selection (click, marquee, move, Alt-duplicate, resize handles), Direct Selection, Type (draw frame, click caret, select, type), Rectangle/Ellipse/Polygon (+ frame variants), Line, Hand, Zoom.
-- PDF export (krilla): real selectable text with embedded font subsets, DeviceCMYK/RGB + spot Separations, bleed boxes, crop/bleed marks + page info, pages or spreads, PDF/A-2b (PDF/X-4 output intent pending) — `file.exportPdf`, File › Export PDF…, `designcraft-cli run --export out.pdf`.
-- IDML interchange (`designcraft-idml`): export and import of swatches, styles, fonts, preferences, parent spreads, spreads/pages, frames, groups, images (embedded or linked), formatted threaded stories — opens in InDesign 2026 and round-trips InDesign-exported files (`file.exportIdml`, `file.openIdml`, File → Export IDML…, CLI `--in x.idml` / `--export x.idml`).
+- PDF export (krilla): real selectable text with embedded font subsets, DeviceCMYK/RGB + spot Separations, bleed boxes, crop/bleed marks + page info, pages or spreads, PDF/A-2b (PDF/X-4 output intent pending) — `file.exportPdf`, File › Export PDF…, `pagenor-cli run --export out.pdf`.
+- IDML interchange (`pagenor-idml`): export and import of swatches, styles, fonts, preferences, parent spreads, spreads/pages, frames, groups, images (embedded or linked), formatted threaded stories — opens in InDesign 2026 and round-trips InDesign-exported files (`file.exportIdml`, `file.openIdml`, File → Export IDML…, CLI `--in x.idml` / `--export x.idml`).
 - Tables (M8): tables anchored in stories (header/footer/body rows, merged cells, per-edge strokes, fills + alternating fills, insets, vertical justification, at-least/exact row heights); composed into the text column (columns scale to fit, rows break across columns/frames with repeating headers/footers, overset); rendered, exported to PDF (real text) and IDML (export + import); Table menu, Table panel, Create Table dialog, caret/typing/Tab navigation and cell selection in cells; `table.*` commands.
 - Hyperlinks (text or frames → URL / e-mail / page) and bookmarks, exported as PDF link annotations and outline.
 - EPUB 3 (reflowable) export: stories in reading order, CSS from paragraph/character styles, images, navigation (`file.exportEpub`, CLI `--export x.epub`).
@@ -35,7 +35,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Crash recovery: unsaved documents are written to the recovery folder every 30 s and reopened (unsaved, remembering their files) after a crash; File › Revert and Save a Copy…; `file.recovery.*`, `file.revert`, `file.saveACopy`.
 - Edit › Paste Into (copied objects become a frame's content, clipped by it; rendered, PDF and IDML both ways — verified in InDesign 2026); Polygon Settings (sides, star inset; double-click the Polygon tool).
 - Color panel (fill/stroke proxy, CMYK/RGB/Lab sliders with channel ramps, tint slider for swatches, spectrum ramp, Add to Swatches) and Color Picker (double-click the proxy); mixed colours are unnamed (not listed in Swatches until added); `object.color`, `swatch.addToSwatches`, `swatch.addUnnamed`.
-- Place text files: Word (.docx: styles by name with their attributes, bold/italic/underline/size/font, footnotes, tables, tabs, breaks), RTF and plain text, into the insertion point, the selected frame or a new frame; autoflow adds pages and threaded frames until the text fits; Remove Styles option (`designcraft-textimport`).
+- Place text files: Word (.docx: styles by name with their attributes, bold/italic/underline/size/font, footnotes, tables, tabs, breaks), RTF and plain text, into the insertion point, the selected frame or a new frame; autoflow adds pages and threaded frames until the text fits; Remove Styles option (`pagenor-textimport`).
 - Gradient Feather (⇧G tool, `object.gradientFeather`): objects fade along a linear or radial opacity gradient, on screen and as a soft mask in PDF.
 - Script Label (`object.label`, `object.findByLabel`), alt text (`object.altText`), Isolate Blending / Knockout Group (`object.transparencyGroup`; on screen, PDF isolates), Table ▸ Sort (`table.sortRows`, numeric-aware, header/footer fixed).
 - File ▸ Export Text (`file.exportText`): a story as Text Only or RTF (fonts, styles, alignment, indents, tables as tab-separated rows); Export EPUB now asks for a path in the UI.
@@ -58,7 +58,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Edit ▸ Transparency Blend Space (`edit.transparencyBlendSpace`; RGB for web/mobile documents; IDML TransparencyPreference) — exported PDFs give pages with transparency a DeviceCMYK or DeviceRGB page group, so viewers and RIPs blend in that space. On screen, spreads with transparency in a CMYK blend space are shown through the working CMYK profile (their colours keep to its gamut, as when composited in CMYK).
 - High Contrast interface theme (fifth Interface Color Theme: black chrome, white text, yellow selection).
 - Place Excel workbooks (.xlsx): the first worksheet's used range becomes a table (shared/inline strings, numbers, booleans).
-- Object Library (`library.new/open/add/place/remove/list/json/close`, Library panel): `.dclib` files of snippets that keep stories, styles, swatches and images.
+- Object Library (`library.new/open/add/place/remove/list/json/close`, Library panel): `.plib` files of snippets that keep stories, styles, swatches and images.
 - Ink Manager (`ink.list`, `ink.options`; Swatches panel menu): All Spots to Process, per-ink conversion and ink aliases in PDF output; IDML ConvertToProcess/AliasInkName.
 - Appearance of Black complete: Printing/Exporting rich black for RGB output (PNG), Overprint [Black] Swatch at 100% (document, IDML OverprintBlack).
 - Hyperlinks and Bookmarks panels (Window ▸ Interactive): new from the selection, edit (`hyperlink.edit`), go to source (`hyperlink.goToSource`), rename bookmarks (`bookmark.rename`), go to page, delete.
@@ -76,7 +76,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Image Import Options › Crop to for placed PDFs (`file.place {pdfCrop: crop|trim|bleed|art|media}`, Place PDF dialog): the frame shows that page box.
 - Stroke styles: striped (thick-thin… and custom bands), wavy and straight-hash strokes now draw on screen and in PDF; named custom stripe/dash/dot styles (`strokeStyle.new/delete/list`, Stroke panel Type list; IDML Striped/Dashed/DottedStrokeStyle).
 - Object ▸ Primary Text Frame (`object.primaryTextFrame`): any text frame's story can become (or stop being) the primary story Smart Text Reflow follows.
-- Place a page of an IDML or DesignCraft document (`file.place {layoutPage}`): its objects, stories, styles and swatches as one group (INDD files are not readable).
+- Place a page of an IDML or Pagenor document (`file.place {layoutPage}`): its objects, stories, styles and swatches as one group (INDD files are not readable).
 - Articles panel (`article.new/add/remove/options/delete/list`): reading order and content of EPUB and HTML exports.
 - Object ▸ Clipping Path (`object.clippingPath {type: alpha|edges, threshold, tolerance}`): traces the placed image and makes the outline the frame.
 - Gridify: arrow keys while dragging a frame or shape tool add columns/rows (`frame.grid`), one undo step.
@@ -89,7 +89,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - View ▸ Separations Preview (`view.separations`): one process plate as ink density, or areas over an ink limit in red (a GCR preview of the rendered view; spot plates and the flattener preview aren't there).
 - Separations Preview plates now come from each object's own colour (CMYK as authored; RGB and images through the colour settings, images via a cached 17³ table), so pure black shows only on the black plate.
 - Language (Character panel ▸ Language, `type.char {language}`): text in other languages isn't hyphenated or spell-checked with the English dictionaries, typographer's quotes follow the language (German „…“, French and Russian «…», Swiss, Spanish, Dutch, Nordic, Japanese and Traditional Chinese 「…」, Simplified Chinese “…”), the font's localized forms (OpenType `locl`: Turkish i, Bulgarian Cyrillic, Japanese / Chinese / Korean glyph variants) follow it too, and so does the fallback for CJK characters the font lacks (with Draw Missing Glyphs from Fallback Fonts on): Japanese, Simplified Chinese, Traditional Chinese and Korean each try their own installed system fonts (Japanese starts with the craft-fonts Japanese faces, Mincho first, when built with them; Hangul, kana and Bopomofo pick their language's fonts whatever the language). Language names from IDML keep their spelling; locale codes as InDesign writes them for some languages (`de_DE_2006`, `nl_NL_2005`; any `ll`, `ll_CC`, `ll-CC`) are their language and region for all of the above, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`). Hyphenation dictionaries for other languages aren't bundled yet.
-- Books (`book.new/open/add/remove/list/styleSource/paginate/syncStyles/exportPdf`, Book panel): `.dcbook` files, continuous page numbering, style sync from a style source, one merged PDF.
+- Books (`book.new/open/add/remove/list/styleSource/paginate/syncStyles/exportPdf`, Book panel): `.pbook` files, continuous page numbering, style sync from a style source, one merged PDF.
 - Track Changes (`changes.track/list/acceptAll/rejectAll`, Type ▸ Track Changes): typing is marked added (highlighted on screen), deletions are kept but hidden from layout and exports until accepted or rejected. Per-change accept/reject and authors aren't there yet.
 - Track Changes: per-change Accept / Reject (`changes.accept`, `changes.reject`) and a Track Changes panel listing every change.
 - Move table rows and columns (`table.moveRow`, `table.moveColumn`, Table panel buttons; with whole rows or columns selected, drag them with the Type tool — `table.dropCells`).
@@ -125,7 +125,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - EPUB: cover image from the first page (`file.exportEpub {cover}`), and Fixed Layout export (`file.exportFixedEpub`, File ▸ Export EPUB (Fixed Layout)…): pre-paginated pages as 144 ppi images with their text kept for search and read-aloud.
 - Interactive PDF options (`file.exportPdf {fullScreen, bookmarksPanel, pageLayout, view, advanceSeconds}`, File ▸ Export PDF (Interactive)…): page mode, layout, opening view and page timing in the catalog and pages.
 - Object Export Options (`object.exportOptions`): tagged-PDF artifact, EPUB/HTML rasterize (the object as an image), alignment and page break before, alt text.
-- Scripts panel (Window ▸ Utilities ▸ Scripts, `script.run`): saved command scripts (with `$N.path` references to earlier results) run as one undo step; edit, add, load and delete them in the panel. Scripts use DesignCraft's command language, not ExtendScript.
+- Scripts panel (Window ▸ Utilities ▸ Scripts, `script.run`): saved command scripts (with `$N.path` references to earlier results) run as one undo step; edit, add, load and delete them in the panel. Scripts use Pagenor's command language, not ExtendScript.
 - Drag and drop text editing: drag selected text to move it (Alt copies) with its formatting (`text.release`).
 - Image Import Options: place any page of a multi-page PDF (`file.place {pdfPage}`; the app asks which page), shown on screen and embedded as that page in PDF export.
 - Define Lists: named numbered lists that continue across stories in page order (`list.define`, paragraph `listName` / `startAt`), round-tripped through IDML; `null` in `type.para` / `type.char` now removes an override.
@@ -148,13 +148,13 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Underline / Strikethrough Options: weight, offset, colour and tint (Character panel; screen, PDF and IDML).
 - Relink to Folder and Relink File Extension (`links.relinkFolder`; missing links found by name).
 - File › Package (⌥⇧⌘P): the document relinked to a Links folder, the placed files, the font files that draw its text in a Document Fonts folder (the fonts it names and any fallback fonts that draw characters those lack; except fonts whose licence restricts it, OS/2 `fsType`), an IDML copy, an optional PDF and a report (fonts, fallback fonts, links, preflight, instructions); Copy Links To (`links.copyTo`).
-- Document fonts: opening a `.designcraft` or `.idml` file loads the fonts in the `Document Fonts` folder beside it (as Package writes it), ahead of installed fonts with the same name, so a packaged document opens with its fonts on another machine. Damaged, oversized (over 256 MB per file, 512 MB in all) and surplus (over 200) font files are skipped and listed in `file.open`'s `warnings`; `font.list` gives each font's `source`. Document fonts belong to their document, as in InDesign: other open documents don't see them (each document with a same-named font draws with its own), and closing the document (or reverting it, or a book chapter's export ending) makes them unavailable. Their files stay in memory until DesignCraft quits, so reopening a document doesn't read or load them again; on the web there is no folder to read.
+- Document fonts: opening a `.pagenor` or `.idml` file loads the fonts in the `Document Fonts` folder beside it (as Package writes it), ahead of installed fonts with the same name, so a packaged document opens with its fonts on another machine. Damaged, oversized (over 256 MB per file, 512 MB in all) and surplus (over 200) font files are skipped and listed in `file.open`'s `warnings`; `font.list` gives each font's `source`. Document fonts belong to their document, as in InDesign: other open documents don't see them (each document with a same-named font draws with its own), and closing the document (or reverting it, or a book chapter's export ending) makes them unavailable. Their files stay in memory until Pagenor quits, so reopening a document doesn't read or load them again; on the web there is no folder to read.
 - Load Swatches / Save Swatches for Exchange (.ase: CMYK, RGB, Lab, Gray; spot or process) from the Swatches panel menu; `swatch.load` / `swatch.save`.
 - Pathfinder (Object › Pathfinder and a Pathfinder panel): Add, Subtract, Intersect, Exclude Overlap, Minus Back; curves stay curves (flo_curves); `object.pathfinder`.
 - Make / Release Compound Path (⌘8; nested paths become holes), Create Outlines (⇧⌘O; one path per text colour), Scissors tool (C) with `path.split`.
 - Transform Again / Individually / Sequence Again (⌥⌘3; a moved copy repeats like Step and Repeat), Clear Transformations; Layers: Merge, Delete Unused, Hide/Lock Others, Show/Unlock All; Break Link to Style (paragraph and character).
 - Floating panels: tear a panel off the dock (its float button, or drag its header away) into a movable, resizable window; Dock puts it back; positions persist; `window.floatPanel` / `window.dockPanel`.
-- Place SVG (vector in PDF export via krilla-svg, resvg on screen, text in the bundled fonts), Photoshop (.psd/.psb composite in its colour mode — Bitmap, Grayscale, Duotone, Indexed, RGB, CMYK, Lab, 8/16-bit — with merged transparency; extra alpha and spot channels don't change the image), BMP, and Illustrator files saved with PDF compatibility (.ai). New `designcraft-images` crate (L2) for sniffing, sizes and decoding. EPS is still missing.
+- Place SVG (vector in PDF export via krilla-svg, resvg on screen, text in the bundled fonts), Photoshop (.psd/.psb composite in its colour mode — Bitmap, Grayscale, Duotone, Indexed, RGB, CMYK, Lab, 8/16-bit — with merged transparency; extra alpha and spot channels don't change the image), BMP, and Illustrator files saved with PDF compatibility (.ai). New `pagenor-images` crate (L2) for sniffing, sizes and decoding. EPS is still missing.
 - View › Display Performance: Fast (grey boxes, no effects, ⌥⇧⌘Z), Typical (72 ppi proxies, ⌥⌘Z), High Quality (⌥⌘H, our default — the renderer is fast enough).
 - OpenType menu (Character panel): discretionary ligatures, fractions, ordinal, swash, titling, contextual alternates, slashed zero, the four figure styles and stylistic sets 1–20; `type.openType`; mapped to IDML's OTF attributes.
 - Add Anchor Point (=), Delete Anchor Point (-) and Convert Direction Point (⇧C) tools (click toggles smooth/corner, drag pulls out handles), with `path.addAnchor`, `path.deleteAnchor`, `path.convertAnchor`.
@@ -168,8 +168,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Table of contents (generate/update, dot leaders) and text variables (running headers, last page number, chapter number, file name, dates, custom) resolved per page.
 - Soft effects: blurred drop shadow, inner shadow, outer glow, basic feather.
 - ~200 commands, all reachable through the JSON control channel; headless CLI rendering to PNG.
-- MCP server (`designcraft-cli mcp [--connect PORT]`, docs/mcp.md): headless engine or the running app; commands, batch, document/story inspection, page renders as images, window screenshots, pointer/keyboard/dialog input.
-- Web build (`apps/designcraft-web`, trunk): the same UI on WebGPU with a WebGL2 fallback; open/place via the browser file picker or drag-and-drop, save/export as downloads.
+- MCP server (`pagenor-cli mcp [--connect PORT]`, docs/mcp.md): headless engine or the running app; commands, batch, document/story inspection, page renders as images, window screenshots, pointer/keyboard/dialog input.
+- Web build (`apps/pagenor-web`, trunk): the same UI on WebGPU with a WebGL2 fallback; open/place via the browser file picker or drag-and-drop, save/export as downloads.
 
 **Next (in order):** books · New Window / split view · Ink Manager and Separations Preview · XML structure, tags and export · buttons and forms · PDF/X-4 output intent (needs krilla support) · EPS place.
 
@@ -196,8 +196,8 @@ machine — about 1–2 hours per catalogue row.
 
 ## Agents: CLI and MCP
 
-Every command is reachable from `designcraft-cli` (`run`, `script` with `$N.path` result references, `app` for the
-running window, `describe`, `commands`), from MCP (`designcraft-cli mcp`, tools including `execute` and `batch` with the
+Every command is reachable from `pagenor-cli` (`run`, `script` with `$N.path` result references, `app` for the
+running window, `describe`, `commands`), from MCP (`pagenor-cli mcp`, tools including `execute` and `batch` with the
 same references), and from the app's JSON control channel. See [docs/agents.md](docs/agents.md).
 
 ## Milestones

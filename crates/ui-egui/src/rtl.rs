@@ -69,7 +69,7 @@ pub fn label(ui: &mut egui::Ui, text: impl Into<WidgetText>) -> egui::Response {
 /// Isolate a user-provided name when embedding it in LTR chrome/metadata.
 /// A Latin product name or suffix must not change the name's internal reading order.
 pub fn isolate(text: &str) -> String {
-    if text.chars().any(designcraft_fonts::is_rtl) { format!("\u{2068}{text}\u{2069}") } else { text.to_owned() }
+    if text.chars().any(pagenor_fonts::is_rtl) { format!("\u{2068}{text}\u{2069}") } else { text.to_owned() }
 }
 
 pub fn plain(ctx: &egui::Context, text: &str, font: FontId, color: Color32) -> Arc<Galley> {
@@ -125,7 +125,7 @@ fn visual_line(job: &LayoutJob, bidi: &BidiInfo<'_>, line: Range<usize>) -> Layo
                 }
             }
             let text = &job.text[range];
-            if rtl && !text.chars().any(designcraft_fonts::is_rtl) {
+            if rtl && !text.chars().any(pagenor_fonts::is_rtl) {
                 // Neutral-only RTL runs have no script for the shaper to infer a direction.
                 // Apply UBA L4 mirroring here; Arabic runs are mirrored by the shaper.
                 let neutral: String = text.chars().rev().map(|c| unicode_bidi_mirroring::get_mirrored(c).unwrap_or(c)).collect();
@@ -192,7 +192,7 @@ fn layout(ctx: &egui::Context, job: LayoutJob) -> Arc<Galley> {
         return layout_uncached(ctx, job);
     }
     let token = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(String::new(), FontId::default(), Color32::TRANSPARENT));
-    let id = egui::Id::new("designcraft.rtl.layout-cache");
+    let id = egui::Id::new("pagenor.rtl.layout-cache");
     let key = egui::util::hash(&job);
     let cached = ctx.data_mut(|data| data.get_temp_mut_or_default::<LayoutCache>(id).lookup(token, key, &job));
     if let Some(galley) = cached {
@@ -481,8 +481,7 @@ mod tests {
     #[test]
     fn isolates_arabic_names_from_latin_brand_and_zoom_suffix() {
         with_fonts(|ctx| {
-            for text in [format!("DesignCraft — {}", isolate("ملف (PDF 123) جديد")), format!("{} @ 89%", isolate("ملف (PDF 123) جديد"))]
-            {
+            for text in [format!("Pagenor — {}", isolate("ملف (PDF 123) جديد")), format!("{} @ 89%", isolate("ملف (PDF 123) جديد"))] {
                 let galley = plain(ctx, &text, FontId::proportional(15.0), Color32::WHITE);
                 let glyphs = &galley.rows[0].glyphs;
                 let x = |c| glyphs.iter().find(|g| g.chr == c && g.advance_width > 0.0).unwrap().pos.x;

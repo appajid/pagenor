@@ -2,8 +2,8 @@
 //! `<first words…>` for text frames), with eye / lock columns per layer and per object and a
 //! selection square in the layer colour.
 
-use designcraft_doc::{Content, Document, Item, ItemId};
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use pagenor_doc::{Content, Document, Item, ItemId};
 use serde_json::json;
 
 use crate::theme::Tokens;
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn text_frames_are_labelled_with_their_first_words() {
-        let mut s = designcraft_engine::Session::new();
+        let mut s = pagenor_engine::Session::new();
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
         s.execute("text.insert", &json!({"text": "Every page begins as an empty field of possibility"})).unwrap();

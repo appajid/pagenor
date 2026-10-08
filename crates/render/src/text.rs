@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_compose::{ComposedStory, FrameText, Line};
-use designcraft_doc::ItemId;
-use designcraft_fonts::FontDb;
-use designcraft_geom::{Affine, BezPath, Rect, Shape};
+use pagenor_compose::{ComposedStory, FrameText, Line};
+use pagenor_doc::ItemId;
+use pagenor_fonts::FontDb;
+use pagenor_geom::{Affine, BezPath, Rect, Shape};
 use vello_cpu::RenderContext;
 use vello_cpu::kurbo;
 use vello_cpu::peniko;
@@ -152,7 +152,7 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
     let mut bounds = None;
     for (si, bp) in &runs {
         let st = &cs.styles[*si as usize];
-        let sw = if st.stroke != designcraft_color::swatch::NONE { st.stroke_weight } else { 0.0 };
+        let sw = if st.stroke != pagenor_color::swatch::NONE { st.stroke_weight } else { 0.0 };
         bounds = union(bounds, bp.bounding_box().inflate(sw, sw));
     }
     for (_, _, r) in &decos {
@@ -238,7 +238,7 @@ impl Renderer {
             ctx.set_transform(m);
             let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
             for l in &ft.lines {
-                let tag_of = |g: &designcraft_compose::PlacedGlyph| cs.styles.get(g.style as usize).and_then(|s| s.xml_tag.clone());
+                let tag_of = |g: &pagenor_compose::PlacedGlyph| cs.styles.get(g.style as usize).and_then(|s| s.xml_tag.clone());
                 let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0).collect();
                 let mut i = 0;
                 while i < gs.len() {
@@ -283,7 +283,7 @@ impl Renderer {
             ctx.set_transform(m);
             ctx.set_paint(peniko::Color::from_rgb8(232, 160, 32));
             for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(designcraft_doc::NOTE_MARK))) {
+                for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(pagenor_doc::NOTE_MARK))) {
                     let h = l.ascent.max(4.0);
                     let mut p = BezPath::new();
                     p.move_to((g.x - h * 0.25, l.baseline - h));
@@ -366,7 +366,7 @@ impl Renderer {
                         }
                     }
                     let st = &cs.styles[*si as usize];
-                    if st.stroke != designcraft_color::swatch::NONE
+                    if st.stroke != pagenor_color::swatch::NONE
                         && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
                     {
                         ctx.set_paint(color_of(&c, 1.0));
@@ -383,7 +383,7 @@ impl Renderer {
             }
         }
         if !greek.elements().is_empty() {
-            ctx.set_paint(color_of(&designcraft_color::Color::gray(0.35), 0.5));
+            ctx.set_paint(color_of(&pagenor_color::Color::gray(0.35), 0.5));
             ctx.fill_path(&greek);
         }
         for n in &ft.notes {
@@ -443,13 +443,13 @@ impl Renderer {
 }
 
 /// Kurbo stroke for a table edge.
-fn cell_stroke(s: &designcraft_doc::CellStroke) -> kurbo::Stroke {
+fn cell_stroke(s: &pagenor_doc::CellStroke) -> kurbo::Stroke {
     let st = kurbo::Stroke::new(s.weight).with_caps(kurbo::Cap::Square);
     match &s.kind {
-        designcraft_doc::StrokeType::Dashed { pattern } if !pattern.is_empty() => {
+        pagenor_doc::StrokeType::Dashed { pattern } if !pattern.is_empty() => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        designcraft_doc::StrokeType::Dotted => st.with_dashes(0.0, [0.0, s.weight * 2.0]).with_caps(kurbo::Cap::Round),
+        pagenor_doc::StrokeType::Dotted => st.with_dashes(0.0, [0.0, s.weight * 2.0]).with_caps(kurbo::Cap::Round),
         _ => st,
     }
 }
@@ -465,17 +465,17 @@ impl Renderer {
         ft: &FrameText,
         xf: Affine,
         path: &BezPath,
-        pt: &designcraft_doc::PathType,
+        pt: &pagenor_doc::PathType,
     ) {
         let doc = f.doc;
         ctx.set_transform(f.view * xf);
-        for (si, bp) in designcraft_compose::path_glyphs(cs, ft, path, pt) {
+        for (si, bp) in pagenor_compose::path_glyphs(cs, ft, path, pt) {
             let st = &cs.styles[si as usize];
             if let Some(c) = doc.resolve_color(&st.fill, st.fill_tint) {
                 ctx.set_paint(color_of(&c, 1.0));
                 ctx.fill_path(&bp);
             }
-            if st.stroke != designcraft_color::swatch::NONE
+            if st.stroke != pagenor_color::swatch::NONE
                 && let Some(c) = doc.resolve_color(&st.stroke, st.stroke_tint)
             {
                 ctx.set_paint(color_of(&c, 1.0));

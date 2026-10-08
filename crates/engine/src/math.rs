@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use designcraft_fonts::{FontDb, FontFace};
+use pagenor_fonts::{FontDb, FontFace};
 
 /// A positioned piece of the formula (baseline-relative: y grows downwards).
 #[derive(Clone, Debug, PartialEq)]
@@ -437,7 +437,7 @@ impl Fonts {
     }
 }
 
-const FAMILY: &str = designcraft_fonts::DEFAULT_FAMILY;
+const FAMILY: &str = pagenor_fonts::DEFAULT_FAMILY;
 const FALLBACK: &str = "Source Sans 3";
 
 fn text_box(f: &Fonts, s: &str, size: f64, italic: bool) -> MBox {
@@ -712,6 +712,6 @@ mod tests {
         assert!(h2 > h1 * 1.4 && h3 > h2, "{h1} {h2} {h3}");
         // The SVG parses and rasterises.
         let (svg, _) = to_svg(r"\sqrt{a^2+b^2} \ne \pi", 14.0);
-        assert!(designcraft_images::svg_tree(&svg).is_some());
+        assert!(pagenor_images::svg_tree(&svg).is_some());
     }
 }

@@ -1,4 +1,4 @@
-//! DesignCraft renderer: spreads → premultiplied RGBA pixels with `vello_cpu`.
+//! Pagenor renderer: spreads → premultiplied RGBA pixels with `vello_cpu`.
 //!
 //! The renderer draws *document content only* (paper, page items, parent items, composed text,
 //! placed images). Non-printing chrome — guides, frame edges, ports, selection — is drawn by the
@@ -12,11 +12,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_color::BlendMode as DcBlend;
-use designcraft_compose::{Cache, ComposedStory};
-use designcraft_doc::{Content, Document, Item, PageSide, SpreadRef, StoryId, StrokeAlign, StrokeType};
-use designcraft_geom::corners;
-use designcraft_geom::{Affine, BezPath, Rect, Shape, Vec2};
+use pagenor_color::BlendMode as DcBlend;
+use pagenor_compose::{Cache, ComposedStory};
+use pagenor_doc::{Content, Document, Item, PageSide, SpreadRef, StoryId, StrokeAlign, StrokeType};
+use pagenor_geom::corners;
+use pagenor_geom::{Affine, BezPath, Rect, Shape, Vec2};
 use vello_cpu::kurbo;
 use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
 use vello_cpu::{Pixmap, RenderContext, Resources};
@@ -121,7 +121,7 @@ pub struct RenderOptions {
     /// Skip non-printing items and layers (Preview mode, export).
     pub printing_only: bool,
     /// Items not to draw (live drag previews).
-    pub hidden: Vec<designcraft_doc::ItemId>,
+    pub hidden: Vec<pagenor_doc::ItemId>,
     /// Draw text smaller than this many pixels as grey bars ("greeking"); 0 = never.
     pub greek_below_px: f64,
     /// Drop shadow on pages (screen view).
@@ -248,7 +248,7 @@ pub fn default_threads() -> u16 {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if let Some(n) = std::env::var("DESIGNCRAFT_RENDER_THREADS").ok().and_then(|v| v.parse().ok()) {
+        if let Some(n) = std::env::var("PAGENOR_RENDER_THREADS").ok().and_then(|v| v.parse().ok()) {
             return n;
         }
         std::thread::available_parallelism().map(|n| (n.get().saturating_sub(1)).clamp(0, 8) as u16).unwrap_or(0)
@@ -330,7 +330,7 @@ impl Renderer {
         if let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels) {
             ctx.render(pm, &mut self.resources);
         }
-        if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
+        if opts.blend_space_view && doc.settings.blend_space == pagenor_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };
             for pl in spreads {
                 let Some(sp) = doc.spread(pl.spread) else { continue };
@@ -374,7 +374,7 @@ impl Renderer {
         let Some(sp) = doc.spread(sr) else { return };
         // Paper.
         if f.opts.paper {
-            let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE);
+            let paper = doc.resolve_color(pagenor_color::swatch::PAPER, 1.0).unwrap_or(pagenor_color::Color::WHITE);
             if f.opts.page_shadow {
                 ctx.set_transform(f.view);
                 ctx.set_paint(peniko::Color::from_rgba8(0, 0, 0, 90));
@@ -596,7 +596,7 @@ impl Renderer {
             ctx.set_paint(peniko::Color::from_rgba8(60, 110, 220, 200));
             ctx.set_stroke(kurbo::Stroke::new(0.75));
             ctx.stroke_path(&r.to_path(0.1));
-            if ff.kind == designcraft_doc::FieldKind::CheckBox && !ff.value.is_empty() && ff.value != "Off" {
+            if ff.kind == pagenor_doc::FieldKind::CheckBox && !ff.value.is_empty() && ff.value != "Off" {
                 let (w, h) = (r.width(), r.height());
                 let mut c = BezPath::new();
                 c.move_to((r.x0 + w * 0.22, r.y0 + h * 0.48));
@@ -626,14 +626,14 @@ impl Renderer {
         let Some(c) = f.doc.resolve_color(&st.swatch, st.tint) else { return };
         let mut stroke = kurbo::Stroke::new(st.weight)
             .with_caps(match st.cap {
-                designcraft_doc::Cap::Butt => kurbo::Cap::Butt,
-                designcraft_doc::Cap::Round => kurbo::Cap::Round,
-                designcraft_doc::Cap::Projecting => kurbo::Cap::Square,
+                pagenor_doc::Cap::Butt => kurbo::Cap::Butt,
+                pagenor_doc::Cap::Round => kurbo::Cap::Round,
+                pagenor_doc::Cap::Projecting => kurbo::Cap::Square,
             })
             .with_join(match st.join {
-                designcraft_doc::Join::Miter => kurbo::Join::Miter,
-                designcraft_doc::Join::Round => kurbo::Join::Round,
-                designcraft_doc::Join::Bevel => kurbo::Join::Bevel,
+                pagenor_doc::Join::Miter => kurbo::Join::Miter,
+                pagenor_doc::Join::Round => kurbo::Join::Round,
+                pagenor_doc::Join::Bevel => kurbo::Join::Bevel,
             })
             .with_miter_limit(st.miter_limit);
         let kind = f.doc.stroke_kind(&st.kind);
@@ -646,7 +646,7 @@ impl Renderer {
         ctx.set_paint(color_of(&c, 1.0));
         let closed = it.path.is_closed();
         // Arrowheads: the path is shortened under them; they're drawn after it.
-        let arrows = designcraft_doc::arrow::apply(bp, st, closed);
+        let arrows = pagenor_doc::arrow::apply(bp, st, closed);
         let bp = arrows.as_ref().map_or(bp, |a| &a.0);
         // Gap colour under dashes and dots: the whole path, undashed.
         let gap = if matches!(kind, StrokeType::Solid) { None } else { f.doc.resolve_color(&st.gap_swatch, st.gap_tint) };
@@ -723,9 +723,9 @@ impl Renderer {
         }
     }
 
-    pub(crate) fn draw_graphic(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
+    pub(crate) fn draw_graphic(&mut self, ctx: &mut RenderContext, f: &Frame, g: &pagenor_doc::Graphic, xf: Affine) {
         let Some(asset) = f.doc.assets.get(&g.asset) else { return };
-        if designcraft_doc::media_kind(&asset.mime).is_some() {
+        if pagenor_doc::media_kind(&asset.mime).is_some() {
             // Video / sound: a dark frame with a play mark (the poster, when set, is drawn by the item).
             ctx.set_transform(f.view * xf * g.xf);
             ctx.set_paint(peniko::Color::from_rgba8(48, 48, 52, 255));
@@ -773,20 +773,18 @@ impl Renderer {
 /// sRGB → working CMYK through a 17³ table built once per colour settings (trilinear).
 fn cmyk_lut(rgb: [f32; 3]) -> [f32; 4] {
     const N: usize = 17;
-    type Lut = (designcraft_color::cms::ColorSettings, std::sync::Arc<Vec<[f32; 4]>>);
+    type Lut = (pagenor_color::cms::ColorSettings, std::sync::Arc<Vec<[f32; 4]>>);
     static LUT: std::sync::Mutex<Option<Lut>> = std::sync::Mutex::new(None);
-    let settings = designcraft_color::cms::active_settings();
+    let settings = pagenor_color::cms::active_settings();
     let table = {
         let mut g = LUT.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
             Some((s, t)) if *s == settings => t.clone(),
             _ => {
-                let cms = designcraft_color::cms::active();
+                let cms = pagenor_color::cms::active();
                 let step = |i: usize| i as f32 / (N - 1) as f32;
                 let t: Vec<[f32; 4]> = (0..N * N * N)
-                    .map(|i| {
-                        cms.srgb_to_cmyk([step(i / (N * N)), step(i / N % N), step(i % N)], designcraft_color::cms::Intent::RelativeColorimetric)
-                    })
+                    .map(|i| cms.srgb_to_cmyk([step(i / (N * N)), step(i / N % N), step(i % N)], pagenor_color::cms::Intent::RelativeColorimetric))
                     .collect();
                 let t = std::sync::Arc::new(t);
                 *g = Some((settings, t.clone()));
@@ -855,17 +853,17 @@ thread_local! {
     static PLATE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
 }
 
-pub fn color_of(c: &designcraft_color::Color, alpha: f32) -> peniko::Color {
+pub fn color_of(c: &pagenor_color::Color, alpha: f32) -> peniko::Color {
     if let Some(p) = PLATE.with(|p| p.get()) {
         let cmyk = match *c {
-            designcraft_color::Color::Cmyk { c, m, y, k } => [c, m, y, k],
-            _ => c.to_cmyk_managed(designcraft_color::cms::Intent::RelativeColorimetric),
+            pagenor_color::Color::Cmyk { c, m, y, k } => [c, m, y, k],
+            _ => c.to_cmyk_managed(pagenor_color::cms::Intent::RelativeColorimetric),
         };
         let v = ((1.0 - cmyk[p.min(3) as usize].clamp(0.0, 1.0)) * 255.0).round() as u8;
         return peniko::Color::from_rgba8(v, v, v, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
     }
     if RICH_BLACK.with(|r| r.get())
-        && let designcraft_color::Color::Cmyk { c: cc, m, y, k } = *c
+        && let pagenor_color::Color::Cmyk { c: cc, m, y, k } = *c
         && cc <= 1e-3
         && m <= 1e-3
         && y <= 1e-3
@@ -878,21 +876,21 @@ pub fn color_of(c: &designcraft_color::Color, alpha: f32) -> peniko::Color {
 }
 
 /// Set a swatch fill (solid or gradient) as the paint. Returns false for [None]/unknown.
-fn set_fill_paint(ctx: &mut RenderContext, doc: &Document, fill: &designcraft_doc::Fill, bounds: Rect) -> bool {
+fn set_fill_paint(ctx: &mut RenderContext, doc: &Document, fill: &pagenor_doc::Fill, bounds: Rect) -> bool {
     let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
-    if let Some(g) = designcraft_color::swatch::resolve_gradient(&doc.swatches, swatch) {
+    if let Some(g) = pagenor_color::swatch::resolve_gradient(&doc.swatches, swatch) {
         let stops: Vec<peniko::ColorStop> = g.expanded_stops().iter().map(|(o, c, a)| peniko::ColorStop::from((*o, color_of(c, *a)))).collect();
         if stops.is_empty() {
             return false;
         }
         let c = bounds.center();
         let grad = match (g.kind, fill.gradient_vector) {
-            (designcraft_color::GradientKind::Radial, Some([x0, y0, x1, y1])) => {
+            (pagenor_color::GradientKind::Radial, Some([x0, y0, x1, y1])) => {
                 let r = Vec2::new(x1 - x0, y1 - y0).hypot().max(1e-3);
                 peniko::Gradient::new_radial((x0, y0), r as f32).with_stops(stops.as_slice())
             }
             (_, Some([x0, y0, x1, y1])) => peniko::Gradient::new_linear((x0, y0), (x1, y1)).with_stops(stops.as_slice()),
-            (designcraft_color::GradientKind::Radial, None) => {
+            (pagenor_color::GradientKind::Radial, None) => {
                 let r = bounds.width().max(bounds.height()) / 2.0;
                 peniko::Gradient::new_radial(c, r as f32).with_stops(stops.as_slice())
             }
@@ -918,7 +916,7 @@ fn set_fill_paint(ctx: &mut RenderContext, doc: &Document, fill: &designcraft_do
 /// Overprint Preview: does this paint overprint (its own flag, or 100% [Black], which
 /// overprints by default)? It's then multiplied over what's beneath.
 pub(crate) fn overprints(f: &Frame, swatch: &str, tint: f32, flag: bool) -> bool {
-    f.opts.overprint_preview && (flag || (f.doc.settings.overprint_black && swatch == designcraft_color::swatch::BLACK && tint >= 0.999))
+    f.opts.overprint_preview && (flag || (f.doc.settings.overprint_black && swatch == pagenor_color::swatch::BLACK && tint >= 0.999))
 }
 
 pub fn blend_mode(b: DcBlend) -> BlendMode {
@@ -954,12 +952,12 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     if is_pdf(bytes) {
         return render_pdf_page(bytes, page as usize, 3000);
     }
-    if designcraft_images::is_svg(bytes) {
-        let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
+    if pagenor_images::is_svg(bytes) {
+        let (px, w, h) = pagenor_images::render_svg(bytes, 3000)?;
         let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
         return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }
-    let img = designcraft_images::decode_rgba(bytes)?;
+    let img = pagenor_images::decode_rgba(bytes)?;
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
         return None;
@@ -1015,11 +1013,11 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
         // Placed PDFs are sized by their page (crop box) in points.
         return pdf_page_size(bytes, 0).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
     }
-    if designcraft_images::is_svg(bytes) {
+    if pagenor_images::is_svg(bytes) {
         // SVGs by their width and height (CSS pixels → points).
-        return designcraft_images::natural_size(bytes).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
+        return pagenor_images::natural_size(bytes).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
     }
-    designcraft_images::pixel_size(bytes)
+    pagenor_images::pixel_size(bytes)
 }
 
 /// MIME type guess for encoded image bytes.
@@ -1092,8 +1090,8 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
 /// Pixels are separated with a plain GCR (black = 1 − max(r, g, b)), so it's a preview.
 /// View › Proof Colors: simulate the proof target (a press, another RGB space, colour-vision
 /// deficiencies) through the active colour settings' proof table.
-pub fn proof_view(img: &mut Rendered, setup: &designcraft_color::cms::ProofSetup) {
-    let lut = designcraft_color::cms::active().proof_lut(setup);
+pub fn proof_view(img: &mut Rendered, setup: &pagenor_color::cms::ProofSetup) {
+    let lut = pagenor_color::cms::active().proof_lut(setup);
     for px in img.pixels.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a == 0 {
@@ -1112,8 +1110,8 @@ pub fn proof_view(img: &mut Rendered, setup: &designcraft_color::cms::ProofSetup
 /// A CMYK transparency blend space on screen: the pixels of `area` (device space) through the
 /// working CMYK profile and back, as a spread composited in that space looks.
 fn blend_space_view(img: &mut Rendered, area: Rect) {
-    use designcraft_color::cms::{ProofSetup, ProofTarget};
-    let lut = designcraft_color::cms::active().proof_lut(&ProofSetup { target: ProofTarget::WorkingCmyk, ..Default::default() });
+    use pagenor_color::cms::{ProofSetup, ProofTarget};
+    let lut = pagenor_color::cms::active().proof_lut(&ProofSetup { target: ProofTarget::WorkingCmyk, ..Default::default() });
     let (w, h) = (img.width as i64, img.height as i64);
     let (x0, y0) = ((area.x0.floor() as i64).clamp(0, w), (area.y0.floor() as i64).clamp(0, h));
     let (x1, y1) = ((area.x1.ceil() as i64).clamp(0, w), (area.y1.ceil() as i64).clamp(0, h));
@@ -1160,14 +1158,14 @@ pub fn separation_view(img: &mut Rendered, plate: Option<u8>, ink_limit: Option<
 }
 
 pub fn image_mime(bytes: &[u8]) -> &'static str {
-    designcraft_images::mime(bytes)
+    pagenor_images::mime(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use designcraft_doc::build::NewDocument;
-    use designcraft_doc::{Fill, ParaFormat};
+    use pagenor_doc::build::NewDocument;
+    use pagenor_doc::{Fill, ParaFormat};
 
     /// `Rendered` has public fields: a buffer that doesn't match the stated size used to panic
     /// in `to_png`.
@@ -1197,7 +1195,7 @@ mod tests {
 
     #[test]
     fn proof_view_simulates_the_target() {
-        use designcraft_color::cms::{ProofSetup, ProofTarget};
+        use pagenor_color::cms::{ProofSetup, ProofTarget};
         let red = |a: u8| Rendered { width: 1, height: 1, pixels: vec![a, 0, 0, a] };
         let mut img = red(255);
         proof_view(&mut img, &ProofSetup { target: ProofTarget::Protanopia, ..Default::default() });
@@ -1216,11 +1214,9 @@ mod tests {
     fn renders_page_with_text_and_fill() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
-        let (fid, _) =
-            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 576.0, 300.0), lid, "Hello DesignCraft", ParaFormat::default()).unwrap();
-        let id = designcraft_doc::ItemId(d.alloc());
-        let mut box_ =
-            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(36.0, 400.0, 136.0, 500.0)));
+        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 576.0, 300.0), lid, "Hello Pagenor", ParaFormat::default()).unwrap();
+        let id = pagenor_doc::ItemId(d.alloc());
+        let mut box_ = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(36.0, 400.0, 136.0, 500.0)));
         box_.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
         d.insert_item(SpreadRef::Doc(0), box_, None).unwrap();
         let cache = Cache::new();
@@ -1242,24 +1238,24 @@ mod tests {
     fn arrowheads_draw_at_line_ends() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
-        let id = designcraft_doc::ItemId(d.alloc());
-        let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 400.0), designcraft_geom::Point::new(400.0, 400.0));
-        let mut line = Item::new(id, lid, designcraft_doc::Shape::GraphicLine, path);
-        line.stroke = designcraft_doc::Stroke {
-            swatch: designcraft_color::swatch::BLACK.into(),
+        let id = pagenor_doc::ItemId(d.alloc());
+        let path = pagenor_geom::shapes::line(pagenor_geom::Point::new(100.0, 400.0), pagenor_geom::Point::new(400.0, 400.0));
+        let mut line = Item::new(id, lid, pagenor_doc::Shape::GraphicLine, path);
+        line.stroke = pagenor_doc::Stroke {
+            swatch: pagenor_color::swatch::BLACK.into(),
             weight: 2.0,
-            end: designcraft_doc::Arrowhead::TriangleWide,
+            end: pagenor_doc::Arrowhead::TriangleWide,
             ..Default::default()
         };
         d.insert_item(SpreadRef::Doc(0), line, None).unwrap();
         // A dashed line with a gap colour: the gaps are painted.
-        let id = designcraft_doc::ItemId(d.alloc());
-        let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 500.0), designcraft_geom::Point::new(400.0, 500.0));
-        let mut dashed = Item::new(id, lid, designcraft_doc::Shape::GraphicLine, path);
-        dashed.stroke = designcraft_doc::Stroke {
-            swatch: designcraft_color::swatch::BLACK.into(),
+        let id = pagenor_doc::ItemId(d.alloc());
+        let path = pagenor_geom::shapes::line(pagenor_geom::Point::new(100.0, 500.0), pagenor_geom::Point::new(400.0, 500.0));
+        let mut dashed = Item::new(id, lid, pagenor_doc::Shape::GraphicLine, path);
+        dashed.stroke = pagenor_doc::Stroke {
+            swatch: pagenor_color::swatch::BLACK.into(),
             weight: 4.0,
-            kind: designcraft_doc::StrokeType::Dashed { pattern: vec![12.0, 4.0] },
+            kind: pagenor_doc::StrokeType::Dashed { pattern: vec![12.0, 4.0] },
             gap_swatch: "C=100 M=0 Y=0 K=0".into(),
             ..Default::default()
         };
@@ -1283,9 +1279,8 @@ mod tests {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
         for (sw, op) in [("C=0 M=0 Y=100 K=0", false), ("C=0 M=100 Y=0 K=0", true)] {
-            let id = designcraft_doc::ItemId(d.alloc());
-            let mut it =
-                Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+            let id = pagenor_doc::ItemId(d.alloc());
+            let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
             it.fill = Fill { overprint: op, ..Fill::swatch(sw) };
             d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         }
@@ -1304,11 +1299,10 @@ mod tests {
     #[test]
     fn cmyk_blend_space_shows_transparent_spreads_in_cmyk() {
         let mut d = Document::new(&NewDocument::default());
-        d.swatches.push(designcraft_color::swatch::Swatch::color("Green", designcraft_color::Color::rgb8(0, 255, 0)));
+        d.swatches.push(pagenor_color::swatch::Swatch::color("Green", pagenor_color::Color::rgb8(0, 255, 0)));
         let lid = d.default_layer();
-        let id = designcraft_doc::ItemId(d.alloc());
-        let mut it =
-            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        let id = pagenor_doc::ItemId(d.alloc());
+        let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
         it.fill = Fill::swatch("Green");
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         let cache = Cache::new();
@@ -1323,7 +1317,7 @@ mod tests {
         d.item_mut(id).unwrap().opacity = 0.99;
         let cmyk = px(&d, &mut r);
         assert!(cmyk[0] > 20 || cmyk[1] < 240, "{cmyk:?}");
-        d.settings.blend_space = designcraft_doc::BlendSpace::Rgb;
+        d.settings.blend_space = pagenor_doc::BlendSpace::Rgb;
         let rgb = px(&d, &mut r);
         assert!(rgb[1] > 245 && rgb[0] < 10, "{rgb:?}");
     }
@@ -1334,16 +1328,15 @@ mod tests {
         let lid = d.default_layer();
         let mut kids = Vec::new();
         for (sw, x) in [("C=0 M=0 Y=100 K=0", 100.0), ("C=0 M=100 Y=0 K=0", 150.0)] {
-            let id = designcraft_doc::ItemId(d.alloc());
-            let mut it =
-                Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(x, 100.0, x + 100.0, 200.0)));
+            let id = pagenor_doc::ItemId(d.alloc());
+            let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(x, 100.0, x + 100.0, 200.0)));
             it.fill = Fill::swatch(sw);
             it.opacity = 0.5;
             kids.push(std::sync::Arc::new(it));
         }
-        let gid = designcraft_doc::ItemId(d.alloc());
-        let mut g = Item::new(gid, lid, designcraft_doc::Shape::Group, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0)));
-        g.content = designcraft_doc::Content::Group { items: kids };
+        let gid = pagenor_doc::ItemId(d.alloc());
+        let mut g = Item::new(gid, lid, pagenor_doc::Shape::Group, pagenor_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0)));
+        g.content = pagenor_doc::Content::Group { items: kids };
         d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
         let cache = Cache::new();
         let mut r = Renderer::new();
@@ -1378,10 +1371,10 @@ mod tests {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
         for (sw, r) in
-            [("C=100 M=0 Y=0 K=0", Rect::new(100.0, 100.0, 200.0, 200.0)), (designcraft_color::swatch::BLACK, Rect::new(150.0, 100.0, 250.0, 200.0))]
+            [("C=100 M=0 Y=0 K=0", Rect::new(100.0, 100.0, 200.0, 200.0)), (pagenor_color::swatch::BLACK, Rect::new(150.0, 100.0, 250.0, 200.0))]
         {
-            let id = designcraft_doc::ItemId(d.alloc());
-            let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+            let id = pagenor_doc::ItemId(d.alloc());
+            let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
             it.fill = Fill::swatch(sw);
             d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         }
@@ -1401,10 +1394,9 @@ mod tests {
     fn appearance_of_black_on_screen() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
-        let id = designcraft_doc::ItemId(d.alloc());
-        let mut it =
-            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
-        it.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+        let id = pagenor_doc::ItemId(d.alloc());
+        let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        it.fill = Fill::swatch(pagenor_color::swatch::BLACK);
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         let cache = Cache::new();
         let mut r = Renderer::new();
@@ -1425,10 +1417,10 @@ mod tests {
         image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let aid = designcraft_doc::AssetId(d.alloc());
+        let aid = pagenor_doc::AssetId(d.alloc());
         d.assets.insert(
             aid,
-            Arc::new(designcraft_doc::Asset {
+            Arc::new(pagenor_doc::Asset {
                 page: 0,
                 id: aid,
                 name: "red.png".into(),
@@ -1438,10 +1430,9 @@ mod tests {
                 pixels: Some((4, 4)),
             }),
         );
-        let id = designcraft_doc::ItemId(d.alloc());
-        let mut it =
-            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
-        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        let id = pagenor_doc::ItemId(d.alloc());
+        let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        it.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
             asset: aid,
             size: (100.0, 100.0),
             xf: Affine::translate((100.0, 100.0)),
@@ -1488,7 +1479,7 @@ mod tests {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
         let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
-        let mut t = designcraft_doc::Table::new(5, 3, 3, 1, 0, 300.0);
+        let mut t = pagenor_doc::Table::new(5, 3, 3, 1, 0, 300.0);
         for c in 0..3 {
             let cell = t.cell_mut(0, c).unwrap();
             cell.fill = "C=100 M=0 Y=0 K=0".into();

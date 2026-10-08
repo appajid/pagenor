@@ -2,9 +2,9 @@
 //! story with "TOC Title" / "TOC Level n" styles (right tab with dot leader). Update Table of
 //! Contents regenerates the same story after edits.
 
-use designcraft_compose::{ComposeOptions, caret, compose_story};
-use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry};
-use designcraft_geom::Rect;
+use pagenor_compose::{ComposeOptions, caret, compose_story};
+use pagenor_doc::{Align, Document, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry};
+use pagenor_geom::Rect;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -126,10 +126,10 @@ fn ensure_styles(d: &mut Document, levels: u8, width: f64) {
     }
     let st = d.styles_mut();
     for (name, para, size) in missing {
-        let chars = designcraft_doc::CharAttrs { size, ..Default::default() };
+        let chars = pagenor_doc::CharAttrs { size, ..Default::default() };
         st.paragraph.push(ParagraphStyle {
             name,
-            based_on: Some(designcraft_doc::story::BASIC_PARAGRAPH.into()),
+            based_on: Some(pagenor_doc::story::BASIC_PARAGRAPH.into()),
             next_style: None,
             para,
             chars,
@@ -163,7 +163,7 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
         }
         styles.push(format!("TOC Level {}", f.level.max(1)));
     }
-    let st = d.story_mut(toc.story).ok_or(designcraft_doc::DocError::NoStory(toc.story))?;
+    let st = d.story_mut(toc.story).ok_or(pagenor_doc::DocError::NoStory(toc.story))?;
     let len = st.len();
     st.replace(0..len, &text);
     for (pi, r) in st.para_ranges().into_iter().enumerate() {
@@ -193,7 +193,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
                 let r: Rect = rect.unwrap_or_else(|| d.spreads[si].pages[pi].margin_rect());
                 let layer = d.default_layer();
                 let (fid, sid) = d.add_text_frame(SpreadRef::Doc(si), r, layer, "", ParaFormat::default())?;
-                *sel = designcraft_doc::Selection::items(vec![fid]);
+                *sel = pagenor_doc::Selection::items(vec![fid]);
                 let w = d.item(fid).map(|i| i.text_area().width());
                 (sid, w)
             }

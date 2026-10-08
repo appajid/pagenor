@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use designcraft_doc::{Align, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Story, Table, TextFrameOptions, VerticalJustification};
-use designcraft_geom::{Point, Rect};
+use pagenor_doc::{Align, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Story, Table, TextFrameOptions, VerticalJustification};
+use pagenor_geom::{Point, Rect};
 
 use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
 
@@ -31,7 +31,7 @@ pub struct PlacedCell {
     /// A header/footer row repeated in a continuation fragment.
     pub repeated: bool,
     /// Graphic cell content (drawn at `clip`'s top left, clipped to it).
-    pub graphic: Option<designcraft_doc::Graphic>,
+    pub graphic: Option<pagenor_doc::Graphic>,
 }
 
 /// One cell edge (or the table border) to stroke.
@@ -63,7 +63,7 @@ impl TableFrag {
         if dy == 0.0 {
             return;
         }
-        let v = designcraft_geom::Vec2::new(0.0, dy);
+        let v = pagenor_geom::Vec2::new(0.0, dy);
         self.rect = self.rect + v;
         for c in &mut self.cells {
             c.rect = c.rect + v;
@@ -327,7 +327,7 @@ fn emit(
             let rs = (cell.row_span.max(1) as usize).min(table.nrows() - r);
             let last_row = r + rs - 1;
             let y1 = ry(last_row).map_or(y + heights[r], |ly| ly + heights[last_row]);
-            let rect = if table.options.direction == designcraft_doc::TextDirection::RightToLeft {
+            let rect = if table.options.direction == pagenor_doc::TextDirection::RightToLeft {
                 Rect::new(right - colx[c + cs], y, right - colx[c], y1)
             } else {
                 Rect::new(x0 + colx[c], y, x0 + colx[c + cs], y1)
@@ -407,7 +407,7 @@ fn emit(
         ascent: h,
         descent: 0.0,
         leading: h,
-        range: anchor..anchor + designcraft_doc::TABLE_ANCHOR.len_utf8(),
+        range: anchor..anchor + pagenor_doc::TABLE_ANCHOR.len_utf8(),
         para: pi,
         glyphs: vec![],
         hyphenated: false,
@@ -480,7 +480,7 @@ pub fn cell_caret(cs: &ComposedStory, table: u64, row: usize, col: usize, pos: u
 #[cfg(test)]
 mod border_tests {
     use super::*;
-    use designcraft_doc::{CellRange, ParaFormat, SpreadRef, build::NewDocument};
+    use pagenor_doc::{CellRange, ParaFormat, SpreadRef, build::NewDocument};
 
     fn compose_table(table: Table) -> ComposedStory {
         let mut doc = Document::new(&NewDocument::default());

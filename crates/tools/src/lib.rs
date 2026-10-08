@@ -1,4 +1,4 @@
-//! DesignCraft tools: pointer events in → commands and overlays out.
+//! Pagenor tools: pointer events in → commands and overlays out.
 //!
 //! Tools never mutate the document. They emit [`Action`]s the engine executes: `Begin` snapshots
 //! the document, each `Preview` re-applies one command on top of the snapshot, `Commit` records
@@ -22,9 +22,9 @@ pub mod snap;
 mod text;
 mod xform;
 
-use designcraft_compose::Cache;
-use designcraft_doc::{Document, Item, ItemId, Selection, SpreadRef};
-use designcraft_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
+use pagenor_compose::Cache;
+use pagenor_doc::{Document, Item, ItemId, Selection, SpreadRef};
+use pagenor_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -197,7 +197,7 @@ pub struct ToolContext<'a> {
     /// Screen pixels per point.
     pub zoom: f64,
     /// Layer new items go on.
-    pub layer: designcraft_doc::LayerId,
+    pub layer: pagenor_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
 }
@@ -226,18 +226,18 @@ impl ToolContext<'_> {
         let (ppi, ppg) = self.doc.parent_page_for(page)?;
         let parent = &self.doc.parents[ppi];
         let pg = &spread.pages[pi];
-        let at = sp - designcraft_geom::Vec2::new(pg.x - parent.pages[ppg].x, 0.0);
+        let at = sp - pagenor_geom::Vec2::new(pg.x - parent.pages[ppg].x, 0.0);
         parent
             .items
             .iter()
             .rev()
-            .find(|it| !it.locked && !pg.overridden.contains(&it.id) && designcraft_doc::edit_hit(it, at, self.tol(4.0)))
+            .find(|it| !it.locked && !pg.overridden.contains(&it.id) && pagenor_doc::edit_hit(it, at, self.tol(4.0)))
             .map(|it| (page, it.id))
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
         let s = self.doc.spread(sr)?;
-        s.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
+        s.items.iter().rev().find(|it| !it.locked && pagenor_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
     }
 
     /// Spread-space → canvas transform of the spread holding item `id`.

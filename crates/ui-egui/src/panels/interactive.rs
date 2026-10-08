@@ -340,7 +340,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     };
     let cur = app.session.active().and_then(|d| d.doc.item(id)).and_then(|it| it.button.clone());
-    use designcraft_doc::ButtonAction as B;
+    use pagenor_doc::ButtonAction as B;
     let (kind, page, url) = match &cur {
         None => ("none", 0, String::new()),
         Some(B::GoToPage { page }) => ("page", *page, String::new()),
@@ -410,7 +410,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     // Form field.
     ui.separator();
     let ff = app.session.active().and_then(|d| d.doc.item(id)).and_then(|it| it.form_field.clone());
-    use designcraft_doc::FieldKind as K;
+    use pagenor_doc::FieldKind as K;
     let kinds = [
         (None, "Not a form field"),
         (Some(K::TextField), "Text Field"),
@@ -497,7 +497,7 @@ pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(d) = app.session.active().map(|d| d.doc.clone()) else { return };
     let Some((si, pi)) = d.page_loc(page) else { return };
     let pg = d.spreads[si].pages[pi].clone();
-    use designcraft_doc::LiquidRule as L;
+    use pagenor_doc::LiquidRule as L;
     crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), d.page_name(page))).strong());
     let mut rule = pg.liquid;
     egui::ComboBox::from_id_salt("liquid_rule")
@@ -529,7 +529,7 @@ pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
         && let Some(it) = d.item(id)
     {
         ui.separator();
-        let l = it.liquid.unwrap_or(designcraft_doc::ObjectLiquid { resize_width: true, resize_height: true, ..Default::default() });
+        let l = it.liquid.unwrap_or(pagenor_doc::ObjectLiquid { resize_width: true, resize_height: true, ..Default::default() });
         let mut v = [l.resize_width, l.resize_height, l.pin_top, l.pin_bottom, l.pin_left, l.pin_right];
         let keys = ["resizeWidth", "resizeHeight", "pinTop", "pinBottom", "pinLeft", "pinRight"];
         let labels = ["Resize width", "Resize height", "Pin top", "Pin bottom", "Pin left", "Pin right"];
@@ -622,7 +622,7 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(d) = app.session.active().map(|d| d.doc.clone()) else { return };
     let Some((si, _)) = d.page_loc(page) else { return };
     let cur = d.spreads[si].pages.first().and_then(|p| p.transition);
-    use designcraft_doc::TransitionKind as K;
+    use pagenor_doc::TransitionKind as K;
     crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Spread"), si + 1)).strong());
     let mut kind = cur.map(|c| c.kind);
     egui::ComboBox::from_id_salt("transition_kind")

@@ -57,11 +57,11 @@ fn svg_options() -> &'static usvg::Options<'static> {
     static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
     OPTS.get_or_init(|| {
         let mut db = usvg::fontdb::Database::new();
-        for f in designcraft_fonts::bundled() {
+        for f in pagenor_fonts::bundled() {
             db.load_font_data(f.to_vec());
         }
         // Japanese text in SVGs: the craft-fonts faces (none without CRAFT_FONTS_DIR).
-        for f in designcraft_fonts::japanese_document_fonts() {
+        for f in pagenor_fonts::japanese_document_fonts() {
             db.load_font_data(f.bytes.to_vec());
         }
         db.set_serif_family("Source Serif 4");

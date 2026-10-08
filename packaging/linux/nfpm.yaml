@@ -3,7 +3,7 @@
 # exports VERSION and NFPM_ARCH.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
-name: designcraft
+name: pagenor
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -12,15 +12,15 @@ version_schema: semver
 release: 1
 section: graphics
 priority: optional
-maintainer: ${DESIGNCRAFT_MAINTAINER}
+maintainer: ${PAGENOR_MAINTAINER}
 vendor: Learning Machines LLC
-homepage: https://getartcraft.com/apps/designcraft
+homepage: https://getartcraft.com/apps/pagenor
 license: MIT OR Apache-2.0
 description: |-
   Open-source, native image editor that works the way Photoshop users expect.
   Layers, masks, adjustment layers, layer styles, type and brushes; opens and
   saves layered PSD/PSB files; 8/16/32-bit documents; GPU compositing (wgpu).
-  Includes designcraft-cli, a headless converter and command runner.
+  Includes pagenor-cli, a headless converter and command runner.
 
 # The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here
@@ -55,11 +55,11 @@ overrides:
       - xdg-desktop-portal
 
 contents:
-  - src: ${STAGE}/usr/bin/designcraft
-    dst: /usr/bin/designcraft
+  - src: ${STAGE}/usr/bin/pagenor
+    dst: /usr/bin/pagenor
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/bin/designcraft-cli
-    dst: /usr/bin/designcraft-cli
+  - src: ${STAGE}/usr/bin/pagenor-cli
+    dst: /usr/bin/pagenor-cli
     file_info: { mode: 0755 }
   - src: ${STAGE}/usr/share/
     dst: /usr/share/

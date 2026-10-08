@@ -3,8 +3,8 @@
 //! Guides are stored on their page in spread coordinates; a spread guide (dropped on the
 //! pasteboard) lives on the spread's first page with `spread: true` and crosses the pasteboard.
 
-use designcraft_doc::{Document, Guide, Orientation, SpreadRef};
-use designcraft_geom::Rect;
+use pagenor_doc::{Document, Guide, Orientation, SpreadRef};
+use pagenor_geom::Rect;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, spread_param, str_param};

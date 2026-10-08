@@ -2,8 +2,8 @@
 //! the reference point elsewhere in a later iteration); Eyedropper (I): click an object to apply
 //! its attributes to the selection.
 
-use designcraft_doc::SpreadRef;
-use designcraft_geom::{Point, Rect};
+use pagenor_doc::SpreadRef;
+use pagenor_geom::{Point, Rect};
 use serde_json::json;
 
 use crate::{Action, Cursor, Gesture, Mods, Overlay, PointerEvent, PointerKind, SnapRequest, Tool, ToolContext};

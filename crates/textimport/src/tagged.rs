@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use designcraft_doc::{CharFormat, Document, Story, StoryId, story::NO_CHAR_STYLE};
+use pagenor_doc::{CharFormat, Document, Story, StoryId, story::NO_CHAR_STYLE};
 
 use crate::{ImportError, Imported, ImportedStyle};
 
@@ -40,7 +40,7 @@ pub fn tagged_text(doc: &Document, story: &Story) -> String {
             if a >= b {
                 continue;
             }
-            if doc.conditions_hide(f.over.conditions.as_deref().unwrap_or(&[])) || f.over.change == Some(designcraft_doc::ChangeMark::Deleted) {
+            if doc.conditions_hide(f.over.conditions.as_deref().unwrap_or(&[])) || f.over.change == Some(pagenor_doc::ChangeMark::Deleted) {
                 continue;
             }
             let mut open = Vec::new();
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(i.story.char_format_at(i.story.text.find("big").unwrap() + 1).over.size, Some(18.0));
         assert_eq!(i.para_styles.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Head", "Body"]);
         // Export and back.
-        let doc = Document::new(&designcraft_doc::build::NewDocument::default());
+        let doc = Document::new(&pagenor_doc::build::NewDocument::default());
         let out = tagged_text(&doc, &i.story);
         assert!(out.starts_with("<ASCII-WIN>") && out.contains("Caf<0x00E9>") && out.contains("<CharStyle:Em>word<CharStyle:>"), "{out}");
         let back = import(out.as_bytes()).unwrap();

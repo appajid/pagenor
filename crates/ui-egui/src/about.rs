@@ -1,9 +1,9 @@
-//! Help › About DesignCraft: tabs About · Contributors · Models. About is the splash with the
+//! Help › About Pagenor: tabs About · Contributors · Models. About is the splash with the
 //! ArtCraft mark, version, and community links (Discord first and largest), plus the other ArtCraft
 //! apps; Contributors and Models are the compiled-in credits (`crate::credits`).
 
-use designcraft_engine::links;
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
+use pagenor_engine::links;
 use serde_json::json;
 
 use crate::DesignApp;
@@ -32,7 +32,7 @@ pub const ABOUT_TABS: [&str; 3] = ["About", "Contributors", "Models"];
 
 /// Paint the ArtCraft mark into `rect` (square), rasterised once per size and cached.
 pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
-    use designcraft_render::vello_cpu::{self, kurbo, peniko};
+    use pagenor_render::vello_cpu::{self, kurbo, peniko};
     let ctx = ui.ctx();
     let ppp = ctx.pixels_per_point();
     let px = ((rect.width().min(rect.height()) * ppp).round() as u32).clamp(8, 1024);
@@ -142,7 +142,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.add_space(6.0);
             ui.label(crate::rtl::widget(
                 ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "DesignCraft")).font(semibold(26.0)).color(t.text_strong),
+                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Pagenor")).font(semibold(26.0)).color(t.text_strong),
             ));
             crate::rtl::label(
                 ui,
@@ -179,8 +179,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 // Centre the row of links.
                 let w = 330.0;
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
-                for (text, key) in
-                    [("DesignCraft page", "appPage"), ("GitHub", "github"), ("getartcraft.com", "website"), ("Report an issue", "issues")]
+                for (text, key) in [("Pagenor page", "appPage"), ("GitHub", "github"), ("getartcraft.com", "website"), ("Report an issue", "issues")]
                 {
                     if link(ui, text, links::get(key).unwrap_or_default(), t.accent) {
                         open = Some(key);
