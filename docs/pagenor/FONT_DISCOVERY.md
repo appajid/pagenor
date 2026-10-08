@@ -1,6 +1,6 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6 / P01.7.
+Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6 / P01.7 / P01.8.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
@@ -19,7 +19,9 @@ and a busy worker can extend the delay. WASM has no installed-font discovery.
 The scan still reads only bounded SFNT metadata tables, including named variable
 instances; full font data is loaded when a face is resolved. TTF, OTF, TTC and
 OTC, family/style grouping, duplicate precedence and document font scopes use
-the existing implementation. Unchanged automatic checks do not read font tables.
+the existing implementation. Unchanged physical-file checks do not read font tables.
+The worker also revalidates one native fallback source per check (P01.8): metadata
+if unused, bounded full tables if already loaded.
 Diagnostic records stop at 256 while counters include omitted records. A file
 with no readable family metadata reports an unsupported/damaged/limit reason;
 this metadata scan does not validate every outline or shaping table.
@@ -403,3 +405,77 @@ so actual vendor activation remains unverified. The first full-gate attempt was
 blocked by sandbox localhost socket restrictions; granting access for the existing
 control-server tests allowed the complete rerun to pass. No Font Book setting,
 unsafe policy, dependency, GitHub upload or remote CI run was changed/performed.
+
+
+## Automatic native source revalidation (P01.8)
+
+The existing background worker now checks one native fallback identity per cycle,
+in a stable round-robin order. These are OS sources without a usable SFNT file;
+readable physical fonts retain their directory/file-signature refresh path.
+Unloaded native sources request only bounded metadata and compare family/style,
+named-instance and menu-group information with the completed scan snapshot.
+Already-loaded native sources request bounded current tables and compare them
+with their cached bytes, detecting glyph-only changes under unchanged names.
+No full tables are requested for every unused font merely to display its menu.
+Provider access occurs after all cache/scan locks have been released.
+
+A detected change invokes the existing serialized forced rescan. That rebuilds
+metadata, renews native epochs, clears fallback misses and updates the generation
+used by the UI to clear composition/canvas caches. New native bytes remain lazy;
+held Arc/FaceRef layout handles and document scopes stay valid. Unchanged results
+do not invalidate faces or advance the generation. One comparison buffer at a
+time uses the existing native table limit (64 MiB); unused metadata retains its
+existing 4 MiB table limit. Expanded native names are additionally limited to
+1,024 named faces and 4 MiB of family/style/native-label strings per source,
+before those names are retained as scan snapshots. Limit violations produce
+bounded diagnostics rather than oversized retained metadata.
+
+Failed metadata sources remain in the retry queue, so a still-registered identity
+can enter the menu when its provider starts exposing readable metadata. A failed
+revalidation records a bounded diagnostic; failure alone is not treated as proof
+of a data change. A late result is ignored if a concurrent rescan or withdrawal
+superseded its source epoch. When an unreadable file becomes usable, its native
+fallback leaves the active source map/queue and cannot shadow the current file.
+
+The worker runs at most once every three seconds while the desktop UI repaints.
+For N queued native sources, a round takes approximately 3 × N seconds plus worker
+and repaint delays. This is polling, not an instantaneous activation callback.
+An activation/data change that reverses before its source is checked may remain
+unobserved. Registration withdrawal/return detected by normal host discovery
+still uses the established epoch policy. Notification-based integration and actual
+Adobe/dongle lifecycle/table-access evidence remain open; Windows/Linux native
+memory providers are not added by this shared revalidation policy.
+
+Five new regressions use private discovery/data providers with the production
+scanner. They cover stable rotation, exactly one source request per check,
+metadata-only unused fonts, full tables only for used fonts, unchanged identity/
+handle preservation, glyph changes, unused family/variable menu changes, recovered
+metadata access, provider errors, superseded probes, native-to-physical transitions
+and expanded-name limits. The existing real pathless Core Text object test now
+also detects replacement tables under the same PostScript name before refreshing.
+These tests do not register a font globally or change Font Book settings.
+
+Apple's documented registration notification is still the appropriate future
+trigger for prompt event-driven refresh. The current Core Text/Core Foundation
+bindings do not expose a safe subscription; objc2's raw observer API requires
+unsafe calls. An alternative `apple-cf` safe wrapper was inspected: its center
+constructors assert on NULL and observation does not return a registration error.
+No dependency or unsafe bridge was introduced; the existing safe table-access
+path provides the polling policy instead.
+
+References: [Apple font registry notification](https://developer.apple.com/documentation/coretext/kctfontmanagerregisteredfontschangednotification),
+[objc2 observer API](https://docs.rs/objc2-core-foundation/latest/objc2_core_foundation/fn.CFNotificationCenterAddObserver.html),
+[apple-cf observer implementation](https://docs.rs/apple-cf/latest/src/apple_cf/cf/runtime.rs.html).
+
+Validation: `cargo xtask ci` passes all seven steps, with 811 tests passed,
+zero failed, three performance tests ignored and all 16 WASM packages checked.
+Strict font-crate Clippy including test targets passes for Windows GNU and Linux
+GNU; native Windows/Linux execution remains deferred to milestone publication.
+The Mac app builds. A fresh CPU UI picker/engine-command probe finds Pagenor Test1
+at `/Library/Fonts/pagenor.ttf` (Regular, glyph A = 2). An unchanged background
+host refresh preserves its installed handle and scan generation. The host has
+800 families / 3,774 faces / 946 files, 52 duplicates, zero rejected/unavailable
+paths and zero pathless/native-service faces. Actual vendor activation is therefore
+not demonstrated by that host probe. Pagenor Test1 remains active; no Font Book
+setting, dependency, unsafe policy, GitHub upload or remote CI run was changed.
+Phase 01 and milestone M0 remain in progress.

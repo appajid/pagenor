@@ -564,11 +564,7 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
     assert_eq!((names[0].family.as_str(), names[0].style.as_str()), (family, "Regular"));
     let db = FontDb::with_font_dirs(vec![]);
     db.scan_report();
-    *db.catalog.write().unwrap() = names
-        .into_iter()
-        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
-        .collect();
-    db.update_native_available([ps.into()], false);
+    publish_native_snapshot(&db, ps, &metadata, false);
     assert!(has(&db.families(), family));
     assert_eq!(db.styles(family), ["Regular"]);
     assert!(!db.is_loaded(family), "metadata/menu access must not retain glyph tables");
@@ -612,12 +608,7 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
     assert!(!db.has_family(family));
     assert_eq!(db.face(family, "Regular").family, FALLBACK_FAMILY);
     // Re-activation must make a fresh native-service request, even for the same identity.
-    *db.catalog.write().unwrap() = native_face_names(&metadata)
-        .unwrap()
-        .into_iter()
-        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
-        .collect();
-    db.update_native_available([ps.into()], false);
+    publish_native_snapshot(&db, ps, &metadata, false);
     assert!(!db.is_loaded(family));
     assert!(db.load_cataloged_with(family, |_| crate::macos::copy_font_data(&native, false)));
     let restored = db.face(family, "Regular");
@@ -632,6 +623,11 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
     let changed_native = core_text::font::new_from_buffer(&changed_data).unwrap();
     assert_eq!(changed_native.postscript_name(), native.postscript_name());
     assert!(changed_native.copy_descriptor().font_path().is_none());
+    assert!(db.native_source_changed_with(|name, metadata_only| {
+        assert_eq!(name, ps);
+        assert!(!metadata_only);
+        crate::macos::copy_font_data(&changed_native, metadata_only)
+    }));
     publish_native_snapshot(&db, ps, &crate::macos::copy_font_data(&changed_native, true).unwrap(), true);
     assert!(!db.is_loaded(family));
     assert!(db.load_cataloged_with(family, |_| crate::macos::copy_font_data(&changed_native, false)));
@@ -758,6 +754,7 @@ fn late_installed_reads_cannot_publish_superseded_or_removed_versions() {
 
 /// A provider snapshot injected into an isolated catalogue; no OS registration changes.
 fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool) {
+    db.scan_state.lock().unwrap().native_metadata.insert(name.into(), native_face_names(metadata).unwrap());
     *db.catalog.write().unwrap() = native_face_names(metadata)
         .unwrap()
         .into_iter()
@@ -845,4 +842,222 @@ fn forced_native_refresh_retires_changed_families_and_variable_instances() {
     assert_eq!(db.styles(renamed), ["Regular"]);
     assert!(db.face(renamed, "Regular").covers('z'));
     assert!(custom.covers('a') && heavy.covers('a') && light.covers('a'), "existing variable layout handles remain valid");
+}
+
+/// Exercise the production scanner with a private provider, without OS font activation.
+fn scan_native_provider(db: &FontDb, force: bool, names: &[&str], metadata: impl Fn(&str) -> Result<Vec<u8>, String>) -> bool {
+    db.refresh_catalog_with(
+        force,
+        || {
+            (
+                Some("Test native provider"),
+                crate::platform::Discovery {
+                    native_fonts: names.iter().map(|name| crate::platform::NativeFont { name: (*name).into(), path: None }).collect(),
+                    ..Default::default()
+                },
+                names.len(),
+            )
+        },
+        metadata,
+    )
+    .0
+}
+
+fn native_provider_db(names: &[&str], metadata: impl Fn(&str) -> Result<Vec<u8>, String>) -> FontDb {
+    let mut db = FontDb::with_font_dirs(vec![]);
+    db.host_fonts = true;
+    assert!(scan_native_provider(&db, true, names, metadata));
+    db.cataloged.set(()).unwrap();
+    db
+}
+
+#[test]
+fn automatic_native_revalidation_rotates_and_loads_only_used_source_tables() {
+    let names = ["PagenorAuto-A", "PagenorAuto-B"];
+    let a = crate::testing::font_with("Pagenor Auto A", &['a']).unwrap();
+    let b = crate::testing::font_with("Pagenor Auto B", &['b']).unwrap();
+    let metadata = |name: &str| Ok(if name == names[0] { a.clone() } else { b.clone() });
+    let db = native_provider_db(&names, metadata);
+    assert_eq!(db.scan_report().native_faces, 2);
+    assert!(!db.is_loaded("Pagenor Auto A") && !db.is_loaded("Pagenor Auto B"));
+    assert!(db.load_cataloged_with("Pagenor Auto A", |_| Ok(a.clone())));
+    let original = db.face("Pagenor Auto A", "Regular");
+    let generation = db.scan_generation();
+    let mut calls = Vec::new();
+    for expected in [names[0], names[1], names[0]] {
+        let call = std::cell::RefCell::new(Vec::new());
+        assert!(!db.native_source_changed_with(|name, metadata_only| {
+            call.borrow_mut().push((name.to_string(), metadata_only));
+            metadata(name)
+        }));
+        assert_eq!(call.borrow().len(), 1, "one source request per worker check");
+        assert_eq!(call.borrow()[0].0, expected);
+        calls.extend(call.into_inner());
+    }
+    assert_eq!(calls.iter().map(|c| c.1).collect::<Vec<_>>(), [false, true, false]);
+    assert_eq!(db.scan_generation(), generation);
+    assert!(Arc::ptr_eq(&original, &db.face("Pagenor Auto A", "Regular")));
+    assert!(!db.is_loaded("Pagenor Auto B"));
+    let dir = font_dir("automatic-file-only");
+    let file_db = FontDb::with_font_dirs(vec![dir.clone()]);
+    file_db.scan_report();
+    assert!(!file_db.native_source_changed_with(|_, _| panic!("physical fonts must not request OS tables")));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn automatic_native_revalidation_detects_glyph_changes_and_unused_family_changes() {
+    let name = "PagenorAutoChanged";
+    let family = "Pagenor Auto Changed";
+    let old = crate::testing::font_with(family, &['a']).unwrap();
+    let changed = crate::testing::font_with(family, &['a', 'b']).unwrap();
+    let db = native_provider_db(&[name], |_| Ok(old.clone()));
+    assert!(db.load_cataloged_with(family, |_| Ok(old.clone())));
+    let original = db.face(family, "Regular");
+    let handle = FaceRef::of(&original);
+    let generation = db.scan_generation();
+    assert!(!scan_native_provider(&db, false, &[name], |_| panic!("unchanged identity scan stays lazy")));
+    assert!(db.native_source_changed_with(|identity, metadata| {
+        assert_eq!(identity, name);
+        assert!(!metadata, "a loaded source compares full tables even when names match");
+        Ok(changed.clone())
+    }));
+    assert!(scan_native_provider(&db, true, &[name], |_| Ok(changed.clone())));
+    assert!(db.scan_generation() > generation);
+    assert!(!db.is_loaded(family));
+    assert!(db.load_cataloged_with(family, |_| Ok(changed.clone())));
+    let current = db.face(family, "Regular");
+    assert!(current.covers('b') && !original.covers('b') && !handle.covers('b'));
+    assert_ne!(current.id(), original.id());
+    let renamed = "Pagenor Auto Renamed";
+    let renamed_data = crate::testing::font_with(renamed, &['z']).unwrap();
+    // No loaded source: metadata changes alone must refresh the picker.
+    let unused = native_provider_db(&[name], |_| Ok(old.clone()));
+    assert!(unused.native_source_changed_with(|_, metadata| {
+        assert!(metadata);
+        Ok(renamed_data.clone())
+    }));
+    assert!(scan_native_provider(&unused, true, &[name], |_| Ok(renamed_data.clone())));
+    assert!(!has(&unused.families(), family));
+    assert!(has(&unused.families(), renamed));
+    assert_eq!(unused.styles(renamed), ["Regular"]);
+    assert!(!unused.is_loaded(renamed));
+    let variable = named_instance_font();
+    assert!(unused.native_source_changed_with(|_, metadata| {
+        assert!(metadata);
+        Ok(variable.clone())
+    }));
+    scan_native_provider(&unused, true, &[name], |_| Ok(variable.clone()));
+    assert!(unused.styles(FAMILY).contains(&"Heavy".into()));
+    assert!(!unused.is_loaded(FAMILY));
+}
+
+#[test]
+fn automatic_native_revalidation_recovers_denied_sources_and_ignores_superseded_checks() {
+    let name = "PagenorAutoDenied";
+    let family = "Pagenor Auto Denied";
+    let data = crate::testing::font_with(family, &['a']).unwrap();
+    let db = native_provider_db(&[name], |_| Err("metadata access temporarily denied".into()));
+    assert!(!has(&db.families(), family));
+    assert!(
+        db.native_source_changed_with(|_, metadata| {
+            assert!(metadata);
+            Ok(data.clone())
+        }),
+        "failed metadata sources must stay in the retry queue"
+    );
+    scan_native_provider(&db, true, &[name], |_| Ok(data.clone()));
+    assert!(has(&db.families(), family));
+    assert!(db.load_cataloged_with(family, |_| Ok(data.clone())));
+    let face = db.face(family, "Regular");
+    let generation = db.scan_generation();
+    assert!(!db.native_source_changed_with(|_, _| Err("table access temporarily denied".into())));
+    assert!(Arc::ptr_eq(&face, &db.face(family, "Regular")), "an error alone is not evidence of changed bytes");
+    assert_eq!(db.scan_generation(), generation);
+    assert!(db.scan_report().issues.iter().any(|(_, reason)| reason.contains("Cannot revalidate native font")));
+    assert!(
+        !db.native_source_changed_with(|_, _| {
+            scan_native_provider(&db, true, &[name], |_| Ok(data.clone()));
+            Ok(crate::testing::font_with(family, &['b']).unwrap())
+        }),
+        "a provider result from before a concurrent manual rescan is ignored"
+    );
+    assert!(
+        !db.native_source_changed_with(|_, _| {
+            scan_native_provider(&db, true, &[], |_| panic!("no identities remain"));
+            Ok(data.clone())
+        }),
+        "a provider result from before withdrawal is ignored"
+    );
+    assert!(!db.has_family(family));
+    assert!(face.covers('a'));
+    assert!(!db.native_source_changed_with(|_, _| panic!("withdrawn sources leave the queue")));
+}
+
+#[test]
+fn automatic_native_revalidation_retires_a_source_when_its_physical_file_becomes_usable() {
+    let name = "PagenorAutoPhysical";
+    let family = "Pagenor Auto Physical";
+    let old = crate::testing::font_with(family, &['a']).unwrap();
+    let dir = font_dir("native-becomes-file");
+    let file = dir.join("transition.ttf");
+    std::fs::write(&file, b"not SFNT").unwrap();
+    let mut db = FontDb::with_font_dirs(vec![]);
+    db.host_fonts = true;
+    let discover = || {
+        (
+            Some("Test native provider"),
+            crate::platform::Discovery {
+                files: vec![file.clone()],
+                native_fonts: vec![crate::platform::NativeFont { name: name.into(), path: Some(file.clone()) }],
+                ..Default::default()
+            },
+            0,
+        )
+    };
+    db.refresh_catalog_with(true, discover, |_| Ok(old.clone()));
+    db.cataloged.set(()).unwrap();
+    assert!(db.load_cataloged_with(family, |_| Ok(old.clone())));
+    let native = db.face(family, "Regular");
+    assert_eq!(native.source, FontSource::Native(name.into()));
+    std::fs::write(&file, crate::testing::font_with(family, &['a', 'b']).unwrap()).unwrap();
+    assert!(db.refresh_catalog_with(false, discover, |_| panic!("readable files no longer need native metadata")).0);
+    assert!(!db.is_loaded(family), "the former native fallback cannot shadow current file data");
+    let installed = db.face(family, "Regular");
+    assert_eq!(installed.source, FontSource::Installed(file));
+    assert!(installed.covers('b') && !native.covers('b'));
+    assert!(!db.native_source_changed_with(|_, _| panic!("native source must leave the revalidation queue")));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_metadata_limits_expanded_instance_names_before_retaining_snapshots() {
+    use crate::testing::{with_names, with_tables};
+    let fvar = |count: u16| {
+        let mut table = Vec::new();
+        for value in [1u16, 0, 16, 2, 1, 20, count, 8] {
+            table.extend_from_slice(&value.to_be_bytes());
+        }
+        table.extend_from_slice(b"wght");
+        for value in [100i32, 400, 900] {
+            table.extend_from_slice(&(value << 16).to_be_bytes());
+        }
+        table.extend_from_slice(&0u16.to_be_bytes());
+        table.extend_from_slice(&256u16.to_be_bytes());
+        for _ in 0..count {
+            table.extend_from_slice(&257u16.to_be_bytes());
+            table.extend_from_slice(&0u16.to_be_bytes());
+            table.extend_from_slice(&(300i32 << 16).to_be_bytes());
+        }
+        table
+    };
+    let variable = named_instance_font();
+    let too_many = with_tables(&variable, vec![(*b"fvar", fvar(1025))]).unwrap();
+    assert!(native_face_names(&too_many).unwrap_err().contains("face/name limit"));
+    let long = "F".repeat(8192);
+    let large_names = with_names(&variable, &[(3, 1, 0x409, 1, &long), (3, 1, 0x409, 16, &long), (3, 1, 0x409, 257, "Light")]).unwrap();
+    let large_names = with_tables(&large_names, vec![(*b"fvar", fvar(1024))]).unwrap();
+    assert!(native_face_names(&large_names).unwrap_err().contains("face/name limit"));
+    let accepted = with_tables(&variable, vec![(*b"fvar", fvar(1024))]).unwrap();
+    assert_eq!(native_face_names(&accepted).unwrap().len(), 1024);
 }

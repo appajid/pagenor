@@ -126,6 +126,8 @@ struct ScanState {
     report: FontScanReport,
     signature: Vec<(std::path::PathBuf, Option<(u64, std::time::SystemTime)>)>,
     native_signature: Vec<crate::platform::NativeFont>,
+    native_metadata: HashMap<String, Vec<ScannedFace>>,
+    native_cursor: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -409,6 +411,7 @@ pub struct FontDb {
     #[cfg(not(target_arch = "wasm32"))]
     catalog: RwLock<Vec<CatalogEntry>>,
     #[cfg(not(target_arch = "wasm32"))]
+    /// OS identities that currently require native table access, with their source epoch.
     native_available: RwLock<HashMap<String, u64>>,
     #[cfg(not(target_arch = "wasm32"))]
     installed_versions: RwLock<HashMap<std::path::PathBuf, InstalledVersion>>,
@@ -685,8 +688,35 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
     let font = skrifa::FontRef::new(data).map_err(|e| format!("Native metadata is not readable SFNT: {e}"))?;
     let (family, style) = face_names(&font).ok_or("Native font has no usable family/style name")?;
     let (group, native) = crate::group::classify(&font, &family);
-    let styles: Vec<_> = font.named_instances().iter().filter_map(|instance| name(&font, &[instance.subfamily_name_id()])).collect();
-    let styles = if styles.is_empty() { vec![style] } else { styles };
+    // A name table may be small while thousands of instances alias its longest name.
+    // Bound the expanded representation before cloning it into retained scan snapshots.
+    const MAX_NATIVE_FACES: usize = 1024;
+    const MAX_NATIVE_NAMES_BYTES: usize = 4 << 20;
+    let base_bytes = family.len().checked_add(native.as_ref().map_or(0, String::len)).ok_or("Native metadata name size overflow")?;
+    if font.named_instances().len() > MAX_NATIVE_FACES {
+        return Err("Native metadata exceeds the face/name limit".into());
+    }
+    let mut styles = Vec::new();
+    let mut bytes = 0usize;
+    let mut add_style = |style: String| -> Result<(), String> {
+        bytes = bytes.checked_add(base_bytes).and_then(|n| n.checked_add(style.len())).ok_or("Native metadata name size overflow")?;
+        if styles.len() >= MAX_NATIVE_FACES || bytes > MAX_NATIVE_NAMES_BYTES {
+            return Err("Native metadata exceeds the face/name limit".into());
+        }
+        styles.push(style);
+        Ok(())
+    };
+    for instance in font.named_instances().iter() {
+        if let Some(style) = name(&font, &[instance.subfamily_name_id()]) {
+            add_style(style)?;
+        }
+    }
+    if styles.is_empty() {
+        if base_bytes.checked_add(style.len()).is_none_or(|n| n > MAX_NATIVE_NAMES_BYTES) {
+            return Err("Native metadata exceeds the face/name limit".into());
+        }
+        styles.push(style);
+    }
     Ok(styles.into_iter().map(|style| ScannedFace { family: family.clone(), style, group, native: native.clone() }).collect())
 }
 
@@ -1087,7 +1117,8 @@ impl FontDb {
     }
 
     /// Check for changed installed/activated files on a worker, at most every three seconds.
-    /// Unchanged catalogues read directory entries and file metadata only. A no-op on WASM.
+    /// The worker also revalidates one native source per check: metadata for unused fonts,
+    /// full tables only for an already-loaded native source. A no-op on WASM.
     pub fn refresh_in_background(&'static self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1104,6 +1135,11 @@ impl FontDb {
                 .name("font-refresh".into())
                 .spawn(move || {
                     self.refresh_catalog(false);
+                    if self.native_source_changed_with(|name, metadata| {
+                        if metadata { crate::platform::native_font_metadata(name) } else { crate::platform::native_font_data(name) }
+                    }) {
+                        self.refresh_catalog(true);
+                    }
                     self.refresh_state.lock().unwrap_or_else(|e| e.into_inner()).running = false;
                 })
                 .is_err()
@@ -1145,6 +1181,16 @@ impl FontDb {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn refresh_catalog(&self, force: bool) -> (bool, usize) {
+        self.refresh_catalog_with(force, crate::platform::discover, crate::platform::native_font_metadata)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_catalog_with(
+        &self,
+        force: bool,
+        discover: impl FnOnce() -> (Option<&'static str>, crate::platform::Discovery, usize),
+        native_metadata: impl Fn(&str) -> Result<Vec<u8>, String>,
+    ) -> (bool, usize) {
         // Serialize initial scans, manual rescans and background refreshes.
         let mut state = self.scan_state.lock().unwrap_or_else(|e| e.into_inner());
         let mut report = FontScanReport { roots: self.font_dirs.clone(), ..Default::default() };
@@ -1152,7 +1198,7 @@ impl FontDb {
         let mut native_fonts = Vec::new();
         let mut stack = self.font_dirs.clone();
         if self.host_fonts {
-            let (source, activated, pathless) = crate::platform::discover();
+            let (source, activated, pathless) = discover();
             report.host_source = source;
             report.host_registered_files = activated.files.len();
             report.host_pathless_faces = pathless;
@@ -1258,19 +1304,26 @@ impl FontDb {
         }
         // A native descriptor may refer to memory or a file the Rust parser cannot read.
         // Only request bounded metadata here; glyph tables remain lazy.
+        let mut metadata_snapshot = HashMap::new();
         for font in &native_fonts {
             if font.path.as_ref().is_some_and(|p| usable_files.contains(&std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))) {
                 continue;
             }
             let location = CatalogLocation::Native(font.name.clone());
-            match crate::platform::native_font_metadata(&font.name).and_then(|data| native_face_names(&data)) {
-                Ok(faces) => found.extend(faces.into_iter().map(|f| CatalogEntry {
-                    family: f.family,
-                    style: f.style,
-                    location: location.clone(),
-                    group: f.group,
-                    native: f.native,
-                })),
+            // Keep failed sources in the revalidation queue so table access can recover
+            // under an unchanged registered identity without a manual rescan.
+            metadata_snapshot.insert(font.name.clone(), Vec::new());
+            match native_metadata(&font.name).and_then(|data| native_face_names(&data)) {
+                Ok(faces) => {
+                    metadata_snapshot.insert(font.name.clone(), faces.clone());
+                    found.extend(faces.into_iter().map(|f| CatalogEntry {
+                        family: f.family,
+                        style: f.style,
+                        location: location.clone(),
+                        group: f.group,
+                        native: f.native,
+                    }));
+                }
                 Err(reason) => report.note(&location.diagnostic_path(), reason),
             }
         }
@@ -1293,9 +1346,10 @@ impl FontDb {
         log::debug!("cataloged {n} system font faces");
         self.update_installed_versions(&signature, &usable_paths);
         *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
-        self.update_native_available(native_fonts.iter().map(|f| f.name.clone()), force);
+        self.update_native_available(metadata_snapshot.keys().cloned(), force);
         state.signature = signature;
         state.native_signature = native_fonts;
+        state.native_metadata = metadata_snapshot;
         state.report = report;
         // The initial scan may run inside a fallback lookup that holds this lock already.
         if self.cataloged.get().is_some() {
@@ -1307,6 +1361,62 @@ impl FontDb {
             self.scan_generation.fetch_add(1, Ordering::Release);
         }
         (true, n)
+    }
+
+    /// Revalidate one native catalogue source per worker cycle, in identity order.
+    /// Unused fonts read metadata only. Loaded fonts compare current table bytes so a
+    /// glyph-only change is visible even when registration and family/style names agree.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_source_changed_with(&self, native_data: impl Fn(&str, bool) -> Result<Vec<u8>, String>) -> bool {
+        let (name, previous_names, epoch) = {
+            let mut state = self.scan_state.lock().unwrap_or_else(|e| e.into_inner());
+            let next = state.native_metadata.keys().filter(|name| state.native_cursor.as_ref().is_none_or(|cursor| *name > cursor)).min();
+            let Some(name) = next.or_else(|| state.native_metadata.keys().min()).cloned() else { return false };
+            state.native_cursor = Some(name.clone());
+            let previous_names = state.native_metadata.get(&name).cloned();
+            let Some(epoch) = self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(&name).copied() else { return false };
+            (name, previous_names, epoch)
+        };
+        let loaded = self
+            .read_faces()
+            .iter()
+            .find(|f| matches!(&f.source, FontSource::Native(identity) if identity == &name) && f.native_epoch == epoch)
+            .cloned();
+        // Do not hold any cache/scan lock while asking the native provider for data.
+        let data = native_data(&name, loaded.is_none());
+        if self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(&name) != Some(&epoch) {
+            return false; // A concurrent rescan/withdrawal superseded this request.
+        }
+        let changed = match data {
+            Ok(data) => match loaded {
+                Some(face) => Ok(face.data() != data.as_slice()),
+                None => native_face_names(&data).map(|names| previous_names.as_ref() != Some(&names)),
+            },
+            Err(reason) => Err(reason),
+        };
+        match changed {
+            Ok(changed) => changed,
+            Err(reason) => {
+                self.note_scan_issue(&CatalogLocation::Native(name).diagnostic_path(), format!("Cannot revalidate native font: {reason}"));
+                false // Failure is not evidence that unchanged registered data was replaced.
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn note_scan_issue(&self, path: &std::path::Path, reason: String) {
+        // A fallback chain may hold `sys` while loading. Do not wait for a scan
+        // that holds `scan_state` and is about to invalidate that same fallback.
+        let state = match self.scan_state.try_lock() {
+            Ok(state) => Some(state),
+            Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut state) = state {
+            state.report.note(path, reason);
+        } else {
+            log::warn!("{}: {reason}", path.display());
+        }
     }
 
     /// Load the files of the installed `family`. Returns whether any face was added.
@@ -1344,18 +1454,7 @@ impl FontDb {
             match data {
                 Ok(data) => faces.extend(self.new_faces_with_epoch(data, source, epoch)),
                 Err(reason) => {
-                    // A fallback chain may hold `sys` while loading. Do not wait for a scan
-                    // that holds `scan_state` and is about to invalidate that same fallback.
-                    let state = match self.scan_state.try_lock() {
-                        Ok(state) => Some(state),
-                        Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
-                        Err(std::sync::TryLockError::WouldBlock) => None,
-                    };
-                    if let Some(mut state) = state {
-                        state.report.note(&diagnostic, format!("Cannot use font: {reason}"));
-                    } else {
-                        log::warn!("Cannot use font {}: {reason}", diagnostic.display());
-                    }
+                    self.note_scan_issue(&diagnostic, format!("Cannot use font: {reason}"));
                 }
             }
         }

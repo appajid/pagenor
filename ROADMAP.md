@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.8: The background worker revalidates one native table source per check.
+  Unused sources request metadata; loaded sources compare bounded current tables.
+  Changed glyphs/menus and recovered table access trigger the existing rescan.
+  Physical-source transitions and retained metadata expansion have regressions.
+  Native notifications and actual Adobe/dongle evidence remain pending.
+
 - P01.7: Manual rescan invalidates native table caches even when registered
   identities stay unchanged. Data reloads lazily; old requests cannot publish
   after the rescan. Variable instances, document scopes and held layout handles
