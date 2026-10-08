@@ -419,6 +419,43 @@ fn named_instance_font() -> Vec<u8> {
 }
 
 #[test]
+fn style_availability_matches_aliases_and_variable_bases_without_loading() {
+    let dir = font_dir("style-availability");
+    let installed = dir.join("installed");
+    let own = dir.join("document");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(installed.join("variable.ttf"), named_instance_font()).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    assert!(db.has_style(FAMILY, "H e a v y"));
+    assert!(db.has_style(FAMILY, "HEAVY {wght:450}"));
+    assert!(!db.has_style(FAMILY, "Unknown Style"));
+    assert!(!db.has_style("Unknown Family", "Heavy"));
+    assert!(!db.has_style(FAMILY, "Regular"), "a closest-style fallback is not an available named style");
+    assert_eq!(db.styles(FAMILY), ["Light", "Heavy"]);
+    assert!(!db.is_loaded(FAMILY), "availability checks must keep installed bytes lazy");
+    let heavy = db.face(FAMILY, "H e a v y");
+    assert!(Arc::ptr_eq(&heavy, &db.face(FAMILY, "Heavy")));
+    assert_eq!(heavy.weight, 900.0);
+    let custom = db.face(FAMILY, "HEAVY {wght:450}");
+    assert!(custom.is_variable());
+    assert_eq!(custom.coords, [(*b"wght", 450.0)]);
+
+    let family = "Pagenor Scoped Style";
+    std::fs::write(own.join("own.ttf"), crate::testing::font_with(family, &['A']).unwrap()).unwrap();
+    let document = db.load_document_fonts(&own);
+    let scoped = db.scoped(document.scope);
+    assert!(scoped.has_style(family, "Reg-u lar"));
+    assert!(!db.has_style(family, "Regular"), "document font availability stays scoped");
+    assert!(scoped.has_style(FAMILY, "Heavy {wght:450}"));
+    std::fs::remove_file(dir.join("installed/variable.ttf")).unwrap();
+    db.refresh_catalog(false);
+    assert!(!db.has_style(FAMILY, "Heavy"), "retained layout faces do not reintroduce removed menu styles");
+    assert!(scoped.has_style(family, "Regular"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn named_instances_are_cataloged_before_loading() {
     let dir = font_dir("variable-catalog");
     let font = named_instance_font();

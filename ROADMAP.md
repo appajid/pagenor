@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.9: Font diagnostics recognize style aliases and custom variable base styles
+  using the existing lookup normalization, without loading glyph data for checks.
+  An independent macOS inventory comparison covers all 272 SFNT families; two
+  legacy Multiple Master families expose no SFNT tables and remain unsupported.
+  Document scopes and original requested style names are preserved.
+
 - P01.8: The background worker revalidates one native table source per check.
   Unused sources request metadata; loaded sources compare bounded current tables.
   Changed glyphs/menus and recovered table access trigger the existing rescan.

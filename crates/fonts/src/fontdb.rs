@@ -1009,6 +1009,11 @@ impl FontDb {
         self.scoped(0).styles(family)
     }
 
+    /// Whether a shared named base style is selectable (see [`ScopedFonts::has_style`]).
+    pub fn has_style(&self, family: &str, style: &str) -> bool {
+        self.scoped(0).has_style(family, style)
+    }
+
     /// Add a user font (TTF/OTF/TTC bytes). Returns the number of faces added (0 if unparseable or
     /// every face was already present).
     pub fn add_font(&self, bytes: Vec<u8>) -> usize {
@@ -1884,6 +1889,15 @@ impl ScopedFonts<'_> {
         v.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
         v.dedup_by(|a, b| a.2 == b.2);
         v.into_iter().map(|t| t.2).collect()
+    }
+
+    /// Whether the requested named base style is selectable, using the same name normalization
+    /// as face lookup. Reads menu metadata without loading installed font bytes. Custom axis
+    /// settings check their base style here; axis names and values are not validated. A nearest
+    /// style fallback does not make an unavailable style selectable.
+    pub fn has_style(&self, family: &str, style: &str) -> bool {
+        let requested = norm(base_style(style));
+        self.styles(family).iter().any(|s| norm(s) == requested)
     }
 
     /// Resolve a family + style to a face, falling back to the closest style of the family, then to

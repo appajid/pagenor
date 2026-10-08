@@ -113,7 +113,7 @@ fn list(d: &Document) -> Vec<Value> {
         .into_iter()
         .map(|((family, style), n)| {
             let missing = !db.has_family(&family);
-            let style_missing = !missing && !db.styles(&family).iter().any(|s| s.eq_ignore_ascii_case(&style));
+            let style_missing = !missing && !db.has_style(&family, &style);
             let source = (!missing).then(|| match db.face(&family, &style).source {
                 FontSource::Bundled => "bundled",
                 FontSource::Installed(_) => "installed",
@@ -240,6 +240,28 @@ mod tests {
         assert!(Arc::ptr_eq(&document, &s.doc().unwrap().doc));
         assert_eq!(s.doc().unwrap().revision, revision);
         assert_eq!(s.journal.len(), journal);
+    }
+
+    #[test]
+    fn font_list_recognizes_style_aliases_and_custom_base_styles_without_editing_the_document() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "A"})).unwrap();
+        s.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 1})).unwrap();
+        for (style, missing) in [("Semi Bold", false), ("Semi-Bold", false), ("Semibold {wght:550}", false), ("Unknown Style", true)] {
+            s.execute("type.char", &json!({"fontFamily": pagenor_fonts::DEFAULT_FAMILY, "fontStyle": style})).unwrap();
+            let document = s.doc().unwrap().doc.clone();
+            let revision = s.doc().unwrap().revision;
+            let journal = s.journal.len();
+            let fonts = s.execute("font.list", &json!({})).unwrap();
+            let row = fonts.as_array().unwrap().iter().find(|f| f["style"] == style).unwrap();
+            assert_eq!(row["missing"], false);
+            assert_eq!(row["styleMissing"], missing, "{style}: {fonts}");
+            assert_eq!(row["source"], "bundled");
+            assert!(Arc::ptr_eq(&document, &s.doc().unwrap().doc));
+            assert_eq!(revision, s.doc().unwrap().revision);
+            assert_eq!(journal, s.journal.len());
+        }
     }
 
     #[test]

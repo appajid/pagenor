@@ -479,3 +479,56 @@ paths and zero pathless/native-service faces. Actual vendor activation is theref
 not demonstrated by that host probe. Pagenor Test1 remains active; no Font Book
 setting, dependency, unsafe policy, GitHub upload or remote CI run was changed.
 Phase 01 and milestone M0 remain in progress.
+
+
+## P01.9 — independent macOS coverage and style diagnostics (2026-10-09)
+
+A read-only `system_profiler SPFontsDataType -json` inventory was compared with
+Pagenor's actual CPU UI font menu and catalogue styles. The OS report contains
+236 files, 2,671 typefaces and 274 distinct family strings, all marked enabled.
+Pagenor's menu has 804 families (800 installed and four bundled); its installed
+catalogue reports 3,774 faces from 946 files. The differing totals reflect the
+inventory sources, not a count of missing fonts. Every one of the 272 SFNT-based
+OS inventory families appears in the menu, including hidden numeric families.
+The QA family Pagenor Test1 also resolves from `/Library/Fonts/pagenor.ttf`.
+This snapshot cannot demonstrate Font Book deactivation or vendor activation.
+No font activation setting was changed.
+
+The two absent families, `.Times LT MM` and `.Helvetica LT MM`, come from legacy
+extensionless Multiple Master fonts at `/System/Library/Fonts/TimesLTMM` and
+`/System/Library/Fonts/HelveLTMM`. Core Text resolves their exact PostScript names,
+but returns no available SFNT tables. They cannot be used by the existing
+Harfrust/Skrifa SFNT pipeline simply by adding a scan directory or file extension.
+Separate native shaping/outline/export support remains PG-0110; the font backend
+was not rewritten to claim coverage of those legacy fonts.
+
+A raw style-name comparison reported 24 mismatches across `.SF Numeric`,
+`.SF Adaptive Numeric` and `.SF Soft Numeric`: macOS reports names such as
+`Regular G2`, while SFNT named-instance metadata says `RegularG2`. The existing
+face lookup already resolves both spellings to the same face. However, `font.list`
+used raw case-insensitive style strings and falsely marked these usable aliases
+as missing. Custom coordinate styles had the same diagnostic problem.
+
+`FontDb::has_style` and `ScopedFonts::has_style` now compare the requested named
+base style with selectable styles using the existing lookup normalization. The
+check reads menu metadata and keeps installed glyph bytes lazy. For a custom
+coordinate style, this answers whether its base style is available; it does not
+validate axis tags, numeric ranges or whether the font is variable. A nearest
+style fallback does not count as a named style being available. Current catalogue
+removal rules, family/style names and document font scopes are preserved.
+`font.list` uses this check without rewriting the document's requested style.
+
+Two new regressions cover a formerly failing bundled-style diagnostic, aliases,
+custom base styles, real synthetic variable coordinates, lazy installed bytes,
+unknown styles/families, removed menu styles, document scope isolation and unchanged
+document identity/revision/undo after diagnostics. A real host probe checks all
+24 Apple numeric aliases through `font.list`, confirms identical alias/canonical
+face handles, and checks `Regular G2 {wght:650}` coordinates. It also confirms
+Pagenor Test1 remains available and that the two legacy faces expose no tables.
+
+Validation: `cargo xtask ci` passes all seven steps, with 813 tests passed,
+zero failed, three performance tests ignored and all 16 WASM packages checked.
+Strict font-crate Clippy including test targets passes for Windows GNU and Linux
+GNU, and the Mac app builds. These are local checks; no GitHub upload or remote
+CI was performed. Actual Adobe/dongle lifecycle, deactivation evidence and native
+Windows/Linux memory-font support remain open. Phase 01 and M0 stay in progress.
