@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate every app icon from assets/app-icon/pagenor.svg.
 #
-# Needs: resvg (brew install resvg / cargo install resvg). On macOS, iconutil also writes the
-# .icns. The outputs are committed, so builds and packaging never need these tools.
+# Needs: Cargo (the workspace resvg renderer and portable ICO/ICNS packers). The outputs are committed, so builds and packaging never need these tools.
 #
 #   packaging/icons.sh
 set -euo pipefail
@@ -13,15 +12,17 @@ ID="org.pagenor.app"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-command -v resvg >/dev/null || { echo "error: resvg not found (brew install resvg)" >&2; exit 1; }
+cargo build -q --manifest-path "$ROOT/Cargo.toml" -p xtask
+RENDER="$ROOT/target/debug/xtask"
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then RENDER="$CARGO_TARGET_DIR/debug/xtask"; fi
 
-# The artwork is a full-bleed 512 tile (rx=112). Windows and Linux use it as is. macOS icons sit on
-# Apple's grid: an 824/1024 body with a transparent margin, so widen the viewBox to 512*1024/824.
+# The artwork is a full-bleed 192 tile (rx=40). Windows and Linux use it as is. macOS icons sit on
+# Apple's grid: an 824/1024 body with a transparent margin, so widen the viewBox to 192*1024/824.
 MAC="$TMP/mac.svg"
-sed 's/viewBox="0 0 512 512"/viewBox="-62.136 -62.136 636.272 636.272"/' "$SVG" >"$MAC"
-grep -q 'viewBox="-62.136' "$MAC" || { echo "error: expected viewBox=\"0 0 512 512\" in $SVG" >&2; exit 1; }
+sed 's/viewBox="0 0 192 192"/viewBox="-23.301 -23.301 238.602 238.602"/' "$SVG" >"$MAC"
+grep -q 'viewBox="-23.301' "$MAC" || { echo "error: expected viewBox=\"0 0 192 192\" in $SVG" >&2; exit 1; }
 
-render() { resvg -w "$2" -h "$2" "$1" "$3" </dev/null; }
+render() { "$RENDER" svg "$1" "$3" "$2"; }
 
 render "$SVG" 1024 "$DIR/pagenor-1024.png"
 # Runtime window/Dock icon on macOS (embedded by apps/pagenor); other platforms use hicolor 256.
@@ -30,7 +31,9 @@ render "$MAC" 512 "$DIR/pagenor-macos-512.png"
 # Linux hicolor theme.
 for s in 16 24 32 48 64 128 256 512; do
   mkdir -p "$DIR/hicolor/${s}x${s}/apps"
-  render "$SVG" "$s" "$DIR/hicolor/${s}x${s}/apps/$ID.png"
+  SOURCE="$SVG"
+  if [ "$s" -le 48 ]; then SOURCE="$DIR/pagenor-small.svg"; fi
+  render "$SOURCE" "$s" "$DIR/hicolor/${s}x${s}/apps/$ID.png"
 done
 mkdir -p "$DIR/hicolor/scalable/apps"
 cp "$DIR/pagenor-small.svg" "$DIR/hicolor/scalable/apps/$ID.svg"
@@ -38,21 +41,28 @@ cp "$DIR/pagenor-small.svg" "$DIR/hicolor/scalable/apps/$ID.svg"
 # Windows .ico.
 ICO_PNGS=()
 for s in 16 20 24 32 40 48 64 128 256; do
-  render "$SVG" "$s" "$TMP/ico-$s.png"
+  SOURCE="$SVG"
+  if [ "$s" -le 48 ]; then SOURCE="$DIR/pagenor-small.svg"; fi
+  render "$SOURCE" "$s" "$TMP/ico-$s.png"
   ICO_PNGS+=("$TMP/ico-$s.png")
 done
-(cd "$ROOT" && cargo run -q -p xtask -- ico "$DIR/pagenor.ico" "${ICO_PNGS[@]}")
+"$RENDER" ico "$DIR/pagenor.ico" "${ICO_PNGS[@]}"
 
-# macOS .icns.
-if command -v iconutil >/dev/null; then
-  SET="$TMP/pagenor.iconset"
-  mkdir -p "$SET"
-  for s in 16 32 128 256 512; do
-    render "$MAC" "$s" "$SET/icon_${s}x${s}.png"
-    render "$MAC" $((s * 2)) "$SET/icon_${s}x${s}@2x.png"
-  done
-  iconutil -c icns -o "$DIR/pagenor.icns" "$SET"
-else
-  echo "warning: iconutil not found (macOS only); pagenor.icns not regenerated" >&2
-fi
+# macOS .icns, packed on any host without iconutil.
+ICNS_PNGS=()
+for s in 16 32 64 128 256 512 1024; do
+  render "$MAC" "$s" "$TMP/icns-$s.png"
+  ICNS_PNGS+=("$TMP/icns-$s.png")
+done
+"$RENDER" icns "$DIR/pagenor.icns" "${ICNS_PNGS[@]}"
 echo "icons written to $DIR"
+
+# Outline logo text once so runtime branding needs no installed Arial/Helvetica font.
+for variant in Primary Inverse; do
+  lower=$(echo "$variant" | tr '[:upper:]' '[:lower:]')
+  "$RENDER" svg "$ROOT/assets/brand/Pagenor-Logo-$variant.svg" "$ROOT/assets/brand/runtime-logo-$lower.svg" 650
+done
+
+for screen in about-page splash-screen; do
+  "$RENDER" svg "$ROOT/assets/brand/pagenor-$screen-editable.svg" "$ROOT/assets/brand/runtime-$screen.svg" 980
+done

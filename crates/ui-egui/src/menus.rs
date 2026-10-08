@@ -129,12 +129,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("window.split", "Split Window", None, "{on?: bool} — two views of the document side by side, each with its own zoom and scroll"),
     ("window.newWindow", "New Window", None, "{on?: bool} — another view of the active document in its own window"),
     ("window.taskBar", "Contextual Task Bar", None, "{}"),
-    ("help.discord", "Join the ArtCraft Discord…", None, "{} — opens https://discord.gg/artcraft in the browser"),
-    ("help.appPage", "Pagenor Website…", None, "{} — opens https://getartcraft.com/apps/pagenor"),
-    ("help.github", "Pagenor on GitHub…", None, "{} — opens https://github.com/storytold/pagenor"),
+    ("help.discord", "Pagenor Community…", None, "{} — unavailable until a community destination is configured"),
+    ("help.appPage", "Pagenor Project Page…", None, "{} — opens Pagenor's repository"),
+    ("help.github", "Pagenor on GitHub…", None, "{} — opens https://github.com/appajid/pagenor"),
     ("help.issues", "Report an Issue…", None, "{} — opens the GitHub issue tracker"),
-    ("help.website", "ArtCraft Website…", None, "{} — opens https://getartcraft.com"),
-    ("help.app", "ArtCraft App Page…", None, "{app} — opens https://getartcraft.com/apps/{app} (e.g. photocraft)"),
+    ("help.website", "Pagenor Project Page…", None, "{} — opens Pagenor's repository"),
+    ("help.app", "Pagenor Project Page…", None, "{app: pagenor} — opens Pagenor's repository"),
     (
         "help.about",
         "About Pagenor",
@@ -664,21 +664,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.brightness",
         ],
     ),
-    (
-        "Help",
-        &[
-            "ui:help.discord",
-            "-",
-            "ui:help.appPage",
-            "ui:help.github",
-            "ui:help.issues",
-            "ui:help.website",
-            "-",
-            "cmd:file.newSample",
-            "-",
-            "ui:help.about",
-        ],
-    ),
+    ("Help", &["ui:help.github", "ui:help.issues", "-", "cmd:file.newSample", "-", "ui:help.about"]),
 ];
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
@@ -1295,13 +1281,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(json!(app.ui.about))
         }
         "help.app" => match p.get("app").and_then(Value::as_str) {
-            Some(slug) if !slug.is_empty() && slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
-                let url = format!("{}/apps/{slug}", pagenor_engine::links::WEBSITE);
+            Some(pagenor_engine::links::APP) => {
+                let url = pagenor_engine::links::GITHUB.to_string();
                 app.ui.pending_urls.push(url.clone());
                 Ok(json!({"url": url}))
             }
-            _ => Err("help.app: give `app` (e.g. \"photocraft\")".into()),
+            _ => Err("help.app: only the Pagenor project page is configured".into()),
         },
+        "help.discord" => Err("Pagenor has no configured community destination".into()),
         h if h.starts_with("help.") && pagenor_engine::links::get(&h[5..]).is_some() => {
             let url = pagenor_engine::links::get(&h[5..]).unwrap_or_default().to_string();
             app.ui.pending_urls.push(url.clone());
@@ -1709,6 +1696,12 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "help.about" || id == "help.app" {
+        return true;
+    }
+    if let Some(key) = id.strip_prefix("help.") {
+        return pagenor_engine::links::get(key).is_some();
+    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.");
     }
@@ -2007,6 +2000,21 @@ pub fn quick_apply_items(session: &pagenor_engine::Session, query: &str) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_help_works_without_a_document_and_unconfigured_links_do_not_open() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        assert!(menu_enabled(&app, "help.github"));
+        assert!(menu_enabled(&app, "help.issues"));
+        assert!(menu_enabled(&app, "help.about"));
+        assert!(!menu_enabled(&app, "help.discord"));
+        run_ui(&mut app, "help.github", &json!({})).unwrap().unwrap();
+        assert_eq!(app.ui.pending_urls, [pagenor_engine::links::GITHUB]);
+        app.ui.pending_urls.clear();
+        assert!(run_ui(&mut app, "help.discord", &json!({})).unwrap().is_err());
+        assert!(run_ui(&mut app, "help.app", &json!({"app": "other-app"})).unwrap().is_err());
+        assert!(app.ui.pending_urls.is_empty());
+    }
 
     fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
         for it in items {

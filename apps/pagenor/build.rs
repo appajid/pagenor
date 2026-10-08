@@ -16,7 +16,7 @@ fn main() {
     res.set_icon("../../assets/app-icon/pagenor.ico")
         .set("ProductName", "Pagenor")
         .set("FileDescription", "Pagenor page layout")
-        .set("CompanyName", "Learning Machines LLC")
+        .set("CompanyName", "Appaji Ambarisha")
         .set("LegalCopyright", "Copyright (c) the Pagenor authors. MIT OR Apache-2.0.")
         .set("OriginalFilename", "pagenor.exe")
         .set("InternalName", "pagenor");

@@ -1,13 +1,15 @@
 //! Workspace tooling: `cargo xtask <command>`.
 //!
-//! Pure Rust (std + serde_json). External tools (`cargo`, `curl`, `tar`) are
+//! Rust tooling (std, serde_json and resvg). External tools (`cargo`, `curl`, `tar`) are
 //! invoked through `std::process::Command`.
 
 mod assets;
+mod icns;
 mod ico;
 mod layers;
 mod parity;
 mod stats;
+mod svg;
 mod version;
 
 use std::path::{Path, PathBuf};
@@ -20,11 +22,15 @@ commands:
   assets          check that every icon/image/font/asset is attributed in ASSETS.md
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
-  ci              fmt --check, clippy -D warnings, test, assets, layers, wasm (stops at first failure)
+  ci              fmt --check, check, clippy -D warnings, test, assets, layers, wasm (stops at first failure)
   corpus [--download]
                   show where test corpora live; --download fetches PngSuite into corpus/pngsuite
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
   parity          recompute the InDesign feature-parity summary in docs/parity.md
+  svg <in.svg> <out.png|out.svg> <max-side>
+                  render artwork or outline SVG text for portable branding
+  icns <out.icns> <in.png>...
+                  pack PNGs into a macOS ICNS on any host platform
   ico <out.ico> <in.png>...
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
 ";
@@ -33,6 +39,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
+        Some("svg") => svg::run(&rest),
         Some("assets") => assets::run(&root()),
         Some("layers") => cmd_layers(),
         Some("wasm") => cmd_wasm(),
@@ -40,6 +47,7 @@ fn main() -> ExitCode {
         Some("corpus") => cmd_corpus(rest.contains(&"--download")),
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
         Some("parity") => parity::run(&root()),
+        Some("icns") => icns::run(&rest),
         Some("ico") => ico::run(&rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
@@ -117,15 +125,18 @@ fn cmd_layers() -> Result<(), String> {
 }
 
 /// Workspace packages that must build for wasm32: all L0–L5 crates plus
-/// the egui shell.
+/// the egui shell and the actual web application.
 fn wasm_set() -> Result<Vec<String>, String> {
     let crates = layers::from_metadata(&metadata()?)?;
     Ok(crates
         .into_iter()
-        .filter(|c| match layers::classify(&c.name) {
-            Some(layers::Class::Layer(l)) => l <= 5 || layers::short_name(&c.name) == "ui-egui",
-            Some(layers::Class::Standalone) => true,
-            _ => false,
+        .filter(|c| {
+            c.name == "pagenor-web"
+                || match layers::classify(&c.name) {
+                    Some(layers::Class::Layer(l)) => l <= 5 || layers::short_name(&c.name) == "ui-egui",
+                    Some(layers::Class::Standalone) => true,
+                    _ => false,
+                }
         })
         .map(|c| c.name)
         .collect())
@@ -136,8 +147,8 @@ fn cmd_wasm() -> Result<(), String> {
     let mut results = Vec::new();
     for pkg in &set {
         let mut c = cargo();
-        c.args(["check", "--target", "wasm32-unknown-unknown", "-p", pkg]);
-        let ok = run(c, &format!("cargo check --target wasm32-unknown-unknown -p {pkg}")).is_ok();
+        c.args(["check", "--locked", "--target", "wasm32-unknown-unknown", "-p", pkg]);
+        let ok = run(c, &format!("cargo check --locked --target wasm32-unknown-unknown -p {pkg}")).is_ok();
         results.push((pkg.clone(), ok));
     }
     println!("\nwasm32-unknown-unknown check:");
@@ -160,19 +171,27 @@ fn cmd_ci() -> Result<(), String> {
             }),
         ),
         (
+            "check",
+            Box::new(|| {
+                let mut c = cargo();
+                c.args(["check", "--locked", "--workspace", "--all-targets"]);
+                run(c, "cargo check --locked --workspace --all-targets")
+            }),
+        ),
+        (
             "clippy",
             Box::new(|| {
                 let mut c = cargo();
-                c.args(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]);
-                run(c, "cargo clippy --workspace --all-targets -- -D warnings")
+                c.args(["clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]);
+                run(c, "cargo clippy --locked --workspace --all-targets -- -D warnings")
             }),
         ),
         (
             "test",
             Box::new(|| {
                 let mut c = cargo();
-                c.args(["test", "--workspace"]);
-                run(c, "cargo test --workspace")
+                c.args(["test", "--locked", "--workspace"]);
+                run(c, "cargo test --locked --workspace")
             }),
         ),
         ("assets", Box::new(|| assets::run(&root()))),

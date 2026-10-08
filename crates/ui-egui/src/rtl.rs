@@ -485,7 +485,9 @@ mod tests {
                 let galley = plain(ctx, &text, FontId::proportional(15.0), Color32::WHITE);
                 let glyphs = &galley.rows[0].glyphs;
                 let x = |c| glyphs.iter().find(|g| g.chr == c && g.advance_width > 0.0).unwrap().pos.x;
-                assert!(x('ج') < x('P') && x('P') < x('ف'), "Arabic name must keep its internal RTL order");
+                // The brand also starts with P: select the PDF run inside the isolated name.
+                let pdf_x = glyphs.windows(3).find(|run| run.iter().map(|g| g.chr).eq(['P', 'D', 'F'])).unwrap()[0].pos.x;
+                assert!(x('ج') < pdf_x && pdf_x < x('ف'), "Arabic name must keep its internal RTL order");
                 assert_eq!(galley.job.text, text);
             }
         });

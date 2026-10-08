@@ -2,7 +2,9 @@
 name = "pagenor-textimport"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor text import: plain text, Word (.docx) and RTF into stories"
 
 [lints]

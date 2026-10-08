@@ -7,8 +7,8 @@ default-members = ["crates/*", "apps/pagenor", "apps/pagenor-cli", "xtask"]
 version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
-# repository = set when the Pagenor repository is published
+rust-version = "1.95"
+repository = "https://github.com/appajid/pagenor"
 
 [workspace.dependencies]
 # internal

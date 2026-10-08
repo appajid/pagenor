@@ -2,7 +2,9 @@
 name = "pagenor-fonts"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor fonts: font database (bundled OFL + system), metrics, glyph outlines, shaping"
 
 [lints]
@@ -19,3 +21,6 @@ harfrust = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-script = { workspace = true }
 log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-text = "22"

@@ -2,7 +2,9 @@
 name = "pagenor-epub"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor EPUB 3 (reflowable) export: stories in reading order, CSS from styles, images"
 
 [lints]

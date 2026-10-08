@@ -37,12 +37,10 @@ impl NativeMenu {
         let mut counter = 0usize;
         // Application menu.
         let app_menu = Submenu::new("Pagenor", true);
-        // Our own About splash (with the community links) instead of the stock panel.
-        let about = MenuItem::with_id("dc-about", "About Pagenor", true, None);
-        let discord = MenuItem::with_id("dc-discord", "Join the ArtCraft Discord…", true, None);
+        // The branded About view instead of the stock panel.
+        let about = MenuItem::with_id("pagenor-about", "About Pagenor", true, None);
         let _ = app_menu.append_items(&[
             &about,
-            &discord,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(None),
             &PredefinedMenuItem::separator(),
@@ -52,8 +50,7 @@ impl NativeMenu {
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::quit(None),
         ]);
-        items.insert("dc-about".into(), ("help.about".into(), serde_json::Value::Null, Handle::Plain(about)));
-        items.insert("dc-discord".into(), ("help.discord".into(), serde_json::Value::Null, Handle::Plain(discord)));
+        items.insert("pagenor-about".into(), ("help.about".into(), serde_json::Value::Null, Handle::Plain(about)));
         let _ = menu.append(&app_menu);
         for (title, entries) in menus::menu_tree() {
             let sub = Submenu::new(pagenor_ui_egui::i18n::tr(&app.ui.language, title), true);
@@ -109,7 +106,7 @@ fn build(app: &DesignApp, parent: &Submenu, entries: &[Item], items: &mut HashMa
             }
             Item::Cmd { label, id, params, shortcut } => {
                 *counter += 1;
-                let mid = format!("dc{counter}");
+                let mid = format!("pagenor-{counter}");
                 let sc = if params.is_null() { shortcut.and_then(accel) } else { None };
                 let label = pagenor_ui_egui::i18n::tr(&app.ui.language, label);
                 let handle = if menus::checked(app, id, params).is_some() {

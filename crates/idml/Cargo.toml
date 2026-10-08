@@ -2,7 +2,9 @@
 name = "pagenor-idml"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor IDML (InDesign Markup Language) import and export"
 
 [lints]

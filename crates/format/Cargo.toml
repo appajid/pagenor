@@ -2,7 +2,9 @@
 name = "pagenor-format"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor native file format: zip with document.json and embedded assets; versioned"
 
 [lints]

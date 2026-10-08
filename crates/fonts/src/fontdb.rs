@@ -334,6 +334,9 @@ pub struct FontDb {
     /// The folders the system font scan reads (the platform's font folders for [`FontDb::global`]).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     font_dirs: Vec<std::path::PathBuf>,
+    /// Query the host registry only for a system database, never for explicit font folders.
+    #[cfg(target_os = "macos")]
+    host_fonts: bool,
     /// Set once the font folders have been scanned. Lookups by family name wait for the first
     /// scan, so what they find doesn't depend on what ran before them.
     #[cfg(not(target_arch = "wasm32"))]
@@ -509,15 +512,14 @@ fn face_names(f: &skrifa::FontRef<'_>) -> Option<(String, String)> {
 }
 
 /// The names and font menu group of every face in the font file at `path`, reading only its table
-/// directories and the tables that name and classify it (`name`, `OS/2`, `meta`; `cmap` only for a
+/// directories and the tables that name and classify it (`name`, `OS/2`, `meta`, `fvar`; `cmap` only for a
 /// font that declares no language or code page): a scan opens hundreds of font files, many of them
-/// megabytes long. A variable font is cataloged under its default style; its named instances
-/// appear once it loads.
+/// megabytes long. Variable named instances are cataloged from `fvar` without loading outlines.
 #[cfg(not(target_arch = "wasm32"))]
 fn file_face_names(path: &std::path::Path) -> Vec<ScannedFace> {
     use std::io::{Read, Seek, SeekFrom};
     /// Caps on what a (possibly damaged) file can make the scan read.
-    const MAX_FACES: u32 = 256;
+    const MAX_FACES: u32 = 1024;
     const MAX_NAME_TABLE: u32 = 1 << 20;
     const MAX_SMALL_TABLE: u32 = 64 << 10;
     const MAX_CMAP: u32 = 4 << 20;
@@ -539,35 +541,41 @@ fn file_face_names(path: &std::path::Path) -> Vec<ScannedFace> {
     };
     starts
         .into_iter()
-        .filter_map(|start| {
-            let dir = read_at(start.into(), 12)?;
-            let tables = u16::from_be_bytes(dir.get(4..6)?.try_into().ok()?) as usize;
-            let records = read_at(u64::from(start) + 12, tables * 16)?;
-            // Table `tag`, unless missing or over `max` bytes.
-            let mut table = |tag: &[u8; 4], max: u32| -> Option<([u8; 4], Vec<u8>)> {
-                let rec = records.as_chunks::<16>().0.iter().find(|r| r.starts_with(tag))?;
-                let (offset, len) = (be32(rec, 8)?, be32(rec, 12)?);
-                if len > max {
-                    return None;
-                }
-                Some((*tag, read_at(offset.into(), len as usize)?))
+        .flat_map(|start| {
+            let mut scan = || -> Option<Vec<ScannedFace>> {
+                let dir = read_at(start.into(), 12)?;
+                let tables = u16::from_be_bytes(dir.get(4..6)?.try_into().ok()?) as usize;
+                let records = read_at(u64::from(start) + 12, tables * 16)?;
+                // Table `tag`, unless missing or over `max` bytes.
+                let mut table = |tag: &[u8; 4], max: u32| -> Option<([u8; 4], Vec<u8>)> {
+                    let rec = records.as_chunks::<16>().0.iter().find(|r| r.starts_with(tag))?;
+                    let (offset, len) = (be32(rec, 8)?, be32(rec, 12)?);
+                    if len > max {
+                        return None;
+                    }
+                    Some((*tag, read_at(offset.into(), len as usize)?))
+                };
+                // A font holding just these tables, to read them as the font itself would.
+                let mut found = vec![table(b"name", MAX_NAME_TABLE)?];
+                found.extend(table(b"OS/2", MAX_SMALL_TABLE));
+                found.extend(table(b"meta", MAX_SMALL_TABLE));
+                found.extend(table(b"fvar", MAX_NAME_TABLE));
+                let font = crate::group::sfnt(found.clone())?;
+                let f = skrifa::FontRef::new(&font).ok()?;
+                let (family, style) = face_names(&f)?;
+                let (group, native) = match crate::group::declared_group(&f) {
+                    Some(g) => (g, crate::group::classify(&f, &family).1),
+                    None => {
+                        found.extend(table(b"cmap", MAX_CMAP));
+                        let font = crate::group::sfnt(found)?;
+                        crate::group::classify(&skrifa::FontRef::new(&font).ok()?, &family)
+                    }
+                };
+                let styles: Vec<String> = f.named_instances().iter().filter_map(|ni| name(&f, &[ni.subfamily_name_id()])).collect();
+                let styles = if styles.is_empty() { vec![style] } else { styles };
+                Some(styles.into_iter().map(|style| ScannedFace { family: family.clone(), style, group, native: native.clone() }).collect())
             };
-            // A font holding just these tables, to read them as the font itself would.
-            let mut found = vec![table(b"name", MAX_NAME_TABLE)?];
-            found.extend(table(b"OS/2", MAX_SMALL_TABLE));
-            found.extend(table(b"meta", MAX_SMALL_TABLE));
-            let font = crate::group::sfnt(found.clone())?;
-            let f = skrifa::FontRef::new(&font).ok()?;
-            let (family, style) = face_names(&f)?;
-            let (group, native) = match crate::group::declared_group(&f) {
-                Some(g) => (g, crate::group::classify(&f, &family).1),
-                None => {
-                    found.extend(table(b"cmap", MAX_CMAP));
-                    let font = crate::group::sfnt(found)?;
-                    crate::group::classify(&skrifa::FontRef::new(&font).ok()?, &family)
-                }
-            };
-            Some(ScannedFace { family, style, group, native })
+            scan().unwrap_or_default()
         })
         .collect()
 }
@@ -771,11 +779,24 @@ impl FontDb {
             #[cfg(not(target_arch = "wasm32"))]
             catalog: RwLock::new(Vec::new()),
             font_dirs,
+            #[cfg(target_os = "macos")]
+            host_fonts: false,
             #[cfg(not(target_arch = "wasm32"))]
             cataloged: std::sync::OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             sys: Mutex::new(SysFallback { enabled: true, ..Default::default() }),
         }
+    }
+
+    /// Bundled fonts plus installed fonts, including macOS-activated fonts outside standard folders.
+    pub fn with_system_fonts() -> Self {
+        #[allow(unused_mut)]
+        let mut db = Self::with_font_dirs(system_font_dirs());
+        #[cfg(target_os = "macos")]
+        {
+            db.host_fonts = true;
+        }
+        db
     }
 
     /// Enable or disable the lazy system-font fallback for characters the loaded fonts lack
@@ -794,7 +815,7 @@ impl FontDb {
     /// [`FontDb::scan_in_background`]).
     pub fn global() -> &'static FontDb {
         static DB: std::sync::OnceLock<FontDb> = std::sync::OnceLock::new();
-        DB.get_or_init(|| FontDb::with_font_dirs(system_font_dirs()))
+        DB.get_or_init(Self::with_system_fonts)
     }
 
     fn read_faces(&self) -> std::sync::RwLockReadGuard<'_, Vec<Arc<FontFace>>> {
@@ -898,10 +919,23 @@ impl FontDb {
     fn scan_font_dirs(&self) -> usize {
         let mut found = Vec::new();
         let mut stack = self.font_dirs.clone();
+        #[cfg(target_os = "macos")]
+        if self.host_fonts {
+            stack.extend(crate::macos::activated_font_paths());
+        }
+        // Stable precedence and one visit per physical file, including registry/directory overlap.
+        stack.sort();
+        stack.reverse();
         // Each folder once, however links lead back to it.
         let mut visited = std::collections::HashSet::new();
         while let Some(d) = stack.pop() {
             if !visited.insert(std::fs::canonicalize(&d).unwrap_or_else(|_| d.clone())) {
+                continue;
+            }
+            if d.is_file() {
+                for f in file_face_names(&d) {
+                    found.push(CatalogEntry { family: f.family, style: f.style, path: d.clone(), group: f.group, native: f.native });
+                }
                 continue;
             }
             let Ok(rd) = std::fs::read_dir(&d) else { continue };
@@ -915,11 +949,11 @@ impl FontDb {
                 if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
                     continue;
                 }
-                for f in file_face_names(&p) {
-                    found.push(CatalogEntry { family: f.family, style: f.style, path: p.clone(), group: f.group, native: f.native });
-                }
+                stack.push(p);
             }
         }
+        found.sort_by_cached_key(|f| (f.family.to_lowercase(), f.style.to_lowercase(), f.path.clone()));
+        found.dedup_by(|a, b| a.family.eq_ignore_ascii_case(&b.family) && a.style.eq_ignore_ascii_case(&b.style));
         let n = found.len();
         log::debug!("cataloged {n} system font faces");
         *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;

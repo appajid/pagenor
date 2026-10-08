@@ -1,13 +1,13 @@
-Pagenor app icon (pagenor.svg, pagenor-small.svg and every file derived from them in
-this directory: pagenor-1024.png, pagenor-macos-512.png, pagenor.icns, pagenor.ico,
-hicolor/).
+Pagenor branding assets
 
-Original artwork made for this project by the project owner in ArtCraft, then vectorised. No
-third-party material. Licensed like the rest of Pagenor, under either of
+Copyright (c) 2026 Appaji Ambarisha.
+Pagenor branding rights holder: Appaji Ambarisha.
+Source: Pagenor_SVG_Assets.zip and Pagenor_Splash_About_Editable_SVG.zip, supplied by Appaji Ambarisha on 2026-10-08.
 
-  * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
-  * MIT license (https://opensource.org/licenses/MIT)
+Appaji Ambarisha reserves rights in the supplied icons, symbols and logos.
+These branding assets are authorised for use in Pagenor and distribution with
+Pagenor. They are not licensed under the software's MIT OR Apache-2.0 terms.
+No other rights in the artwork or branding are granted by the software licence.
 
-at your option.
-
-Regenerate the derived files with packaging/icons.sh.
+This applies to the supplied SVGs in assets/brand, the runtime derivatives,
+and all derived icons in assets/app-icon. Regenerate with packaging/icons.sh.

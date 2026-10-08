@@ -164,3 +164,92 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn all_sfnt_extensions_and_duplicate_files_remain_lazy() {
+    let dir = font_dir("extensions");
+    let regular = renamed("SourceSans3-Regular.ttf");
+    for ext in ["otf", "OTF", "ttc", "OTC"] {
+        let data = if ext.eq_ignore_ascii_case("ttc") || ext.eq_ignore_ascii_case("otc") {
+            collection(std::slice::from_ref(&regular))
+        } else {
+            regular.clone()
+        };
+        std::fs::write(dir.join(format!("duplicate.{ext}")), data).unwrap();
+    }
+    let db = FontDb::with_font_dirs(vec![dir.clone(), dir.join("Sub")]);
+    assert_eq!(db.load_system_fonts(), 2);
+    assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+    assert!(!db.is_loaded(FAMILY));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn named_instances_are_cataloged_before_loading() {
+    use crate::testing::{with_names, with_tables};
+    let dir = font_dir("variable-catalog");
+    let font = with_names(
+        &renamed("SourceSans3-Regular.ttf"),
+        &[
+            (3, 1, 0x409, 1, FAMILY),
+            (3, 1, 0x409, 2, "Regular"),
+            (3, 1, 0x409, 256, "Weight"),
+            (3, 1, 0x409, 257, "Light"),
+            (3, 1, 0x409, 258, "Heavy"),
+        ],
+    )
+    .unwrap();
+    let mut fvar = Vec::new();
+    for value in [1u16, 0, 16, 2, 1, 20, 2, 8] {
+        fvar.extend_from_slice(&value.to_be_bytes());
+    }
+    fvar.extend_from_slice(b"wght");
+    for value in [100i32, 400, 900] {
+        fvar.extend_from_slice(&(value << 16).to_be_bytes());
+    }
+    fvar.extend_from_slice(&0u16.to_be_bytes());
+    fvar.extend_from_slice(&256u16.to_be_bytes());
+    for (id, weight) in [(257u16, 300i32), (258, 900)] {
+        fvar.extend_from_slice(&id.to_be_bytes());
+        fvar.extend_from_slice(&0u16.to_be_bytes());
+        fvar.extend_from_slice(&(weight << 16).to_be_bytes());
+    }
+    let font = with_tables(&font, vec![(*b"fvar", fvar)]).unwrap();
+    std::fs::remove_file(dir.join("Sysfont-Regular.ttf")).unwrap();
+    std::fs::remove_file(dir.join("Sub/Sysfont-Bold.TTF")).unwrap();
+    std::fs::write(dir.join("variable.otf"), font).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    assert_eq!(db.styles(FAMILY), ["Light", "Heavy"]);
+    assert!(!db.is_loaded(FAMILY));
+    assert_eq!(db.face(FAMILY, "Heavy").style, "Heavy");
+    assert!(db.face(FAMILY, "Heavy").is_variable());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn host_registry_fonts_are_cataloged_without_loading() {
+    let paths = crate::macos::activated_font_paths();
+    assert!(!paths.is_empty(), "Core Text should report installed fonts on macOS");
+    let folder_families = FontDb::with_font_dirs(system_font_dirs()).families();
+    let bundled_families = FontDb::with_font_dirs(vec![]).families();
+    let db = FontDb::with_system_fonts();
+    // Verify every readable SFNT face in the host registry reaches the menu catalogue.
+    let infos = db.scoped(0).family_infos();
+    let added: Vec<_> = infos.iter().filter(|info| !folder_families.contains(&info.family)).map(|info| &info.family).collect();
+    eprintln!("Core Text reports {} files; registry adds {} families beyond directory scanning: {added:?}", paths.len(), added.len());
+    let mut usable = 0;
+    for path in paths {
+        let faces = file_face_names(&path);
+        if faces.is_empty() {
+            eprintln!("No usable SFNT metadata: {}", path.display());
+        }
+        for face in faces {
+            usable += 1;
+            assert!(infos.iter().any(|info| info.family.eq_ignore_ascii_case(&face.family)), "{}: {}", path.display(), face.family);
+            assert!(db.styles(&face.family).iter().any(|style| style.eq_ignore_ascii_case(&face.style)));
+            assert!(!db.is_loaded(&face.family) || bundled_families.contains(&face.family));
+        }
+    }
+    assert!(usable > 0);
+}

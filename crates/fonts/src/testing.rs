@@ -106,7 +106,7 @@ fn assemble(font: &[u8], mut tables: Vec<([u8; 4], Vec<u8>)>) -> Option<Vec<u8>>
 }
 
 /// `font` with `tables` added, each replacing the table of its tag. `None` if `font` can't be read.
-fn with_tables(font: &[u8], tables: Vec<([u8; 4], Vec<u8>)>) -> Option<Vec<u8>> {
+pub(crate) fn with_tables(font: &[u8], tables: Vec<([u8; 4], Vec<u8>)>) -> Option<Vec<u8>> {
     let mut all = tables_of(font)?;
     all.retain(|(tag, _)| !tables.iter().any(|(t, _)| t == tag));
     all.extend(tables);

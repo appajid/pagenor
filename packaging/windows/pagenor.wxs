@@ -4,31 +4,26 @@
 
     wix build pagenor.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
-  Per-machine install into Program Files, a Start Menu shortcut, `.pcraft` owned by Pagenor,
-  and Pagenor offered under "Open with" for PSD/PSB and the image formats it reads (without
-  taking over the user's default app for them).
+  Per-machine install into Program Files with a Start Menu shortcut.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
       Name="Pagenor"
-      Manufacturer="Learning Machines LLC"
+      Manufacturer="Appaji Ambarisha"
       Version="$(var.Version)"
-      UpgradeCode="49E87D30-BB68-4896-AA1D-F45C833CFC3C"
+      UpgradeCode="19F2117E-82B7-5119-851F-D573BE3EE68E"
       Scope="perMachine"
       Compressed="yes"
       Language="1033">
-    <SummaryInformation Description="Pagenor page layout and publishing" Manufacturer="Learning Machines LLC" />
+    <SummaryInformation Description="Pagenor page layout and publishing" Manufacturer="Appaji Ambarisha" />
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
         DowngradeErrorMessage="A newer version of Pagenor is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Icon Id="DesigncraftIcon.ico" SourceFile="$(var.IconPath)" />
-    <Property Id="ARPPRODUCTICON" Value="DesigncraftIcon.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps/pagenor" />
-    <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/pagenor" />
-    <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
+    <Icon Id="PagenorIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="PagenorIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Pagenor" />
@@ -36,24 +31,24 @@
     <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="Main" Title="Pagenor" Level="1">
-      <ComponentGroupRef Id="DesigncraftFiles" />
+      <ComponentGroupRef Id="PagenorFiles" />
     </Feature>
   </Package>
 
   <Fragment>
-    <ComponentGroup Id="DesigncraftFiles" Directory="INSTALLFOLDER">
-      <Component Id="DesigncraftApp" Guid="DE018EF3-EE87-4E36-9F76-0B7B060A195E">
-        <File Id="DesigncraftExe" Source="$(var.BinDir)\pagenor.exe" KeyPath="yes">
+    <ComponentGroup Id="PagenorFiles" Directory="INSTALLFOLDER">
+      <Component Id="PagenorApp" Guid="54E2E178-B8D0-54DC-B725-D4F32DDA891F">
+        <File Id="PagenorExe" Source="$(var.BinDir)\pagenor.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Pagenor"
               Description="Pagenor page layout and publishing" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
-              Icon="DesigncraftIcon.ico" IconIndex="0" />
+              Icon="PagenorIcon.ico" IconIndex="0" />
         </File>
 
-        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pagenor.exe" Value="[#DesigncraftExe]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pagenor.exe" Value="[#PagenorExe]" Type="string" />
       </Component>
 
-      <Component Id="DesigncraftCli">
-        <File Id="DesigncraftCliExe" Source="$(var.BinDir)\pagenor-cli.exe" KeyPath="yes" />
+      <Component Id="PagenorCli">
+        <File Id="PagenorCliExe" Source="$(var.BinDir)\pagenor-cli.exe" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

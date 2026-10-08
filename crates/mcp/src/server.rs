@@ -136,11 +136,10 @@ impl Server {
                     "capabilities": {"tools": {}, "resources": {}},
                     "serverInfo": {"name": "pagenor", "title": "Pagenor", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": pagenor_engine::links::APP_PAGE},
                     "instructions": format!(
-                        "{INSTRUCTIONS} Backend: {}. Community: {} (Discord), {} (app page), {} (source). The `app.links` command returns these links.",
+                        "{INSTRUCTIONS} Backend: {}. Project: {}. Issues: {}. The `app.links` command returns configured links.",
                         self.backend.describe(),
-                        pagenor_engine::links::DISCORD,
-                        pagenor_engine::links::APP_PAGE,
-                        pagenor_engine::links::GITHUB
+                        pagenor_engine::links::GITHUB,
+                        pagenor_engine::links::ISSUES
                     ),
                 }))
             }

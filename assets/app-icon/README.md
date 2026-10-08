@@ -1,50 +1,41 @@
-# Pagenor app icon
+# Pagenor app icons and branding
 
-**A calico cat wearing a polka-dot scarf**, as an engraving-style head-and-shoulders portrait in the
-Crafting Apps' owl-template framing: a full-bleed colour field, the cat in three-quarter view, its
-shoulders running off the bottom edge.
+Pagenor branding rights belong to Appaji Ambarisha. The supplied artwork is preserved
+in `assets/brand/` from `Pagenor_SVG_Assets.zip` and
+`Pagenor_Splash_About_Editable_SVG.zip` (2026-10-08). Branding rights are
+reserved; see `LICENSE.txt`. Existing software and upstream notices remain applicable.
 
-## Palette
+The supplied splash design appears on wide start screens and during web loading.
+The start-screen wordmark adapts to light/dark mode; About uses the supplied page
+artwork with the actual build version, plus Contributors and Models tabs. The original
+wordmarks contain text; runtime derivatives outline that text to preserve its
+appearance on macOS, Windows, Linux and WASM without needing Arial installed.
 
-Exactly three colours:
+`pagenor.svg` uses the supplied light app tile; `pagenor-small.svg` uses the small
+variant. Dark and monochrome alternatives are retained in `assets/brand/`.
+The tiles have a 192 × 192 viewBox. macOS adds a transparent margin to fit its icon grid.
 
-| Colour | Hex | Used for |
-|---|---|---|
-| Ink | `#0b0b0c` | Line work and contour |
-| Paper | `#efe9dc` | The figure (the cat and its scarf) |
-| Pagenor green (app colour) | `#7bb51c` | The full-bleed background field |
+Generated files:
 
-## Geometry
+- `pagenor-1024.png`: full-size tile.
+- `pagenor-macos-512.png`: runtime macOS Dock icon.
+- `pagenor.icns`: macOS bundle icon.
+- `pagenor.ico`: Windows executable and installer icon (16–256 px).
+- `hicolor/<size>/apps/org.pagenor.app.png`: Linux icons, including the shared
+  Windows/Linux runtime icon at 256 px.
+- `hicolor/scalable/apps/org.pagenor.app.svg`: Linux scalable icon.
 
-A 512 × 512 viewBox, clipped to a rounded square with `rx=112`. Windows and Linux use the full tile. The
-macOS icons (`.icns`, `pagenor-macos-512.png`) sit on Apple's grid: an 824/1024 body with a
-transparent margin.
+Run `packaging/icons.sh` to regenerate with Cargo, the workspace resvg renderer,
+and portable ICO/ICNS packers on any host.
+Generated assets are checked into source control, so building Pagenor on another platform does not require these generation tools.
 
-## Provenance
+## Editing the artwork
 
-The owner drew the cat in ArtCraft. The 2880 px drawing, keyed to the three-colour palette, lives
-outside this repo in craftrules at `assets/app-icons/pagenor/source.png`. It was vectorised with
-craftrules' `assets/logo-options/_tools/vectorize_tile.py`: `pagenor.svg` is traced at 2048 px and
-`pagenor-small.svg` at 1024 px. Design rules: craftrules `standards/icon-design.md`.
-
-## Files
-
-| File | Use |
-|---|---|
-| `pagenor.svg` | Canonical artwork (about 680 KB) |
-| `pagenor-small.svg` | Lighter vector (about 350 KB); also `hicolor/scalable` |
-| `pagenor-1024.png` | 1024 px render of the full tile |
-| `pagenor-macos-512.png` | Runtime Dock icon on macOS (embedded by `apps/pagenor`) |
-| `pagenor.icns` | macOS bundle icon (`CFBundleIconFile`) |
-| `pagenor.ico` | Windows exe icon, 16–256 px (embedded by `apps/pagenor/build.rs`) |
-| `hicolor/<size>/apps/org.pagenor.app.png` | Linux icon theme, 16–512 px; the 256 px one is also the runtime window icon on Windows and Linux |
-| `hicolor/scalable/apps/org.pagenor.app.svg` | Linux scalable icon |
-| `LICENSE.txt` | MIT OR Apache-2.0 |
-
-The app ID is `org.pagenor.app`. It's used for the hicolor icon names, the Wayland app ID and
-`packaging/linux/org.pagenor.app.desktop`.
-
-## Regenerate
-
-Edit `pagenor.svg` (or `pagenor-small.svg`), then run `packaging/icons.sh`. It needs `resvg`, and
-`iconutil` for the `.icns` (macOS only). It packs the `.ico` with `cargo xtask ico`.
+The nine `Pagenor-*.svg` files are the exact supplied originals. The two
+`pagenor-*-editable.svg` screens are editable runtime adaptations: decorative window
+buttons and the sample loading bar are removed, branding attribution is updated,
+and About's placeholder version is omitted so Rust draws the current Cargo version.
+Edit these adapted screens when changing the running splash/About artwork.
+`runtime-*.svg` files are generated derivatives with text outlined for consistent
+rendering across platforms. Their names are deliberately different from the
+originals on both case-sensitive and case-insensitive filesystems.

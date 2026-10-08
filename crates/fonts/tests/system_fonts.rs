@@ -3,12 +3,12 @@
 // Integration tests: unwrapping and panicking on failure is fine here, unlike in shipped code.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use pagenor_fonts::{FontDb, system_font_dirs};
+use pagenor_fonts::FontDb;
 
 #[test]
 fn a_fresh_session_finds_installed_fonts_by_name() {
     let bundled = FontDb::with_font_dirs(vec![]).families();
-    let probe = FontDb::with_font_dirs(system_font_dirs());
+    let probe = FontDb::with_system_fonts();
     probe.load_system_fonts();
     // An installed family that isn't bundled and that loads.
     let installed = probe.families();

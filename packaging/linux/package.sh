@@ -34,7 +34,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export PAGENOR_MAINTAINER="${PAGENOR_MAINTAINER:-Pagenor maintainers <pagenor@storyteller.ai>}"
+export PAGENOR_MAINTAINER="${PAGENOR_MAINTAINER:-Appaji Ambarisha}"
 BASENAME="pagenor-$VERSION-linux-$ARCH"
 
 echo "==> Pagenor $VERSION for Linux $ARCH ($FORMATS)"

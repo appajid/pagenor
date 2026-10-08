@@ -2,14 +2,16 @@
 
 **Professional Publishing & Page Layout**
 
-Pagenor is an independent derivative of Pagenor, initially pinned to
-`f4a4c9709b7c552800f15ba3d1f0f68dd75fa165`.
+Pagenor is an independent open-source project. Its upstream origin and pinned
+revision are documented in [PAGENOR_UPSTREAM.md](PAGENOR_UPSTREAM.md).
 
 The project retains the upstream MIT/Apache-2.0 licensing and attribution.
 ArtCraft trademarks and brand assets are not used by Pagenor.
 
 Pagenor's principal development direction is a professional **Indic Publishing Engine**
 covering major Indic scripts and multilingual publishing.
+
+Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor).
 
 ## The sample magazine
 
@@ -103,71 +105,24 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 | L7 | `apps/pagenor`, `apps/pagenor-cli`, `apps/pagenor-web` |
 
 - **Status and milestones:** [ROADMAP.md](ROADMAP.md)
+- **Development phases and audit findings:** [PHASE_STATUS.md](PHASE_STATUS.md) and [issue register](docs/pagenor/ISSUES.md)
 - **Contributor and agent rules** (clean-room, asset policy, quality gates): [`AGENTS.md`](AGENTS.md)
 - **Bundled assets:** every one is listed with its licence in [`ASSETS.md`](ASSETS.md)
-- **App icon and colour:** a calico cat in a polka-dot scarf on Pagenor green `#7bb51c`; see [`assets/app-icon/`](assets/app-icon/README.md)
-
-## The Crafting Apps
-
-Pagenor is one of the **Crafting Apps**: free, open-source creative tools from the
-[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
-stand on its own.
-
-| | App | What it's for | Code | Learn more |
-|:-:|---|---|---|---|
-| <img src="https://raw.githubusercontent.com/storytold/photocraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.photocraft.png" alt="" width="32" height="32"> | **PhotoCraft** | Image editing: layers, masks, type and real PSD files | [GitHub](https://github.com/storytold/photocraft) | [Website](https://getartcraft.com/apps/photocraft) |
-| <img src="https://raw.githubusercontent.com/storytold/vectorcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png" alt="" width="32" height="32"> | **VectorCraft** | Vector illustration | [GitHub](https://github.com/storytold/vectorcraft) | [Website](https://getartcraft.com/apps/vectorcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/filmcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png" alt="" width="32" height="32"> | **FilmCraft** | Video editing, color and sound | [GitHub](https://github.com/storytold/filmcraft) | [Website](https://getartcraft.com/apps/filmcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/pagenor/main/assets/app-icon/hicolor/64x64/apps/org.pagenor.app.png" alt="" width="32" height="32"> | **Pagenor** | **Page layout and publishing · you are here** | [GitHub](https://github.com/storytold/pagenor) | [Website](https://getartcraft.com/apps/pagenor) |
-
-And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
-
-<br>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<h3 align="center">Come make things with us</h3>
-
-<p align="center">
-  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
-  set type, and people still figuring out what they like to make. Share what you're working on,
-  ask for help, tell us what's broken, or tell us what you wish these tools could do.
-  Whatever your medium and however long you've been at it, you're welcome here.
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
-  <a href="https://getartcraft.com/">getartcraft.com</a> ·
-  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/pagenor">Pagenor</a>
-</p>
+- **App icon and logo:** Appaji Ambarisha’s Pagenor page-fold symbol and blue wordmark; see [`assets/app-icon/`](assets/app-icon/README.md)
 
 ## License and credits
 
 Pagenor is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the Pagenor contributors. Required notices are in [NOTICE](NOTICE).
+Original upstream copyright and required notices are preserved in [NOTICE](NOTICE)
+and [PAGENOR_UPSTREAM.md](PAGENOR_UPSTREAM.md).
 
-Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
+Bundled fonts, icons, images and other assets keep their own licences; each one is listed
 with its author, source and license in [ASSETS.md](ASSETS.md).
 
 The bundled fonts, and the craft-fonts fonts embedded by release builds, are under the SIL Open
 Font License; all UI icons are drawn in code and are original.
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and Pagenor, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
+Pagenor branding belongs to Appaji Ambarisha. Branding rights are reserved under
+[assets/brand/LICENSE.txt](assets/brand/LICENSE.txt); the software remains open source.
 
 <sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. Pagenor is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
-
-<br>
-
-<p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
-</p>

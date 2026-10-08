@@ -2,7 +2,9 @@
 name = "pagenor-mcp"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor MCP server: JSON-RPC 2.0 over stdio, driving a running app or a headless session"
 
 [lints]

@@ -1,0 +1,13 @@
+Pagenor branding assets
+
+Copyright (c) 2026 Appaji Ambarisha.
+Pagenor branding rights holder: Appaji Ambarisha.
+Source: Pagenor_SVG_Assets.zip and Pagenor_Splash_About_Editable_SVG.zip, supplied by Appaji Ambarisha on 2026-10-08.
+
+Appaji Ambarisha reserves rights in the supplied icons, symbols and logos.
+These branding assets are authorised for use in Pagenor and distribution with
+Pagenor. They are not licensed under the software's MIT OR Apache-2.0 terms.
+No other rights in the artwork or branding are granted by the software licence.
+
+This applies to the supplied SVGs in assets/brand, the runtime derivatives,
+and all derived icons in assets/app-icon. Regenerate with packaging/icons.sh.

@@ -7,13 +7,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>DesignCraft</string>
+  <string>Pagenor</string>
   <key>CFBundleName</key>
-  <string>DesignCraft</string>
+  <string>Pagenor</string>
   <key>CFBundleExecutable</key>
-  <string>DesignCraft</string>
+  <string>Pagenor</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.designcraft</string>
+  <string>org.pagenor.app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -24,12 +24,12 @@
   <string>@SHORT_VERSION@</string>
   <key>CFBundleVersion</key>
   <string>@SHORT_VERSION@</string>
-  <key>DesignCraftVersion</key>
+  <key>PagenorVersion</key>
   <string>@VERSION@</string>
-  <key>DesignCraftBuildCommit</key>
+  <key>PagenorBuildCommit</key>
   <string>@BUILD_SHA@</string>
   <key>CFBundleIconFile</key>
-  <string>DesignCraft</string>
+  <string>Pagenor</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.graphics-design</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
@@ -43,29 +43,29 @@
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © the DesignCraft authors. MIT OR Apache-2.0.</string>
+  <string>Copyright © the Pagenor authors. MIT OR Apache-2.0.</string>
 
-  <!-- Designcraft's own format. -->
+  <!-- Pagenor's native format. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.designcraft.document</string>
+      <string>org.pagenor.app.document</string>
       <key>UTTypeDescription</key>
-      <string>DesignCraft Document</string>
+      <string>Pagenor Document</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
         <string>public.image</string>
       </array>
       <key>UTTypeIconFile</key>
-      <string>DesignCraft</string>
+      <string>Pagenor</string>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
-        <array><string>pcraft</string></array>
+        <array><string>pagenor</string></array>
         <key>public.mime-type</key>
-        <array><string>application/x-designcraft</string></array>
+        <array><string>application/vnd.pagenor+zip</string></array>
       </dict>
     </dict>
   </array>
@@ -90,7 +90,7 @@
     </dict>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.designcraft.qoi</string>
+      <string>org.pagenor.app.qoi</string>
       <key>UTTypeDescription</key>
       <string>QOI Image</string>
       <key>UTTypeConformsTo</key>

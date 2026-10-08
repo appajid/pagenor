@@ -150,7 +150,11 @@ const APP_ID: &str = "org.pagenor.app";
 /// The window, Dock, taskbar and Alt-Tab icon. macOS gets Apple's icon grid (transparent margin);
 /// elsewhere the full tile. Regenerate with `packaging/icons.sh`.
 fn app_icon() -> Option<egui::IconData> {
-    None
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../../../assets/app-icon/pagenor-macos-512.png").as_slice();
+    #[cfg(not(target_os = "macos"))]
+    let bytes = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/org.pagenor.app.png").as_slice();
+    eframe::icon_data::from_png_bytes(bytes).ok()
 }
 
 fn main() -> eframe::Result {

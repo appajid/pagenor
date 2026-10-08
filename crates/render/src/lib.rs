@@ -1214,7 +1214,8 @@ mod tests {
     fn renders_page_with_text_and_fill() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
-        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 576.0, 300.0), lid, "Hello Pagenor", ParaFormat::default()).unwrap();
+        let text = "Hello Pagenor";
+        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 576.0, 300.0), lid, text, ParaFormat::default()).unwrap();
         let id = pagenor_doc::ItemId(d.alloc());
         let mut box_ = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(36.0, 400.0, 136.0, 500.0)));
         box_.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
@@ -1231,7 +1232,7 @@ mod tests {
         let dark = (36..300).flat_map(|x| (36..60).map(move |y| (x, y))).filter(|&(x, y)| img.pixel(x, y)[0] < 100).count();
         assert!(dark > 50, "text pixels: {dark}");
         let _ = fid;
-        assert!(r.stats.glyphs >= 15);
+        assert_eq!(r.stats.glyphs, text.chars().filter(|c| !c.is_whitespace()).count());
     }
 
     #[test]

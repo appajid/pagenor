@@ -2,7 +2,9 @@
 name = "pagenor-engine"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor engine: session, documents, history, selection, command registry, tool hosting"
 
 [lints]

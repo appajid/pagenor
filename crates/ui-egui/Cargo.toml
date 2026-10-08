@@ -2,7 +2,9 @@
 name = "pagenor-ui-egui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Pagenor egui frontend (InDesign-style UI); swappable — nothing below depends on it"
 
 [lints]
@@ -15,6 +17,7 @@ pagenor-doc = { workspace = true }
 pagenor-fonts = { workspace = true }
 pagenor-compose = { workspace = true }
 pagenor-render = { workspace = true }
+pagenor-images = { workspace = true }
 pagenor-tools = { workspace = true }
 pagenor-engine = { workspace = true }
 unicode-bidi = { workspace = true }

@@ -13,14 +13,12 @@ release: 1
 section: graphics
 priority: optional
 maintainer: ${PAGENOR_MAINTAINER}
-vendor: Learning Machines LLC
-homepage: https://getartcraft.com/apps/pagenor
+vendor: Appaji Ambarisha
 license: MIT OR Apache-2.0
 description: |-
-  Open-source, native image editor that works the way Photoshop users expect.
-  Layers, masks, adjustment layers, layer styles, type and brushes; opens and
-  saves layered PSD/PSB files; 8/16/32-bit documents; GPU compositing (wgpu).
-  Includes pagenor-cli, a headless converter and command runner.
+  Open-source page-layout and publishing application written in Rust.
+  Lay out books, magazines and multilingual documents; exchange IDML and
+  export PDF and EPUB. Includes pagenor-cli for headless document operations.
 
 # The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here

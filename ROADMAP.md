@@ -1,5 +1,10 @@
 # Pagenor roadmap
 
+- P00.1: Phase-based validation now starts with a locked workspace quality gate,
+  macOS/Windows/Linux CI, Rust 1.95 metadata and a web-app WASM check. The local
+  baseline and remaining ownership/release findings are recorded in
+  `PHASE_STATUS.md` and `docs/pagenor/PHASE_00_REPORT.md`; Phase 00 is still in progress.
+
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.

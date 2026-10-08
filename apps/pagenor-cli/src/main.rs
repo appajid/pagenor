@@ -72,19 +72,14 @@ fn main() -> ExitCode {
         Some("bench") => report(perf::bench(&args[1..])),
         Some("links") => {
             use pagenor_engine::links::*;
-            outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
+            outln!("Project   {GITHUB}\nIssues    {ISSUES}");
             ExitCode::SUCCESS
         }
         _ => {
             eprintln!(
                 "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli links\n       pagenor-cli --version"
             );
-            eprintln!(
-                "\nCommunity: {}  ·  {}  ·  {}",
-                pagenor_engine::links::DISCORD,
-                pagenor_engine::links::APP_PAGE,
-                pagenor_engine::links::GITHUB
-            );
+            eprintln!("\nProject: {}  ·  Issues: {}", pagenor_engine::links::GITHUB, pagenor_engine::links::ISSUES);
             ExitCode::FAILURE
         }
     }
