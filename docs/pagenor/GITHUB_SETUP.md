@@ -28,8 +28,9 @@ GPU screenshot adapter is unavailable on this host.
 macOS, Windows and Linux checks, including WASM, plus Rust 1.95 on Linux.
 The source upload is complete and both prior GitHub README commits are preserved.
 [Initial run](https://github.com/appajid/pagenor/actions/runs/37766460875):
-macOS quality and minimum Rust 1.95 on Linux passed; Windows/Linux quality jobs
-are still running. Auxiliary packaging lint and FreeBSD runs exposed the findings
+macOS quality and minimum Rust 1.95 on Linux passed; Windows quality is still
+running. Linux quality exhausted the runner disk; CI now disables dev/test debug
+symbols and uses fresh cache keys (PG-0013), pending a successful rerun. Auxiliary packaging lint and FreeBSD runs exposed the findings
 recorded as PG-0011/PG-0012; their source fixes require remote reruns.
 Release verification remains a separate Phase 00/10 gate.
 
