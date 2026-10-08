@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.6: Replaced installed-font files now reload lazily using published file
+  versions. New glyphs, collection styles and named/custom variable instances
+  resolve current data; existing layout/document handles remain valid.
+  Identical bytes preserve identity, and stale loader results are rejected.
+  Windows/Linux private-memory API limits are documented; no new backend is claimed.
+
 - P01.5: macOS native font identities now support fonts without readable files.
   Core Text supplies bounded metadata for menus and glyph tables on demand;
   activation epochs prevent reuse after observed withdrawal/reactivation.

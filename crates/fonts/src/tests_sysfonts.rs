@@ -624,3 +624,119 @@ fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file
     assert_ne!(face.id(), restored.id());
     assert!(restored.covers('\u{e123}'));
 }
+
+#[test]
+fn changed_installed_bytes_refresh_on_use_without_changing_existing_handles() {
+    let dir = font_dir("changed-installed");
+    let installed = dir.join("installed");
+    let own = dir.join("Document Fonts");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::create_dir_all(&own).unwrap();
+    let family = "Pagenor Updated";
+    let file = installed.join("font.ttf");
+    std::fs::write(&file, crate::testing::font_with(family, &['a']).unwrap()).unwrap();
+    std::fs::write(own.join("own.ttf"), crate::testing::font_with(family, &['d']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    let original = db.face(family, "Regular");
+    let handle = FaceRef::of(&original);
+    let document = db.load_document_fonts(&own);
+    let document_face = db.scoped(document.scope).face(family, "Regular");
+    assert!(!original.covers('b'));
+    assert!(db.fallback_for('\u{e123}', original.id(), None).is_none());
+    std::fs::write(&file, crate::testing::font_with(family, &['a', 'b']).unwrap()).unwrap();
+    assert!(db.refresh_catalog(false).0);
+    // Discovery updates metadata; it must not reload all the fonts for menus.
+    assert!(Arc::ptr_eq(&original, &db.read_faces().iter().find(|f| f.family == family).unwrap().clone()));
+    let changed = db.face(family, "Regular");
+    assert!(changed.covers('b'), "a changed installed file must supply its new glyphs");
+    assert_ne!(changed.id(), original.id());
+    assert!(!original.covers('b') && !handle.covers('b'), "existing layout handles retain their original bytes");
+    assert!(Arc::ptr_eq(&document_face, &db.scoped(document.scope).face(family, "Regular")));
+    assert!(document_face.covers('d') && !document_face.covers('b'));
+    assert!(!db.refresh_catalog(false).0);
+    assert!(Arc::ptr_eq(&changed, &db.face(family, "Regular")));
+    db.load_system_fonts();
+    assert!(Arc::ptr_eq(&changed, &db.face(family, "Regular")), "an unchanged rescan keeps face identity");
+    std::fs::write(&file, b"damaged font").unwrap();
+    db.load_system_fonts();
+    assert!(Arc::ptr_eq(&changed, &db.face(family, "Regular")), "a damaged replacement preserves usable cached rendering");
+    std::fs::write(&file, crate::testing::font_with(family, &['a', 'b', 'c', '\u{e123}']).unwrap()).unwrap();
+    db.load_system_fonts();
+    let fallback = db.fallback_for('\u{e123}', original.id(), None).unwrap();
+    assert_eq!(fallback.family, family, "fallback loads the current bytes and retries earlier misses");
+    assert!(db.face(family, "Regular").covers('c'));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn replaced_collections_retire_old_styles_and_preserve_identical_variable_instances() {
+    let dir = font_dir("replaced-collection");
+    let installed = dir.join("Installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let file = installed.join("faces.ttc");
+    std::fs::write(&file, collection(&[renamed("SourceSans3-Regular.ttf"), renamed("SourceSans3-Bold.ttf")])).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    let regular = db.face(FAMILY, "Regular");
+    let bold = db.face(FAMILY, "Bold");
+    let variable = collection(&[named_instance_font()]);
+    std::fs::write(&file, &variable).unwrap();
+    assert!(db.refresh_catalog(false).0);
+    assert_eq!(db.styles(FAMILY), ["Light", "Heavy"]);
+    assert!(!db.is_loaded(FAMILY));
+    assert_eq!(db.axes(FAMILY, "Light")[0].0, "wght");
+    assert_eq!(db.face(FAMILY, "Heavy").weight, 900.0);
+    assert_ne!(regular.id(), db.face(FAMILY, "Regular").id());
+    assert_ne!(bold.id(), db.face(FAMILY, "Bold").id());
+    let custom = db.face(FAMILY, "Light {wght:450}");
+    let light = db.face(FAMILY, "Light");
+    let stamp = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, &variable).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(stamp + std::time::Duration::from_secs(2)))
+        .unwrap();
+    assert!(db.refresh_catalog(false).0);
+    assert!(Arc::ptr_eq(&light, &db.face(FAMILY, "Light")), "unchanged bytes retain the base face");
+    assert!(Arc::ptr_eq(&custom, &db.face(FAMILY, "Light {wght:450}")), "unchanged bytes retain custom instances");
+    let renamed = "Pagenor Renamed Collection";
+    std::fs::write(&file, collection(&[crate::testing::font_with(renamed, &['z']).unwrap()])).unwrap();
+    db.load_system_fonts();
+    assert!(!db.has_family(FAMILY), "superseded collection families cannot resolve from old cached data");
+    assert_eq!(db.face(renamed, "Regular").family, renamed);
+    std::fs::remove_file(&file).unwrap();
+    db.load_system_fonts();
+    assert!(!db.has_family(FAMILY), "removal must not resurrect an older collection version");
+    assert!(db.has_family(renamed), "the latest good installed cache retains its removal policy");
+    assert!(regular.covers('a') && bold.covers('a') && custom.weight == 450.0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn late_installed_reads_cannot_publish_superseded_or_removed_versions() {
+    let dir = font_dir("late-installed-read");
+    let installed = dir.join("Installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let family = "Pagenor Late Read";
+    let file = installed.join("font.ttf");
+    std::fs::write(&file, crate::testing::font_with(family, &['a']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    db.scan_report();
+    let (data, epoch) = db.read_installed(&file).unwrap();
+    let source = FontSource::Installed(file.clone());
+    let pending = db.new_faces_with_epoch(data.clone(), source.clone(), epoch);
+    let removed = db.new_faces_with_epoch(data.clone(), source.clone(), epoch);
+    assert!(!pending.is_empty());
+    std::fs::write(&file, crate::testing::font_with(family, &['a', 'b']).unwrap()).unwrap();
+    assert!(db.read_installed(&file).is_err(), "changed bytes cannot carry an older discovery version");
+    db.load_system_fonts();
+    assert!(db.new_faces_with_epoch(data, source, epoch).is_empty(), "a late completed read is rejected");
+    assert_eq!(db.insert_faces(pending), 0, "a late parsed face is rejected too");
+    assert!(!db.is_loaded(family));
+    std::fs::remove_file(&file).unwrap();
+    db.load_system_fonts();
+    assert_eq!(db.insert_faces(removed), 0, "removed files cannot be newly inserted from old requests");
+    assert!(!db.has_family(family));
+    std::fs::remove_dir_all(dir).unwrap();
+}

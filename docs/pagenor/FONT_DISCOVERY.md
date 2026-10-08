@@ -1,6 +1,6 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5.
+Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
@@ -239,8 +239,8 @@ including if an earlier request was still in flight. Existing layout handles
 remain valid; document-local scopes and their precedence remain unchanged.
 Provider errors become bounded diagnostics without blocking a concurrent scan.
 Activation/deactivation entirely between polls, or changed tables under an
-unchanged identity, cannot be identified by this snapshot scheme. Already-loaded
-installed-file replacement remains a separate open issue (PG-0106).
+unchanged identity, cannot be identified by this snapshot scheme. P01.6 below fixes already-loaded installed-file replacement (PG-0106).
+Unchanged native identities remain PG-0108.
 
 Validation uses a real Core Text font created from synthetic OFL-derived bytes
 in memory: its descriptor has no path and its tables reproduce the reference
@@ -276,3 +276,74 @@ is used. Adobe documents an Install family step for availability in other apps.
 References: [Apple font registration scopes](https://developer.apple.com/documentation/coretext/ctfontmanagerscope),
 [Apple table access](https://developer.apple.com/documentation/coretext/ctfontcopytable(_:_:_:)),
 [Adobe installation for other apps](https://helpx.adobe.com/uk/creative-cloud/apps/integration-with-other-apps/manage-fonts/install-fonts.html).
+
+
+## Replacing an installed font file (P01.6)
+
+A refreshed catalogue previously kept using old cached glyphs when an already-used
+font file changed. File-backed faces now carry a version matching the published
+file size and modification time. Metadata-only scans update these versions;
+glyph bytes stay lazy. The next explicit lookup, axes request or fallback loads
+the changed file and selects current family/style/instance data.
+
+A read checks the same open file before and after copying its bytes. Full reads
+use the existing 256 MiB document-font size ceiling, rejecting known oversized
+files before allocation and bounding reads if a file grows. File versions are
+checked again during parsing/insertion so an older request cannot publish after
+a newer scan or removal. Failures become bounded diagnostics with the existing
+nonblocking scan-lock policy. Native table-source epochs retain their P01.5 logic.
+
+Changed font bytes get new face IDs. Superseded collection families/styles leave
+the shared cache when current faces arrive; Arc/FaceRef handles already held by
+layouts remain valid. Document-local fonts retain precedence and their scopes.
+When timestamp changes correspond to identical bytes, the shared byte buffer is
+compared once and existing face/custom-instance handles retain their identity.
+A removed or metadata-rejected installed file keeps the latest usable cache under
+the established P01.3 policy. This does not deactivate an OS font or change Font Book.
+
+Three regressions verify glyph/fallback updates, document-handle preservation,
+unchanged rescans, metadata-rejected replacements and repair; collection family
+renames, style removal, named/custom variable instances and identical-byte reuse;
+and rejection of superseded reads/parsed faces and removed requests. The new-glyph
+regression failed before the fix. File changes preserving both size and timestamp
+remain invisible to metadata-only refresh; no continuous hashing is introduced.
+
+The final local quality gate passes all seven steps: 804 tests passed, none
+failed, three performance tests ignored, and all 16 WASM packages checked.
+Font-crate strict Clippy (including test targets) passes for Windows GNU and
+Linux GNU; the native Mac app build also passes. A fresh real UI picker probe
+resolves Pagenor Test1 from `/Library/Fonts/pagenor.ttf`, glyph A = 2, and verifies
+that an unchanged rescan keeps the same face. The host snapshot remains 800
+families / 3,774 faces / 946 files, 52 duplicates and zero rejected/unavailable
+paths; native-service/pathless counts are zero. This is not vendor activation
+evidence. No Font Book setting, dependency or unsafe policy was changed, and
+no GitHub upload or remote CI run was performed.
+
+## Windows/Linux temporary-font API investigation
+
+Microsoft explicitly specifies that AddFontMemResourceEx fonts are private to
+the caller and not enumerable. Loading a font into another application's RAM
+therefore does not make it a Windows system font accessible to Pagenor.
+DirectWrite GetSystemFontCollection represents installed fonts and can check
+for updates; its exposed font streams/tables are a possible complementary native
+source, not a way to enumerate another process's private fonts.
+
+The dwrote 0.11.5 safe API was inspected without adding it as a dependency.
+Its system-collection/font-face getters assert on native failures, and table /
+stream access copies a Vec before the caller can impose size limits. A Windows
+adapter requires a suitable fallible, bounded safe wrapper while preserving this
+repository's no-panic and unsafe-forbidden rules. No Windows memory backend was
+added, and no native Windows execution was performed on this Mac.
+
+Fontconfig provides application-specific sets and file locations; its ftface
+property can carry a FreeType face object. Inference: this is a pointer within
+the current process, not an IPC handle to fonts private to another application.
+The current Linux/FreeBSD adapter continues to discover configured physical
+locations. Vendor memory-font support requires an API that supplies a font to
+Pagenor's process, or session-visible registration where the host supports it.
+A concrete regional vendor/font is still needed for integration validation.
+
+References: [Microsoft memory-font scope](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-addfontmemresourceex),
+[DirectWrite system collection](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritefactory-getsystemfontcollection),
+[Fontconfig developer API](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-devel/),
+[dwrote safe API](https://docs.rs/dwrote/0.11.5/dwrote/).
