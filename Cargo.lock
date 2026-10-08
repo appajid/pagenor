@@ -1332,6 +1332,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontconfig"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d0e1eb4148faaf675053b7299bc5b4c041c8c0c724cf77844d6be8dd0ac5b9d"
+dependencies = [
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
 name = "fontconfig-parser"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2971,12 +2980,15 @@ name = "pagenor-fonts"
 version = "0.2.1"
 dependencies = [
  "core-text",
+ "fontconfig",
+ "fontconfig-parser",
  "harfrust 0.13.3",
  "kurbo",
  "log",
  "skrifa 0.47.0",
  "unicode-bidi",
  "unicode-script",
+ "winreg",
 ]
 
 [[package]]
@@ -5499,6 +5511,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "winresource"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5622,6 +5644,17 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yeslogic-fontconfig-sys"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d8b8abf912b9a29ff112e1671c97c33636903d13a69712037190e6805af4f76"
+dependencies = [
+ "dlib",
+ "once_cell",
+ "pkg-config",
+]
 
 [[package]]
 name = "yoke"

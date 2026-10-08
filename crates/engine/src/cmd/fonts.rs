@@ -46,21 +46,26 @@ fn scan_report(rescan: bool) -> Result<Value> {
             db.load_system_fonts();
         }
         let r = db.scan_report();
-        Ok(json!({
-            "roots": r.roots, "hostRegisteredFiles": r.host_registered_files,
-            "hostPathlessFaces": r.host_pathless_faces,
-            "filesScanned": r.files_scanned, "families": r.families, "faces": r.faces,
-            "duplicateFaces": r.duplicate_faces, "skippedFaces": r.skipped_faces,
-            "rejectedFiles": r.rejected_files, "unavailablePaths": r.unavailable_paths,
-            "issuesOmitted": r.issues_omitted,
-            "issues": r.issues.into_iter().map(|(path, reason)| json!({"path": path, "reason": reason})).collect::<Vec<_>>()
-        }))
+        Ok(report_value(r))
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = rescan;
         Err(bad("font.diagnostics", "Installed-font discovery requires the desktop application"))
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn report_value(r: pagenor_fonts::FontScanReport) -> Value {
+    json!({
+        "roots": r.roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(), "hostSource": r.host_source, "hostRegisteredFiles": r.host_registered_files,
+        "hostPathlessFaces": r.host_pathless_faces,
+        "filesScanned": r.files_scanned, "families": r.families, "faces": r.faces,
+        "duplicateFaces": r.duplicate_faces, "skippedFaces": r.skipped_faces,
+        "rejectedFiles": r.rejected_files, "unavailablePaths": r.unavailable_paths,
+        "issuesOmitted": r.issues_omitted,
+        "issues": r.issues.into_iter().map(|(path, reason)| json!({"path": path.to_string_lossy(), "reason": reason})).collect::<Vec<_>>()
+    })
 }
 
 /// Every story's text, including table cells and footnotes.
@@ -200,6 +205,20 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_diagnostics_present_non_utf8_paths_without_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'f', 255]));
+        let r = report_value(pagenor_fonts::FontScanReport {
+            roots: vec![path.clone()],
+            issues: vec![(path, "Unreadable".into())],
+            ..Default::default()
+        });
+        assert_eq!(r["roots"][0], "/f\u{fffd}");
+        assert_eq!(r["issues"][0]["path"], "/f\u{fffd}");
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

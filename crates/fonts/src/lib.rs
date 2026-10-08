@@ -11,9 +11,15 @@ mod fontdb;
 mod group;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(not(target_arch = "wasm32"))]
+mod platform;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+#[cfg(any(target_os = "linux", target_os = "freebsd", all(test, unix)))]
+mod unix;
 mod vertical;
+#[cfg(any(windows, all(test, not(target_arch = "wasm32"))))]
+mod windows;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use fontdb::FontScanReport;

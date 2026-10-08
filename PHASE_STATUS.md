@@ -6,8 +6,8 @@ in `ROADMAP.md` are implementation history, not proof that a phase exit gate pas
 
 | Phase | Priority | Work | Status / evidence |
 |---|---|---|---|
-| 00 | P0 | Repository, security and provenance | In progress. Local quality baseline and CI setup: [report](docs/pagenor/PHASE_00_REPORT.md). Own repository and local remote are configured. Initial CI passed macOS and Rust 1.95 on Linux; Windows quality remains pending; Linux hit a runner disk limit and requires a rerun with reduced debug symbols. Auxiliary workflow fixes await reruns. Private-repository branch protection and release supply-chain checks remain open. |
-| 01 | P0 | Font discovery and catalogue | In progress. Core Text paths, all SFNT extensions, lazy named instances and duplicate handling implemented. Host comparison covered by tests; Diagnostics/rescan commands and automatic native refresh are implemented and pass the local gate. Font Book activation lifecycle and native Windows/Linux adapter validation remain open. |
+| 00 | P0 | Repository, security and provenance | In progress. Local quality baseline and CI setup: [report](docs/pagenor/PHASE_00_REPORT.md). Own repository and local remote are configured. Remote CI passed macOS, Linux, Rust 1.95, packaging lint and FreeBSD. Windows exposed a path-separator assertion in the data-merge test; the assertion now compares paths and awaits its rerun. Private-repository branch protection and release supply-chain checks remain open. |
+| 01 | P0 | Font discovery and catalogue | In progress. Core Text paths, all SFNT extensions, lazy named instances and duplicate handling implemented. Host comparison covered by tests; Diagnostics/rescan commands and automatic native refresh are implemented and pass the local gate. Windows registry and Linux/FreeBSD Fontconfig adapters are implemented (P01.2); cross-target compile and strict Clippy checks pass. Native adapter reruns and Font Book activation lifecycle remain open. |
 | 02 | P0 | Clipboard, input and document reliability | Pending exit-gate validation. Unicode paste fixes exist; external application, undo, autosave and recovery matrix still required. |
 | 03 | P0 | Indic corpus and font presets | Planned. Requires stable font discovery, versioned fixtures and font licence/size review. |
 | 04 | P0 | Script-aware fallback and composite fonts | Planned. Reuse existing composition and document architecture. |
@@ -23,8 +23,9 @@ in `ROADMAP.md` are implementation history, not proof that a phase exit gate pas
 Milestones: M0 = 00–02; Indic Alpha = 03–05; Publishing Alpha = 06–08;
 Beta = 09–10; 1.0 = 11. No milestone is complete yet.
 
-Next: finish Phase 00 ownership/release checks and Phase 01 diagnostic/rescan work,
-then validate the Phase 02 reliability matrix before starting the Indic corpus.
+Next: complete native adapter CI and macOS activation evidence, resolve loaded-font
+deactivation behaviour, and finish Phase 00 release checks. Then validate the
+Phase 02 reliability matrix before starting the Indic corpus.
 Open findings and their completion evidence belong in [the issue register](docs/pagenor/ISSUES.md).
 
 All platforms retain the shared Rust core and `unsafe_code = "forbid"`.

@@ -714,7 +714,7 @@ fn relative_path_and_reopen() {
     std::fs::create_dir_all(&b).unwrap();
     let csv = b.join("data.csv");
     write(&csv, "Name\nAda\n");
-    assert_eq!(relative_between(&a, &csv), "../b/data.csv");
+    assert_eq!(std::path::Path::new(&relative_between(&a, &csv)), std::path::Path::new("../b/data.csv"));
     assert_eq!(relative_between(&b, &csv), "data.csv");
 
     let mut doc = pagenor_doc::Document::new(&pagenor_doc::build::NewDocument::default());
@@ -743,7 +743,7 @@ fn relative_path_and_reopen() {
     let mut s2 = Session::new();
     exec(&mut s2, "file.open", json!({"path": saved}));
     let src = &s2.documents()[s2.active_index().unwrap()].doc.data_merge.sources[0];
-    assert_eq!(src.relative_path.as_deref(), Some("../b/data.csv"));
+    assert_eq!(src.relative_path.as_deref().map(std::path::Path::new), Some(std::path::Path::new("../b/data.csv")));
     assert_eq!(src.rows[0][0], "Ada");
 }
 

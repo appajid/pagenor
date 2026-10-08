@@ -324,18 +324,19 @@ fn named_instances_are_cataloged_before_loading() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux", target_os = "freebsd"))]
 #[test]
 fn host_registry_fonts_are_cataloged_without_loading() {
-    let paths = crate::macos::activated_font_paths();
-    assert!(!paths.is_empty(), "Core Text should report installed fonts on macOS");
+    let (source, host, _) = crate::platform::discover();
+    let paths = host.files;
+    assert!(!paths.is_empty(), "{source:?} should report installed fonts on this host: {:?}", host.issues);
     let folder_families = FontDb::with_font_dirs(system_font_dirs()).families();
     let bundled_families = FontDb::with_font_dirs(vec![]).families();
     let db = FontDb::with_system_fonts();
     // Verify every readable SFNT face in the host registry reaches the menu catalogue.
     let infos = db.scoped(0).family_infos();
     let added: Vec<_> = infos.iter().filter(|info| !folder_families.contains(&info.family)).map(|info| &info.family).collect();
-    eprintln!("Core Text reports {} files; registry adds {} families beyond directory scanning: {added:?}", paths.len(), added.len());
+    eprintln!("{source:?} reports {} files; registry adds {} families beyond directory scanning: {added:?}", paths.len(), added.len());
     let mut usable = 0;
     for path in paths {
         let faces = file_face_names(&path);
@@ -350,4 +351,58 @@ fn host_registry_fonts_are_cataloged_without_loading() {
         }
     }
     assert!(usable > 0);
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[test]
+fn fontconfig_process_and_fresh_configuration_locations_reach_the_lazy_catalogue() {
+    use std::os::unix::ffi::OsStringExt;
+    const MARKER: &str = "PAGENOR_FONTCONFIG_TEST";
+    if std::env::var_os(MARKER).is_some() {
+        let root = PathBuf::from(std::env::var_os(MARKER).unwrap());
+        let db = FontDb::with_system_fonts();
+        assert!(db.has_family(FAMILY));
+        assert_eq!(db.styles(FAMILY), ["Regular"]);
+        assert!(!db.is_loaded(FAMILY));
+        // New font and newly configured directory appear without relying on FcInit's cached config.
+        let external = root.join("later");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("font.otc"), collection(&[renamed("SourceSans3-Bold.ttf")])).unwrap();
+        std::fs::write(root.join("fonts.conf"), "<fontconfig><dir prefix='relative'>external</dir><dir prefix='relative'>later</dir></fontconfig>")
+            .unwrap();
+        assert!(db.refresh_catalog(false).0);
+        assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+        assert!(!db.is_loaded(FAMILY));
+        return;
+    }
+    // An independent Fontconfig process is the oracle for the current host's file-backed fonts.
+    let list = std::process::Command::new("fc-list").args(["--format", "%{file}\n"]).output().unwrap();
+    assert!(list.status.success());
+    let db = FontDb::with_system_fonts();
+    let bundled = FontDb::with_font_dirs(vec![]).families();
+    let mut usable = 0;
+    for line in list.stdout.split(|b| *b == b'\n').filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(std::ffi::OsString::from_vec(line.to_vec()));
+        for face in file_face_names(&path) {
+            usable += 1;
+            assert!(db.has_family(&face.family), "{}: {}", path.display(), face.family);
+            assert!(db.styles(&face.family).iter().any(|s| s.eq_ignore_ascii_case(&face.style)));
+            assert!(!db.is_loaded(&face.family) || bundled.contains(&face.family));
+        }
+    }
+    assert!(usable > 0, "The CI image must have usable fonts for host comparison");
+    let root = font_dir("fontconfig-process");
+    let external = root.join("external");
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::write(external.join("font.ttf"), renamed("SourceSans3-Regular.ttf")).unwrap();
+    std::fs::write(root.join("fonts.conf"), "<fontconfig><dir prefix='relative'>external</dir></fontconfig>").unwrap();
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fontdb::tests_sysfonts::fontconfig_process_and_fresh_configuration_locations_reach_the_lazy_catalogue", "--nocapture"])
+        .env(MARKER, &root)
+        .env("FONTCONFIG_FILE", root.join("fonts.conf"))
+        .env("FONTCONFIG_PATH", &root)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.status.success(), "{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
 }

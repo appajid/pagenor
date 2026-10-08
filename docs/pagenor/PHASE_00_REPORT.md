@@ -99,13 +99,14 @@ not a completed licence audit or release SBOM.
 
 ## Remaining exit-gate work
 
-Appaji will create Pagenor’s GitHub repository later. Its remote, branch protections
-and native CI results are therefore pending; the existing remote was not changed
-and nothing was pushed. Signing/release permissions, immutable executable inputs,
-complete notices/SBOM, source revision in artifacts and reproducible release builds
-also remain unverified. Current Help/MCP community links need owner-approved
-destinations. These findings are tracked individually in the issue register.
+Updated 2026-10-08: the owner repository `appajid/pagenor` is connected and the
+source history is uploaded. Help/MCP links use it. CI run 37770434311 passed
+macOS, Linux and Rust 1.95; packaging 37770434230 and FreeBSD 37770434210 passed.
+Windows failed a native-path text assertion, corrected in P01.2 and awaiting a
+rerun. Private-repository branch protection requires a plan/visibility decision.
+Signing/release permissions, immutable executable inputs, complete notices/SBOM,
+source revision in artifacts and reproducible release builds remain unverified.
 
-Phase 01 remains active: lazy Core Text discovery passes the current-host comparison,
-but user diagnostics, a rescan command, activation/deactivation lifecycle and native
-Windows/Linux catalogue comparisons are still required before its exit gate closes.
+Phase 01 diagnostics, rescan and automatic refresh are implemented. Native
+Windows/Linux adapters are in P01.2; their native comparison reruns and macOS
+activation lifecycle evidence remain required before the phase exit gate closes.

@@ -1,9 +1,9 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-08. Task P01.1.
+Updated: 2026-10-08. Tasks P01.1 / P01.2.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
-font folders, macOS registry file count, rejected files and duplicate-face
+font folders, host registry file count, rejected files and duplicate-face
 choices. **Rescan Installed Fonts** is available there and in the Type menu.
 Neither command needs a document. Counts describe installed fonts, excluding
 bundled, in-memory and document-local fonts.
@@ -38,7 +38,7 @@ Commands are available through CLI, MCP and the control channel:
 {"id":2,"method":"engine.execute","params":{"command":"font.rescan","params":{}}}
 ```
 
-Both return roots, hostRegisteredFiles, hostPathlessFaces, filesScanned, families,
+Both return roots, hostSource, hostRegisteredFiles, hostPathlessFaces, filesScanned, families,
 faces, duplicateFaces, skippedFaces, rejectedFiles, unavailablePaths,
 issuesOmitted and issues (path/reason). `app.fontDiscovery` opens the UI dialog.
 
@@ -61,7 +61,8 @@ Remaining Phase 01 evidence:
 
 - A controlled native Core Text registration probe logged
   `NOT IMPLEMENTED - RegisterFonts`; its test font never became registered.
-  This does not verify Font Book activation/deactivation. A direct Font Book
+  A retry with unique family/PostScript names and repaired checksums produced
+  the same host log. This does not verify Font Book activation/deactivation. A direct Font Book
   and third-party font-manager session remains required (PG-0102).
 - Descriptors with no readable file path cannot be fed to the existing Rust
   shaper; their count is visible in diagnostics. This includes fonts that macOS
@@ -69,6 +70,63 @@ Remaining Phase 01 evidence:
 - Already-loaded installed faces stay cached to preserve existing rendering;
   unused removed files leave the catalogue. Define picker behaviour for loaded
   deactivated faces before hiding or evicting them (PG-0104).
-- Windows registry and Linux Fontconfig/XDG activation locations still need
-  safe native adapters and native comparison tests (PG-0103). Standard font
-  directories and automatic file-change discovery are already shared.
+- Windows and Linux/FreeBSD adapters are implemented as described below. Native
+  CI and user font-manager/installation smoke tests remain PG-0103.
+
+## Native location adapters (P01.2)
+
+`with_system_fonts` combines standard platform folders with host discovery.
+`with_font_dirs` remains isolated: it never consults host registries or configuration.
+The new sources provide paths to the existing bounded SFNT metadata scanner;
+family/style names and named instances continue to come from the font itself.
+Canonical paths and existing family/style precedence suppress duplicates.
+
+Windows reads the machine and current-user `CurrentVersion\Fonts` registry keys
+through the safe `winreg` API, in both 32-bit and 64-bit views. Absolute paths can
+point outside standard folders. Relative paths resolve against Windows Fonts or
+the current user's local font folder. String decoding preserves UTF-16 paths;
+REG_EXPAND_SZ expansion is bounded and performed once. Invalid value types,
+malformed paths and unavailable keys are diagnostic records. Discovery never
+writes installed-font keys. Tests write only a disposable, separate HKCU test key.
+Fonts registered privately inside another process and memory-only GDI fonts are
+not exposed by these installed-font keys; this adapter does not promise access
+to them. Fonts passed to Pagenor's own `add_font` API already reach the picker.
+
+Linux and FreeBSD load Fontconfig at runtime through the safe `fontconfig` API
+and request file locations only. Missing Fontconfig is reported, while folder
+scanning remains available. Fresh configuration reads follow FONTCONFIG_FILE /
+FONTCONFIG_PATH, ordered numeric *.conf includes, relative/tilde/XDG prefixes,
+remapped directories and reset-dirs. Cycles and hostile input are bounded: 256
+configuration paths, 1 MiB per XML file, 8 MiB total, 4,096 entries/directories and
+16,384 pending elements. XDG_DATA_HOME and absolute XDG_DATA_DIRS locations are
+also included. New files and configuration directories are found on refresh,
+even if Fontconfig's process-wide cache has not refreshed. This is a location
+adapter; it does not reproduce Fontconfig aliases, matching or reject rules,
+and standard font folders remain scanned.
+
+Diagnostics include the source name (Core Text, Windows font registry or
+Fontconfig). Paths with non-Unicode OS bytes remain intact in the catalogue;
+only diagnostic presentation uses replacement characters, avoiding a JSON
+serialization panic.
+
+Additional validation:
+
+- Full local `cargo xtask ci` passed all seven steps: 795 tests passed, none
+  failed, three performance tests ignored; all 16 WASM packages checked.
+- Windows and Linux font crate/tests compile for their actual Rust targets and
+  pass Clippy with warnings denied from macOS. This is compile-time evidence;
+  native execution remains required.
+- Isolated tests cover Unicode/environment paths, expansion limits, registry
+  type errors and external collection paths; XML include ordering, reset/cycles,
+  XDG resolution and oversized/malformed configuration.
+- Native tests compare all readable registered faces with the lazy catalogue.
+  Linux/FreeBSD additionally compare against an independent `fc-list` process
+  and run a fresh subprocess with external fonts and a changed configuration.
+- The earlier CI rerun passed macOS, Linux, minimum Rust, packaging lint and
+  FreeBSD. Windows exposed an unrelated path-text assertion; it now compares
+  paths and retains its save/reopen validation. New adapters await native CI.
+
+API references: [Fontconfig configuration](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-user.html),
+[Microsoft font installation](https://learn.microsoft.com/en-us/windows/win32/gdi/font-installation-and-deletion),
+[`fontconfig` safe wrapper](https://docs.rs/fontconfig/0.11.0/fontconfig/),
+[`winreg` safe wrapper](https://docs.rs/winreg/0.56.0/winreg/).

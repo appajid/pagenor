@@ -2608,7 +2608,8 @@ fn font_discovery(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         count("unavailablePaths")
     ));
     if count("hostRegisteredFiles") > 0 {
-        ui.label(format!("{} file locations supplied by macOS", count("hostRegisteredFiles")));
+        let source = d.fields.get("hostSource").and_then(Value::as_str).unwrap_or("the operating system");
+        ui.label(format!("{} file locations supplied by {source}", count("hostRegisteredFiles")));
     }
     if count("hostPathlessFaces") > 0 {
         ui.label(format!("{} macOS faces have no file path and cannot be catalogued", count("hostPathlessFaces")));

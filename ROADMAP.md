@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.2: Windows installed-font registry and Linux/FreeBSD Fontconfig locations
+  now feed the shared lazy catalogue. XDG folders and bounded configuration
+  includes are rescanned for new files. Cross-target compilation and Clippy pass;
+  native host comparison tests and the Windows path-assertion correction await CI.
+  Details: `docs/pagenor/FONT_DISCOVERY.md`.
+
 - P01.1: Installed-font diagnostics and manual rescan are available through Type
   and engine commands. Native background refresh discovers new file-backed fonts,
   including Core Text activation locations on macOS, without eagerly loading font data.

@@ -19,8 +19,3 @@ pub(crate) fn activated_fonts() -> ActivatedFonts {
     paths.dedup();
     ActivatedFonts { paths, pathless_faces }
 }
-
-#[cfg(test)]
-pub(crate) fn activated_font_paths() -> Vec<PathBuf> {
-    activated_fonts().paths
-}

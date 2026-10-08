@@ -91,6 +91,7 @@ pub struct DocumentFonts {
 #[derive(Clone, Debug, Default)]
 pub struct FontScanReport {
     pub roots: Vec<std::path::PathBuf>,
+    pub host_source: Option<&'static str>,
     pub host_registered_files: usize,
     pub host_pathless_faces: usize,
     pub files_scanned: usize,
@@ -383,7 +384,7 @@ pub struct FontDb {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     font_dirs: Vec<std::path::PathBuf>,
     /// Query the host registry only for a system database, never for explicit font folders.
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_arch = "wasm32"))]
     host_fonts: bool,
     /// Set once the font folders have been scanned. Lookups by family name wait for the first
     /// scan, so what they find doesn't depend on what ran before them.
@@ -681,7 +682,15 @@ pub fn system_font_dirs() -> Vec<std::path::PathBuf> {
             dirs.push(h.join(".fonts"));
             dirs.push(h.join(".local/share/fonts"));
         }
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from).filter(|p| p.is_absolute()) {
+            dirs.push(data.join("fonts"));
+        }
+        if let Some(data) = std::env::var_os("XDG_DATA_DIRS") {
+            dirs.extend(std::env::split_paths(&data).filter(|p| p.is_absolute()).take(128).map(|p| p.join("fonts")));
+        }
     }
+    dirs.sort();
+    dirs.dedup();
     dirs
 }
 
@@ -844,7 +853,7 @@ impl FontDb {
             refresh_state: Mutex::new(RefreshState::default()),
             scan_generation: std::sync::atomic::AtomicU64::new(0),
             font_dirs,
-            #[cfg(target_os = "macos")]
+            #[cfg(not(target_arch = "wasm32"))]
             host_fonts: false,
             #[cfg(not(target_arch = "wasm32"))]
             cataloged: std::sync::OnceLock::new(),
@@ -853,11 +862,11 @@ impl FontDb {
         }
     }
 
-    /// Bundled fonts plus installed fonts, including macOS-activated fonts outside standard folders.
+    /// Bundled fonts plus installed fonts, including host-registered locations outside standard folders.
     pub fn with_system_fonts() -> Self {
         #[allow(unused_mut)]
         let mut db = Self::with_font_dirs(system_font_dirs());
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             db.host_fonts = true;
         }
@@ -1036,13 +1045,21 @@ impl FontDb {
         let mut report = FontScanReport { roots: self.font_dirs.clone(), ..Default::default() };
         let mut files = Vec::new();
         let mut stack = self.font_dirs.clone();
-        #[cfg(target_os = "macos")]
         if self.host_fonts {
-            let activated = crate::macos::activated_fonts();
-            report.host_registered_files = activated.paths.len();
-            report.host_pathless_faces = activated.pathless_faces;
-            stack.extend(activated.paths);
+            let (source, activated, pathless) = crate::platform::discover();
+            report.host_source = source;
+            report.host_registered_files = activated.files.len();
+            report.host_pathless_faces = pathless;
+            report.roots.extend(activated.dirs.iter().cloned());
+            stack.extend(activated.files);
+            stack.extend(activated.dirs);
+            for (path, reason) in activated.issues {
+                report.note(&path, reason);
+            }
+            report.issues_omitted += activated.omitted;
         }
+        report.roots.sort();
+        report.roots.dedup();
         // Stable precedence and one visit per physical file, including registry/directory overlap.
         stack.sort();
         stack.reverse();
