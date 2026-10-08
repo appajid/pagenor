@@ -921,6 +921,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_clipboard_paste_is_one_reversible_edit_and_explicit_text_bypasses_the_host() {
+        for command in ["edit.paste", "edit.pasteWithoutFormatting"] {
+            let host = "தமிழ் 👩‍💻\r\nاردو";
+            let services = Services { clipboard_text: Some(Box::new(move || Some(host.into()))), ..Default::default() };
+            let mut app = DesignApp::new(Session::new(), services);
+            app.run("file.new", json!({})).unwrap();
+            let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "A界B"})).unwrap();
+            let story = pagenor_doc::StoryId(frame["story"].as_u64().unwrap());
+            app.run("text.select", json!({"story": story.0, "anchor": 1, "focus": 4})).unwrap();
+            let selection = app.session.doc().unwrap().selection.clone();
+            let undo = app.session.doc().unwrap().history.undo.len();
+            app.run(command, json!({})).unwrap();
+            let text = format!("A{}B", host.replace("\r\n", "\n"));
+            assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, text);
+            assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, "A界B");
+            assert_eq!(app.session.doc().unwrap().selection, selection);
+            app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, text);
+            app.run("edit.undo", json!({})).unwrap();
+            app.services.clipboard_text = Some(Box::new(|| panic!("explicit paste text must not read the host")));
+            app.run(command, json!({"text": "Explicit हिन्दी"})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc.story(story).unwrap().text, "AExplicit हिन्दीB");
+        }
+    }
+
+    #[test]
     fn snap_view_uses_the_saved_switches() {
         let mut ui = UiState::default();
         assert!(ui.snap_view().snap_to_guides);

@@ -355,7 +355,7 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-fn insert(s: &mut Session, p: &Value) -> Result<Value> {
+pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
     // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`).
     if text == "\t" && s.doc()?.selection.text.is_some_and(|t| t.cell.is_some()) {

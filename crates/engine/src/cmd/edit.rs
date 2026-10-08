@@ -88,7 +88,8 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         });
     }
     let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
-    s.execute("text.insert", &json!({"text": text.replace("\r\n", "\n").replace('\r', "\n"), "raw": true}))
+    // The outer Paste command owns undo and journaling; reuse insertion without recording Type.
+    super::text::insert(s, &json!({"text": text.replace("\r\n", "\n").replace('\r', "\n"), "raw": true}))
 }
 
 fn strip_objects(st: &pagenor_doc::Story) -> pagenor_doc::Story {
@@ -314,6 +315,104 @@ mod text_clipboard_tests {
     fn frame(s: &mut Session, text: &str) -> pagenor_doc::StoryId {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
         s.doc().unwrap().doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story
+    }
+
+    #[test]
+    fn external_and_plain_paste_are_one_undo_step_and_one_journal_entry() {
+        for command in ["edit.paste", "edit.pasteWithoutFormatting"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let original = "Before हिन्दी after";
+            let story = frame(&mut s, original);
+            s.execute("text.select", &json!({"story": story.0, "anchor": 7, "focus": 7 + "हिन्दी".len()})).unwrap();
+            let before = s.doc().unwrap().doc.clone();
+            let undo = s.doc().unwrap().history.undo.len();
+            let journal = s.journal.len();
+            let text = "தமிழ் 👩‍💻\r\nবাংলা\rاردو";
+            s.execute(command, &json!({"text": text})).unwrap();
+            assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "Before தமிழ் 👩‍💻\nবাংলা\nاردو after");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "{command} must create one undo step");
+            assert_eq!(s.journal.len(), journal + 1, "a replay must not insert pasted text twice");
+            assert_eq!(s.journal.last().unwrap().0, command);
+            let mut replay = Session::new();
+            replay.execute("file.new", &json!({})).unwrap();
+            let target = frame(&mut replay, original);
+            replay.execute("text.select", &json!({"story": target.0, "anchor": 7, "focus": 7 + "हिन्दी".len()})).unwrap();
+            for (id, params) in &s.journal[journal..] {
+                replay.execute(id, params).unwrap();
+            }
+            assert_eq!(replay.doc().unwrap().doc.story(target).unwrap().text, s.doc().unwrap().doc.story(story).unwrap().text);
+            let after = s.doc().unwrap().doc.clone();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&after, &s.doc().unwrap().doc));
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_selection_before_formatted_paste() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let source = frame(&mut s, "தமிழ்");
+        s.execute("text.select", &json!({"story": source.0, "anchor": 0, "focus": "தமிழ்".len()})).unwrap();
+        s.execute("type.bold", &json!({})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let target = frame(&mut s, "A界B");
+        s.execute("text.select", &json!({"story": target.0, "anchor": 1, "focus": 4})).unwrap();
+        let before = s.doc().unwrap().selection.text.unwrap();
+        s.execute("edit.paste", &json!({"text": "தமிழ்"})).unwrap();
+        let after = s.doc().unwrap().selection.text.unwrap();
+        assert_ne!(before, after);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(target).unwrap().text, "A界B");
+        assert_eq!(s.doc().unwrap().selection.text, Some(before), "undo must restore the original selected range");
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(target).unwrap().text, "Aதமிழ்B");
+        assert_eq!(s.doc().unwrap().selection.text, Some(after));
+        assert_eq!(s.doc().unwrap().doc.story(target).unwrap().char_format_at(1 + "த".len()).over.font_style.as_deref(), Some("Bold"));
+    }
+
+    #[test]
+    fn pasted_unicode_and_formatting_survive_copy_save_and_first_recovery() {
+        let dir = std::env::temp_dir().join(format!("pagenor-paste-persistence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let story = frame(&mut s, "A");
+        s.execute("text.select", &json!({"story": story.0, "anchor": 0, "focus": 1})).unwrap();
+        s.execute("type.bold", &json!({})).unwrap();
+        let text = "தமிழ் हिन्दी বাংলা اردو e\u{301} 👩‍💻\r\nSecond\rThird";
+        let expected = text.replace("\r\n", "\n").replace('\r', "\n");
+        s.execute("edit.pasteWithoutFormatting", &json!({"text": text})).unwrap();
+        let copy = dir.join("copy.pagenor");
+        let before = s.doc().unwrap().doc.clone();
+        s.execute("file.saveACopy", &json!({"path": copy})).unwrap();
+        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+        assert!(s.doc().unwrap().is_dirty() && s.doc().unwrap().path.is_none());
+        let copied = super::super::file::from_bytes(&std::fs::read(&copy).unwrap()).unwrap();
+        assert_eq!(copied.story(story).unwrap().text, expected);
+        assert_eq!(copied.story(story).unwrap().char_format_at(0).over.font_style.as_deref(), Some("Bold"));
+
+        let recovery = dir.join("recovery");
+        s.recovery_dir = Some(recovery.clone());
+        assert_eq!(s.execute("file.recovery.save", &json!({})).unwrap()["saved"], 1);
+        let mut recovered = Session::new();
+        recovered.recovery_dir = Some(recovery);
+        assert_eq!(recovered.execute("file.recovery.open", &json!({})).unwrap()["opened"].as_array().unwrap().len(), 1);
+        assert!(recovered.doc().unwrap().is_dirty());
+        assert_eq!(recovered.doc().unwrap().doc.story(story).unwrap().text, expected);
+        assert_eq!(recovered.doc().unwrap().doc.story(story).unwrap().char_format_at(0).over.font_style.as_deref(), Some("Bold"));
+        let saved = dir.join("saved.pagenor");
+        recovered.execute("file.saveAs", &json!({"path": saved})).unwrap();
+        assert!(!recovered.doc().unwrap().is_dirty());
+        let mut reopened = Session::new();
+        reopened.execute("file.open", &json!({"path": saved})).unwrap();
+        assert_eq!(reopened.doc().unwrap().doc.story(story).unwrap().text, expected);
+        reopened.doc().unwrap().doc.check().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

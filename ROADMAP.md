@@ -1,5 +1,10 @@
 # Pagenor roadmap
 
+- P02.1: External/plain paste creates one undo step and one journal entry.
+  It reuses text insertion without dispatching a second command; undo captures
+  the selection before edits. Unicode/formatting persistence and UI bridge tests
+  pass. The immediate repeat-crash recovery gap is the next reliability finding.
+
 - P01.10: Unicode family-name matching now follows the menu grouping key.
   Case variants resolve the same lazy installed/memory/document fonts, duplicate
   faces are excluded and document fonts keep precedence during composition.
