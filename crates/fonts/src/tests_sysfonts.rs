@@ -137,6 +137,35 @@ fn scan_diagnostics_explain_rejections_and_duplicates_without_loading() {
 }
 
 #[test]
+fn hidden_families_paths_and_explicit_extensionless_files_remain_usable() {
+    let dir = font_dir("hidden-fonts");
+    let hidden = dir.join(".manager/.fonts");
+    let cache = dir.join(".manager/.r");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    let family = ".Pagenor Hidden";
+    let data = crate::testing::font_with(family, &['a']).unwrap();
+    std::fs::write(hidden.join(".hidden.ttf"), &data).unwrap();
+    let extensionless = cache.join("12345");
+    std::fs::write(&extensionless, data).unwrap();
+    // An OS registry supplies direct file paths; they need no font extension.
+    let db = FontDb::with_font_dirs(vec![hidden, extensionless.clone()]);
+    let report = db.scan_report();
+    assert_eq!((report.files_scanned, report.faces, report.duplicate_faces), (2, 1, 1));
+    assert!(has(&db.families(), family));
+    assert!(db.scoped(0).family_infos().iter().any(|f| f.family == family));
+    assert_eq!(db.styles(family), ["Regular"]);
+    assert!(!db.is_loaded(family), "hidden fonts are catalogued without retaining their full data");
+    assert!(db.face(family, "Regular").covers('a'));
+    let registered = FontDb::with_font_dirs(vec![extensionless.clone()]);
+    let face = registered.face(family, "Regular");
+    assert_eq!(face.family, family);
+    assert_eq!(face.source, FontSource::Installed(extensionless));
+    assert!(face.covers('a'));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn scan_diagnostics_cap_records_but_count_every_rejection() {
     let dir = font_dir("diagnostics-cap");
     for n in 0..300 {
@@ -182,6 +211,37 @@ fn automatic_refresh_finds_added_files_and_preserves_document_fonts() {
     assert!(db.has_family("Pagenor Memory"));
     assert!(db.scoped(document.scope).has_family("Pagenor Memory"));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn newly_discovered_styles_resolve_before_a_loaded_nearest_style() {
+    let dir = font_dir("added-style");
+    let bold_path = dir.join("Sub/Sysfont-Bold.TTF");
+    std::fs::remove_file(&bold_path).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let regular = db.face(FAMILY, "Regular");
+    assert_eq!(db.styles(FAMILY), ["Regular"]);
+    // A scoped Regular must keep precedence after a shared Bold arrives.
+    let own = dir.join("Document Fonts");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("own.ttf"), renamed("SourceSans3-Regular.ttf")).unwrap();
+    let document = db.load_document_fonts(&own);
+    let scoped = db.scoped(document.scope);
+    let doc_regular = scoped.face(FAMILY, "Regular");
+    std::fs::remove_file(own.join("own.ttf")).unwrap();
+    std::fs::write(&bold_path, renamed("SourceSans3-Bold.ttf")).unwrap();
+    assert!(db.refresh_catalog(false).0);
+    assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+    assert!(!db.read_faces().iter().any(|f| f.family == FAMILY && f.style == "Bold"), "menus remain lazy");
+    // Test the scoped lookup first: its own Regular must not hide an installed Bold.
+    let bold = scoped.face(FAMILY, "Bold");
+    assert_eq!(bold.style, "Bold", "selecting the new style must resolve it");
+    assert_eq!(bold.source, FontSource::Installed(bold_path));
+    assert!(Arc::ptr_eq(&bold, &db.face(FAMILY, "b-o-l-d")));
+    assert!(Arc::ptr_eq(&regular, &db.face(FAMILY, "Regular")));
+    assert!(Arc::ptr_eq(&doc_regular, &scoped.face(FAMILY, "Regular")));
+    assert!(Arc::ptr_eq(&regular, &db.face(FAMILY, "Medium")), "unavailable styles still use the closest face");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -327,10 +387,8 @@ fn all_sfnt_extensions_and_duplicate_files_remain_lazy() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn named_instances_are_cataloged_before_loading() {
+fn named_instance_font() -> Vec<u8> {
     use crate::testing::{with_names, with_tables};
-    let dir = font_dir("variable-catalog");
     let font = with_names(
         &renamed("SourceSans3-Regular.ttf"),
         &[
@@ -357,7 +415,13 @@ fn named_instances_are_cataloged_before_loading() {
         fvar.extend_from_slice(&0u16.to_be_bytes());
         fvar.extend_from_slice(&(weight << 16).to_be_bytes());
     }
-    let font = with_tables(&font, vec![(*b"fvar", fvar)]).unwrap();
+    with_tables(&font, vec![(*b"fvar", fvar)]).unwrap()
+}
+
+#[test]
+fn named_instances_are_cataloged_before_loading() {
+    let dir = font_dir("variable-catalog");
+    let font = named_instance_font();
     std::fs::remove_file(dir.join("Sysfont-Regular.ttf")).unwrap();
     std::fs::remove_file(dir.join("Sub/Sysfont-Bold.TTF")).unwrap();
     std::fs::write(dir.join("variable.otf"), font).unwrap();
@@ -367,6 +431,33 @@ fn named_instances_are_cataloged_before_loading() {
     assert_eq!(db.face(FAMILY, "Heavy").style, "Heavy");
     assert!(db.face(FAMILY, "Heavy").is_variable());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn catalogued_named_instances_and_axes_win_over_loaded_regular() {
+    let dir = font_dir("added-named-instance");
+    std::fs::remove_file(dir.join("Sysfont-Regular.ttf")).unwrap();
+    std::fs::remove_file(dir.join("Sub/Sysfont-Bold.TTF")).unwrap();
+    std::fs::write(dir.join("variable.otf"), named_instance_font()).unwrap();
+    for lookup in ["face", "axes", "custom"] {
+        let db = FontDb::with_font_dirs(vec![dir.clone()]);
+        db.add_font(renamed("SourceSans3-Regular.ttf"));
+        let regular = db.face(FAMILY, "Regular");
+        assert!(db.styles(FAMILY).contains(&"Heavy".into()));
+        assert!(!db.read_faces().iter().any(|f| f.family == FAMILY && f.style == "Heavy"));
+        match lookup {
+            "face" => assert_eq!(db.face(FAMILY, "Heavy").style, "Heavy"),
+            "axes" => assert_eq!(db.axes(FAMILY, "Heavy")[0].0, "wght"),
+            _ => {
+                let custom = db.face(FAMILY, "Heavy {wght:650}");
+                assert_eq!(custom.style, "Heavy {wght:650}");
+                assert_eq!(custom.coords, [(*b"wght", 650.0)]);
+                assert_eq!(custom.source, FontSource::Installed(dir.join("variable.otf")));
+            }
+        }
+        assert!(Arc::ptr_eq(&regular, &db.face(FAMILY, "Regular")), "in-memory face remains intact");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux", target_os = "freebsd"))]

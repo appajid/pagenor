@@ -1,6 +1,6 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-08. Tasks P01.1 / P01.2 / P01.3.
+Updated: 2026-10-08. Tasks P01.1 / P01.2 / P01.3 / P01.4.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
@@ -168,3 +168,41 @@ time of this update; the issue register records their final evidence. Windows
 ARM64 packaging/run smoke passed in run 37776034034: cross-build MSI, native
 install, executable architecture check, CLI version invocation and uninstall.
 This does not validate ARM64 GUI rendering or font activation.
+
+## Desktop availability and newly discovered styles (P01.4)
+
+The catalogue is an index of local family/style names and font file paths, not
+an internet font service. Native discovery reads host registrations and physical
+font files. WASM alone has no installed-system-font access. Keeping full glyph
+bytes lazy does not restrict the desktop family's menu to bundled/web fonts.
+
+macOS now unions the available-font collection with any additional registered
+PostScript names, resolving their descriptors through safe Core Text APIs.
+Neither query filters names beginning with a dot. Both queries returned the same
+516 names / 207 files on this host, so the complementary query adds no files in
+this particular session; no improved Font Book activation coverage is claimed.
+The owner’s Pagenor Test1 remains active. Registry-supplied direct paths need no
+TTF/OTF extension; folder scans include hidden files/subfolders with supported
+extensions. A synthetic hidden family, hidden paths and an extensionless direct
+file test verifies menus, lazy loading, deduplication and glyph coverage.
+
+A newly discovered Bold or named variable instance previously resolved as an
+already-loaded Regular because nearest-style lookup happened before catalogue
+loading. Exact loaded styles now retain precedence; if an exact style is present
+only in the catalogue, its file is loaded before choosing a closest style.
+Missing styles retain nearest-style fallback. Variable-axis/custom-instance
+lookups follow the same rule. Two regressions failed before the fix and pass
+now; they also verify preserved document/memory handles and normalized style
+names. Font bytes remain lazy for menus; no document or OS activation is changed.
+
+Full local `cargo xtask ci`: all seven steps passed, 799 tests passed, zero
+failed, three performance tests ignored and all 16 WASM packages checked. Local
+font-crate Clippy checks with warnings denied also passed for Windows GNU and
+Linux GNU targets; this is compile-time evidence, not native execution.
+
+Remaining limits still apply to descriptors without readable font data and to
+external font-manager lifecycle coverage. New tasks are tested locally; GitHub
+uploads and native Windows/Linux/macOS validation are deferred to a completed
+roadmap milestone, per the owner's request.
+
+Reference: [Apple's available PostScript-name API](https://developer.apple.com/documentation/coretext/ctfontmanagercopyavailablepostscriptnames()).

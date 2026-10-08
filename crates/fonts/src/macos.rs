@@ -11,10 +11,30 @@ pub(crate) struct ActivatedFonts {
 }
 
 pub(crate) fn activated_fonts() -> ActivatedFonts {
-    let collection = core_text::font_collection::create_for_all_families();
-    let Some(descriptors) = collection.get_descriptors() else { return ActivatedFonts { paths: Vec::new(), pathless_faces: 0 } };
-    let mut paths: Vec<_> = descriptors.iter().filter_map(|descriptor| descriptor.font_path()).collect();
-    let pathless_faces = usize::try_from(descriptors.len()).unwrap_or(0).saturating_sub(paths.len());
+    let mut paths = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    let mut pathless_faces = 0;
+    if let Some(descriptors) = core_text::font_collection::create_for_all_families().get_descriptors() {
+        for descriptor in descriptors.iter() {
+            names.insert(descriptor.font_name());
+            match descriptor.font_path() {
+                Some(path) => paths.push(path),
+                None => pathless_faces += 1,
+            }
+        }
+    }
+    // Query registered PostScript names as a complementary source.
+    // Keep the collection paths (including variants sharing a PostScript name); only resolve
+    // additional names here. These safe wrappers request descriptors, not font file bytes.
+    for name in core_text::font_collection::get_postscript_names().iter() {
+        if names.insert(name.to_string()) {
+            let descriptor = core_text::font_descriptor::new_from_postscript_name(&name);
+            match descriptor.font_path() {
+                Some(path) => paths.push(path),
+                None => pathless_faces += 1,
+            }
+        }
+    }
     paths.sort();
     paths.dedup();
     ActivatedFonts { paths, pathless_faces }

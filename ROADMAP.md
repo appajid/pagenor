@@ -1,5 +1,10 @@
 # Pagenor roadmap
 
+- P01.4: Newly discovered exact styles and variable instances resolve before a
+  previously loaded closest style. macOS also checks registered PostScript names;
+  hidden paths/families and explicit extensionless font files have regression
+  coverage. Development/testing stay local until a completed milestone.
+
 - P01.3: Installed picker families/styles follow the refreshed catalogue even
   after a face was loaded. Cached rendering handles and document-local fonts
   remain intact; the removal/restoration regression and full local gate pass.

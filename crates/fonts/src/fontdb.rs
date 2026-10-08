@@ -1498,17 +1498,28 @@ impl ScopedFonts<'_> {
     /// Resolve a family + style to a face, falling back to the closest style of the family, then to
     /// Source Sans 3 Regular. Installed system fonts are found by name whatever ran before.
     pub fn face(&self, family: &str, style: &str) -> Arc<FontFace> {
-        if let Some(f) = self.find(family, style) {
+        if let Some(f) = self.find(family, style, true) {
             return f;
         }
+        let closest = self.find(family, style, false);
         #[cfg(not(target_arch = "wasm32"))]
-        if self.db.load_cataloged(family)
-            && let Some(f) = self.find(family, style)
         {
-            return f;
+            // A loaded closest style must not hide a newly catalogued exact style.
+            // Only read font bytes when the catalogue can improve this lookup.
+            let requested = norm(base_style(style));
+            let catalogued =
+                closest.is_none() || self.db.read_catalog().iter().any(|c| c.family.eq_ignore_ascii_case(family) && norm(&c.style) == requested);
+            if catalogued {
+                self.db.load_cataloged(family);
+                // Another lookup may have loaded the exact style concurrently.
+                if let Some(f) = self.find(family, style, false) {
+                    return f;
+                }
+            }
         }
-        self.find(FALLBACK_FAMILY, style)
-            .or_else(|| self.find(FALLBACK_FAMILY, "Regular"))
+        closest
+            .or_else(|| self.find(FALLBACK_FAMILY, style, false))
+            .or_else(|| self.find(FALLBACK_FAMILY, "Regular", false))
             .or_else(|| self.db.read_faces().first().cloned())
             .unwrap_or_else(last_resort_face)
     }
@@ -1551,9 +1562,9 @@ impl ScopedFonts<'_> {
     }
 
     /// `Style {wght:650,wdth:90}`: the named style's font at those axis values, made on first use.
-    fn instance(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
+    fn instance(&self, family: &str, style: &str, exact_style: bool) -> Option<Arc<FontFace>> {
         let open = style.find('{')?;
-        let base = self.find(family, style[..open].trim())?;
+        let base = self.find(family, style[..open].trim(), exact_style)?;
         if base.skrifa().is_none_or(|f| f.axes().is_empty()) {
             return Some(base);
         }
@@ -1579,9 +1590,9 @@ impl ScopedFonts<'_> {
         Some(self.db.instances.write().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert_with(|| Arc::new(f)).clone())
     }
 
-    fn find(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
+    fn find(&self, family: &str, style: &str, exact_style: bool) -> Option<Arc<FontFace>> {
         if style.contains('{') {
-            return self.instance(family, style);
+            return self.instance(family, style, exact_style);
         }
         let faces = self.db.read_faces();
         // The document's fonts first: they stand in for other fonts of the same name.
@@ -1593,6 +1604,9 @@ impl ScopedFonts<'_> {
         let ns = norm(style);
         if let Some(f) = cands.iter().find(|f| norm(&f.style) == ns) {
             return Some((*f).clone());
+        }
+        if exact_style {
+            return None;
         }
         let (tw, ti) = (style_weight(style), style_italic(style));
         cands
