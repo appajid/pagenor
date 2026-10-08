@@ -40,6 +40,7 @@ pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 pub type OpenAsyncFn = Box<dyn FnMut(&str)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
+pub type ClipboardTextFn = Box<dyn FnMut() -> Option<String>>;
 /// Files `(name, bytes)` delivered asynchronously by the host (web file picker, dropped files).
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
 
@@ -58,6 +59,8 @@ pub struct Services {
     /// Hand bytes to the user as a named file (browser download). When set, Save uses it
     /// instead of writing to a path.
     pub download: Option<DownloadFn>,
+    /// Read plain Unicode text from the host system clipboard.
+    pub clipboard_text: Option<ClipboardTextFn>,
     /// Files delivered asynchronously, drained every frame: `.pagenor` → `file.openBytes`,
     /// anything else → `file.place`.
     pub inbox: Option<Inbox>,
@@ -494,6 +497,21 @@ impl DesignApp {
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // Pagenor external clipboard bridge. Native menus/accelerators can invoke Paste
+        // without an egui Paste event, so fetch Unicode text from the host in that case.
+        let mut params = params;
+        if matches!(id, "edit.paste" | "edit.pasteWithoutFormatting")
+            && params.get("text").is_none()
+            && let Some(read_clipboard) = self.services.clipboard_text.as_mut()
+            && let Some(text) = read_clipboard()
+        {
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("text".into(), Value::String(text));
+            } else {
+                params = json!({"text": text});
+            }
+        }
+
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }

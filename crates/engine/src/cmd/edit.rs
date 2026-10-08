@@ -317,6 +317,20 @@ mod text_clipboard_tests {
     }
 
     #[test]
+    fn external_unicode_and_multiline_paste_is_lossless() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let story = frame(&mut s, "");
+        s.execute("text.select", &json!({"story": story.0, "anchor": 0, "focus": 0})).unwrap();
+        let external = "English हिन्दी বাংলা অসমীয়া ਪੰਜਾਬੀ ગુજરાતી ଓଡ଼ିଆ தமிழ் తెలుగు ಕನ್ನಡ മലയാളം اردو\r\nSecond line\rThird line";
+        s.execute("edit.paste", &json!({"text": external})).unwrap();
+        assert_eq!(
+            s.doc().unwrap().doc.story(story).unwrap().text,
+            "English हिन्दी বাংলা অসমীয়া ਪੰਜਾਬੀ ગુજરાતી ଓଡ଼ିଆ தமிழ் తెలుగు ಕನ್ನಡ മലയാളം اردو\nSecond line\nThird line"
+        );
+    }
+
+    #[test]
     fn formatted_copy_paste_and_plain_paste() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();

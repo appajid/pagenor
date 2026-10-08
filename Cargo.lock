@@ -2813,6 +2813,7 @@ dependencies = [
 name = "pagenor"
 version = "0.2.1"
 dependencies = [
+ "arboard",
  "eframe",
  "egui",
  "log",

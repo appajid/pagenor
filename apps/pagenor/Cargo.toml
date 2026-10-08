@@ -16,6 +16,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+arboard = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for pagenor.exe; build.rs only uses it when the target is Windows.

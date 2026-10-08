@@ -685,9 +685,7 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ));
                 ui.label(crate::rtl::widget(
                     ui,
-                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Professional publishing and page layout."))
-                        .size(12.0)
-                        .color(t.text_dim),
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Professional publishing and page layout.")).size(12.0).color(t.text_dim),
                 ));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
