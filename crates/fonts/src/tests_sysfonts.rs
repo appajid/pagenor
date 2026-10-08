@@ -542,3 +542,85 @@ fn fontconfig_process_and_fresh_configuration_locations_reach_the_lazy_catalogue
     std::fs::remove_dir_all(root).unwrap();
     assert!(result.status.success(), "{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_memory_font_tables_reach_catalogue_shaping_and_outlines_without_a_file() {
+    use crate::testing::{font_with, with_names};
+    use skrifa::raw::TableProvider;
+    let family = "Pagenor Native Memory";
+    let ps = "PagenorNativeMemory-Regular";
+    let data = with_names(
+        &font_with(family, &['a', '\u{e123}']).unwrap(),
+        &[(3, 1, 0x409, 1, family), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x409, 4, family), (3, 1, 0x409, 6, ps)],
+    )
+    .unwrap();
+    // This is a real Core Text font created from memory; it is not installed/registered.
+    let native = core_text::font::new_from_buffer(&data).unwrap();
+    assert!(native.copy_descriptor().font_path().is_none());
+    let metadata = crate::macos::copy_font_data(&native, true).unwrap();
+    assert!(skrifa::FontRef::new(&metadata).unwrap().glyf().is_err());
+    let names = native_face_names(&metadata).unwrap();
+    assert_eq!((names[0].family.as_str(), names[0].style.as_str()), (family, "Regular"));
+    let db = FontDb::with_font_dirs(vec![]);
+    db.scan_report();
+    *db.catalog.write().unwrap() = names
+        .into_iter()
+        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
+        .collect();
+    db.update_native_available([ps.into()]);
+    assert!(has(&db.families(), family));
+    assert_eq!(db.styles(family), ["Regular"]);
+    assert!(!db.is_loaded(family), "metadata/menu access must not retain glyph tables");
+    assert!(!db.load_cataloged_with(family, |_| Err("font provider denied table access".into())));
+    assert!(!db.is_loaded(family));
+    assert!(db.scan_report().issues.iter().any(|(_, reason)| reason.contains("provider denied")));
+    std::thread::scope(|threads| {
+        let guard = db.scan_state.lock().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let db = &db;
+        threads.spawn(move || {
+            send.send(db.load_cataloged_with(family, |_| Err("provider denied while scanning".into()))).unwrap();
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop(guard);
+        assert!(!result.unwrap(), "failed native loading must not wait for a concurrent scan");
+    });
+    assert!(db.load_cataloged_with(family, |name| {
+        assert_eq!(name, ps);
+        crate::macos::copy_font_data(&native, false)
+    }));
+    let face = db.face(family, "Regular");
+    assert_eq!(face.source, FontSource::Native(ps.into()));
+    assert!(face.source.path().is_none());
+    assert!(face.covers('\u{e123}'));
+    let reference = FontDb::with_font_dirs(vec![]);
+    reference.add_font(data);
+    let original = reference.face(family, "Regular");
+    let shape = |f: &FontFace| crate::shape(f, "a\u{e123}", &[], |c| c).iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>();
+    assert_eq!(shape(&face), shape(&original));
+    let glyph = face.glyph_for('a');
+    assert_eq!(db.outline(&face, glyph).elements(), reference.outline(&original, glyph).elements());
+    // Simulate the registration disappearing from the current catalogue. Loaded layout
+    // handles remain valid, but native faces cannot restore stale picker entries.
+    db.catalog.write().unwrap().clear();
+    db.update_native_available([]);
+    assert!(!has(&db.families(), family));
+    assert!(!db.scoped(0).family_infos().iter().any(|f| f.family == family));
+    assert!(db.styles(family).is_empty());
+    assert!(face.covers('\u{e123}'));
+    assert!(!db.has_family(family));
+    assert_eq!(db.face(family, "Regular").family, FALLBACK_FAMILY);
+    // Re-activation must make a fresh native-service request, even for the same identity.
+    *db.catalog.write().unwrap() = native_face_names(&metadata)
+        .unwrap()
+        .into_iter()
+        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(ps.into()), group: f.group, native: f.native })
+        .collect();
+    db.update_native_available([ps.into()]);
+    assert!(!db.is_loaded(family));
+    assert!(db.load_cataloged_with(family, |_| crate::macos::copy_font_data(&native, false)));
+    let restored = db.face(family, "Regular");
+    assert_ne!(face.id(), restored.id());
+    assert!(restored.covers('\u{e123}'));
+}

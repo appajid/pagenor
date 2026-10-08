@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.5: macOS native font identities now support fonts without readable files.
+  Core Text supplies bounded metadata for menus and glyph tables on demand;
+  activation epochs prevent reuse after observed withdrawal/reactivation.
+  Real memory-font shaping/outline tests pass. Adobe/dongle activation and
+  Windows/Linux memory-font backends remain pending; work stays local.
+
 - P01.4: Newly discovered exact styles and variable instances resolve before a
   previously loaded closest style. macOS also checks registered PostScript names;
   hidden paths/families and explicit extensionless font files have regression

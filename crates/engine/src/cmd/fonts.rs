@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
             s.cache.clear();
             Ok(report)
         }),
-        cmd!(query "font.list", "Fonts in Document", [], None, "{} → [{family, style, characters, missing, styleMissing, source: bundled|installed|document|added (null when missing)}] (missing first)", has_doc, |s, _| {
+        cmd!(query "font.list", "Fonts in Document", [], None, "{} → [{family, style, characters, missing, styleMissing, source: bundled|installed|document|added|native (null when missing)}] (missing first)", has_doc, |s, _| {
             Ok(Value::Array(list(&s.doc()?.doc)))
         }),
         cmd!(
@@ -59,7 +59,7 @@ fn scan_report(rescan: bool) -> Result<Value> {
 fn report_value(r: pagenor_fonts::FontScanReport) -> Value {
     json!({
         "roots": r.roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(), "hostSource": r.host_source, "hostRegisteredFiles": r.host_registered_files,
-        "hostPathlessFaces": r.host_pathless_faces,
+        "hostPathlessFaces": r.host_pathless_faces, "nativeFaces": r.native_faces,
         "filesScanned": r.files_scanned, "families": r.families, "faces": r.faces,
         "duplicateFaces": r.duplicate_faces, "skippedFaces": r.skipped_faces,
         "rejectedFiles": r.rejected_files, "unavailablePaths": r.unavailable_paths,
@@ -119,6 +119,7 @@ fn list(d: &Document) -> Vec<Value> {
                 FontSource::Installed(_) => "installed",
                 FontSource::Document(_) => "document",
                 FontSource::Memory => "added",
+                FontSource::Native(_) => "native",
             });
             (
                 missing || style_missing,

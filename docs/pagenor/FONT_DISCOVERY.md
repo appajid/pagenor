@@ -1,18 +1,18 @@
 # Installed-font discovery and refresh
 
-Updated: 2026-10-08. Tasks P01.1 / P01.2 / P01.3 / P01.4.
+Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned
 font folders, host registry file count, rejected files and duplicate-face
 choices. **Rescan Installed Fonts** is available there and in the Type menu.
-Neither command needs a document. Counts describe installed fonts, excluding
-bundled, in-memory and document-local fonts.
+Neither command needs a document. Counts describe installed/OS-activated fonts,
+excluding bundled, app-added in-memory and document-local fonts.
 
 On native macOS, Windows and Linux, the running UI checks discovery locations
 and file size/modification metadata on a worker at most every three seconds.
 Changed candidates rebuild the existing lazy catalogue. On macOS each check
-also queries Core Text for currently available file-backed font descriptors,
-including activation locations outside standard folders. New families can
+also queries Core Text for currently available font descriptors and identities,
+including locations outside standard folders and pathless sources. New families can
 appear without restarting the application or using Rescan. UI repaint timing
 and a busy worker can extend the delay. WASM has no installed-font discovery.
 
@@ -64,9 +64,9 @@ Remaining Phase 01 evidence:
   A retry with unique family/PostScript names and repaired checksums produced
   the same host log. This does not verify Font Book activation/deactivation. A direct Font Book
   and third-party font-manager session remains required (PG-0102).
-- Descriptors with no readable file path cannot be fed to the existing Rust
-  shaper; their count is visible in diagnostics. This includes fonts that macOS
-  may expose without accessible font bytes.
+- P01.5 supports macOS descriptors without readable files when Core Text
+  exposes their font tables. Both pathless and native-service face counts are
+  visible in diagnostics. Providers denying table access remain unavailable.
 - Loaded installed faces stay cached to preserve existing rendering. P01.3 makes
   installed picker families/styles follow the current catalogue, so removed
   cached faces no longer restore deleted entries. Document scopes remain
@@ -200,9 +200,79 @@ failed, three performance tests ignored and all 16 WASM packages checked. Local
 font-crate Clippy checks with warnings denied also passed for Windows GNU and
 Linux GNU targets; this is compile-time evidence, not native execution.
 
-Remaining limits still apply to descriptors without readable font data and to
-external font-manager lifecycle coverage. New tasks are tested locally; GitHub
+P01.5 below adds native table access for descriptors without readable files.
+External font-manager lifecycle coverage remains incomplete. New tasks are tested locally; GitHub
 uploads and native Windows/Linux/macOS validation are deferred to a completed
 roadmap milestone, per the owner's request.
 
 Reference: [Apple's available PostScript-name API](https://developer.apple.com/documentation/coretext/ctfontmanagercopyavailablepostscriptnames()).
+
+
+## Temporary fonts supplied by the OS (P01.5)
+
+Dynamic fonts include fonts activated temporarily in memory by a font manager
+or dongle package. A path is not required when the operating system exposes a
+font identity and its tables. `FontSource::Native` carries that identity; its
+`path()` is `None`. This extends the existing Rust shaping/rendering pipeline.
+No font binary, dependency or unsafe code was added.
+
+macOS discovery retains the Core Text descriptors/PostScript identities as well
+as file locations. Readable files keep the existing fast metadata scanner.
+Descriptors without a usable SFNT file use safe Core Text table access: menu
+scans request only name, OS/2, meta, fvar and cmap tables. Limits are 256 tables,
+1 MiB per metadata table and 4 MiB total metadata. The shared parser preserves
+family/style grouping, CJK names and variable named instances. File entries take
+precedence over duplicate native entries.
+
+On use, Pagenor resolves the exact PostScript identity again and requests its
+font tables. OS substitution for a withdrawn name is rejected. Tables are
+assembled into transient SFNT bytes with checksums, CFF/CFF2 signatures and head
+checksum adjustment; DSIG is omitted. The retained data is capped at 64 MiB.
+The existing shaper, outline renderer and export font paths consume these bytes.
+No font file or persistent native-font cache is created. Document packaging
+reports that native-service fonts are not copied.
+
+Background refresh compares native identities and file signatures. When it
+observes an identity disappear, new lookups and fallback exclude its cached
+faces. A returning identity gets a new activation epoch and fresh table request,
+including if an earlier request was still in flight. Existing layout handles
+remain valid; document-local scopes and their precedence remain unchanged.
+Provider errors become bounded diagnostics without blocking a concurrent scan.
+Activation/deactivation entirely between polls, or changed tables under an
+unchanged identity, cannot be identified by this snapshot scheme. Already-loaded
+installed-file replacement remains a separate open issue (PG-0106).
+
+Validation uses a real Core Text font created from synthetic OFL-derived bytes
+in memory: its descriptor has no path and its tables reproduce the reference
+shaping glyphs/advances and outline elements. A private test provider injects
+that identity into an isolated catalogue, verifying lazy menus, provider errors,
+concurrent diagnostic contention, simulated withdrawal/reactivation, preserved
+handles and fresh face IDs. These lifecycle tests do not register a font globally.
+A second test checks complete SFNT checksum and rejects a nonexistent identity.
+No Font Book activation setting was changed; Pagenor Test1 stays active.
+
+The inspected host UI currently reports 800 families, 3,774 faces, 946 files,
+52 duplicates and zero rejected/unavailable files. These are host-specific
+snapshot counts, not proof of Adobe/dongle coverage. Its native-service/pathless
+counts are zero. A separate UI display fixture verifies the two new diagnostic
+rows; it is not a real activated-font observation. The earlier registration
+probe's host limitation remains PG-0102. Actual Adobe and regional dongle font
+activation, disappearance and restoration still require vendor/session evidence.
+
+The final local `cargo xtask ci` passes all seven steps: 801 tests passed,
+zero failed, three performance tests ignored and all 16 WASM packages checked.
+Strict font-crate Clippy (including test targets) passes for Windows GNU and
+Linux GNU. The native macOS app build and real UI menu/diagnostic probe pass.
+The WASM check retains an unrelated existing unused-variable warning in the
+UI crate. No GitHub upload or remote CI was performed for this task.
+
+Windows/Linux retain the same source abstraction and existing registry/Fontconfig
+file adapters. Their memory-font table providers are not implemented yet;
+cross-target checks establish build compatibility only. Fonts private to another
+process cannot be assumed available to Pagenor. Such a vendor must expose them
+to the session or provide an integration API; no private memory/decryption route
+is used. Adobe documents an Install family step for availability in other apps.
+
+References: [Apple font registration scopes](https://developer.apple.com/documentation/coretext/ctfontmanagerscope),
+[Apple table access](https://developer.apple.com/documentation/coretext/ctfontcopytable(_:_:_:)),
+[Adobe installation for other apps](https://helpx.adobe.com/uk/creative-cloud/apps/integration-with-other-apps/manage-fonts/install-fonts.html).

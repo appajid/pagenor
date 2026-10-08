@@ -54,6 +54,8 @@ pub enum FontSource {
     Memory,
     /// An installed font file (the system's or the user's font folders).
     Installed(std::path::PathBuf),
+    /// Font tables supplied by the native font service, with no redistributable file.
+    Native(String),
     /// A font file in a document's `Document Fonts` folder ([`FontDb::load_document_fonts`]).
     Document(std::path::PathBuf),
 }
@@ -63,7 +65,7 @@ impl FontSource {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             FontSource::Installed(p) | FontSource::Document(p) => Some(p),
-            FontSource::Bundled | FontSource::Memory => None,
+            FontSource::Bundled | FontSource::Memory | FontSource::Native(_) => None,
         }
     }
 }
@@ -94,6 +96,8 @@ pub struct FontScanReport {
     pub host_source: Option<&'static str>,
     pub host_registered_files: usize,
     pub host_pathless_faces: usize,
+    /// Catalogue entries whose glyph data must be requested from the native font service.
+    pub native_faces: usize,
     pub files_scanned: usize,
     pub families: usize,
     pub faces: usize,
@@ -121,6 +125,7 @@ impl FontScanReport {
 struct ScanState {
     report: FontScanReport,
     signature: Vec<(std::path::PathBuf, Option<(u64, std::time::SystemTime)>)>,
+    native_signature: Vec<crate::platform::NativeFont>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -144,6 +149,8 @@ pub struct FontFace {
     pub source: FontSource,
     bytes: FontBytes,
     index: u32,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_epoch: u64,
     pub upem: f64,
     /// Ascender in font units (positive = up).
     pub ascent: f64,
@@ -340,11 +347,28 @@ impl FontFace {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CatalogLocation {
+    File(std::path::PathBuf),
+    Native(String),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CatalogLocation {
+    fn diagnostic_path(&self) -> std::path::PathBuf {
+        match self {
+            Self::File(path) => path.clone(),
+            Self::Native(name) => std::path::PathBuf::from(format!("Native font: {name}")),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 struct CatalogEntry {
     family: String,
     style: String,
-    path: std::path::PathBuf,
+    location: CatalogLocation,
     /// The font menu group and native family name, read by the scan.
     group: FontGroup,
     native: Option<String>,
@@ -375,6 +399,10 @@ pub struct FontDb {
     outlines: Mutex<HashMap<(u32, u32), Arc<BezPath>>>,
     #[cfg(not(target_arch = "wasm32"))]
     catalog: RwLock<Vec<CatalogEntry>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_available: RwLock<HashMap<String, u64>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    next_native_epoch: std::sync::atomic::AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
     scan_state: Mutex<ScanState>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -641,6 +669,16 @@ fn file_face_names(path: &std::path::Path) -> Vec<ScannedFace> {
     read_file_face_names(path).map(|(faces, _)| faces).unwrap_or_default()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
+    let font = skrifa::FontRef::new(data).map_err(|e| format!("Native metadata is not readable SFNT: {e}"))?;
+    let (family, style) = face_names(&font).ok_or("Native font has no usable family/style name")?;
+    let (group, native) = crate::group::classify(&font, &family);
+    let styles: Vec<_> = font.named_instances().iter().filter_map(|instance| name(&font, &[instance.subfamily_name_id()])).collect();
+    let styles = if styles.is_empty() { vec![style] } else { styles };
+    Ok(styles.into_iter().map(|style| ScannedFace { family: family.clone(), style, group, native: native.clone() }).collect())
+}
+
 /// The platform's font folders (the system's and the user's), scanned by [`FontDb::global`].
 /// Empty on wasm.
 pub fn system_font_dirs() -> Vec<std::path::PathBuf> {
@@ -783,6 +821,8 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         source,
         bytes,
         index,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_epoch: 0,
         bmp: std::sync::OnceLock::new(),
         em: std::sync::OnceLock::new(),
         group: std::sync::OnceLock::new(),
@@ -847,6 +887,10 @@ impl FontDb {
             outlines: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             catalog: RwLock::new(Vec::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_available: RwLock::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            next_native_epoch: std::sync::atomic::AtomicU64::new(1),
             #[cfg(not(target_arch = "wasm32"))]
             scan_state: Mutex::new(ScanState::default()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -939,11 +983,24 @@ impl FontDb {
 
     /// The faces of a font file from `source` whose family and style aren't loaded yet.
     fn new_faces(&self, bytes: Vec<u8>, source: FontSource) -> Vec<FontFace> {
+        self.new_faces_with_epoch(bytes, source, 0)
+    }
+
+    fn new_faces_with_epoch(&self, bytes: Vec<u8>, source: FontSource, epoch: u64) -> Vec<FontFace> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = epoch;
         let data = Arc::new(bytes);
         enumerate_faces(&data)
             .into_iter()
-            .filter(|(_, family, style, _)| !has_face(&self.read_faces(), family, style))
-            .filter_map(|(i, family, style, coords)| make_face(FontBytes::Owned(data.clone()), source.clone(), i, family, style, coords))
+            .filter(|(_, family, style, _)| {
+                !self.read_faces().iter().any(|f| has_face(std::slice::from_ref(f), family, style) && self.current_face(f))
+            })
+            .filter_map(|(i, family, style, coords)| {
+                let face = make_face(FontBytes::Owned(data.clone()), source.clone(), i, family, style, coords)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let face = FontFace { native_epoch: epoch, ..face };
+                Some(face)
+            })
             .collect()
     }
 
@@ -954,7 +1011,15 @@ impl FontDb {
         let mut faces = self.faces.write().unwrap_or_else(|e| e.into_inner());
         let mut added = 0;
         for f in new {
-            if !has_face(&faces, &f.family, &f.style) {
+            if !self.current_face(&f) {
+                continue;
+            }
+            if let Some(index) = faces.iter().position(|old| has_face(std::slice::from_ref(old), &f.family, &f.style)) {
+                if !self.current_face(&faces[index]) {
+                    faces[index] = Arc::new(f);
+                    added += 1;
+                }
+            } else {
                 faces.push(Arc::new(f));
                 added += 1;
             }
@@ -1044,6 +1109,7 @@ impl FontDb {
         let mut state = self.scan_state.lock().unwrap_or_else(|e| e.into_inner());
         let mut report = FontScanReport { roots: self.font_dirs.clone(), ..Default::default() };
         let mut files = Vec::new();
+        let mut native_fonts = Vec::new();
         let mut stack = self.font_dirs.clone();
         if self.host_fonts {
             let (source, activated, pathless) = crate::platform::discover();
@@ -1051,6 +1117,7 @@ impl FontDb {
             report.host_registered_files = activated.files.len();
             report.host_pathless_faces = pathless;
             report.roots.extend(activated.dirs.iter().cloned());
+            native_fonts = activated.native_fonts;
             stack.extend(activated.files);
             stack.extend(activated.dirs);
             for (path, reason) in activated.issues {
@@ -1110,10 +1177,13 @@ impl FontDb {
                 (p.clone(), metadata)
             })
             .collect();
-        if !force && signature == state.signature {
+        native_fonts.sort();
+        native_fonts.dedup();
+        if !force && signature == state.signature && native_fonts == state.native_signature {
             return (false, state.report.faces);
         }
         let mut found = Vec::new();
+        let mut usable_files = std::collections::HashSet::new();
         report.files_scanned = files.len();
         for path in files {
             match read_file_face_names(&path) {
@@ -1122,10 +1192,11 @@ impl FontDb {
                     if skipped > 0 {
                         report.note(&path, format!("Skipped {skipped} faces: unreadable family metadata or collection limit exceeded"));
                     }
+                    usable_files.insert(std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()));
                     found.extend(faces.into_iter().map(|f| CatalogEntry {
                         family: f.family,
                         style: f.style,
-                        path: path.clone(),
+                        location: CatalogLocation::File(path.clone()),
                         group: f.group,
                         native: f.native,
                     }));
@@ -1143,21 +1214,45 @@ impl FontDb {
                 }
             }
         }
-        found.sort_by_cached_key(|f| (f.family.to_lowercase(), f.style.to_lowercase(), f.path.clone()));
+        // A native descriptor may refer to memory or a file the Rust parser cannot read.
+        // Only request bounded metadata here; glyph tables remain lazy.
+        for font in &native_fonts {
+            if font.path.as_ref().is_some_and(|p| usable_files.contains(&std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))) {
+                continue;
+            }
+            let location = CatalogLocation::Native(font.name.clone());
+            match crate::platform::native_font_metadata(&font.name).and_then(|data| native_face_names(&data)) {
+                Ok(faces) => found.extend(faces.into_iter().map(|f| CatalogEntry {
+                    family: f.family,
+                    style: f.style,
+                    location: location.clone(),
+                    group: f.group,
+                    native: f.native,
+                })),
+                Err(reason) => report.note(&location.diagnostic_path(), reason),
+            }
+        }
+        found.sort_by_cached_key(|f| (f.family.to_lowercase(), f.style.to_lowercase(), f.location.clone()));
         found.dedup_by(|a, b| {
             let duplicate = a.family.eq_ignore_ascii_case(&b.family) && a.style.eq_ignore_ascii_case(&b.style);
             if duplicate {
                 report.duplicate_faces += 1;
-                report.note(&a.path, format!("Duplicate {} / {}; using {}", a.family, a.style, b.path.display()));
+                report.note(
+                    &a.location.diagnostic_path(),
+                    format!("Duplicate {} / {}; using {}", a.family, a.style, b.location.diagnostic_path().display()),
+                );
             }
             duplicate
         });
         let n = found.len();
         report.faces = n;
+        report.native_faces = found.iter().filter(|f| matches!(f.location, CatalogLocation::Native(_))).count();
         report.families = found.iter().map(|f| f.family.to_lowercase()).collect::<std::collections::HashSet<_>>().len();
         log::debug!("cataloged {n} system font faces");
         *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
+        self.update_native_available(native_fonts.iter().map(|f| f.name.clone()));
         state.signature = signature;
+        state.native_signature = native_fonts;
         state.report = report;
         // The initial scan may run inside a fallback lookup that holds this lock already.
         if self.cataloged.get().is_some() {
@@ -1174,18 +1269,46 @@ impl FontDb {
     /// Load the files of the installed `family`. Returns whether any face was added.
     #[cfg(not(target_arch = "wasm32"))]
     fn load_cataloged(&self, family: &str) -> bool {
-        let paths: Vec<std::path::PathBuf> = {
+        self.load_cataloged_with(family, crate::platform::native_font_data)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_cataloged_with(&self, family: &str, native_data: impl Fn(&str) -> Result<Vec<u8>, String>) -> bool {
+        let locations: Vec<CatalogLocation> = {
             let cat = self.read_catalog();
-            let mut p: Vec<_> = cat.iter().filter(|c| c.family.eq_ignore_ascii_case(family)).map(|c| c.path.clone()).collect();
-            p.sort();
-            p.dedup();
-            p
+            let mut locations: Vec<_> = cat.iter().filter(|c| c.family.eq_ignore_ascii_case(family)).map(|c| c.location.clone()).collect();
+            locations.sort();
+            locations.dedup();
+            locations
         };
         // The whole family arrives at once (see `insert_faces`).
         let mut faces = Vec::new();
-        for p in paths {
-            if let Ok(data) = std::fs::read(&p) {
-                faces.extend(self.new_faces(data, FontSource::Installed(p)));
+        for location in locations {
+            let diagnostic = location.diagnostic_path();
+            let (data, source, epoch) = match location {
+                CatalogLocation::File(path) => (std::fs::read(&path).map_err(|e| e.to_string()), FontSource::Installed(path), 0),
+                CatalogLocation::Native(name) => {
+                    let Some(epoch) = self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(&name).copied() else { continue };
+                    (native_data(&name), FontSource::Native(name), epoch)
+                }
+            };
+            match data {
+                Ok(data) => faces.extend(self.new_faces_with_epoch(data, source, epoch)),
+                Err(reason) if matches!(source, FontSource::Native(_)) => {
+                    // A fallback chain may hold `sys` while loading. Do not wait for a scan
+                    // that holds `scan_state` and is about to invalidate that same fallback.
+                    let state = match self.scan_state.try_lock() {
+                        Ok(state) => Some(state),
+                        Err(std::sync::TryLockError::Poisoned(error)) => Some(error.into_inner()),
+                        Err(std::sync::TryLockError::WouldBlock) => None,
+                    };
+                    if let Some(mut state) = state {
+                        state.report.note(&diagnostic, format!("Cannot use native font: {reason}"));
+                    } else {
+                        log::warn!("Cannot use native font {}: {reason}", diagnostic.display());
+                    }
+                }
+                Err(_) => {}
             }
         }
         self.insert_faces(faces) > 0
@@ -1316,7 +1439,32 @@ impl FontDb {
     }
 
     fn is_loaded(&self, family: &str) -> bool {
-        self.read_faces().iter().any(|f| f.family.eq_ignore_ascii_case(family))
+        self.read_faces().iter().any(|f| f.family.eq_ignore_ascii_case(family) && self.current_face(f))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_native_available(&self, names: impl IntoIterator<Item = String>) {
+        let names: std::collections::HashSet<_> = names.into_iter().collect();
+        // Serialize with insertion and cached lookup so activation changes cannot admit data
+        // fetched for a previous activation. An identity returning later gets a new epoch.
+        let _faces = self.faces.write().unwrap_or_else(|e| e.into_inner());
+        let mut available = self.native_available.write().unwrap_or_else(|e| e.into_inner());
+        available.retain(|name, _| names.contains(name));
+        for name in names {
+            available.entry(name).or_insert_with(|| self.next_native_epoch.fetch_add(1, Ordering::Relaxed));
+        }
+    }
+
+    /// Native activations must still be present. Retained layout handles do not grant a new
+    /// lookup access after the OS withdraws the font. Other cached source policies stay intact.
+    fn current_face(&self, face: &FontFace) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let FontSource::Native(name) = &face.source {
+            return self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(name) == Some(&face.native_epoch);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = face;
+        true
     }
 
     /// A shared variable font's axes (see [`ScopedFonts::axes`]).
@@ -1342,7 +1490,7 @@ impl FontDb {
                 return false;
             }
         }
-        let covered = |db: &FontDb| db.read_faces().iter().any(|f| f.covers(c));
+        let covered = |db: &FontDb| db.read_faces().iter().any(|f| db.current_face(f) && f.covers(c));
         self.ensure_catalog();
         let generation = self.scan_generation();
         let cataloged: Vec<String> = self.read_catalog().iter().map(|e| e.family.clone()).collect();
@@ -1354,7 +1502,28 @@ impl FontDb {
                 }
             }
         }
-        let mut paths: Vec<std::path::PathBuf> = self.catalog.read().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.path.clone()).collect();
+        let mut locations: Vec<_> = self.read_catalog().iter().map(|e| e.location.clone()).collect();
+        locations.sort();
+        locations.dedup();
+        for location in &locations {
+            if let CatalogLocation::Native(name) = location {
+                let Some(epoch) = self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(name).copied() else { continue };
+                let Ok(data) = crate::platform::native_font_data(name) else { continue };
+                let hit = enumerate_faces(&data)
+                    .iter()
+                    .any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
+                if hit && self.insert_faces(self.new_faces_with_epoch(data, FontSource::Native(name.clone()), epoch)) > 0 && covered(self) {
+                    return true;
+                }
+            }
+        }
+        let mut paths: Vec<_> = locations
+            .into_iter()
+            .filter_map(|e| match e {
+                CatalogLocation::File(path) => Some(path),
+                CatalogLocation::Native(_) => None,
+            })
+            .collect();
         paths.sort();
         paths.dedup();
         for p in paths {
@@ -1439,7 +1608,7 @@ impl ScopedFonts<'_> {
     /// Installed menu entries come from the current catalogue. Retained font bytes can still
     /// render existing layouts after removal, but must not put deleted faces back in the picker.
     fn shared_menu_face(face: &&Arc<FontFace>) -> bool {
-        cfg!(target_arch = "wasm32") || !matches!(face.source, FontSource::Installed(_))
+        cfg!(target_arch = "wasm32") || !matches!(face.source, FontSource::Installed(_) | FontSource::Native(_))
     }
 
     /// Selectable family names: document fonts, bundled/in-memory fonts and the current installed
@@ -1587,6 +1756,8 @@ impl ScopedFonts<'_> {
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let f = FontFace { native_epoch: base.native_epoch, ..f };
         Some(self.db.instances.write().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert_with(|| Arc::new(f)).clone())
     }
 
@@ -1597,7 +1768,8 @@ impl ScopedFonts<'_> {
         let faces = self.db.read_faces();
         // The document's fonts first: they stand in for other fonts of the same name.
         let named = |f: &&Arc<FontFace>| f.family.eq_ignore_ascii_case(family);
-        let cands: Vec<&Arc<FontFace>> = self.own().iter().filter(named).chain(faces.iter().filter(named)).collect();
+        let cands: Vec<&Arc<FontFace>> =
+            self.own().iter().filter(named).chain(faces.iter().filter(named).filter(|f| self.db.current_face(f))).collect();
         if cands.is_empty() {
             return None;
         }
@@ -1653,15 +1825,19 @@ impl ScopedFonts<'_> {
             }
         }
         let faces = self.db.read_faces();
-        let mut order: Vec<&Arc<FontFace>> =
-            self.own().iter().chain(faces.iter()).filter(|f| f.id != exclude && f.family.eq_ignore_ascii_case(family)).collect();
+        let mut order: Vec<&Arc<FontFace>> = self
+            .own()
+            .iter()
+            .chain(faces.iter())
+            .filter(|f| f.id != exclude && f.family.eq_ignore_ascii_case(family) && self.db.current_face(f))
+            .collect();
         order.sort_by_key(|f| (f.italic, (f.weight - 400.0).abs() as i32));
         order.into_iter().find(|f| f.covers(c)).cloned()
     }
 
     fn loaded_fallback(&self, c: char, exclude: u32) -> Option<Arc<FontFace>> {
         let faces = self.db.read_faces();
-        let mut order: Vec<&Arc<FontFace>> = faces.iter().chain(self.own().iter()).filter(|f| f.id != exclude).collect();
+        let mut order: Vec<&Arc<FontFace>> = faces.iter().chain(self.own().iter()).filter(|f| f.id != exclude && self.db.current_face(f)).collect();
         order.sort_by_key(|f| (!f.family.eq_ignore_ascii_case(FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
         order.into_iter().find(|f| f.covers(c)).cloned()
     }

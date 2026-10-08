@@ -88,6 +88,7 @@ fn copy_font(face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut
     let from = match &face.source {
         FontSource::Bundled => return " — included with Pagenor".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
+        FontSource::Native(_) => return " — not copied: supplied by the operating system".into(),
         FontSource::Installed(p) | FontSource::Document(p) => p,
     };
     if face.restricted_licence() {
