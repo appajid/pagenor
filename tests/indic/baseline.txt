@@ -1,0 +1,39 @@
+# Pagenor Indic baseline corpus
+# These are baseline natural-language/script samples, not yet the exhaustive conjunct corpus.
+
+[Devanagari]
+हिन्दी भाषा और देवनागरी लिपि
+मराठी भाषा
+संस्कृतम्
+नेपाली भाषा
+
+[Bengali-Assamese]
+বাংলা ভাষা
+অসমীয়া ভাষা
+
+[Gurmukhi]
+ਪੰਜਾਬੀ ਭਾਸ਼ਾ
+
+[Gujarati]
+ગુજરાતી ભાષા
+
+[Odia]
+ଓଡ଼ିଆ ଭାଷା
+
+[Tamil]
+தமிழ் மொழி
+
+[Telugu]
+తెలుగు భాష
+
+[Kannada]
+ಕನ್ನಡ ಭಾಷೆ
+
+[Malayalam]
+മലയാളം ഭാഷ
+
+[Urdu]
+اردو زبان
+
+[Mixed]
+English हिन्दी বাংলা ਪੰਜਾਬੀ ગુજરાતી ଓଡ଼ିଆ தமிழ் తెలుగు ಕನ್ನಡ മലയാളം اردو
