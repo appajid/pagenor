@@ -26,7 +26,11 @@ GPU screenshot adapter is unavailable on this host.
 
 [Quality CI](https://github.com/appajid/pagenor/actions/workflows/ci.yml) runs
 macOS, Windows and Linux checks, including WASM, plus Rust 1.95 on Linux.
-Remote results are pending until the source upload and initial runs complete.
+The source upload is complete and both prior GitHub README commits are preserved.
+[Initial run](https://github.com/appajid/pagenor/actions/runs/37766460875):
+macOS quality and minimum Rust 1.95 on Linux passed; Windows/Linux quality jobs
+are still running. Auxiliary packaging lint and FreeBSD runs exposed the findings
+recorded as PG-0011/PG-0012; their source fixes require remote reruns.
 Release verification remains a separate Phase 00/10 gate.
 
 `main` is currently unprotected. GitHub’s ruleset endpoint returned HTTP 403

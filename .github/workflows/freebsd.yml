@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       # The Japanese font tests run against craft-fonts (an optional build input; they skip without it).
       - name: Check out craft-fonts
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -40,8 +40,9 @@ jobs:
         with:
           release: "14.3"
           usesh: true
-          cpu: 4
-          mem: 12288
+          # Private-repository Linux runners have limited host RAM/CPU. Leave room for QEMU.
+          cpu: 2
+          mem: 4096
           # Nothing to bring back; copying the target dir out of the VM fails on large builds.
           copyback: false
           prepare: |
@@ -52,5 +53,6 @@ jobs:
             # The checkout is synced in under another owner; let tests that call git read it.
             git config --global --add safe.directory "*"
             rustc --version
+            export CARGO_BUILD_JOBS=2
             CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked
             CRAFT_FONTS_DIR="$PWD/craft-fonts" CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked

@@ -12,9 +12,12 @@
   </developer>
   <description>
     <p>
-      Pagenor is a page layout. Lay out magazines, books and print documents
+      Pagenor is a page-layout and publishing application for creating magazines,
+      books and print documents with text frames, typography, images and reusable styles.
     </p>
   </description>
+  <url type="homepage">https://github.com/appajid/pagenor</url>
+  <url type="bugtracker">https://github.com/appajid/pagenor/issues</url>
   <launchable type="desktop-id">org.pagenor.app.desktop</launchable>
   <icon type="stock">org.pagenor.app</icon>
   <categories>
