@@ -108,6 +108,104 @@ fn rescanning_finds_fonts_installed_since() {
 }
 
 #[test]
+fn rescanning_retries_a_previously_missing_glyph() {
+    let dir = font_dir("fallback-rescan");
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let latin = db.face(crate::DEFAULT_FAMILY, "Regular");
+    let ch = '\u{e123}';
+    assert!(db.fallback_for(ch, latin.id(), None).is_none());
+    std::fs::write(dir.join("new.ttf"), crate::testing::font_with("Pagenor Rescan", &[ch]).unwrap()).unwrap();
+    db.load_system_fonts();
+    assert_eq!(db.fallback_for(ch, latin.id(), None).unwrap().family, "Pagenor Rescan");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn scan_diagnostics_explain_rejections_and_duplicates_without_loading() {
+    let dir = font_dir("diagnostics");
+    std::fs::copy(dir.join("Sysfont-Regular.ttf"), dir.join("duplicate.otf")).unwrap();
+    let missing = dir.join("absent");
+    let db = FontDb::with_font_dirs(vec![dir.clone(), missing.clone(), dir.join("Sub/..")]);
+    let report = db.scan_report();
+    assert_eq!((report.files_scanned, report.families, report.faces), (4, 1, 2));
+    assert_eq!((report.rejected_files, report.duplicate_faces, report.unavailable_paths), (1, 1, 1));
+    assert!(report.issues.iter().any(|(p, reason)| p.ends_with("damaged.ttf") && reason.contains("metadata")));
+    assert!(report.issues.iter().any(|(p, reason)| p == &missing && reason.contains("directory")));
+    assert!(report.issues.iter().any(|(_, reason)| reason.contains("Duplicate") && reason.contains(FAMILY)));
+    assert!(!db.is_loaded(FAMILY));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn scan_diagnostics_cap_records_but_count_every_rejection() {
+    let dir = font_dir("diagnostics-cap");
+    for n in 0..300 {
+        std::fs::write(dir.join(format!("broken-{n}.ttf")), b"broken").unwrap();
+    }
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let report = db.scan_report();
+    assert_eq!(report.rejected_files, 301);
+    assert_eq!(report.issues.len(), 256);
+    assert_eq!(report.issues_omitted, 45);
+    assert_eq!(report.faces, 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn automatic_refresh_finds_added_files_and_preserves_document_fonts() {
+    let dir = font_dir("dynamic");
+    let installed = dir.join("installed");
+    let own = dir.join("document");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::create_dir_all(&own).unwrap();
+    let family = "Pagenor Dynamic";
+    std::fs::write(own.join("own.ttf"), crate::testing::font_with(family, &['a']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed.clone()]);
+    let document = db.load_document_fonts(&own);
+    let face = db.scoped(document.scope).face(family, "Regular");
+    db.scan_report();
+    let before = db.scan_generation();
+    assert!(!db.refresh_catalog(false).0);
+    assert_eq!(db.scan_generation(), before, "an unchanged check does not rescan metadata");
+    std::fs::write(installed.join("new.otf"), crate::testing::font_with(family, &['b']).unwrap()).unwrap();
+    assert!(db.refresh_catalog(false).0);
+    assert!(db.scan_generation() > before);
+    assert!(db.has_family(family));
+    assert!(!db.is_loaded(family), "automatic discovery retains the lazy catalogue");
+    assert!(Arc::ptr_eq(&face, &db.scoped(document.scope).face(family, "Regular")));
+    std::fs::remove_file(installed.join("new.otf")).unwrap();
+    assert!(db.refresh_catalog(false).0);
+    assert!(!db.has_family(family), "an unused installed face leaves the catalogue when removed");
+    assert!(db.scoped(document.scope).has_family(family));
+    assert!(Arc::ptr_eq(&face, &db.scoped(document.scope).face(family, "Regular")));
+    db.add_font(crate::testing::font_with("Pagenor Memory", &['m']).unwrap());
+    assert!(db.has_family("Pagenor Memory"));
+    assert!(db.scoped(document.scope).has_family("Pagenor Memory"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn parallel_rescans_publish_complete_catalogues() {
+    let dir = font_dir("parallel-rescan");
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    db.scan_report();
+    std::thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| {
+                for _ in 0..3 {
+                    assert_eq!(db.load_system_fonts(), 2);
+                    let r = db.scan_report();
+                    assert_eq!((r.faces, r.families), (2, 1));
+                    assert_eq!(db.styles(FAMILY), ["Regular", "Bold"]);
+                }
+            });
+        }
+    });
+    assert!(!db.is_loaded(FAMILY));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_background_scan_serves_the_first_lookup() {
     let dir = font_dir("background");
     let db: &'static FontDb = Box::leak(Box::new(FontDb::with_font_dirs(vec![dir])));

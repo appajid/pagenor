@@ -815,6 +815,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "footnoteOptions" => crate::i18n::tr(&app.ui.language, "Footnote Options"),
         "insertXref" => crate::i18n::tr(&app.ui.language, "New Cross-Reference"),
         "findFont" => crate::i18n::tr(&app.ui.language, "Find/Replace Font"),
+        "fontDiscovery" => crate::i18n::tr(&app.ui.language, "Font Discovery"),
         "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
@@ -1055,6 +1056,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "footnoteOptions" => footnote_options(app, ui, &mut d),
             "insertXref" => insert_xref(app, ui, &mut d),
             "findFont" => find_font(app, ui, &mut d),
+            "fontDiscovery" => font_discovery(app, ui, &mut d),
             "colorPicker" => color_picker(ui, &mut d),
             "preferences" => preferences(app, ui, &mut d),
             "print" => print_dialog(app, ui, &mut d),
@@ -1400,6 +1402,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
     match d.id.as_str() {
+        "fontDiscovery" => Ok(Value::Null),
         "newDocument" => {
             let margins = json!({"top": d.m("marginTop").unwrap_or(36.0), "bottom": d.m("marginBottom").unwrap_or(36.0), "inside": d.m("marginInside").unwrap_or(36.0), "outside": d.m("marginOutside").unwrap_or(36.0)});
             app.run(
@@ -2592,6 +2595,54 @@ fn color_picker(ui: &mut egui::Ui, d: &mut Dialog) {
     if c != before {
         d.fields.insert("hex".into(), json!(format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())));
     }
+}
+
+/// Installed-font diagnostics come from engine commands; the dialog only presents them.
+fn font_discovery(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let count = |key: &str| d.fields.get(key).and_then(Value::as_u64).unwrap_or(0);
+    ui.label(format!("{} installed families · {} faces · {} files scanned", count("families"), count("faces"), count("filesScanned")));
+    ui.label(format!(
+        "{} duplicate faces · {} rejected files · {} unavailable paths",
+        count("duplicateFaces"),
+        count("rejectedFiles"),
+        count("unavailablePaths")
+    ));
+    if count("hostRegisteredFiles") > 0 {
+        ui.label(format!("{} file locations supplied by macOS", count("hostRegisteredFiles")));
+    }
+    if count("hostPathlessFaces") > 0 {
+        ui.label(format!("{} macOS faces have no file path and cannot be catalogued", count("hostPathlessFaces")));
+    }
+    ui.label("Newly installed or activated fonts appear automatically after a short delay.");
+    ui.add_space(8.0);
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Rescan Installed Fonts"))).clicked()
+        && let Ok(Value::Object(report)) = app.run("font.rescan", json!({}))
+    {
+        d.fields = report;
+    }
+    egui::ScrollArea::vertical().id_salt("font_discovery_details").max_height(280.0).show(ui, |ui| {
+        ui.strong("Font folders");
+        if let Some(roots) = d.fields.get("roots").and_then(Value::as_array) {
+            for path in roots {
+                ui.label(path.as_str().unwrap_or(""));
+            }
+        }
+        ui.add_space(8.0);
+        ui.strong("Skipped files and duplicates");
+        if let Some(issues) = d.fields.get("issues").and_then(Value::as_array) {
+            if issues.is_empty() {
+                ui.label("No scan issues reported.");
+            }
+            for issue in issues {
+                ui.label(issue["path"].as_str().unwrap_or(""));
+                ui.label(egui::RichText::new(issue["reason"].as_str().unwrap_or("")).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+                ui.add_space(6.0);
+            }
+        }
+        if let Some(n) = d.fields.get("issuesOmitted").and_then(Value::as_u64).filter(|n| *n > 0) {
+            ui.label(format!("{n} additional records omitted (first 256 shown)."));
+        }
+    });
 }
 
 /// Find/Replace Font: the document's fonts (missing ones first, flagged) and a replacement.

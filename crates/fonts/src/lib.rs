@@ -15,6 +15,8 @@ mod macos;
 pub mod testing;
 mod vertical;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use fontdb::FontScanReport;
 pub use fontdb::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontDb, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
     MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, system_font_dirs,

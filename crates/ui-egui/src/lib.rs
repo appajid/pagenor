@@ -413,6 +413,7 @@ pub struct DesignApp {
     fonts_lang: String,
     pub restyle: bool,
     fonts_ready: bool,
+    font_generation: u64,
     pub integrated_titlebar: bool,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
@@ -452,6 +453,7 @@ impl DesignApp {
             fonts_lang: String::new(),
             restyle: false,
             fonts_ready: false,
+            font_generation: 0,
             integrated_titlebar: false,
             native_menu: false,
             native_shortcuts: Default::default(),
@@ -519,6 +521,10 @@ impl DesignApp {
         self.after_engine();
         if let Err(e) = &r {
             self.status(e.clone());
+        } else if id == "font.rescan"
+            && let Ok(report) = &r
+        {
+            self.status(format!("Font scan complete: {} families, {} faces", report["families"], report["faces"]));
         }
         r
     }
@@ -683,6 +689,31 @@ impl DesignApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let db = pagenor_fonts::FontDb::global();
+        db.refresh_in_background();
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.request_repaint_after(std::time::Duration::from_secs(3));
+        let generation = db.scan_generation();
+        if self.font_generation != generation {
+            self.font_generation = generation;
+            self.session.cache.clear();
+            self.canvas.shown = None;
+            self.canvas.pending = None;
+            self.canvas.shown_doc = None;
+            self.canvas.pending_doc = None;
+            if let Some((canvas, _)) = &mut self.other_pane {
+                canvas.shown = None;
+                canvas.pending = None;
+                canvas.shown_doc = None;
+                canvas.pending_doc = None;
+            }
+            if self.ui.dialog.as_ref().is_some_and(|d| d.id == "fontDiscovery")
+                && let Ok(Value::Object(report)) = self.run("font.diagnostics", json!({}))
+                && let Some(dialog) = &mut self.ui.dialog
+            {
+                dialog.fields = report;
+            }
+        }
         if !self.fonts_ready {
             ctx.request_repaint();
             return;

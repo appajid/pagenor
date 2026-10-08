@@ -63,6 +63,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
     ("app.findFontDialog", "Find/Replace Font…", None, "{} — fonts used (missing ones flagged) and replacing them"),
+    ("app.fontDiscovery", "Font Discovery…", None, "{} — installed-font scan locations, counts, skipped files and rescan"),
     ("app.insertXrefDialog", "Insert Cross-Reference…", None, "{} — New Cross-Reference dialog (paragraph or text anchor, format)"),
     ("app.deleteAllGuides", "Delete All Guides on Spread", None, "{} — the spread in view"),
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
@@ -279,6 +280,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
         "Type",
         &[
             "ui:app.findFontDialog",
+            "ui:app.fontDiscovery",
+            "cmd:font.rescan",
             "-",
             "cmd:type.createOutlines",
             ">Bulleted and Numbered Lists",
@@ -896,6 +899,13 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.dialog = Some(crate::dialogs::Dialog::new("footnoteOptions", o));
             Ok(Value::Null)
         }
+        "app.fontDiscovery" => match app.run("font.diagnostics", json!({})) {
+            Ok(report) => {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("fontDiscovery", report.clone()));
+                Ok(report)
+            }
+            Err(e) => Err(e),
+        },
         "app.findFontDialog" => {
             if app.session.active().is_none() {
                 return Some(Err("no document open".into()));
@@ -1487,6 +1497,9 @@ fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.fontDiscovery" {
+        return enabled(app, "font.diagnostics");
+    }
     match pagenor_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
         None => true,

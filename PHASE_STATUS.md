@@ -6,8 +6,8 @@ in `ROADMAP.md` are implementation history, not proof that a phase exit gate pas
 
 | Phase | Priority | Work | Status / evidence |
 |---|---|---|---|
-| 00 | P0 | Repository, security and provenance | In progress. Local quality baseline and CI setup: [report](docs/pagenor/PHASE_00_REPORT.md). Own repository and local remote are configured. Initial CI, private-repository branch protection and release supply-chain checks remain open. |
-| 01 | P0 | Font discovery and catalogue | In progress. Core Text paths, all SFNT extensions, lazy named instances and duplicate handling implemented. Host comparison covered by tests; diagnostics, activation lifecycle and native Windows/Linux validation remain open. |
+| 00 | P0 | Repository, security and provenance | In progress. Local quality baseline and CI setup: [report](docs/pagenor/PHASE_00_REPORT.md). Own repository and local remote are configured. Initial CI passed macOS and Rust 1.95 on Linux; Windows/Linux quality jobs remain pending. Auxiliary workflow fixes await reruns. Private-repository branch protection and release supply-chain checks remain open. |
+| 01 | P0 | Font discovery and catalogue | In progress. Core Text paths, all SFNT extensions, lazy named instances and duplicate handling implemented. Host comparison covered by tests; Diagnostics/rescan commands and automatic native refresh are implemented and pass the local gate. Font Book activation lifecycle and native Windows/Linux adapter validation remain open. |
 | 02 | P0 | Clipboard, input and document reliability | Pending exit-gate validation. Unicode paste fixes exist; external application, undo, autosave and recovery matrix still required. |
 | 03 | P0 | Indic corpus and font presets | Planned. Requires stable font discovery, versioned fixtures and font licence/size review. |
 | 04 | P0 | Script-aware fallback and composite fonts | Planned. Reuse existing composition and document architecture. |

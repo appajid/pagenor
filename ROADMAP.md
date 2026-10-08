@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+- P01.1: Installed-font diagnostics and manual rescan are available through Type
+  and engine commands. Native background refresh discovers new file-backed fonts,
+  including Core Text activation locations on macOS, without eagerly loading font data.
+  Rescans clear stale fallback misses and retain document-local fonts. Validation
+  and remaining activation/platform gaps: `docs/pagenor/FONT_DISCOVERY.md`.
+
 - P00.1: Phase-based validation now starts with a locked workspace quality gate,
   macOS/Windows/Linux CI, Rust 1.95 metadata and a web-app WASM check. The local
   baseline and remaining ownership/release findings are recorded in

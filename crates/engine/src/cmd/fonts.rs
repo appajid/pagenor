@@ -13,6 +13,12 @@ use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "font.diagnostics", "Font Discovery", [], None, "{} → installed-font scan counts, roots and bounded issues; no font files loaded", native_fonts, |_, _| scan_report(false)),
+        cmd!(query "font.rescan", "Rescan Installed Fonts", ["Type"], None, "{} → refreshed installed-font diagnostics; preserves documents and undo history", native_fonts, |s, _| {
+            let report = scan_report(true)?;
+            s.cache.clear();
+            Ok(report)
+        }),
         cmd!(query "font.list", "Fonts in Document", [], None, "{} → [{family, style, characters, missing, styleMissing, source: bundled|installed|document|added (null when missing)}] (missing first)", has_doc, |s, _| {
             Ok(Value::Array(list(&s.doc()?.doc)))
         }),
@@ -26,6 +32,35 @@ pub fn specs() -> Vec<CommandSpec> {
             replace
         ),
     ]
+}
+
+fn native_fonts(_: &Session) -> std::result::Result<(), String> {
+    if cfg!(target_arch = "wasm32") { Err("Installed-font discovery is available in the desktop application".into()) } else { Ok(()) }
+}
+
+fn scan_report(rescan: bool) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let db = pagenor_fonts::FontDb::global();
+        if rescan {
+            db.load_system_fonts();
+        }
+        let r = db.scan_report();
+        Ok(json!({
+            "roots": r.roots, "hostRegisteredFiles": r.host_registered_files,
+            "hostPathlessFaces": r.host_pathless_faces,
+            "filesScanned": r.files_scanned, "families": r.families, "faces": r.faces,
+            "duplicateFaces": r.duplicate_faces, "skippedFaces": r.skipped_faces,
+            "rejectedFiles": r.rejected_files, "unavailablePaths": r.unavailable_paths,
+            "issuesOmitted": r.issues_omitted,
+            "issues": r.issues.into_iter().map(|(path, reason)| json!({"path": path, "reason": reason})).collect::<Vec<_>>()
+        }))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = rescan;
+        Err(bad("font.diagnostics", "Installed-font discovery requires the desktop application"))
+    }
 }
 
 /// Every story's text, including table cells and footnotes.
@@ -165,6 +200,27 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn font_discovery_and_rescan_work_without_a_document_and_do_not_edit_one() {
+        let mut s = Session::new();
+        let r = s.execute("font.diagnostics", &json!({})).unwrap();
+        assert!(r["faces"].is_number());
+        assert!(r["roots"].is_array());
+        assert!(r["issues"].as_array().unwrap().len() <= 256);
+        s.execute("font.rescan", &json!({})).unwrap();
+        assert!(s.active().is_none());
+        assert!(s.journal.is_empty());
+        s.execute("file.new", &json!({})).unwrap();
+        let document = s.doc().unwrap().doc.clone();
+        let revision = s.doc().unwrap().revision;
+        let journal = s.journal.len();
+        s.execute("font.rescan", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&document, &s.doc().unwrap().doc));
+        assert_eq!(s.doc().unwrap().revision, revision);
+        assert_eq!(s.journal.len(), journal);
+    }
 
     #[test]
     fn find_and_replace_font() {
