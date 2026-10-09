@@ -32,5 +32,6 @@ are excluded. See [Mojikumi repair scope](../mojikumi.md) for supported limits.
 
 The existing native adapters, .pgnr names, fallible serialization, clipboard and
 recovery behavior remain. Dot-prefixed families stay hidden from menus, available
-to backend lookup. Real Adobe/dongle activation validation remains pending at the
-owner's request. Windows/Linux and browser execution belong to the milestone matrix.
+to backend lookup. The owner removed Adobe/dongle activation validation from
+scope on 2026-10-09; existing native font support remains. Windows/Linux and
+browser execution belong to the milestone matrix.

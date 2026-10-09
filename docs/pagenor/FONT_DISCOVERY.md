@@ -1,5 +1,12 @@
 # Installed-font discovery and refresh
 
+Current scope (2026-10-09): The owner cancelled Adobe/dongle activation and
+table-access validation. It is no longer pending or a milestone requirement,
+and is not claimed as tested. Existing native font support remains. Earlier
+task reports below describe the scope at the time; their pending Adobe/dongle
+references are superseded by this decision. Font Book lifecycle, native
+notifications and Windows/Linux memory-font adapters remain separate open work.
+
 Updated: 2026-10-09. Tasks P01.1 / P01.2 / P01.3 / P01.4 / P01.5 / P01.6 / P01.7 / P01.8.
 
 Open **Type › Font Discovery…** to see the latest installed catalogue, scanned

@@ -28,4 +28,5 @@ filters/sorts/affixes, grid geometry/adoption/merge, PDF output, image handling,
 unsupported formulas, input budgets and UI command/undo delivery. CPU-rendered UI
 inspection covers sources, grid drawing and scrolling to the lower controls at
 1440 × 900. Native Windows/Linux execution and browser interaction remain milestone
-validation tasks. Adobe/dongle font activation remains pending separately.
+validation tasks. Adobe/dongle font activation validation was removed from scope
+by the owner on 2026-10-09.

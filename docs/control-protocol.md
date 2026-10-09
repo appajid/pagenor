@@ -1,22 +1,50 @@
 # Control protocol
 
-Start the app with `--control <port>` (or `PAGENOR_CONTROL_PORT`). The server listens on
-`127.0.0.1` only and speaks JSON lines: one request object per line, one reply per line.
+The desktop control channel is off by default. Start it explicitly with
+`--control <port>`. It listens on `127.0.0.1` and speaks JSON lines: one request
+object per line, one reply per line. Headless scripts do not need this transport.
 
-**Only requests are read.** Every line must be a JSON object with a string `method` (`id` and `params`
-are optional; blank lines are skipped). Anything else gets one error reply
-(`{"ok": false, "error": "… closing the connection"}`) and the server **closes the connection**, so
-nothing sent after it on that connection runs. That covers text that isn't JSON, a JSON array or number,
-an object without `method`, invalid UTF-8, and a line longer than 4 MiB. An HTTP request (for example a
-web page's cross-origin `fetch` to `127.0.0.1:<port>`) therefore can't smuggle a command in its body:
-its request line is rejected first. At most 16 connections are served at once; further ones get an error
-line and are closed. Clients that get an error reply should reconnect. The port has no authentication,
-so only enable it while you use it. Transport: `apps/pagenor/src/control_server.rs`.
+Every request requires the same capability token as the app. Set
+`PAGENOR_CONTROL_TOKEN` to a random secret of 32–1,024 UTF-8 bytes in the app and
+client environments. If unset in the app, a fresh random 64-character hex token
+is generated and printed once to stderr for the client to use. Invalid configured
+tokens or startup failures disable the channel and show an app status message.
+Tokens are not included in documents, preferences, error responses or request logs.
+
+```sh
+export PAGENOR_CONTROL_TOKEN="$(openssl rand -hex 32)"
+pagenor --control 7979 &
+pagenor-cli app --port 7979 --method ui.inspect '{}'
+```
+
+A client sends the token as a top-level field on every request:
 
 ```json
-{"id": 1, "method": "engine.execute", "params": {"command": "frame.create", "params": {"rect": [36, 36, 300, 200], "content": "text"}}}
+{"id": 1, "token": "<same capability token>", "method": "engine.execute", "params": {"command": "frame.create", "params": {"rect": [36, 36, 300, 200], "content": "text"}}}
 {"id": 1, "ok": true, "result": {"id": 10, "story": 11}}
 ```
+
+Missing or wrong tokens get `unauthorized` and close the connection before UI
+or engine dispatch. Malformed input also closes the connection before later lines
+can run, including an HTTP request followed by a JSON body. Blank lines are skipped.
+`method` must be nonempty and at most 256 bytes; `params` is optional. Reflected
+IDs are numbers, null or strings of at most 128 bytes; other IDs become null.
+
+The server bounds request lines to 4 MiB (excluding CR/LF), concurrent connections
+to 16, queued UI requests to 16 and authenticated requests per connection to
+4,096. A full UI queue rejects the request before dispatch. Socket reads and writes
+have a 30-second idle timeout; waiting for the app reply has a 60-second timeout.
+A reply timeout does not cancel an already queued request; it may still execute.
+These are operation/idle limits, not a total connection deadline. The final
+EOF-terminated request remains supported. Click count is clamped to 1–16 and drag
+steps to 1–10,000.
+
+Connected CLI/MCP clients require `PAGENOR_CONTROL_TOKEN`, allow only loopback
+destinations, serialize requests within 4 MiB and bound newline-terminated replies
+to 64 MiB including the newline. A reply must match the request ID. A lost or invalid
+reply drops the connection and returns an error: a command may already have run,
+so the client never automatically replays it. A subsequent explicit call can reconnect.
+Transport: `apps/pagenor/src/control_server.rs`; client: `crates/mcp/src/backend.rs`.
 
 | Method | Params | What it does |
 |---|---|---|

@@ -2,8 +2,8 @@
 //!
 //! Usage: `pagenor [--control <port>] [--sample] [files…]`
 //!
-//! `--control <port>` (or `PAGENOR_CONTROL_PORT`) starts a localhost JSON-lines control server:
-//! `{"id":1,"method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
+//! `--control <port>` explicitly starts an authenticated localhost JSON-lines control server:
+//! `{"id":1,"token":"…","method":"ui.inspect","params":{}}` → `{"id":1,"ok":true,"result":…}`.
 //! See `pagenor_ui_egui::control` for the methods.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -234,8 +234,14 @@ fn main() -> eframe::Result {
             load_prefs(&mut app);
             app.integrated_titlebar = cfg!(target_os = "macos");
             if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
+                match control_server::start(port, cc.egui_ctx.clone()) {
+                    Ok(rx) => app = app.with_control(rx),
+                    Err(error) => {
+                        use std::io::Write as _;
+                        let _ = writeln!(std::io::stderr(), "pagenor: control server: {error}");
+                        app.status(format!("Control server unavailable: {error}"));
+                    }
+                }
             }
             if sample {
                 let _ = app.run("file.newSample", serde_json::json!({}));

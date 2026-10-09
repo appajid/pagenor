@@ -27,6 +27,12 @@ use crate::DesignApp;
 use crate::canvas::Xf;
 use crate::menus;
 
+const MAX_CLICK_COUNT: u64 = 16;
+
+fn synthetic_work_count(params: &Value, key: &str, default: u64, maximum: u64) -> u64 {
+    params.get(key).and_then(Value::as_u64).unwrap_or(default).clamp(1, maximum)
+}
+
 pub type ControlResponse = Value;
 
 pub struct ControlRequest {
@@ -218,7 +224,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 }
             }
             app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
+            let count = synthetic_work_count(p, "count", 1, MAX_CLICK_COUNT);
             for _ in 1..count {
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
                 app.synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
@@ -411,6 +417,22 @@ mod automation_contract_tests {
             Outcome::Screenshot { .. } => panic!("unexpected screenshot"),
         }
     }
+    #[test]
+    fn synthetic_pointer_work_is_bounded() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        for method in ["ui.click", "ui.drag"] {
+            app.synthetic.clear();
+            assert_eq!(call(&mut app, &ctx, method, json!({"count":u64::MAX,"steps":u64::MAX}))["ok"], true);
+            let buttons = app.synthetic.iter().filter(|e| matches!(e, egui::Event::PointerButton { .. })).count();
+            assert_eq!(buttons, 2 * MAX_CLICK_COUNT as usize);
+            assert!(app.synthetic.len() <= 10_001 + 2 * MAX_CLICK_COUNT as usize);
+        }
+        app.synthetic.clear();
+        assert_eq!(call(&mut app, &ctx, "ui.click", json!({"count":0}))["ok"], true);
+        assert_eq!(app.synthetic.len(), 3);
+    }
+
     fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) {
         let mut output = ctx.run_ui(
             egui::RawInput {

@@ -31,7 +31,8 @@ People trust Pagenor with their layouts; a crash loses their work. **This outran
 
 ## Running and looking at the app
 - `cargo run --release -p pagenor -- --sample --control 7979` (sample magazine + control channel).
-- Drive it: JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}` then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
+- Set the same random `PAGENOR_CONTROL_TOKEN` (32–1,024 bytes) in the app/client environments.
+- Drive it: authenticated JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"token":"<same capability token>","method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}` then `{"id":2,"token":"<same capability token>","method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
 - **For UI work, look at the result** (take `ui.screenshot`, read the PNG) and compare with `plan/indesign/02-ui-ux.md` / `11-observed-ui.md`. If no frame is presented (screen locked) use `ui.render` or `pagenor-cli run --sample --all-pages DIR`.
 - Headless: `pagenor-cli run --sample --cmd 'frame.create={"rect":[0,0,100,100]}' --export out.png`.
 - Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.

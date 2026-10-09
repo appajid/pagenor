@@ -366,7 +366,7 @@ fn fake_app() -> (String, std::sync::mpsc::Receiver<Value>) {
 #[test]
 fn connect_mode_forwards_to_the_app() {
     let (addr, seen) = fake_app();
-    let remote = Remote::connect(&addr).unwrap();
+    let remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
     assert!(remote.has_ui());
     let mut s = Server::new(Box::new(remote));
     let r = call(&mut s, "screenshot", json!({}));
@@ -374,6 +374,7 @@ fn connect_mode_forwards_to_the_app() {
     assert!(image_of(&r).starts_with(PNG_MAGIC));
     let got = seen.recv().unwrap();
     assert_eq!(got["method"], "ui.screenshot");
+    assert_eq!(got["token"], "test-control-token-with-at-least-32-bytes");
     assert!(!std::path::Path::new(got["params"]["path"].as_str().unwrap()).exists(), "temp screenshot is removed");
 
     ok(&mut s, "click", json!({"x": 10, "y": 20, "count": 2}));
@@ -389,7 +390,12 @@ fn connect_mode_forwards_to_the_app() {
 fn control_addr_accepts_port_or_address() {
     assert_eq!(control_addr("7979"), "127.0.0.1:7979");
     assert_eq!(control_addr("localhost:8000"), "localhost:8000");
-    assert!(Remote::connect("127.0.0.1:1").is_err());
+    assert_eq!(Remote::connect_with_token("127.0.0.1:1", "short").err().map(|e| e.kind()), Some(std::io::ErrorKind::InvalidInput));
+    assert_eq!(
+        Remote::connect_with_token("192.0.2.1:7979", "test-control-token-with-at-least-32-bytes").err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+    assert!(Remote::connect_with_token("127.0.0.1:1", "test-control-token-with-at-least-32-bytes").is_err());
 }
 
 #[test]
@@ -499,4 +505,81 @@ fn explicit_typing_rejects_stale_selection_and_closed_document() {
     assert_eq!(b.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     b.session.execute("file.close", &json!({})).unwrap();
     assert!(b.call("ui.text", json!({"text":"X"})).is_err());
+}
+
+#[test]
+fn lost_reply_does_not_replay_a_mutating_request() {
+    use std::net::TcpListener;
+    use std::time::Duration;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = std::thread::spawn(move || {
+        let (first, _) = listener.accept().unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(first);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mutation: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(mutation["method"], "engine.execute");
+        // The command was applied, but the reply was lost. Never send it again.
+        drop(reader);
+        let (second, _) = listener.accept().unwrap();
+        second.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut out = second.try_clone().unwrap();
+        let mut reader = BufReader::new(second);
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let next: Value = serde_json::from_str(&line).unwrap();
+        writeln!(out, "{}", json!({"id": next["id"], "ok": true, "result": null})).unwrap();
+        next
+    });
+    let mut remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
+    let result = remote.call("engine.execute", json!({"command": "frame.create"}));
+    assert!(result.is_err(), "a lost mutation reply must not be retried: {result:?}");
+    assert_eq!(remote.call("ui.inspect", json!({})), Ok(Value::Null));
+    let next = server.join().unwrap();
+    assert_eq!(next["method"], "ui.inspect");
+    assert_eq!(next["id"], 2);
+}
+
+#[test]
+fn connected_client_bounds_outbound_requests() {
+    let (addr, seen) = fake_app();
+    let mut remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
+    let error = remote.call("ui.inspect", json!({"value": "x".repeat(4 * 1024 * 1024)})).unwrap_err();
+    assert!(error.contains("control request is larger"), "{error}");
+    drop(remote);
+    assert!(seen.recv_timeout(std::time::Duration::from_millis(100)).is_err());
+}
+
+#[test]
+fn invalid_replies_drop_the_connection_without_replay() {
+    for bad in [json!({"id":99,"ok":true}), json!({"id":1,"ok":"yes"}), json!(null)] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            first.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut out = first.try_clone().unwrap();
+            let mut reader = BufReader::new(first);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            writeln!(out, "{bad}").unwrap();
+            drop(reader);
+            drop(out);
+            let (next, _) = listener.accept().unwrap();
+            next.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut out = next.try_clone().unwrap();
+            let mut reader = BufReader::new(next);
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["id"], 2);
+            writeln!(out, "{}", json!({"id":2,"ok":true,"result":null})).unwrap();
+        });
+        let mut remote = Remote::connect_with_token(&addr, "test-control-token-with-at-least-32-bytes").unwrap();
+        assert!(remote.call("engine.execute", json!({})).unwrap_err().contains("not retried"));
+        assert_eq!(remote.call("ui.inspect", json!({})), Ok(Value::Null));
+        server.join().unwrap();
+    }
 }

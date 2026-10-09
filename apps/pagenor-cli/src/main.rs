@@ -97,7 +97,7 @@ fn report(r: Result<(), String>) -> ExitCode {
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
-/// started with `pagenor --control PORT`). JSON-RPC on stdin/stdout; logs on stderr.
+/// started with `pagenor --control PORT`; both processes need `PAGENOR_CONTROL_TOKEN`). JSON-RPC on stdin/stdout; logs on stderr.
 fn mcp(args: &[String]) -> Result<(), String> {
     use pagenor_mcp::{Backend, Headless, Remote, Server, control_addr};
     let mut connect: Option<String> = None;

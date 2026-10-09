@@ -13,8 +13,9 @@ Build the CLI (`cargo build --release -p pagenor-cli`), then:
 # Headless: an in-process engine, no window
 claude mcp add pagenor -- /path/to/target/release/pagenor-cli mcp
 
-# Drive the running desktop app (start it first with a control port)
-pagenor --control 7979
+# Drive the running desktop app with a shared random capability.
+export PAGENOR_CONTROL_TOKEN="$(openssl rand -hex 32)"
+pagenor --control 7979 &
 claude mcp add pagenor-app -- /path/to/target/release/pagenor-cli mcp --connect 7979
 ```
 
@@ -26,7 +27,7 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 
 ## Modes
 
-| | Headless (`mcp`) | Connected (`mcp --connect PORT` or `HOST:PORT`) |
+| | Headless (`mcp`) | Connected (`mcp --connect PORT` or `LOOPBACK:PORT`) |
 |---|---|---|
 | Engine | In-process `pagenor_engine::Session`, starts with an empty Letter document (`--sample` opens the sample magazine) | The app's session, through its loopback control channel ([control-protocol.md](control-protocol.md)) |
 | Rendering | `pagenor-render` (CPU) | The app's renderer |
@@ -34,7 +35,12 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 | UI-only commands via `execute` (`view.*`, `window.*`, `help.*`, `edit.dynamicSpelling`, and `app.*` except `app.links`) | Error | Work |
 
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
-what the agent does shows up live in the window. The connection is re-established once if the app restarts.
+what the agent does shows up live in the window. Both processes require the same
+`PAGENOR_CONTROL_TOKEN`. Ensure the MCP client receives this environment variable
+when it launches the CLI; registration alone does not supply it. Missing/wrong tokens
+fail before dispatch. Requests/replies are bounded and destinations are loopback only.
+Lost replies are reported without replaying commands; a subsequent explicit call can
+reconnect. Headless mode has no token requirement.
 
 ## Coordinates
 

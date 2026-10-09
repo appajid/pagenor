@@ -103,7 +103,9 @@ For CLI rendering, put `--page`, `--scale` and `--pdf-options` before the
 `--export` or `--all-pages` that should use them. A trailing export option is an
 error rather than silently ignored.
 
-To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is described in
+To drive a running app, explicitly start its control channel and send authenticated
+JSON lines to `127.0.0.1:7979`. The app and clients use the same random
+`PAGENOR_CONTROL_TOKEN`; the app generates one if unset. The protocol is described in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 
 ### Web

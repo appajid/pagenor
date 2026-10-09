@@ -1,5 +1,10 @@
 # Upstream pull-request integration review — P00.2 / P00.3 / P00.4
 
+Scope update (2026-10-09): The owner removed Adobe/dongle activation validation
+from pending work and milestone requirements. Earlier validation reports below
+retain their historical scope; those pending references are superseded. Existing
+native font support is retained, without claiming vendor activation was tested.
+
 Snapshot: 2026-10-09; 53 open pull requests retrieved through GitHub’s API. The public HTML page was older than the API snapshot. This is a bounded snapshot, not a monitor or a claim about future changes. Open PRs are proposals, not upstream releases.
 
 Twelve PRs contribute the initial P00.2 batch. P00.3 adds #154; P00.4 selectively adds the package portion of #155. Adaptations and limits are recorded in provenance and the policy notes. Source patches and regressions were inspected for the adopted changes; the remaining proposals were triaged by their descriptions, changed files, dependencies and conflict with Pagenor work. This table does not claim a full implementation/security audit of every deferred branch. Larger feature branches remain candidates, not automatically rejected.
@@ -21,7 +26,7 @@ Pagenor keeps its product names, owner artwork, `.pgnr` default/legacy compatibi
 | [#154](https://github.com/storytold/designcraft/pull/154) | Bound native and Office document parsing | Adopted in P00.3 | Shared bounded ZIP/native/Office parsing and matching save limits; quick-xml compatibility tested. Adds Pagenor table/duplicate/root/read budgets and save-error propagation. See IMPORT_LIMITS.md. |
 | [#153](https://github.com/storytold/designcraft/pull/153) | Harden temporary files and release inputs | Not adopted in this batch | Recommended next hardening; recovery rewrite overlaps P02.2–P02.4 owned entries/retained snapshots. Port without replacing tested recovery semantics; release inputs separately. |
 | [#152](https://github.com/storytold/designcraft/pull/152) | Apply contextual escaping to HTML and EPUB exports | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
-| [#151](https://github.com/storytold/designcraft/pull/151) | Harden the authenticated control channel | Not adopted in this batch | Recommended next hardening; token/framing changes need desktop/CLI/MCP parity. Preserve Pagenor’s automation-off-by-default configuration. |
+| [#151](https://github.com/storytold/designcraft/pull/151) | Harden the authenticated control channel | Adapted locally in P00.5 | Token/framing bounds across desktop/CLI/MCP; Pagenor retains automation off by default, bounds the UI queue and prevents edit replay after lost replies. |
 | [#150](https://github.com/storytold/designcraft/pull/150) | Fix relink atomicity and EPS source retention | Not adopted in this batch | Recommended next hardening; extensive links/EPS/format/IDML/PDF changes need combined atomicity and source-retention fixtures. |
 | [#149](https://github.com/storytold/designcraft/pull/149) | Import: RTF and Tagged Text keep characters past U+FFFF | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
 | [#148](https://github.com/storytold/designcraft/pull/148) | #59: AGENTS.md and CLAUDE.md name the VectorCraft sibling ../vectorcraft | Not adopted in this batch | Not applicable: upstream sibling directory naming does not describe Pagenor ownership or local sibling projects. |

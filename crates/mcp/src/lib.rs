@@ -4,8 +4,8 @@
 //! JSON-RPC 2.0, hand-written (no async runtime). The server exposes Pagenor as a set of MCP
 //! tools and resources and forwards everything to a [`Backend`]:
 //!
-//! - [`Remote`] talks to a running desktop app through its loopback JSON-lines control channel
-//!   (`pagenor --control 7979`): one `{"id","method","params"}` line in, one
+//! - [`Remote`] talks to a running desktop app through its authenticated loopback JSON-lines control channel
+//!   (`pagenor --control 7979`): one `{"id","token","method","params"}` line in, one
 //!   `{"id","ok","result"|"error"}` line out (see `docs/control-protocol.md`).
 //! - [`Headless`] hosts an in-process [`pagenor_engine::Session`] and implements the
 //!   engine-level control-channel methods itself (rendering pages with `pagenor-render`), so

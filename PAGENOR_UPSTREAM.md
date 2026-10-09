@@ -238,3 +238,32 @@ omitted. Local additions bound persisted input, requests, models, workers and
 reports; preserve transaction/history on errors; share rebased snapshots; and
 retain provider model labels and plan-use disclosure. Actual provider and native
 Windows/Linux credential execution remain unverified. [Scope](docs/ai-assistant.md).
+
+
+## Authenticated desktop control adaptation — P00.5 (2026-10-09)
+
+Adapted [upstream #151](https://github.com/storytold/designcraft/pull/151), by
+@skylartaylor, at inspected head `c4ca2a9dbe8980614ae9d29bbc067fdf9f3f2491`,
+based on `14e677b24216396e398823ff034d9882322362d1`.
+The MIT OR Apache-2.0 licences and original copyright remain applicable.
+
+The server/client source was compared with the pinned Git blobs before adaptation.
+This ports token authentication, fallible listener/client threads, connection/request/
+framing/reflection/timeout bounds, loopback client destinations and click-count limits.
+Desktop, CLI/MCP and automation examples use Pagenor identifiers. Existing development
+rules were retained; only their local control examples were updated for authentication.
+Pagenor keeps automation off by default and requires `--control`; the documentation's
+previous, unimplemented environment-port shortcut was removed. Document commands,
+clipboard, recovery, lazy scoped fonts, branding and `.pgnr` behavior stay intact.
+
+Local additions remove automatic request replay after a lost reply, validate reply
+IDs/status, check ID exhaustion, bound serialization before allocation can grow without
+limit, propagate socket-option failures and avoid exposing invalid token values in
+errors. The UI queue holds at most 16 requests and rejects overflow before dispatch;
+a reply timeout does not cancel an already queued command. Incoming tokens are bounded
+before copying, CRLF requests work at the byte limit, and connection slots use a
+minimum-Rust-compatible compare/exchange loop. Best-effort stderr writes avoid a
+broken diagnostic pipe causing a panic; capability tokens are not passed to a logger.
+Regression tests exercise actual loopback transport, auth-before-UI delivery, queue
+pressure, lost replies/reconnection and pointer-event bounds. Validation and remaining
+platform scope are recorded in [control hardening](docs/pagenor/CONTROL_HARDENING.md).

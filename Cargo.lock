@@ -3383,6 +3383,7 @@ dependencies = [
  "arboard",
  "eframe",
  "egui",
+ "getrandom 0.3.4",
  "log",
  "muda",
  "pagenor-engine",

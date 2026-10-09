@@ -1,7 +1,8 @@
 # Phase 02 — clipboard and document reliability
 
 Updated: 2026-10-09. P02.1–P02.5 are complete locally; Phase 02 and M0 are in progress.
-Adobe/dongle activation validation remains pending at the owner’s request.
+Adobe/dongle activation validation was removed from scope by the owner on
+2026-10-09. Existing native font support and other reliability checks remain.
 
 ## P02.1 — one reversible paste operation
 

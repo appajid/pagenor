@@ -1,5 +1,18 @@
 # Pagenor roadmap
 
+- Scope update (2026-10-09): The owner cancelled Adobe/dongle activation
+  validation. It is no longer pending or a milestone requirement, and is not
+  claimed as tested. Existing native font support is retained; other font
+  lifecycle, platform and Indic validation tasks remain open.
+
+- P00.5: Adapted upstream #151 for authenticated desktop control, loopback-only
+  clients and bounded framing, connections, requests, UI queue and pointer work.
+  Automation remains off by default. Lost replies never replay document edits;
+  explicit later calls can reconnect. Pagenor recovery, scoped fonts, branding,
+  .pgnr and shared Rust layers remain. All seven local gates pass: 1,262 tests,
+  3 ignored; 20 WASM packages. Native Windows/Linux execution remains a milestone
+  check. [Behavior and evidence](docs/pagenor/CONTROL_HARDENING.md).
+
 - P09.5: Adapted closed #54 with native AI services, persisted review records,
   docked/floating Chat/Suggestions/Settings and proofreading, acceptance, undo
   and report controls. Pagenor format 3 and scoped document fonts stay. Input,
@@ -43,8 +56,7 @@
   refresh, cached rendering and newly installed exact styles. Open dialog lists
   refresh with catalogue changes/rescans. Local gate: 1,157 passed, 3 ignored;
   17 WASM packages. CPU pointer replacement/undo/Done and inspected dialogs pass;
-  Windows/Linux strict UI-library Clippy checks pass. Indic exit gates and real
-  Adobe/dongle activation remain pending. [Scope](docs/pagenor/FONT_REPLACEMENT.md).
+  Windows/Linux strict UI-library Clippy checks pass. Indic exit gates remain pending. [Scope](docs/pagenor/FONT_REPLACEMENT.md).
 
 - P07.1: Dependent upstream typography/layout proposals #83/#84/#81/#106/#96
   add drop caps/selection, baseline/wrap/defaults, threading, snapping, family
@@ -54,7 +66,7 @@
   Local gate: 1,118 passed, 3 ignored; 17 WASM packages. CPU panel/layout
   inspection and Windows/Linux strict UI-library Clippy checks are included
   in the completed local integration group; native/browser execution remains
-  separate. Adobe/dongle activation remains pending.
+  separate.
 
 - P09.3: Advanced data-merge backends and panel from pinned upstream #109/#125.
   Multiple sources, JSON/Excel values, filters/sorts, grids and warning handling
@@ -86,7 +98,7 @@
   local gate: 916 passed, 3 ignored; 17 WASM packages. Windows/Linux strict
   UI-library Clippy checks pass. Folder-wide rollback and hostile concurrent
   directory renaming remain outside this task; [scope](docs/pagenor/PACKAGE_OUTPUT.md).
-  Adobe/dongle validation remains pending; no milestone exit or GitHub push.
+  No milestone exit or GitHub push.
 
 - P00.3: Adapted upstream #154 for bounded ZIP/ZIP64, native and Office
   import/output processing, with matching native save limits and XML 0.41
@@ -97,7 +109,7 @@
   Import limits and remaining streaming,
   package-path and IDML confinement work are recorded in
   [the policy](docs/pagenor/IMPORT_LIMITS.md). Cross-platform native execution
-  and actual Adobe/dongle validation remain pending; no milestone exit/push.
+  remains pending; no milestone exit/push.
 
 - P00.2: Triaged 53 open upstream PRs and adapted reliability changes from 12,
   with pinned revisions/attribution and a decision register. Fixes cover no-break
@@ -145,7 +157,7 @@
   through the shared command; the exit hook makes a best-effort final save. Eight
   UI regressions, six isolated process probes and inspected CPU images pass.
   Live native shutdown, actual storage failures and external clipboard transfer
-  remain pending; Adobe/dongle activation validation stays pending.
+  remain pending.
 
 - P02.3: The recovery timer handles owned checkpoints after clean undo, bounds
   oversized intervals before multiplication, schedules its own wakeup and reports
@@ -169,7 +181,6 @@
   Case variants resolve the same lazy installed/memory/document fonts, duplicate
   faces are excluded and document fonts keep precedence during composition.
   Accents, punctuation, spacing and original names remain distinct/intact.
-  Actual Adobe/dongle activation validation stays pending at the owner’s request.
 
 - P01.9: Font diagnostics recognize style aliases and custom variable base styles
   using the existing lookup normalization, without loading glyph data for checks.
@@ -181,13 +192,13 @@
   Unused sources request metadata; loaded sources compare bounded current tables.
   Changed glyphs/menus and recovered table access trigger the existing rescan.
   Physical-source transitions and retained metadata expansion have regressions.
-  Native notifications and actual Adobe/dongle evidence remain pending.
+  Native notifications remain pending.
 
 - P01.7: Manual rescan invalidates native table caches even when registered
   identities stay unchanged. Data reloads lazily; old requests cannot publish
   after the rescan. Variable instances, document scopes and held layout handles
-  have regression coverage. Automatic same-identity change detection and actual
-  Adobe/dongle activation remain open.
+  have regression coverage. P01.8 adds automatic same-identity change detection;
+  notification-driven detection remains open.
 
 - P01.6: Replaced installed-font files now reload lazily using published file
   versions. New glyphs, collection styles and named/custom variable instances
@@ -198,8 +209,8 @@
 - P01.5: macOS native font identities now support fonts without readable files.
   Core Text supplies bounded metadata for menus and glyph tables on demand;
   activation epochs prevent reuse after observed withdrawal/reactivation.
-  Real memory-font shaping/outline tests pass. Adobe/dongle activation and
-  Windows/Linux memory-font backends remain pending; work stays local.
+  Real memory-font shaping/outline tests pass. Windows/Linux memory-font
+  backends remain pending; work stays local.
 
 - P01.4: Newly discovered exact styles and variable instances resolve before a
   previously loaded closest style. macOS also checks registered PostScript names;
