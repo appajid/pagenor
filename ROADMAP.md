@@ -1,5 +1,13 @@
 # Pagenor roadmap
 
+- P09.4: Adapted upstream #128/#118 for RTL table defaults/panel controls,
+  document-binding story defaults, PDF/A raster interpolation and typing/story/
+  page contracts. Pagenor recovery-aware quit and damaged-raster validation stay.
+  Local gate: 1,167 passed, 3 ignored; 17 WASM packages. Windows/Linux strict
+  UI-library Clippy checks pass. Inspected CPU pointer direction and undo pass;
+  native platform/browser execution remain milestone checks.
+  [Behavior](docs/pagenor/TABLE_CONTROL.md).
+
 - P04.1: Adapted upstream #126/#129 for scoped composite resolution, generated
   labels, localized aliases, glyph coverage, nested objects/preflight and repeated
   missing-font replacement. Bounded shared metadata preserves lazy menus, live

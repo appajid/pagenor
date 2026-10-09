@@ -175,3 +175,17 @@ scope is retained; withdrawn broad preset/CID changes are excluded. Imported sco
 documents describe source proposals, not development instructions. Details:
 [font replacement scope](docs/pagenor/FONT_REPLACEMENT.md). No Indic phase exit or
 Adobe/dongle validation is implied.
+
+## Table direction and control contracts — P09.4 (2026-10-09)
+
+Adapted the following original MIT OR Apache-2.0 contributions locally, preserving
+licences, copyright, Pagenor identifiers and generated contributor metadata:
+
+| PR | Source author | Inspected head | Adaptation |
+|---|---|---|---|
+| [#128](https://github.com/storytold/designcraft/pull/128) | @aiongg | `0f52f3ba89b1d48e31a157c2b5b49d66e29b136b` | RTL table defaults/panel, new-story binding direction and PDF/A raster interpolation. |
+| [#118](https://github.com/storytold/designcraft/pull/118) | @skylartaylor | `e9cc4b49eca854dd0101cca48f8a9017d27dfd1a` | Explicit-caret typing, missing-story errors and strict render/export page contracts. |
+
+Pagenor retains recovery-aware control quit and damaged-raster prevalidation;
+import targets, document font scopes and ordinary clipboard/keyboard routing stay.
+See [behavior and limits](docs/pagenor/TABLE_CONTROL.md).
