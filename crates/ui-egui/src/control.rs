@@ -294,6 +294,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         }
         "ui.dialog.confirm" => wrap(crate::dialogs::confirm(app)),
         "ui.dialog.cancel" => {
+            app.cancel_pdf_import();
             app.ui.dialog = None;
             ok(Value::Null)
         }
@@ -337,7 +338,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 None => ok(json!({"width": img.width, "height": img.height, "pngBase64": pagenor_engine::cmd::base64_encode(&png)})),
             }
         }
-        "app.open" => wrap(app.run("file.open", json!({"path": s("path")}))),
+        "app.open" => wrap(app.open_file("file.open", json!({"path": s("path")}))),
         "app.save" => wrap(app.run("file.save", json!({"path": s("path")}))),
         "app.export" => wrap(app.run("app.exportPng", json!({"path": s("path"), "page": p.get("page"), "scale": p.get("scale")}))),
         "app.quit" => wrap(app.run("app.quit", json!({}))),

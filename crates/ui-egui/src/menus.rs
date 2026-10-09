@@ -132,6 +132,13 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("window.split", "Split Window", None, "{on?: bool} — two views of the document side by side, each with its own zoom and scroll"),
     ("window.newWindow", "New Window", None, "{on?: bool} — another view of the active document in its own window"),
     ("window.taskBar", "Contextual Task Bar", None, "{}"),
+    (
+        "window.taskBarPin",
+        "Pin Bar Position",
+        None,
+        "{on?: bool, at?: [x, y] (points from the canvas's top-left)} — the Contextual Task Bar stays where it is (or at `at`) instead of following the selection; with neither, toggles",
+    ),
+    ("window.taskBarReset", "Reset Bar Position", None, "{} — the Contextual Task Bar follows the selection again, under it"),
     ("help.discord", "Pagenor Community…", None, "{} — unavailable until a community destination is configured"),
     ("help.appPage", "Pagenor Project Page…", None, "{} — opens Pagenor's repository"),
     ("help.github", "Pagenor on GitHub…", None, "{} — opens https://github.com/appajid/pagenor"),
@@ -701,7 +708,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
             let l = path.to_lowercase();
             if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
-                return Some(app.run("file.place", json!({"path": path})));
+                return Some(app.open_file("file.place", json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {
                 Ok(v) => v,
@@ -846,8 +853,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                     None => Ok(Value::Null),
                 });
             }
+            let request = app.import_request("swatches");
             if let Some(open) = app.services.open_async.as_mut() {
-                open("swatches");
+                open(request);
             }
             Ok(Value::Null)
         }
@@ -1288,6 +1296,26 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(json!(app.second_window))
         }
         "window.taskBar" => flag(&mut app.ui.task_bar),
+        "window.taskBarPin" => {
+            let at = match p.get("at") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_array().map(|a| a.iter().map(Value::as_f64).collect::<Vec<_>>()).as_deref() {
+                    Some([Some(x), Some(y)]) if x.is_finite() && y.is_finite() => Some([x.clamp(-1e6, 1e6) as f32, y.clamp(-1e6, 1e6) as f32]),
+                    _ => return Some(Err("window.taskBarPin: `at` is [x, y] in points".into())),
+                },
+            };
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(at.is_some() || app.ui.task_bar_pin.is_none());
+            app.ui.task_bar_pin = match (on, at.or(app.ui.task_bar_pin).or(app.ui.task_bar_at)) {
+                (false, _) => None,
+                (true, Some(at)) => Some(at),
+                (true, None) => return Some(Err("window.taskBarPin: the Contextual Task Bar isn't showing; give `at`".into())),
+            };
+            Ok(json!(app.ui.task_bar_pin))
+        }
+        "window.taskBarReset" => {
+            app.ui.task_bar_pin = None;
+            Ok(Value::Null)
+        }
         "help.about" => {
             if let Some(tab) = p.get("tab").and_then(Value::as_str) {
                 let Some(i) = crate::about::ABOUT_TABS.iter().position(|t| t.eq_ignore_ascii_case(tab)) else {
@@ -1323,6 +1351,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 name: name.to_string(),
                 control_bar: u.control_bar,
                 task_bar: u.task_bar,
+                task_bar_pin: u.task_bar_pin,
                 tools_double_column: u.tools_double_column,
                 dock_tab: u.dock_tab.clone(),
                 dock_expanded: u.dock_expanded,
@@ -1355,6 +1384,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 app.ui.control_bar = w.control_bar;
                 app.ui.task_bar = w.task_bar;
+                app.ui.task_bar_pin = w.task_bar_pin;
                 app.ui.tools_double_column = w.tools_double_column;
                 app.ui.dock_tab = w.dock_tab;
                 app.ui.dock_expanded = w.dock_expanded;
@@ -1699,6 +1729,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "app.language" => app.ui.language == params.get("lang").and_then(Value::as_str).unwrap_or(""),
         "app.flattener" => app.ui.flattener == params.get("preset").and_then(Value::as_str).unwrap_or(""),
         "window.taskBar" => app.ui.task_bar,
+        "window.taskBarPin" => app.ui.task_bar_pin.is_some(),
         "window.toolsDoubleColumn" => app.ui.tools_double_column,
         "view.togglePreview" => app.ui.screen_mode == crate::ScreenMode::Preview,
         "window.brightness" => params.get("brightness").and_then(Value::as_str) == Some(app.ui.brightness.id()),
@@ -1762,6 +1793,20 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     if params.is_null() && id == "object.textFrameOptions" {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;
+    }
+    // New Paragraph/Character Style…: the style options for the new style.
+    if params.is_null() && matches!(id, "style.paragraph.create" | "style.character.create") {
+        crate::dialogs::open_new_style(app, id == "style.paragraph.create");
+        return;
+    }
+    // Paragraph/Character Style Options…: those of the selected text's style.
+    if params.is_null() && matches!(id, "style.paragraph.edit" | "style.character.edit") {
+        let para = id == "style.paragraph.edit";
+        let cur = crate::panels::text_attrs(app).and_then(|a| a[if para { "paragraphStyle" } else { "characterStyle" }].as_str().map(str::to_string));
+        if let Some(name) = cur {
+            crate::dialogs::open_style_options(app, para, &name);
+            return;
+        }
     }
     if params.is_null()
         && ui_label(id).is_none()

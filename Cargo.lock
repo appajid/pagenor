@@ -3174,6 +3174,7 @@ dependencies = [
  "pagenor-engine",
  "pagenor-fonts",
  "pagenor-geom",
+ "pagenor-idml",
  "pagenor-images",
  "pagenor-render",
  "pagenor-tools",

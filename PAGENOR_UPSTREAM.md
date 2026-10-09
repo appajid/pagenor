@@ -74,3 +74,34 @@ paths, prepare exports before file writes, check existing redirected ancestors
 iteratively, preserve short extensions when truncating names and reserve suffix
 space. Folder-wide rollback, hostile concurrent directory renaming and general
 Save atomicity are not claimed. See [behavior and limits](docs/pagenor/PACKAGE_OUTPUT.md).
+
+## Editor UI adaptation — P09.2 (2026-10-09)
+
+Reviewed both open and closed upstream requests: 53 open and 61 closed in the
+pinned snapshot. Of 58 merged closed requests, 56 merge revisions are ancestors
+of Pagenor's initial revision; #132/#135 concern release packaging. The unmerged
+#74/#50 are superseded. The closed #54 AI proposal is included in the remaining
+feature integration scope, alongside open feature backends, at the owner's request.
+
+The following original MIT OR Apache-2.0 contributions are adapted without
+changing their licences or generated contributor registry:
+
+| PR | Source author | Inspected head | Adaptation |
+|---|---|---|---|
+| [#112](https://github.com/storytold/designcraft/pull/112) | @aiongg | `9fec15876a674bd5b5c38ae00bfb0a7ec52c8561` | Responsive app/control/tools bars and accessibility labels. |
+| [#142](https://github.com/storytold/designcraft/pull/142) | @jahala | `20422c47256b21338f05de5ead111166f01368bf` | Second control row remains visible. |
+| [#143](https://github.com/storytold/designcraft/pull/143) | @aiongg | `7d064f268e6893f814c91988c41432287b44a10d` | Remaining contextual task-bar drag, pin and reset; existing shared font search retained. |
+| [#145](https://github.com/storytold/designcraft/pull/145) | @aiongg | `63a1f03498910e74d0eab9bf9c2073f79e6f6469` | Ruler unit context menus and Properties language. |
+| [#144](https://github.com/storytold/designcraft/pull/144) | @aiongg | `ca0ab6e55179b5c504a9a8626048e65f1cd1ed78` | Rich character-style options, inherited previews, sparse attributes and rename/rebase. |
+| [#171](https://github.com/storytold/designcraft/pull/171) | @zydvc26s67-web | `3018c56e0c8428fead12d0e72e1de9160579dbd4` | Style delete UI and character deletion combined with #144's richer editor. |
+| [#80](https://github.com/storytold/designcraft/pull/80) | @aiongg | `1ccf4fbfbe719bdd52b656284e9a83f617dc28c3` | Open/Place/drop error alerts. |
+| [#119](https://github.com/storytold/designcraft/pull/119) | @skylartaylor | `637d05e776cbc0b699c16141b09cfc34a6fd71c6` | Import intent and stable target document identity across asynchronous delivery; PDF options retain bytes. |
+| [#138](https://github.com/storytold/designcraft/pull/138) | @jahala | `9ec7858dc959ac47275ec27d4bc08f25ea3a8559` | Browser named-key filtering, narrowed locally to explicit key names to preserve ordinary capitalized text. |
+
+Changed-file blob identities match all nine pinned heads. Pagenor preserves owner
+branding, product URLs, `.pgnr` and legacy names, shared font search/scopes,
+clipboard services and recovery ownership. Serialization remains fallible.
+Local additions validate style replacements/paragraph renames, reject inheritance
+cycles and rewrite nested text, defaults, note options, running headers, TOC/XML
+references. Existing text traversal now includes endnotes. No remote push or
+milestone completion is implied. Larger feature branches are tracked separately.

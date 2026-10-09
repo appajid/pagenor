@@ -875,7 +875,7 @@ impl Story {
                 c.text.for_each_text_mut(f);
             }
         }
-        for n in &mut self.notes {
+        for n in self.notes.iter_mut().chain(&mut self.endnotes) {
             std::sync::Arc::make_mut(n).text.for_each_text_mut(f);
         }
     }

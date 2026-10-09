@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+- P09.2: Adapted nine pinned upstream editor UI proposals after reviewing both
+  open and closed requests. Responsive bars, two control rows, movable/pinned
+  task bar, ruler units, language, richer style editors/deletion and stable
+  asynchronous import targets preserve Pagenor branding, .pgnr, lazy scoped
+  fonts, clipboard and recovery. Local replacement/rename validation prevents
+  broken style references and inheritance cycles. New feature backends and
+  their UI remain in scope for subsequent local integration groups. Full local
+  gate: 972 passed, 3 ignored; 17 WASM packages. The rebuilt Mac app was
+  inspected for branding, both control rows and character-style sections.
+  Windows/Linux strict UI-library Clippy checks pass. Native drag delivery and
+  browser execution remain separate validation gaps.
+
 - P00.4: Adapted the package portion of upstream #155: portable Unicode names,
   redirected-output checks and staged individual file replacement. Pagenor
   additions prepare exports/preflight paths before writes, check existing parent

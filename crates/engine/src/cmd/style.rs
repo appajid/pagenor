@@ -100,8 +100,25 @@ pub fn specs() -> Vec<CommandSpec> {
             edit_para
         ),
         cmd!("style.paragraph.delete", "Delete Paragraph Style", [], None, "{name, replaceWith?}", has_doc, delete_para),
-        cmd!("style.character.create", "New Character Style…", [], None, "{name, basedOn?, chars?: {…}}", has_doc, create_char),
-        cmd!("style.character.edit", "Character Style Options…", [], None, "{name, rename?, basedOn?, chars?}", has_doc, edit_char),
+        cmd!(
+            "style.character.create",
+            "New Character Style…",
+            [],
+            None,
+            "{name, basedOn?: style | \"[None]\", chars?: {…}} — the style sets only `chars` → {name} (made unique)",
+            has_doc,
+            create_char
+        ),
+        cmd!(
+            "style.character.edit",
+            "Character Style Options…",
+            [],
+            None,
+            "{name, rename?, basedOn?: style | \"[None]\" | null, chars?: {attr: value | null (no longer set)}} — renaming updates every use",
+            has_doc,
+            edit_char
+        ),
+        cmd!("style.character.delete", "Delete Character Style", [], None, "{name, replaceWith?}", has_doc, delete_char),
         cmd!(query "style.list", "List Styles", [], None, "{} → paragraph and character style names", has_doc, |s, _| {
             let st = s.doc()?;
             Ok(json!({
@@ -455,9 +472,22 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.edit", "missing name"))?.to_string();
     let para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
-    let rename = str_param(p, "rename").map(str::to_string);
+    let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
+    if based.as_ref().is_some_and(|v| !v.is_null() && !v.is_string()) {
+        return Err(bad("style.paragraph.edit", "`basedOn` is a style name or null"));
+    }
     s.edit(|d, _| {
+        if let Some(n) = &rename
+            && (n.is_empty() || n.starts_with('[') || d.styles.para(n).is_some())
+        {
+            return Err(bad("style.paragraph.edit", format!("can't rename to `{n}`")));
+        }
+        if let Some(Value::String(b)) = &based
+            && d.styles.para(b).is_none()
+        {
+            return Err(bad("style.paragraph.edit", format!("no paragraph style `{b}`")));
+        }
         if let Some(Value::String(b)) = &based
             && d.styles.para_based_on_cycles(&name, b)
         {
@@ -482,7 +512,14 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
 /// Rename a paragraph or character style everywhere it's used.
 fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str) {
     let st = d.styles_mut();
+    let prefix = if para { "p" } else { "c" };
+    if let Some(tag) = st.export_tags.remove(&format!("{prefix}:{from}")) {
+        st.export_tags.insert(format!("{prefix}:{to}"), tag);
+    }
     if para {
+        if st.default_paragraph == from {
+            st.default_paragraph = to.to_string();
+        }
         for s in &mut st.paragraph {
             if s.name == from {
                 s.name = to.to_string();
@@ -499,6 +536,9 @@ fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str)
             }
         }
     } else {
+        if st.default_character == from {
+            st.default_character = to.to_string();
+        }
         for s in &mut st.character {
             if s.name == from {
                 s.name = to.to_string();
@@ -506,6 +546,42 @@ fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str)
             if s.based_on.as_deref() == Some(from) {
                 s.based_on = Some(to.to_string());
             }
+        }
+        for s in &mut st.paragraph {
+            rename_char_refs(&mut s.para, from, to);
+        }
+        if d.footnote_options.ref_char_style == from {
+            d.footnote_options.ref_char_style = to.to_string();
+        }
+    }
+    if para && d.footnote_options.para_style == from {
+        d.footnote_options.para_style = to.to_string();
+    }
+    if para {
+        for name in [&mut d.endnote_options.para_style, &mut d.endnote_options.heading_style] {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+        if let Some(toc) = &mut d.toc {
+            for entry in &mut toc.entries {
+                if entry.style == from {
+                    entry.style = to.to_string();
+                }
+            }
+        }
+        for (name, _) in &mut d.xml.style_map {
+            if name == from {
+                *name = to.to_string();
+            }
+        }
+    }
+    for var in &mut d.text_variables {
+        if let pagenor_doc::vars::VarKind::RunningHeader { style, character, .. } = &mut var.kind
+            && *character != para
+            && style == from
+        {
+            *style = to.to_string();
         }
     }
     for sid in d.stories.keys().copied().collect::<Vec<_>>() {
@@ -519,9 +595,23 @@ fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str)
                 for r in st.chars.iter_mut().filter(|r| r.format.style == from) {
                     r.format.style = to.to_string();
                 }
+                for f in &mut st.paras {
+                    rename_char_refs(&mut f.para, from, to);
+                }
             }
             st.rev += 1;
         });
+    }
+}
+
+/// Point the nested, nested line and GREP styles of paragraph attributes at a renamed character style.
+fn rename_char_refs(p: &mut ParaAttrs, from: &str, to: &str) {
+    let names = p.nested_styles.iter_mut().flatten().map(|n| &mut n.style);
+    let names = names.chain(p.nested_line_styles.iter_mut().flatten().map(|n| &mut n.style));
+    for n in names.chain(p.grep_styles.iter_mut().flatten().map(|g| &mut g.style)) {
+        if n == from {
+            *n = to.to_string();
+        }
     }
 }
 
@@ -560,31 +650,20 @@ fn group_styles(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn delete_para(s: &mut Session, p: &Value) -> Result<Value> {
-    let name = str_param(p, "name").unwrap_or("").to_string();
-    let repl = str_param(p, "replaceWith").unwrap_or(pagenor_doc::BASIC_PARAGRAPH).to_string();
-    if name.starts_with('[') {
-        return Err(bad("style.paragraph.delete", "built-in styles can't be deleted"));
-    }
-    s.edit(|d, _| {
-        d.styles_mut().paragraph.retain(|x| x.name != name);
-        for sid in d.stories.keys().copied().collect::<Vec<_>>() {
-            if let Some(story) = d.story_mut(sid) {
-                for f in &mut story.paras {
-                    if f.style == name {
-                        f.style = repl.clone();
-                    }
-                }
-            }
-        }
-        ok()
-    })
+    delete_style(s, p, true)
 }
 
 fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Character Style 1").to_string();
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
-    let based_on = str_param(p, "basedOn").map(str::to_string);
+    // Based on [None] is based on nothing.
+    let based_on = str_param(p, "basedOn").filter(|b| *b != pagenor_doc::NO_CHAR_STYLE).map(str::to_string);
     s.edit(|d, _| {
+        if let Some(b) = &based_on
+            && d.styles.char_style(b).is_none()
+        {
+            return Err(bad("style.character.create", format!("no character style `{b}`")));
+        }
         let name = Styles::unique_name(|n| d.styles.char_style(n).is_some(), &base);
         d.styles_mut().character.push(CharacterStyle { name: name.clone(), based_on, chars, shortcut: String::new() });
         Ok(json!({"name": name}))
@@ -593,10 +672,85 @@ fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.character.edit", "missing name"))?.to_string();
+    if name == pagenor_doc::NO_CHAR_STYLE {
+        return Err(bad("style.character.edit", "[None] can't be edited"));
+    }
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    // `null` unsets an attribute (the style no longer sets it).
+    let unset: Vec<String> = p
+        .get("chars")
+        .and_then(Value::as_object)
+        .map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default();
+    let rename = str_param(p, "rename").filter(|n| *n != name).map(|n| n.trim().to_string());
+    let based: Option<Option<String>> = match p.get("basedOn") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(b)) if b == pagenor_doc::NO_CHAR_STYLE => Some(None),
+        Some(Value::String(b)) => Some(Some(b.clone())),
+        Some(_) => return Err(bad("style.character.edit", "`basedOn` is a style name or null")),
+    };
     s.edit(|d, _| {
-        let st = d.styles_mut().char_style_mut(&name).ok_or_else(|| bad("style.character.edit", "no such style"))?;
+        if let Some(Some(b)) = &based {
+            if d.styles.char_style(b).is_none() {
+                return Err(bad("style.character.edit", format!("no character style `{b}`")));
+            }
+            if d.styles.char_based_on_cycles(&name, b) {
+                return Err(bad("style.character.edit", "based-on would create a cycle"));
+            }
+        }
+        if let Some(n) = &rename
+            && (n.is_empty() || n.starts_with('[') || d.styles.char_style(n).is_some())
+        {
+            return Err(bad("style.character.edit", format!("can't rename to `{n}`")));
+        }
+        let st = d.styles_mut().char_style_mut(&name).ok_or_else(|| bad("style.character.edit", format!("no character style `{name}`")))?;
         st.chars.merge(&chars);
+        for k in &unset {
+            st.chars.set_json(k, &Value::Null).map_err(|e| bad("style.character.edit", e))?;
+        }
+        if let Some(b) = based.clone() {
+            st.based_on = b;
+        }
+        if let Some(n) = &rename {
+            // Every use: other styles, stories, table cells, nested and GREP styles, footnotes.
+            rename_style(d, false, &name, n);
+        }
+        ok()
+    })
+}
+
+fn delete_char(s: &mut Session, p: &Value) -> Result<Value> {
+    delete_style(s, p, false)
+}
+
+fn delete_style(s: &mut Session, p: &Value, para: bool) -> Result<Value> {
+    let command = if para { "style.paragraph.delete" } else { "style.character.delete" };
+    let name = str_param(p, "name").ok_or_else(|| bad(command, "missing name"))?.to_string();
+    let default = if para { pagenor_doc::BASIC_PARAGRAPH } else { pagenor_doc::NO_CHAR_STYLE };
+    let replacement = str_param(p, "replaceWith").unwrap_or(default).to_string();
+    if name.starts_with('[') {
+        return Err(bad(command, "built-in styles can't be deleted"));
+    }
+    let styles = &s.doc()?.doc.styles;
+    let exists = |n: &str| if para { styles.para(n).is_some() } else { styles.char_style(n).is_some() };
+    if !exists(&name) || !exists(&replacement) || name == replacement {
+        return Err(bad(command, "the style and a different replacement style must exist"));
+    }
+    let cycle = if para { styles.para_based_on_cycles(&name, &replacement) } else { styles.char_based_on_cycles(&name, &replacement) };
+    if cycle {
+        return Err(bad(command, "replacement cannot inherit from the deleted style"));
+    }
+    s.edit(|d, _| {
+        let styles = d.styles_mut();
+        if para {
+            styles.paragraph.retain(|x| x.name != name);
+        } else {
+            styles.character.retain(|x| x.name != name);
+        }
+        styles.export_tags.remove(&format!("{}:{name}", if para { "p" } else { "c" }));
+        // The definition is gone before rewriting uses, so the replacement is never duplicated.
+        rename_style(d, para, &name, &replacement);
         ok()
     })
 }
@@ -972,6 +1126,73 @@ mod color_tests {
         s.execute("style.group", &json!({"kind": "paragraph", "names": ["Titles/Head"], "group": ""})).unwrap();
         assert!(s.doc().unwrap().doc.styles.para("Head").is_some());
         assert!(s.execute("style.group", &json!({"names": ["[Basic Paragraph]"], "group": "X"})).is_err());
+    }
+
+    #[test]
+    fn character_style_edit_sets_unsets_rebases_and_renames_every_use() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Base", "chars": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Emphasis", "chars": {"fontStyle": "Italic", "tracking": 20}})).unwrap();
+        s.execute(
+            "style.paragraph.create",
+            &json!({"name": "Lead", "para": {
+                "nestedStyles": [{"style": "Emphasis", "through": true, "count": 1, "until": {"kind": "words"}}],
+                "grepStyles": [{"style": "Emphasis", "pattern": "\\d+"}],
+                "nestedLineStyles": [{"style": "Emphasis", "lines": 1}]}}),
+        )
+        .unwrap();
+        s.execute("footnote.options", &json!({"refCharStyle": "Emphasis"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hi there"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 2})).unwrap();
+        s.execute("style.character.apply", &json!({"name": "Emphasis"})).unwrap();
+
+        s.execute(
+            "style.character.edit",
+            &json!({"name": "Emphasis", "rename": "Strong", "basedOn": "Base", "chars": {"size": 14, "fill": "[Paper]", "fontStyle": null}}),
+        )
+        .unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.styles.char_style("Emphasis").is_none());
+        let st = d.styles.char_style("Strong").unwrap();
+        assert_eq!(st.based_on.as_deref(), Some("Base"));
+        // Exactly the attributes set: `null` unset the font style, the rest stayed unset.
+        assert_eq!(st.chars, CharAttrs { size: Some(14.0), fill: Some("[Paper]".into()), tracking: Some(20.0), ..Default::default() });
+        let story = d.story(pagenor_doc::StoryId(sid)).unwrap();
+        assert!(story.chars.iter().any(|r| r.format.style == "Strong"));
+        assert!(story.chars.iter().all(|r| r.format.style != "Emphasis"));
+        let lead = d.styles.para("Lead").unwrap();
+        assert_eq!(lead.para.nested_styles.as_ref().unwrap()[0].style, "Strong");
+        assert_eq!(lead.para.grep_styles.as_ref().unwrap()[0].style, "Strong");
+        assert_eq!(lead.para.nested_line_styles.as_ref().unwrap()[0].style, "Strong");
+        assert_eq!(d.footnote_options.ref_char_style, "Strong");
+
+        // Based On [None] (null or the name) clears it.
+        s.execute("style.character.edit", &json!({"name": "Strong", "basedOn": null})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.char_style("Strong").unwrap().based_on, None);
+        s.execute("style.character.edit", &json!({"name": "Strong", "basedOn": "Base"})).unwrap();
+        s.execute("style.character.edit", &json!({"name": "Strong", "basedOn": "[None]"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.char_style("Strong").unwrap().based_on, None);
+
+        // Refused: a based-on cycle, an unknown parent, a taken or empty name, editing [None].
+        s.execute("style.character.edit", &json!({"name": "Strong", "basedOn": "Base"})).unwrap();
+        assert!(s.execute("style.character.edit", &json!({"name": "Base", "basedOn": "Strong"})).is_err());
+        assert!(s.execute("style.character.edit", &json!({"name": "Strong", "basedOn": "Nope"})).is_err());
+        assert!(s.execute("style.character.edit", &json!({"name": "Strong", "rename": "Base"})).is_err());
+        assert!(s.execute("style.character.edit", &json!({"name": "Strong", "rename": "  "})).is_err());
+        assert!(s.execute("style.character.edit", &json!({"name": "[None]", "chars": {"size": 9}})).is_err());
+        assert!(s.doc().unwrap().doc.styles.char_style("[None]").unwrap().chars.is_empty());
+    }
+
+    #[test]
+    fn new_character_style_checks_its_based_on() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.execute("style.character.create", &json!({"name": "Orphan", "basedOn": "Nope"})).is_err());
+        s.execute("style.character.create", &json!({"name": "Plain", "basedOn": "[None]", "chars": {"size": 9}})).unwrap();
+        let st = s.doc().unwrap().doc.styles.char_style("Plain").cloned().unwrap();
+        assert_eq!((st.based_on, st.chars), (None, CharAttrs { size: Some(9.0), ..Default::default() }));
     }
 
     #[test]

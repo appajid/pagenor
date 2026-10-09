@@ -559,3 +559,177 @@ fn commands_take_non_object_params_without_panicking() {
         assert!(r.is_ok(), "{p}: {r:?}");
     }
 }
+
+#[test]
+fn paragraph_style_edit_persists_attrs_and_rename() {
+    let mut s = session();
+    let name =
+        s.execute("style.paragraph.create", &json!({"name": "Body Copy", "para": {"align": "left"}})).unwrap()["name"].as_str().unwrap().to_string();
+    s.execute("style.paragraph.edit", &json!({"name": name, "para": {"align": "center"}})).unwrap();
+    {
+        let st = s.doc().unwrap();
+        let style = st.doc.styles.para(&name).expect("style still exists");
+        assert_eq!(style.para.align, Some(pagenor_doc::Align::Center), "edited attribute persisted");
+    }
+    // Renaming updates the style definition itself, and every place it's referenced.
+    s.execute("style.paragraph.edit", &json!({"name": name, "rename": "Body Text"})).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.doc.styles.para("Body Text").is_some(), "renamed style exists under the new name");
+    assert!(st.doc.styles.para(&name).is_none(), "old name is gone");
+}
+
+#[test]
+fn paragraph_style_edit_rejects_based_on_cycle() {
+    let mut s = session();
+    let a = s.execute("style.paragraph.create", &json!({"name": "A"})).unwrap()["name"].as_str().unwrap().to_string();
+    let b = s.execute("style.paragraph.create", &json!({"name": "B", "basedOn": a})).unwrap()["name"].as_str().unwrap().to_string();
+    let r = s.execute("style.paragraph.edit", &json!({"name": a, "basedOn": b}));
+    assert!(r.is_err(), "A based on B based on A must be rejected");
+}
+
+#[test]
+fn paragraph_style_delete_reassigns_affected_text() {
+    let mut s = session();
+    let name = s.execute("style.paragraph.create", &json!({"name": "Caption"})).unwrap()["name"].as_str().unwrap().to_string();
+    let sid = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap()["story"].as_u64().unwrap();
+    s.execute("text.insert", &json!({"text": "Hello, world"})).unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": name})).unwrap();
+    {
+        let st = s.doc().unwrap();
+        let story = st.doc.stories.get(&pagenor_doc::StoryId(sid)).expect("story exists");
+        assert_eq!(story.paras[0].style, name, "style applied before delete");
+    }
+    s.execute("style.paragraph.delete", &json!({"name": name, "replaceWith": pagenor_doc::BASIC_PARAGRAPH})).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.doc.styles.para(&name).is_none(), "deleted style is gone");
+    let story = st.doc.stories.get(&pagenor_doc::StoryId(sid)).expect("story exists");
+    assert_eq!(story.paras[0].style, pagenor_doc::BASIC_PARAGRAPH, "affected paragraph reassigned to the replacement style");
+}
+
+#[test]
+fn paragraph_style_delete_rejects_builtin_styles() {
+    let mut s = session();
+    let r = s.execute("style.paragraph.delete", &json!({"name": pagenor_doc::BASIC_PARAGRAPH}));
+    assert!(r.is_err(), "built-in styles can't be deleted");
+}
+
+#[test]
+fn character_style_edit_persists_attrs_and_rename() {
+    let mut s = session();
+    let name = s.execute("style.character.create", &json!({"name": "Key Term", "chars": {"fontStyle": "Bold"}})).unwrap()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.execute("style.character.edit", &json!({"name": name, "chars": {"tracking": 20.0}})).unwrap();
+    {
+        let st = s.doc().unwrap();
+        let style = st.doc.styles.char_style(&name).expect("style still exists");
+        assert_eq!(style.chars.tracking, Some(20.0), "edited attribute persisted");
+    }
+    // Renaming updates the style definition itself, and every place it's referenced.
+    s.execute("style.character.edit", &json!({"name": name, "rename": "Emphasis"})).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.doc.styles.char_style("Emphasis").is_some(), "renamed style exists under the new name");
+    assert!(st.doc.styles.char_style(&name).is_none(), "old name is gone");
+}
+
+#[test]
+fn character_style_edit_rejects_based_on_cycle() {
+    let mut s = session();
+    let a = s.execute("style.character.create", &json!({"name": "A"})).unwrap()["name"].as_str().unwrap().to_string();
+    let b = s.execute("style.character.create", &json!({"name": "B", "basedOn": a})).unwrap()["name"].as_str().unwrap().to_string();
+    let r = s.execute("style.character.edit", &json!({"name": a, "basedOn": b}));
+    assert!(r.is_err(), "A based on B based on A must be rejected");
+}
+
+#[test]
+fn character_style_delete_reassigns_affected_text() {
+    let mut s = session();
+    let name = s.execute("style.character.create", &json!({"name": "Key Term"})).unwrap()["name"].as_str().unwrap().to_string();
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    let sid = r["story"].as_u64().unwrap();
+    s.execute("text.insert", &json!({"text": "Hello, world"})).unwrap();
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+    s.execute("style.character.apply", &json!({"name": name})).unwrap();
+    {
+        let st = s.doc().unwrap();
+        let story = st.doc.stories.get(&pagenor_doc::StoryId(sid)).expect("story exists");
+        assert_eq!(story.chars[0].format.style, name, "style applied before delete");
+    }
+    s.execute("style.character.delete", &json!({"name": name, "replaceWith": pagenor_doc::NO_CHAR_STYLE})).unwrap();
+    let st = s.doc().unwrap();
+    assert!(st.doc.styles.char_style(&name).is_none(), "deleted style is gone");
+    let story = st.doc.stories.get(&pagenor_doc::StoryId(sid)).expect("story exists");
+    assert_eq!(story.chars[0].format.style, pagenor_doc::NO_CHAR_STYLE, "affected run reassigned to the replacement style");
+}
+
+#[test]
+fn character_style_delete_rejects_builtin_styles() {
+    let mut s = session();
+    let r = s.execute("style.character.delete", &json!({"name": pagenor_doc::NO_CHAR_STYLE}));
+    assert!(r.is_err(), "built-in styles can't be deleted");
+}
+
+#[test]
+fn style_delete_rejects_invalid_replacements_and_preserves_undo() {
+    for kind in ["paragraph", "character"] {
+        let mut s = session();
+        s.execute(&format!("style.{kind}.create"), &json!({"name":"Parent"})).unwrap();
+        s.execute(&format!("style.{kind}.create"), &json!({"name":"Child", "basedOn":"Parent"})).unwrap();
+        let before = pagenor_engine_snapshot(&s);
+        for replacement in ["Parent", "Child", "Missing"] {
+            assert!(s.execute(&format!("style.{kind}.delete"), &json!({"name":"Parent", "replaceWith":replacement})).is_err());
+            assert_eq!(pagenor_engine_snapshot(&s), before);
+        }
+        s.execute(&format!("style.{kind}.delete"), &json!({"name":"Child"})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pagenor_engine_snapshot(&s), before);
+    }
+}
+
+fn pagenor_engine_snapshot(s: &Session) -> serde_json::Value {
+    serde_json::to_value(&*s.doc().unwrap().doc).unwrap()
+}
+
+#[test]
+fn paragraph_style_edit_rejects_invalid_rename_and_base() {
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name":"A"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name":"B"})).unwrap();
+    let before = pagenor_engine_snapshot(&s);
+    for change in [json!({"rename":"B"}), json!({"rename":"  "}), json!({"basedOn":"Missing"}), json!({"basedOn":42})] {
+        let mut params = change;
+        params["name"] = json!("A");
+        assert!(s.execute("style.paragraph.edit", &params).is_err());
+        assert_eq!(pagenor_engine_snapshot(&s), before);
+    }
+}
+
+#[test]
+fn character_style_delete_updates_nested_notes_defaults_and_grep_and_undo() {
+    let mut s = session();
+    s.execute("style.character.create", &json!({"name":"Old"})).unwrap();
+    s.execute("style.character.create", &json!({"name":"Replacement"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name":"Body", "para":{"grepStyles":[{"style":"Old", "pattern":"x"}]}})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect":[0,0,100,100],"content":"text","text":"x"})).unwrap();
+    let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+    s.edit(|d, _| {
+        d.styles_mut().default_character = "Old".into();
+        let story = d.story_mut(sid).unwrap();
+        let mut text = pagenor_doc::Story::with_text(sid, "x", Default::default());
+        text.chars[0].format.style = "Old".into();
+        story.endnotes.push(std::sync::Arc::new(pagenor_doc::Footnote { id: 1, text }));
+        Ok(json!({}))
+    })
+    .unwrap();
+    let before = pagenor_engine_snapshot(&s);
+    s.execute("style.character.delete", &json!({"name":"Old", "replaceWith":"Replacement"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.styles.default_character, "Replacement");
+    assert_eq!(d.styles.para("Body").unwrap().para.grep_styles.as_ref().unwrap()[0].style, "Replacement");
+    assert_eq!(d.story(sid).unwrap().endnotes[0].text.chars[0].format.style, "Replacement");
+    assert_eq!(d.styles.character.iter().filter(|c| c.name == "Replacement").count(), 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(pagenor_engine_snapshot(&s), before);
+}
