@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P00.4: Adapted the package portion of upstream #155: portable Unicode names,
+  redirected-output checks and staged individual file replacement. Pagenor
+  additions prepare exports/preflight paths before writes, check existing parent
+  redirects and preserve short extensions when shortening names. .pgnr, scoped
+  fonts, fallback/licence handling and live document state are retained. Full
+  local gate: 916 passed, 3 ignored; 17 WASM packages. Windows/Linux strict
+  UI-library Clippy checks pass. Folder-wide rollback and hostile concurrent
+  directory renaming remain outside this task; [scope](docs/pagenor/PACKAGE_OUTPUT.md).
+  Adobe/dongle validation remains pending; no milestone exit or GitHub push.
+
 - P00.3: Adapted upstream #154 for bounded ZIP/ZIP64, native and Office
   import/output processing, with matching native save limits and XML 0.41
   compatibility. Added padded-table/root/duplicate/read guards and propagated

@@ -1,15 +1,190 @@
 //! File › Package and Links › Copy Links To: gather a document with the files it uses.
 
+use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+
+use super::{CommandSpec, bad, cmd, has_doc, str_param};
+use crate::{EngineError, Result, Session};
 use pagenor_compose::ComposedStory;
 use pagenor_doc::{AssetId, Document};
 use pagenor_fonts::{FaceRef, FontFace, FontSource};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, str_param};
-use crate::{EngineError, Result, Session};
+// Reserve 24 bytes for an extension, numbering and a Windows device-name prefix.
+const MAX_OUTPUT_COMPONENT_BYTES: usize = 200;
+
+fn path_error(path: &Path, message: impl std::fmt::Display) -> EngineError {
+    EngineError::Other(format!("{}: {message}", path.display()))
+}
+
+fn is_redirect(metadata: &Metadata) -> bool {
+    // Rust reports Windows name-surrogate reparse points (including directory junctions) as
+    // symlinks, while leaving non-redirecting reparse metadata such as cloud placeholders alone.
+    metadata.file_type().is_symlink()
+}
+
+fn ensure_real_directory(path: &Path) -> Result<()> {
+    // Walk even existing ancestors: an existing nested folder beneath a redirected parent
+    // must not bypass the check. An iterative walk also avoids input-sized recursion.
+    let ancestors: Vec<_> = path.ancestors().filter(|p| !p.as_os_str().is_empty()).collect();
+    for directory in ancestors.into_iter().rev() {
+        match std::fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if is_redirect(&metadata) {
+                    return Err(path_error(directory, "refusing a redirected output directory"));
+                }
+                if !metadata.is_dir() {
+                    return Err(path_error(directory, "output path is not a directory"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(e) = std::fs::create_dir(directory)
+                    && e.kind() != std::io::ErrorKind::AlreadyExists
+                {
+                    return Err(path_error(directory, e));
+                }
+                let metadata = std::fs::symlink_metadata(directory).map_err(|e| path_error(directory, e))?;
+                if is_redirect(&metadata) || !metadata.is_dir() {
+                    return Err(path_error(directory, "output directory was redirected while it was being created"));
+                }
+            }
+            Err(e) => return Err(path_error(directory, e)),
+        }
+    }
+    Ok(())
+}
+
+/// A selected output directory and its resolved identity. Every package path is checked against
+/// it before use. Outputs are staged in the same directory and atomically persisted over an
+/// existing regular file, preserving overwrite behavior without following file links.
+struct OutputRoot {
+    path: PathBuf,
+    canonical: PathBuf,
+}
+
+impl OutputRoot {
+    fn new(path: PathBuf) -> Result<Self> {
+        ensure_real_directory(&path)?;
+        let canonical = std::fs::canonicalize(&path).map_err(|e| path_error(&path, e))?;
+        Ok(Self { path, canonical })
+    }
+
+    fn validate_directory(&self, path: &Path) -> Result<()> {
+        if !path.starts_with(&self.path) {
+            return Err(path_error(path, "output path is outside the selected directory"));
+        }
+        ensure_real_directory(path)?;
+        let canonical = std::fs::canonicalize(path).map_err(|e| path_error(path, e))?;
+        if !canonical.starts_with(&self.canonical) {
+            return Err(path_error(path, "output directory resolves outside the selected directory"));
+        }
+        Ok(())
+    }
+
+    fn child(&self, name: &str) -> Result<PathBuf> {
+        let path = self.path.join(name);
+        if path.parent() != Some(self.path.as_path()) {
+            return Err(path_error(&path, "invalid output directory name"));
+        }
+        Ok(path)
+    }
+
+    fn validate_file_entry(&self, path: &Path) -> Result<bool> {
+        let parent = path.parent().ok_or_else(|| path_error(path, "output file has no parent directory"))?;
+        self.validate_directory(parent)?;
+        if !path.starts_with(&self.path) {
+            return Err(path_error(path, "output file is outside the selected directory"));
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if is_redirect(&metadata) {
+                    return Err(path_error(path, "refusing to replace a redirected output file"));
+                }
+                if !metadata.is_file() {
+                    return Err(path_error(path, "output path is not a regular file"));
+                }
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(path_error(path, e)),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temporary_file(&self, path: &Path, permissions: Option<std::fs::Permissions>) -> Result<tempfile::NamedTempFile> {
+        let parent = path.parent().ok_or_else(|| path_error(path, "output file has no parent directory"))?;
+        self.validate_directory(parent)?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".pagenor-package-").suffix(".tmp");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Match fs::write for a new output: 0666 restricted by the caller's umask.
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let file = builder.tempfile_in(parent).map_err(|e| path_error(path, e))?;
+        #[cfg(unix)]
+        if let Some(permissions) = permissions {
+            // Overwrites retain their prior mode; copied fonts retain their source mode.
+            file.as_file().set_permissions(permissions).map_err(|e| path_error(path, e))?;
+        }
+        #[cfg(not(unix))]
+        // The replacement inherits its directory's ACL. Rust's portable permission API cannot
+        // reproduce a destination file's Windows DACL without platform-specific code.
+        let _ = permissions;
+        Ok(file)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (path, bytes);
+            return Err(EngineError::Other("package files are unavailable on the web".into()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let existed = self.validate_file_entry(path)?;
+            let permissions = if existed { Some(std::fs::symlink_metadata(path).map_err(|e| path_error(path, e))?.permissions()) } else { None };
+            let mut file = self.temporary_file(path, permissions)?;
+            file.write_all(bytes).map_err(|e| path_error(path, e))?;
+            // Recheck immediately before replacement. If a name is raced after this check,
+            // persist replaces that directory entry rather than following it.
+            self.validate_file_entry(path)?;
+            file.persist(path).map_err(|e| path_error(path, e.error))?;
+            Ok(())
+        }
+    }
+
+    fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+        if self.validate_file_entry(to)?
+            && std::fs::canonicalize(to).is_ok_and(|target| std::fs::canonicalize(from).is_ok_and(|source| source == target))
+        {
+            return Ok(());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = from;
+            return Err(EngineError::Other("package files are unavailable on the web".into()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut source = File::open(from).map_err(|e| path_error(from, e))?;
+            let permissions = Some(source.metadata().map_err(|e| path_error(from, e))?.permissions());
+            let mut target = self.temporary_file(to, permissions)?;
+            std::io::copy(&mut source, &mut target).map_err(|e| path_error(to, e))?;
+            self.validate_file_entry(to)?;
+            target.persist(to).map_err(|e| path_error(to, e.error))?;
+            Ok(())
+        }
+    }
+}
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -34,14 +209,78 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// A file name for asset `a` in a Links folder, unique among `taken`.
-fn link_name(name: &str, id: AssetId, taken: &mut Vec<String>) -> String {
-    let base =
-        Path::new(name).file_name().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("asset-{}", id.0));
-    unique_name(base, taken)
+fn is_reserved_windows_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches([' ', '.']);
+    ["con", "prn", "aux", "nul"].into_iter().any(|reserved| caseless::compatibility_caseless_match_str(stem, reserved))
+        || (1..=9).any(|n| {
+            caseless::compatibility_caseless_match_str(stem, &format!("com{n}"))
+                || caseless::compatibility_caseless_match_str(stem, &format!("lpt{n}"))
+        })
 }
 
-/// `base`, or `base` numbered ("logo 2.png"), unique among `taken` (case-insensitively).
+fn portable_names_equal(a: &str, b: &str) -> bool {
+    caseless::canonical_caseless_match_str(a, b)
+}
+
+/// A portable single path component made from document metadata.
+fn safe_component(name: &str, fallback: &str) -> String {
+    let leaf = name.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("");
+    let mut safe = String::new();
+    for ch in leaf.trim().chars() {
+        let replacement = ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\');
+        let ch = if replacement { '_' } else { ch };
+        if safe.len() + ch.len_utf8() > MAX_OUTPUT_COMPONENT_BYTES - 24 {
+            break;
+        }
+        safe.push(ch);
+    }
+    safe.truncate(safe.trim_end_matches([' ', '.']).len());
+    if safe.is_empty() || safe == "." || safe == ".." {
+        safe = fallback.to_string();
+    }
+    if is_reserved_windows_name(&safe) {
+        safe.insert(0, '_');
+    }
+    safe
+}
+
+/// Preserve a short file extension when shortening a long basename, so packaged font and
+/// image files remain discoverable by readers that inspect the extension.
+fn safe_file_component(name: &str, fallback: &str) -> String {
+    let mut safe = safe_component(name, fallback);
+    let leaf = name.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("");
+    if let Some((_, extension)) = leaf.trim().trim_end_matches([' ', '.']).rsplit_once('.')
+        && !extension.is_empty()
+        && extension.len() <= 16
+        && extension.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        let suffix = format!(".{extension}");
+        if !safe.ends_with(&suffix) {
+            let budget = MAX_OUTPUT_COMPONENT_BYTES - 24 - suffix.len();
+            let end = safe.char_indices().map(|(i, _)| i).chain(std::iter::once(safe.len())).take_while(|i| *i <= budget).last().unwrap_or(0);
+            safe.truncate(end);
+            safe.push_str(&suffix);
+        }
+    }
+    safe
+}
+
+fn package_output_path(dir: &Path, title: &str, extension: &str) -> Result<PathBuf> {
+    let path = dir.join(format!("{title}.{extension}"));
+    if path.parent() != Some(dir) {
+        return Err(bad("file.package", "an output filename would be outside the selected directory"));
+    }
+    Ok(path)
+}
+
+/// A file name for asset `a` in a Links folder, unique among `taken`.
+fn link_name(name: &str, id: AssetId, taken: &mut Vec<String>) -> String {
+    let fallback = format!("asset-{}", id.0);
+    unique_name(safe_file_component(name, &fallback), taken)
+}
+
+/// `base`, or `base` numbered ("logo 2.png"), unique under portable Unicode normalization and
+/// case-insensitive comparison.
 fn unique_name(base: String, taken: &mut Vec<String>) -> String {
     let (stem, ext) = match base.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{e}")),
@@ -49,7 +288,7 @@ fn unique_name(base: String, taken: &mut Vec<String>) -> String {
     };
     let mut n = base;
     let mut k = 2;
-    while taken.iter().any(|t| t.eq_ignore_ascii_case(&n)) {
+    while taken.iter().any(|t| portable_names_equal(t, &n)) {
         n = format!("{stem} {k}{ext}");
         k += 1;
     }
@@ -57,9 +296,8 @@ fn unique_name(base: String, taken: &mut Vec<String>) -> String {
     n
 }
 
-/// Write each asset's bytes into `dir`; returns the relinked document and the paths written.
-fn write_links(d: &Document, dir: &Path, only: Option<&[AssetId]>) -> Result<(Document, Vec<PathBuf>)> {
-    std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
+/// Prepare relinking without changing the filesystem or the live document.
+fn plan_links(d: &Document, dir: &Path, only: Option<&[AssetId]>) -> (Document, Vec<(AssetId, PathBuf)>) {
     let mut out = d.clone();
     let mut taken = Vec::new();
     let mut written = Vec::new();
@@ -72,19 +310,37 @@ fn write_links(d: &Document, dir: &Path, only: Option<&[AssetId]>) -> Result<(Do
         let a = &d.assets[&id];
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
-        std::fs::write(&path, a.data.as_slice()).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
         let mut na = (**a).clone();
         na.link = Some(path.to_string_lossy().to_string());
         out.assets.insert(id, Arc::new(na));
-        written.push(path);
+        written.push((id, path));
     }
-    Ok((out, written))
+    (out, written)
+}
+
+fn write_planned_links(d: &Document, root: &OutputRoot, planned: &[(AssetId, PathBuf)]) -> Result<()> {
+    for (id, path) in planned {
+        let asset = d.assets.get(id).ok_or_else(|| path_error(path, "planned asset is missing"))?;
+        root.write(path, asset.data.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Validate every link destination before replacing any individual file.
+fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>) -> Result<(Document, Vec<PathBuf>)> {
+    root.validate_directory(dir)?;
+    let (out, planned) = plan_links(d, dir, only);
+    for (_, path) in &planned {
+        root.validate_file_entry(path)?;
+    }
+    write_planned_links(d, root, &planned)?;
+    Ok((out, planned.into_iter().map(|(_, path)| path).collect()))
 }
 
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
 /// restricts it or it is already there (`copied`: the source files copied) → what the package
 /// report adds after the font's name (nothing when copied).
-fn copy_font(face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
+fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with Pagenor".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
@@ -97,13 +353,10 @@ fn copy_font(face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut
     if copied.contains(from) {
         return String::new();
     }
-    let name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "font".into());
+    let name = safe_file_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
     let to = dir.join(unique_name(name, taken));
-    // Packaging into the folder the font is in: it is there already (and copying a file onto
-    // itself empties it on some systems).
-    let same = std::fs::canonicalize(&to).is_ok_and(|t| std::fs::canonicalize(from).is_ok_and(|f| f == t));
-    match std::fs::create_dir_all(dir).and_then(|_| if same { Ok(0) } else { std::fs::copy(from, &to) }) {
-        Ok(_) => {
+    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+        Ok(()) => {
             copied.push(from.clone());
             files.push(to);
             String::new()
@@ -137,18 +390,46 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
 fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("file.package", "missing `dir`"))?);
     let st = s.doc()?;
-    let title = st.doc.title.clone();
+    let root = OutputRoot::new(dir.clone())?;
+    let display_title = st.doc.title.clone();
+    let title = safe_component(&display_title, "Untitled");
     let fonts = s.execute("font.list", &json!({}))?;
     let links = s.execute("links.list", &json!({}))?;
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
     let d = s.doc()?.doc.clone();
-    let (packed, mut files) = write_links(&d, &dir.join("Links"), None)?;
-    let doc_path = dir.join(format!("{title}.{}", pagenor_doc::file_type::EXTENSION));
-    std::fs::write(&doc_path, super::to_bytes(&packed)?).map_err(|e| EngineError::Other(format!("{}: {e}", doc_path.display())))?;
-    files.insert(0, doc_path);
+    let links_dir = root.child("Links")?;
+    let (packed, planned) = plan_links(&d, &links_dir, None);
+    // Prepare required exports before any output is replaced. A refused native save or PDF
+    // export leaves prior package files intact. This is per-file atomic output, not a
+    // transaction across the entire folder if a later storage operation fails.
+    let doc_path = package_output_path(&dir, &title, pagenor_doc::file_type::EXTENSION)?;
+    let native_bytes = super::to_bytes(&packed)?;
+    let idml = p.get("idml").and_then(Value::as_bool).unwrap_or(true).then(|| pagenor_idml::export_idml(&packed));
+    let pdf = if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
+        Some(pagenor_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?)
+    } else {
+        None
+    };
+    let idml_path = package_output_path(&dir, &title, "idml")?;
+    let pdf_path = package_output_path(&dir, &title, "pdf")?;
+    let report_path = root.child("Instructions.txt")?;
+    root.validate_directory(&links_dir)?;
+    for path in std::iter::once(&doc_path)
+        .chain(std::iter::once(&report_path))
+        .chain(idml.as_ref().map(|_| &idml_path))
+        .chain(pdf.as_ref().map(|_| &pdf_path))
+        .chain(planned.iter().map(|(_, path)| path))
+    {
+        root.validate_file_entry(path)?;
+    }
+    write_planned_links(&d, &root, &planned)?;
+    root.write(&doc_path, &native_bytes)?;
+    let mut files = vec![doc_path];
+    files.extend(planned.into_iter().map(|(_, path)| path));
     // The font files, and what the report says about each font.
     let db = pagenor_fonts::FontDb::global().scoped(d.font_scope);
-    let (fonts_dir, mut copied, mut taken) = (dir.join(pagenor_fonts::DOCUMENT_FONTS_FOLDER), Vec::new(), Vec::new());
+    let fonts_dir = root.child(pagenor_fonts::DOCUMENT_FONTS_FOLDER)?;
+    let (mut copied, mut taken) = (Vec::new(), Vec::new());
     let (mut font_lines, mut named) = (Vec::new(), Vec::new());
     for f in fonts.as_array().into_iter().flatten() {
         let (family, style) = (f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));
@@ -156,7 +437,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         // A missing font's text is drawn in its substitute, which isn't a fallback font.
         let face = db.face(family, style);
         named.push(face.id());
-        let note = if missing { " — MISSING".to_string() } else { copy_font(&face, &fonts_dir, &mut copied, &mut taken, &mut files) };
+        let note = if missing { " — MISSING".to_string() } else { copy_font(&root, &face, &fonts_dir, &mut copied, &mut taken, &mut files) };
         font_lines.push(format!("  {family} {style}{note}\n"));
     }
     // Fallback fonts: the faces that draw characters the named fonts lack.
@@ -166,21 +447,20 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     }
     drawn.retain(|f| !named.contains(&f.id()));
     drawn.sort_by(|a, b| (&a.family, &a.style).cmp(&(&b.family, &b.style)));
-    let fallback_lines: Vec<String> =
-        drawn.iter().map(|f| format!("  {} {}{}\n", f.family, f.style, copy_font(f, &fonts_dir, &mut copied, &mut taken, &mut files))).collect();
-    if p.get("idml").and_then(Value::as_bool).unwrap_or(true) {
-        let path = dir.join(format!("{title}.idml"));
-        std::fs::write(&path, pagenor_idml::export_idml(&packed)).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
-        files.push(path);
+    let fallback_lines: Vec<String> = drawn
+        .iter()
+        .map(|f| format!("  {} {}{}\n", f.family, f.style, copy_font(&root, f, &fonts_dir, &mut copied, &mut taken, &mut files)))
+        .collect();
+    if let Some(bytes) = idml {
+        root.write(&idml_path, &bytes)?;
+        files.push(idml_path);
     }
-    if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
-        let path = dir.join(format!("{title}.pdf"));
-        let bytes = pagenor_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-        std::fs::write(&path, bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
-        files.push(path);
+    if let Some(bytes) = pdf {
+        root.write(&pdf_path, &bytes)?;
+        files.push(pdf_path);
     }
     // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {title}\n\n");
+    let mut r = format!("Package report: {display_title}\n\n");
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
@@ -200,8 +480,8 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             r += &format!("  {}\n", i.get("message").and_then(Value::as_str).unwrap_or(""));
         }
     }
-    let report = dir.join("Instructions.txt");
-    std::fs::write(&report, &r).map_err(|e| EngineError::Other(format!("{}: {e}", report.display())))?;
+    let report = report_path;
+    root.write(&report, r.as_bytes())?;
     files.push(report);
     Ok(json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r}))
 }
@@ -210,7 +490,8 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("links.copyTo", "missing `dir`"))?);
     let only: Option<Vec<AssetId>> = p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(AssetId).collect());
     let d = s.doc()?.doc.clone();
-    let (relinked, written) = write_links(&d, &dir, only.as_deref())?;
+    let root = OutputRoot::new(dir.clone())?;
+    let (relinked, written) = write_links(&d, &root, &dir, only.as_deref())?;
     s.edit(|doc, _| {
         doc.assets = relinked.assets;
         Ok(())
@@ -224,7 +505,7 @@ mod tests {
 
     #[test]
     fn package_writes_document_links_and_report() {
-        let dir = std::env::temp_dir().join(format!("dc-package-{}", std::process::id()));
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let svg = dir.join("logo.svg");
@@ -261,12 +542,18 @@ mod tests {
         use pagenor_fonts::testing::{font_with, with_fs_type};
         const FREE: &str = "DocFont Package Free";
         const RESTRICTED: &str = "DocFont Package Restricted";
-        let dir = std::env::temp_dir().join(format!("dc-package-fonts-{}", std::process::id()));
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-fonts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let fonts = dir.join("src").join(DOCUMENT_FONTS_FOLDER);
         std::fs::create_dir_all(&fonts).unwrap();
         std::fs::write(fonts.join("free.ttf"), font_with(FREE, &['F']).unwrap()).unwrap();
         std::fs::write(fonts.join("restricted.otf"), with_fs_type(font_with(RESTRICTED, &['R']).unwrap(), 0x0002).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(fonts.join("free.ttf"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
         // Text in both fonts, and in the bundled default font.
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -275,7 +562,7 @@ mod tests {
             s.execute("text.select", &json!({"story": r["story"], "anchor": a, "focus": b})).unwrap();
             s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
         }
-        let src = dir.join("src").join("Fonts.pagenor");
+        let src = dir.join("src").join("Fonts.pgnr");
         s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
         let mut s = Session::new();
         assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 2);
@@ -284,6 +571,15 @@ mod tests {
         let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).unwrap();
         let packed_fonts = out.join(DOCUMENT_FONTS_FOLDER);
         assert!(packed_fonts.join("free.ttf").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                std::fs::metadata(packed_fonts.join("free.ttf")).unwrap().permissions().mode() & 0o777,
+                std::fs::metadata(fonts.join("free.ttf")).unwrap().permissions().mode() & 0o777
+            );
+        }
         assert!(!packed_fonts.join("restricted.otf").exists(), "a restricted licence keeps the font out");
         assert!(r["files"].to_string().contains("free.ttf"), "{}", r["files"]);
         let report = r["report"].as_str().unwrap();
@@ -310,7 +606,7 @@ mod tests {
         // Characters no other font has: the named font lacks both, the document's other fonts
         // draw them.
         let (helped, restricted) = ('\u{F0A41}', '\u{F0A42}');
-        let dir = std::env::temp_dir().join(format!("dc-package-fallback-{}", std::process::id()));
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-fallback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let fonts = dir.join("src").join(DOCUMENT_FONTS_FOLDER);
         std::fs::create_dir_all(&fonts).unwrap();
@@ -324,7 +620,7 @@ mod tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
         s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": text.len()})).unwrap();
         s.execute("type.char", &json!({"fontFamily": NAMED, "fontStyle": "Regular"})).unwrap();
-        let src = dir.join("src").join("Fallback.pagenor");
+        let src = dir.join("src").join("Fallback.pgnr");
         s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
         let mut s = Session::new();
         assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 3);
@@ -344,5 +640,239 @@ mod tests {
         let doc = r["files"][0].as_str().unwrap().to_string();
         assert_eq!(Session::new().execute("file.open", &json!({"path": doc})).unwrap()["documentFonts"], 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_uses_portable_names_inside_the_selected_directory() {
+        assert_eq!(safe_component("Archive/Annual: Review", "Untitled"), "Annual_ Review");
+        assert_eq!(safe_component(".", "Untitled"), "Untitled");
+        assert_eq!(safe_component("CON", "Untitled"), "_CON");
+        assert_eq!(safe_component("COM¹.txt", "Untitled"), "_COM¹.txt");
+        assert_eq!(safe_component("LPT³", "Untitled"), "_LPT³");
+        for name in ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"] {
+            assert!(is_reserved_windows_name(name), "{name}");
+        }
+        let mut taken = Vec::new();
+        assert_eq!(unique_name("Logo.svg".into(), &mut taken), "Logo.svg");
+        assert_eq!(unique_name("logo.svg".into(), &mut taken), "logo 2.svg");
+        assert_eq!(unique_name("Résumé.pdf".into(), &mut taken), "Résumé.pdf");
+        assert_eq!(unique_name("Re\u{301}sume\u{301}.pdf".into(), &mut taken), "Re\u{301}sume\u{301} 2.pdf");
+        assert_eq!(unique_name("ΟΣ.txt".into(), &mut taken), "ΟΣ.txt");
+        assert_eq!(unique_name("ος.txt".into(), &mut taken), "ος 2.txt");
+
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-safe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Archive/Annual: Review"})).unwrap();
+        let r = s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
+        let files = r["files"].as_array().unwrap();
+        assert!(files.iter().all(|path| Path::new(path.as_str().unwrap()).starts_with(&dir)));
+        assert!(dir.join("Annual_ Review.pgnr").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_overwrites_existing_regular_outputs() {
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-overwrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let document = dir.join("Annual.pgnr");
+        std::fs::write(&document, b"previous package").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
+        assert!(super::super::from_bytes(&std::fs::read(&document).unwrap()).is_ok());
+        assert!(!dir.join(pagenor_fonts::DOCUMENT_FONTS_FOLDER).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(std::fs::metadata(&document).unwrap().permissions().mode() & 0o777, 0o640);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_accepts_a_relative_destination() {
+        let dir = PathBuf::from(format!(".pagenor-package-relative-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Relative"})).unwrap();
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
+        assert!(dir.join("Relative.pgnr").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_refuses_redirected_destinations() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-redirects-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let outside = base.join("separate");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
+
+        let redirected_root = base.join("redirected-package");
+        symlink(&outside, &redirected_root).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": redirected_root.to_string_lossy(), "idml": false})).is_err());
+        assert!(!outside.join("Annual.pgnr").exists());
+        std::fs::remove_file(&redirected_root).unwrap();
+
+        let redirected_parent = base.join("redirected-parent");
+        symlink(&outside, &redirected_parent).unwrap();
+        let nested_package = redirected_parent.join("nested").join("Package");
+        assert!(s.execute("file.package", &json!({"dir": nested_package.to_string_lossy(), "idml": false})).is_err());
+        assert!(!outside.join("nested").exists());
+        std::fs::create_dir_all(outside.join("nested/Package")).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": nested_package.to_string_lossy(), "idml": false})).is_err());
+        assert!(!outside.join("nested/Package/Annual.pgnr").exists(), "existing descendants cannot bypass parent checks");
+        std::fs::remove_file(&redirected_parent).unwrap();
+
+        let package = base.join("Package");
+        std::fs::create_dir_all(&package).unwrap();
+        symlink(&outside, package.join("Links")).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": package.to_string_lossy(), "idml": false})).is_err());
+        assert!(!outside.join("Annual.pgnr").exists());
+        std::fs::remove_file(package.join("Links")).unwrap();
+        std::fs::create_dir(package.join("Links")).unwrap();
+
+        let kept = outside.join("kept.pgnr");
+        std::fs::write(&kept, b"kept").unwrap();
+        symlink(&kept, package.join("Annual.pgnr")).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": package.to_string_lossy(), "idml": false})).is_err());
+        assert_eq!(std::fs::read(&kept).unwrap(), b"kept");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn package_refuses_windows_directory_redirects() {
+        use std::os::windows::fs::symlink_dir;
+
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-windows-redirect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let outside = base.join("separate");
+        std::fs::create_dir_all(&outside).unwrap();
+        let redirected = base.join("Package");
+        match symlink_dir(&outside, &redirected) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let _ = std::fs::remove_dir_all(&base);
+                return;
+            }
+            Err(e) => panic!("could not create directory redirect: {e}"),
+        }
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": redirected.to_string_lossy(), "idml": false})).is_err());
+        assert!(!outside.join("Annual.pgnr").exists());
+        std::fs::remove_dir(&redirected).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn package_title_cannot_replace_a_file_outside_output() {
+        let base = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-title-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let outside = base.join("outside.pgnr");
+        std::fs::write(&outside, b"keep").unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": base.join("outside").to_string_lossy()})).unwrap();
+        s.execute("file.package", &json!({"dir": base.join("Pkg").to_string_lossy(), "idml": false})).unwrap();
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn package_preparation_failure_preserves_previous_outputs() {
+        use pagenor_doc::Asset;
+        let base = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+        let out = base.path().join("Pkg");
+        std::fs::create_dir_all(out.join("Links")).unwrap();
+        std::fs::write(out.join("Annual.pgnr"), b"old document").unwrap();
+        std::fs::write(out.join("Links/asset-0"), b"old link").unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        for i in 0..4094 {
+            let id = AssetId(d.alloc());
+            d.assets.insert(
+                id,
+                Arc::new(Asset {
+                    id,
+                    page: 0,
+                    name: format!("asset-{i}"),
+                    mime: "application/octet-stream".into(),
+                    link: None,
+                    data: Arc::new(vec![1]),
+                    pixels: None,
+                }),
+            );
+        }
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).is_err());
+        assert_eq!(std::fs::read(out.join("Annual.pgnr")).unwrap(), b"old document");
+        assert_eq!(std::fs::read(out.join("Links/asset-0")).unwrap(), b"old link");
+        assert_eq!(std::fs::read_dir(out.join("Links")).unwrap().count(), 1);
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn failed_font_copy_keeps_existing_file_and_removes_staging_file() {
+        let base = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+        let root = OutputRoot::new(base.path().to_path_buf()).unwrap();
+        let target = base.path().join("font.ttf");
+        std::fs::write(&target, b"keep font").unwrap();
+        // A directory cannot supply font bytes; failure must not truncate the destination.
+        assert!(root.copy(base.path(), &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep font");
+        assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn portable_names_leave_room_for_numbering_and_extension() {
+        let mut taken = Vec::new();
+        let long = format!("{}.svg", "தமிழ்".repeat(80));
+        for _ in 0..12 {
+            let name = link_name(&long, AssetId(1), &mut taken);
+            assert!(name.len() <= MAX_OUTPUT_COMPONENT_BYTES);
+            assert!(name.ends_with(".svg"));
+            assert_eq!(Path::new(&name).components().count(), 1);
+        }
+        assert_eq!(safe_component(r"C:\Fonts\NUL.ttf", "font"), "_NUL.ttf");
+        assert_eq!(safe_component("name... ", "asset"), "name");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn report_redirect_is_refused_before_replacing_the_document() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+        let out = base.path().join("Pkg");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("Annual.pgnr"), b"keep document").unwrap();
+        let outside = base.path().join("outside.txt");
+        std::fs::write(&outside, b"keep report").unwrap();
+        symlink(&outside, out.join("Instructions.txt")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
+        assert!(s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).is_err());
+        assert_eq!(std::fs::read(out.join("Annual.pgnr")).unwrap(), b"keep document");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep report");
     }
 }

@@ -58,3 +58,19 @@ now propagates serialization errors through save/copy/serialize/snippet/book/
 package callers; failed save preparation leaves live relative paths and saved
 state unchanged. No package-path rewrite or IDML archive/resource confinement
 from #155/#156 is implied. See [limits and scope](docs/pagenor/IMPORT_LIMITS.md).
+
+## Package output adaptation — P00.4 (2026-10-09)
+
+Adapted the package-output portion of [upstream #155](https://github.com/storytold/designcraft/pull/155),
+by @skylartaylor, at inspected head `9809a9b386b9254c18e847a0771cf1eb9b970acf`.
+The live PR head was verified and all six changed-file blob identities match the
+pinned snapshot. Original MIT OR Apache-2.0 licences/copyright remain applicable.
+The guide and descendant-aware step-repeat portions are not adopted by this task.
+
+The port uses portable Unicode filenames, redirect checks and staged individual
+file replacement. Pagenor retains `.pgnr`, fallible serialization, document font
+scopes and native/memory font reporting. Local additions preflight required output
+paths, prepare exports before file writes, check existing redirected ancestors
+iteratively, preserve short extensions when truncating names and reserve suffix
+space. Folder-wide rollback, hostile concurrent directory renaming and general
+Save atomicity are not claimed. See [behavior and limits](docs/pagenor/PACKAGE_OUTPUT.md).

@@ -1,8 +1,8 @@
-# Upstream pull-request integration review — P00.2 / P00.3
+# Upstream pull-request integration review — P00.2 / P00.3 / P00.4
 
 Snapshot: 2026-10-09; 53 open pull requests retrieved through GitHub’s API. The public HTML page was older than the API snapshot. This is a bounded snapshot, not a monitor or a claim about future changes. Open PRs are proposals, not upstream releases.
 
-Twelve PRs contribute the initial P00.2 batch. P00.3 subsequently adds #154 with the adaptations recorded in provenance and the import-limits note. Source patches and regressions were inspected for the adopted changes; the remaining proposals were triaged by their descriptions, changed files, dependencies and conflict with Pagenor work. This table does not claim a full implementation/security audit of every deferred branch. Larger feature branches remain candidates, not automatically rejected.
+Twelve PRs contribute the initial P00.2 batch. P00.3 adds #154; P00.4 selectively adds the package portion of #155. Adaptations and limits are recorded in provenance and the policy notes. Source patches and regressions were inspected for the adopted changes; the remaining proposals were triaged by their descriptions, changed files, dependencies and conflict with Pagenor work. This table does not claim a full implementation/security audit of every deferred branch. Larger feature branches remain candidates, not automatically rejected.
 
 Pagenor keeps its product names, owner artwork, `.pgnr` default/legacy compatibility, shared Rust layers and `unsafe_code = "forbid"`. Native font sources and recovery state are not replaced. Dot-prefixed families are omitted from pickers per the owner’s updated preference, while backend lookup remains available. No contributor profiles or upstream instruction changes were copied. No GitHub publishing or remote CI is performed.
 
@@ -17,7 +17,7 @@ Pagenor keeps its product names, owner artwork, `.pgnr` default/legacy compatibi
 | [#170](https://github.com/storytold/designcraft/pull/170) | feat(pptx): export documents as editable PowerPoint presentations | Not adopted in this batch | New PowerPoint exporter/crate and embedded-font work; Phase 08 feature, with fidelity and font-licence gates. |
 | [#168](https://github.com/storytold/designcraft/pull/168) | Fix Windows startup crash by defaulting to DirectX 12 | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
 | [#156](https://github.com/storytold/designcraft/pull/156) | Confine IDML resources and bound package parsing | Not adopted in this batch | Draft, depends on #154. Rejects external IDML resources on non-Unix hosts; unsuitable unchanged for the required Windows workflow. |
-| [#155](https://github.com/storytold/designcraft/pull/155) | Validate engine work counts and package filenames | Not adopted in this batch | Recommended next hardening; larger package path/atomic output rewrite overlaps P02.6 .pgnr output. Integrate with package cross-platform path tests. |
+| [#155](https://github.com/storytold/designcraft/pull/155) | Validate engine work counts and package filenames | Package portion adopted in P00.4 | Portable names and staged individual output files; preserves .pgnr, fallible serialization and scoped fonts. Adds preparation/preflight, existing-ancestor checks and extension/suffix bounds. Guide/work-count portions remain deferred. See PACKAGE_OUTPUT.md. |
 | [#154](https://github.com/storytold/designcraft/pull/154) | Bound native and Office document parsing | Adopted in P00.3 | Shared bounded ZIP/native/Office parsing and matching save limits; quick-xml compatibility tested. Adds Pagenor table/duplicate/root/read budgets and save-error propagation. See IMPORT_LIMITS.md. |
 | [#153](https://github.com/storytold/designcraft/pull/153) | Harden temporary files and release inputs | Not adopted in this batch | Recommended next hardening; recovery rewrite overlaps P02.2–P02.4 owned entries/retained snapshots. Port without replacing tested recovery semantics; release inputs separately. |
 | [#152](https://github.com/storytold/designcraft/pull/152) | Apply contextual escaping to HTML and EPUB exports | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
@@ -85,3 +85,21 @@ policy and the remaining host-buffering, streaming, package and IDML tasks.
 A test compilation initially exhausted disk space; generated caches/examples
 were removed only. A Unicode fixture's numeric reference was corrected before
 the final gate. Deferred PRs remain candidates; no GitHub push or phase exit.
+
+## P00.4 package validation
+
+The selected #155 package portion passes 12 focused macOS tests and the complete
+local gate: 916 passed, 0 failed, 3 ignored; all seven steps and 17 WASM packages
+pass. Windows/Linux strict UI-library Clippy checks pass; these are compile
+checks, not native execution. A synthetic title-escape regression overwrote an owned outside sentinel on
+the original implementation and passes after the adaptation. Tests also cover
+Unicode/device names, existing/missing redirected parents, report redirects,
+regular overwrites/modes, failed staging cleanup, serialization refusal and
+licensed/named/fallback font copies. The Windows-specific redirect test remains
+unexecuted on macOS. See [behavior and limits](PACKAGE_OUTPUT.md).
+
+The pinned 53-PR snapshot now has 14 selected/adopted proposals (including the
+partial #155 adaptation), two already present and 37 deferred. #155's guide and
+work-count portions remain candidates. Only stale generated compiler objects
+were removed to recover build disk space; no user documents/recovery were removed.
+No GitHub push or milestone exit.

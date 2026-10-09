@@ -42,7 +42,7 @@ are retained.
 This is a focused hardening batch. Hosts still read input bytes into memory
 before invoking these parsers. Native JSON serialization occurs before its
 size is checked. This is not streaming or a complete XML/ZIP security audit.
-Atomic replacement on actual storage failure, package path/rollback hardening
-(#155), IDML ZIP/XML/resource bounds (#156) and native platform execution are
-separate tasks. IDML receives the quick-xml API compatibility change only.
+P00.4 adds [package paths and individual atomic outputs](PACKAGE_OUTPUT.md)
+from #155. General Save atomicity, folder-wide rollback, IDML ZIP/XML/resource
+bounds (#156) and native platform execution remain separate tasks. IDML receives the quick-xml API compatibility change only.
 Font discovery/loading and vendor activation behavior are unchanged.
