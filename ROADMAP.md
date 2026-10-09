@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P07.1: Dependent upstream typography/layout proposals #83/#84/#81/#106/#96
+  add drop caps/selection, baseline/wrap/defaults, threading, snapping, family
+  style linking, text/frame formatting, kerning and empty-paragraph fixes.
+  Version-2 migration preserves version-1 layout with bounded indexed style
+  walks. Pagenor clipboard/recovery and scoped lazy fonts are retained.
+  Local gate: 1,118 passed, 3 ignored; 17 WASM packages. CPU panel/layout
+  inspection and Windows/Linux strict UI-library Clippy checks are included
+  in the completed local integration group; native/browser execution remains
+  separate. Adobe/dongle activation remains pending.
+
 - P09.3: Advanced data-merge backends and panel from pinned upstream #109/#125.
   Multiple sources, JSON/Excel values, filters/sorts, grids and warning handling
   preserve template state, undo, scoped fonts and .pgnr. Joins/affixes/combined

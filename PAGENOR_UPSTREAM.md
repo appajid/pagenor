@@ -128,3 +128,29 @@ Local additions retain archive/output budgets for XLSX, limit repeated XLS strin
 and padded grids, bound formula recursion/evaluation and grid planning, cap actual
 file/HTTPS reads and reject URL request-line injection. Join keys are indexed while
 preserving the first matching record. Details: [data merge scope](docs/pagenor/DATA_MERGE.md).
+
+## Typography and layout adaptation — P07.1 (2026-10-09)
+
+Adapted the dependent final branch #96, including #83/#84/#81/#106. All changed
+blob identities match the pinned source heads. The original MIT OR Apache-2.0
+licences and copyright remain applicable; generated contributor files are untouched.
+
+| PR | Source author | Inspected head |
+|---|---|---|
+| [#83](https://github.com/storytold/designcraft/pull/83) | @aiongg | `673039f5dc7dac7804e482531d30d7a3ea328baa` |
+| [#84](https://github.com/storytold/designcraft/pull/84) | @aiongg | `141a5306bf5f36a7e964e91efed5f4ff4033df43` |
+| [#81](https://github.com/storytold/designcraft/pull/81) | @aiongg | `dc18c104485d2797e4846569f714b3ab8d844bef` |
+| [#106](https://github.com/storytold/designcraft/pull/106) | @skylartaylor | `bed9438612e85f7d28799a6dff679ab6859c76b9` |
+| [#96](https://github.com/storytold/designcraft/pull/96) | @denizkoekden | `38ec9ce7e04a3e61dd6f8d9f9be07889df6fc952` |
+
+Drop caps/selection, first baselines, wrap/defaults, text threading/ports, snapping,
+word/paragraph selection, font style linking, text/frame colour targeting, kerning
+across format runs, baseline-based horizontal frame fitting and empty paragraph
+mark formatting are adapted once. The inherited clipboard/control isolation change
+is omitted to retain Pagenor's tested menu/control bridge and recovery behavior.
+
+Format version 2 pins the former paragraph defaults when loading version-1/legacy
+files. Pagenor retains bounded native reads and fallible serialization, u64 future
+version comparisons, .pgnr names and document font precedence. The migration uses
+indexed bounded style walks and includes endnotes. Current selection style traits
+use scoped fonts and custom variable-axis values. No Indic phase exit is implied.

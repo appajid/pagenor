@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 unicode-bidi = { workspace = true }
+unicode-segmentation = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }

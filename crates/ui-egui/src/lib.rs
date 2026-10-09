@@ -202,6 +202,9 @@ pub struct UiState {
     pub smart_spacing: bool,
     #[serde(default = "default_zone")]
     pub snap_zone: f64,
+    /// Tools panel: Formatting Affects Text (J): with text frames selected, colour edits go to
+    /// their text instead of the frames.
+    pub formatting_affects_text: bool,
     /// Window > Contextual Task Bar.
     pub task_bar: bool,
     /// Where the Contextual Task Bar is pinned: its top-left, in points from the canvas's top-left
@@ -284,6 +287,7 @@ impl Default for UiState {
             smart_dimensions: true,
             smart_spacing: true,
             snap_zone: 4.0,
+            formatting_affects_text: false,
             task_bar: true,
             task_bar_pin: None,
             task_bar_at: None,
