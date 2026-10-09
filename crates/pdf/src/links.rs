@@ -84,7 +84,7 @@ pub(crate) fn annotations(doc: &Document, cache: &pagenor_compose::Cache, sheets
     let mut stack: Vec<(Affine, &std::sync::Arc<pagenor_doc::Item>)> =
         doc.spreads.get(sh.spread).map(|sp| sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect()).unwrap_or_default();
     while let Some((xf, it)) = stack.pop() {
-        stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
+        stack.extend(it.shown_children().map(|c| (xf * it.child_space(), c)));
         let Some(action) = &it.button else { continue };
         if it.hidden {
             continue;

@@ -109,7 +109,9 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "book" => &[OpenFilter { name: "Book", extensions: &["pbook", "dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["plib", "dclib"] }],
-        "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
+        "dataMerge" => {
+            &[OpenFilter { name: "Data source (CSV, TSV, text, Excel, JSON)", extensions: &["csv", "tsv", "tab", "txt", "xlsx", "xls", "json"] }]
+        }
         "place" => &[
             OpenFilter {
                 name: "Graphics and text",
@@ -253,7 +255,7 @@ mod tests {
     fn data_merge_open_dialog_lists_table_extensions() {
         let filters = super::open_filters("dataMerge");
         let exts: Vec<&str> = filters.iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
-        for ext in ["csv", "tsv", "tab", "txt", "xlsx"] {
+        for ext in ["csv", "tsv", "tab", "txt", "xlsx", "xls", "json"] {
             assert!(exts.contains(&ext), "{ext} is missing from the dataMerge dialog: {exts:?}");
         }
         assert!(

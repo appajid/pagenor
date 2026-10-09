@@ -105,3 +105,26 @@ Local additions validate style replacements/paragraph renames, reject inheritanc
 cycles and rewrite nested text, defaults, note options, running headers, TOC/XML
 references. Existing text traversal now includes endnotes. No remote push or
 milestone completion is implied. Larger feature branches are tracked separately.
+
+## Advanced data merge adaptation — P09.3 (2026-10-09)
+
+Adapted [#109](https://github.com/storytold/designcraft/pull/109) and
+[#125](https://github.com/storytold/designcraft/pull/125), both by @CameronGilroy,
+at inspected heads `aff5c9492e62a06f277f5a8eb9627b19cbc4f259` and
+`805ac702d5ab2ae5bcce3431eb9ab7245f9a2449`. Changed-file blobs match the pinned
+snapshots. Original MIT OR Apache-2.0 licences and copyright remain applicable.
+The dependent second proposal was compared against the first to avoid replaying it.
+
+Multiple linked sources, JSON, source filters/sorts, record grids and the grid tool,
+skipping warned records, affixes, joins, virtual fields, workbook values/formulas,
+inline/remote images and merged PDF output are adapted. The panel exposes source,
+filter/sort, field, record, warning and grid controls; joins, affixes and combined
+sorting currently use commands, rather than additional dedicated screens.
+Pagenor retains native names, document fonts, recovery and fallible serialization.
+The unrelated PSD chunk optimization is omitted. Imported design documents record
+source proposals and are not development instructions.
+
+Local additions retain archive/output budgets for XLSX, limit repeated XLS strings
+and padded grids, bound formula recursion/evaluation and grid planning, cap actual
+file/HTTPS reads and reject URL request-line injection. Join keys are indexed while
+preserving the first matching record. Details: [data merge scope](docs/pagenor/DATA_MERGE.md).

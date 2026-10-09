@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P09.3: Advanced data-merge backends and panel from pinned upstream #109/#125.
+  Multiple sources, JSON/Excel values, filters/sorts, grids and warning handling
+  preserve template state, undo, scoped fonts and .pgnr. Joins/affixes/combined
+  sorting are command interfaces. Local parsing, formula, transfer and planning
+  bounds retain the import policies. Source/grid/lower-control CPU inspection
+  and UI interaction regressions pass. Full local gate: 1,022 passed, 3 ignored;
+  17 WASM packages. Windows/Linux strict UI-library Clippy checks pass. Native
+  execution on those platforms and browser interaction remain milestone checks.
+  [Behavior and limits](docs/pagenor/DATA_MERGE.md).
+
 - P09.2: Adapted nine pinned upstream editor UI proposals after reviewing both
   open and closed requests. Responsive bars, two control rows, movable/pinned
   task bar, ruler units, language, richer style editors/deletion and stable
@@ -377,7 +387,7 @@ same references), and from the app's JSON control channel. See [docs/agents.md](
 | M8 | Tables | ✅ core (table/cell styles, rotation, diagonal lines pending) |
 | M9 | Performance (MT composition, tiles) | in progress (glyph path cache, bounded RTL label layout cache, culling, parallel compose 6.7× faster, perf harness) |
 | M10 | Find/Change, spelling, Preflight | in progress (Find/Change ✅, spelling ✅, Preflight) |
-| M11 | Layout power features (liquid/alternate layouts, data merge) | started (data merge phase 1, step & repeat, snippets) |
+| M11 | Layout power features (liquid/alternate layouts, data merge) | started (advanced data merge, step & repeat, snippets) |
 | M12 | Interactive & digital (EPUB, HTML, interactive PDF) | started (EPUB, PDF links/bookmarks) |
 | M13 | Automation (scripts, batch) | |
 | M14 | 1.0 polish & packaging | |
