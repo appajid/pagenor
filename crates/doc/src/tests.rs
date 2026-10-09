@@ -256,3 +256,89 @@ fn next_id_near_the_top_is_rejected() {
     d.next_id = crate::MAX_NEXT_ID;
     d.check().unwrap();
 }
+
+#[test]
+fn find_many_agrees_with_find_across_groups_and_parent_spreads() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let mut ids = Vec::new();
+    for spread in [SpreadRef::Doc(0), SpreadRef::Doc(1), SpreadRef::Parent(0)] {
+        let id = ItemId(d.alloc());
+        let child = Item::new(id, lid, Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)));
+        let group_id = ItemId(d.alloc());
+        let mut group = Item::new(group_id, lid, Shape::Group, child.path.clone());
+        group.content = Content::Group { items: vec![Arc::new(child)] };
+        d.insert_item(spread, group, None).unwrap();
+        ids.extend([id, group_id]);
+    }
+    let absent = ItemId(999_999);
+    let mut requested = ids.clone();
+    requested.extend([absent, ids[0], ids[2]]);
+    let before = d.clone();
+    let found = d.find_many(&requested);
+    for id in &ids {
+        assert_eq!(found.get(id), d.find(*id).as_ref());
+        assert_eq!(d.item_at(found.get(id).unwrap()).unwrap().id, *id);
+        assert_eq!(d.find_many(&[*id, *id]).get(id), found.get(id));
+    }
+    assert_eq!(found.len(), ids.len());
+    assert!(!found.contains_key(&absent));
+    assert!(d.find_many(&[absent]).is_empty());
+    assert!(d.find_many(&[]).is_empty());
+    assert_eq!(d, before, "lookup must not alter the document");
+}
+
+#[test]
+fn find_many_keeps_first_match_precedence_for_duplicate_item_ids() {
+    // Malformed documents are rejected by check(), but lookups still agree before validation.
+    let mut d = doc();
+    let id = ItemId(d.alloc());
+    let other = ItemId(d.alloc());
+    let item = Item::new(id, d.default_layer(), Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)));
+    let mut group = item.clone();
+    group.id = other;
+    group.content = Content::Group { items: vec![Arc::new(item.clone())] };
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    d.insert_item(SpreadRef::Doc(0), item.clone(), None).unwrap();
+    d.insert_item(SpreadRef::Parent(0), item, None).unwrap();
+    let found = d.find_many(&[id, other]);
+    assert_eq!(found.get(&id), d.find(id).as_ref());
+    assert_eq!(found[&id].spread, SpreadRef::Doc(0));
+    assert_eq!(found[&id].path, vec![0, 0]);
+    assert!(d.check().is_err());
+}
+
+#[test]
+fn find_many_handles_deep_groups_on_a_small_thread_stack() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let leaf = ItemId(d.alloc());
+    let mut item = Item::new(leaf, lid, Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)));
+    let depth = 2048;
+    for _ in 0..depth {
+        let mut parent = Item::new(ItemId(d.alloc()), lid, Shape::Group, item.path.clone());
+        parent.content = Content::Group { items: vec![Arc::new(item)] };
+        item = parent;
+    }
+    d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let single = d.find(leaf).unwrap();
+            assert_eq!(single.path.len(), depth + 1);
+            let many = d.find_many(&[leaf, ItemId(999_999)]);
+            assert_eq!(many.get(&leaf), Some(&single));
+            // Drop this deliberately deep synthetic tree iteratively too. Ordinary Arc teardown
+            // is outside the locator's scope and would recursively drop the only child.
+            let mut pending = std::mem::take(&mut Arc::make_mut(&mut d.spreads[0]).items);
+            while let Some(item) = pending.pop() {
+                let mut item = Arc::try_unwrap(item).unwrap();
+                if let Content::Group { items } = &mut item.content {
+                    pending.append(items);
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -296,3 +296,27 @@ back to safe stderr. Tests cover closed stderr, fresh-process rotation, the exis
 panic hook and control-token exclusion, as well as deterministic file failures.
 [Behavior and local evidence](docs/pagenor/DESKTOP_LOGGING.md) distinguish production
 logger cross-compilation from deferred native platform execution.
+
+
+## Batched composition lookup adaptation — P00.7 (2026-10-10)
+
+Adapted the performance idea and three-file proposal in
+[upstream #172](https://github.com/storytold/designcraft/pull/172), by
+@ZuraGuerra (Git author Zura Guerra), at verified head
+`85657c9b88a4ff520d41b8c0913678a72b34f8ed`. All three source blob identities
+match GitHub's file metadata. On this date GitHub marks the request closed,
+unmerged and “withdrawn”; its author says it was opened in error. Pagenor's local
+adaptation is independently reviewed, not an upstream acceptance claim. Original
+MIT OR Apache-2.0 licences and copyright remain applicable. Contributor registries
+and profiles are unchanged.
+
+The composition signature locates a story's frame IDs in one document walk.
+Pagenor retains its anchored/embedded-frame fallback, font scope, allocation
+retention and existing cache invalidation behavior. Local changes replace the
+source's recursive helper with iterative pre-order traversal, shared with single
+lookup, and accept a resident ID slice rather than an unrestricted iterator.
+Missing/repeated IDs, parent spreads and first-match ordering are preserved.
+There is no persistent document index or dependency addition. Regression tests,
+local before/after measurements and platform limits are recorded in
+[composition lookup](docs/pagenor/COMPOSITION_LOOKUP.md). This task stays local;
+no remote publication or running macOS bundle replacement is performed.

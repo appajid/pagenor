@@ -247,8 +247,10 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         vec![Arc::as_ptr(story) as usize, story.rev as usize, Arc::as_ptr(&doc.styles) as usize, doc.sections.len(), doc.font_scope as usize];
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
+    // Cache hits also validate frame locations; resolve the whole thread in one walk.
+    let locs = doc.find_many(&story.frames);
     for f in &story.frames {
-        let Some(loc) = doc.find(*f) else {
+        let Some(loc) = locs.get(f) else {
             // Embedded frames live in another story (possibly in a note/cell),
             // so changing their geometry does not change this story's pointer.
             use std::hash::{Hash, Hasher};

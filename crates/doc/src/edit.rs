@@ -1,5 +1,6 @@
 //! Locating and editing items, threading, and story management.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use pagenor_geom::{Affine, Point, Rect, shapes};
@@ -35,15 +36,33 @@ impl ItemLoc {
     }
 }
 
-fn find_in(items: &[Arc<Item>], id: ItemId, path: &mut ItemPath) -> bool {
-    for (i, it) in items.iter().enumerate() {
-        path.push(i);
-        if it.id == id || find_in(it.children(), id, path) {
-            return true;
+/// Pre-order traversal with heap-held iterators, bounded by the resident tree's depth.
+/// A group cannot recursively own itself through immutable `Arc<Item>` children.
+/// The predicate stops the walk as soon as all requested locations are found.
+fn locate_in(items: &[Arc<Item>], path: &mut ItemPath, mut found: impl FnMut(&Item, &ItemPath) -> bool) -> bool {
+    let mut levels = vec![items.iter().enumerate()];
+    while let Some(level) = levels.last_mut() {
+        if let Some((i, item)) = level.next() {
+            path.push(i);
+            if found(item, path) {
+                return true;
+            }
+            let children = item.children();
+            if children.is_empty() {
+                path.pop();
+            } else {
+                levels.push(children.iter().enumerate());
+            }
+        } else {
+            levels.pop();
+            path.pop();
         }
-        path.pop();
     }
     false
+}
+
+fn find_in(items: &[Arc<Item>], id: ItemId, path: &mut ItemPath) -> bool {
+    locate_in(items, path, |item, _| item.id == id)
 }
 
 impl Document {
@@ -74,6 +93,42 @@ impl Document {
             }
         }
         None
+    }
+
+    /// Locate a resident batch of IDs in one pre-order document walk, stopping once
+    /// all are found. Missing IDs are absent; repeated IDs resolve once. As with
+    /// `find`, document spreads precede parents and the first matching item wins.
+    /// Work is O(items + IDs + returned path lengths), with no recursive traversal.
+    /// The slice bounds request storage to IDs already held by the caller.
+    pub fn find_many(&self, ids: &[ItemId]) -> HashMap<ItemId, ItemLoc> {
+        let mut out = HashMap::new();
+        if ids.is_empty() {
+            return out;
+        }
+        // A single distinct ID needs only cheap comparisons, not a hash per item.
+        let mut want: HashSet<ItemId> = ids.iter().copied().collect();
+        if want.len() == 1 {
+            if let Some(id) = want.iter().copied().next()
+                && let Some(loc) = self.find(id)
+            {
+                out.insert(id, loc);
+            }
+            return out;
+        }
+        for spread in self.spread_refs() {
+            if let Some(sp) = self.spread(spread) {
+                let complete = locate_in(&sp.items, &mut Vec::new(), |item, path| {
+                    if want.remove(&item.id) {
+                        out.insert(item.id, ItemLoc { spread, path: path.clone() });
+                    }
+                    want.is_empty()
+                });
+                if complete {
+                    break;
+                }
+            }
+        }
+        out
     }
 
     pub fn item_at(&self, loc: &ItemLoc) -> Option<&Item> {

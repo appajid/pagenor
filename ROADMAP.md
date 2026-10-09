@@ -5,6 +5,17 @@
   claimed as tested. Existing native font support is retained; other font
   lifecycle, platform and Indic validation tasks remain open.
 
+- P00.7: Adapted the performance idea from the now-withdrawn upstream #172,
+  resolving threaded frame locations in one iterative document walk per story.
+  Nested/parent locations, embedded frames, font scope and cache invalidation
+  remain. Four regressions and equivalent-output warm-cache benchmarks pass;
+  1,000-page/50-frame stories improve from 333.221 ms to 28.524 ms (11.68×).
+  The previous deep-group locator stack failure is reproduced in isolation;
+  the new small-stack regression passes. All seven local gates pass: 1,286 tests,
+  3 ignored; 20 WASM packages. Windows/Linux production document/composition
+  library strict Clippy and the macOS executable build pass. Native platform
+  execution remains a milestone check. [Scope and evidence](docs/pagenor/COMPOSITION_LOOKUP.md).
+
 - P00.6: Adapted upstream #122 for desktop stderr and rotating diagnostic logs,
   retaining settings paths, control authentication/off-by-default and existing
   panic/recovery hooks. Record, pending-byte and file caps handle storage failures

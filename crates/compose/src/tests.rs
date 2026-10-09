@@ -3432,3 +3432,53 @@ fn mojikumi_does_not_restore_fullwidth_blanks_to_narrow_tracked_punctuation() {
         assert!((a.adv - b.adv).abs() < 0.001);
     }
 }
+
+#[test]
+fn batched_frame_lookup_preserves_cache_reuse_and_invalidation() {
+    use pagenor_doc::{Content, Item, Shape, WrapMode};
+    let (mut d, sid, first) = doc_with(&LOREM.repeat(5), Rect::new(0.0, 0.0, 120.0, 50.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (nested, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 60.0, 120.0, 160.0), lid, "", ParaFormat::default()).unwrap();
+    let (parent, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(0.0, 0.0, 120.0, 150.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, nested).unwrap();
+    d.thread(nested, parent).unwrap();
+    let sp = d.spread_mut(SpreadRef::Doc(0)).unwrap();
+    let at = sp.items.iter().position(|i| i.id == nested).unwrap();
+    let child = sp.items.remove(at);
+    let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Group, child.path.clone());
+    group.content = Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    d.check().unwrap();
+    let original = d.clone();
+    let cache = Cache::new();
+    let initial = cache.get(&d, sid, None);
+    assert_eq!(initial.frames.iter().map(|f| f.frame).collect::<Vec<_>>(), vec![first, nested, parent]);
+    assert!(Arc::ptr_eq(&initial, &cache.get(&d, sid, None)));
+    assert!(Arc::ptr_eq(&initial, &cache.get(&original, sid, None)));
+    let page = cache.get(&d, sid, Some("1"));
+    assert!(Arc::ptr_eq(&page, &cache.get(&d, sid, Some("1"))));
+
+    d.item_mut(nested).unwrap().path = pagenor_geom::shapes::rectangle(Rect::new(0.0, 60.0, 120.0, 70.0));
+    let resized = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&initial, &resized));
+    assert!(Cache::changed_frames(&initial, &resized).contains(&nested));
+    assert!(Arc::ptr_eq(&initial, &cache.composed_for(&original, sid).unwrap()));
+    assert!(Arc::ptr_eq(&resized, &cache.composed_for(&d, sid).unwrap()));
+
+    d.item_mut(parent).unwrap().path = pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 10.0));
+    let parent_resized = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&resized, &parent_resized));
+    assert!(Cache::changed_frames(&resized, &parent_resized).contains(&parent));
+
+    let mut wrap = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 50.0)));
+    wrap.wrap.mode = WrapMode::BoundingBox;
+    d.insert_item(SpreadRef::Doc(0), wrap, None).unwrap();
+    let wrapped = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&parent_resized, &wrapped));
+    assert!(Cache::changed_frames(&parent_resized, &wrapped).contains(&first));
+
+    d.font_scope = d.font_scope.wrapping_add(1);
+    let scoped = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&wrapped, &scoped));
+    assert!(Arc::ptr_eq(&scoped, &cache.get(&d, sid, None)));
+}
