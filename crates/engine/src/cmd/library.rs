@@ -12,7 +12,7 @@ use crate::{Result, Session};
 pub struct LibraryItem {
     pub name: String,
     pub description: String,
-    /// A `.pagenor` snippet, base64.
+    /// A `.pgnr` snippet, base64.
     pub snippet: String,
 }
 

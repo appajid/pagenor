@@ -51,6 +51,10 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 
 ## Quick start
 
+Pagenor saves new native documents as **`.pgnr`**. Existing `.pagenor` documents
+remain readable. Both extensions use the same native ZIP format, with embedded
+assets and document data; no conversion is needed to open an older document.
+
 On macOS, build and launch a local app bundle so Finder and the Dock use the
 current Pagenor icon:
 

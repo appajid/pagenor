@@ -45,6 +45,14 @@
         </File>
 
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pagenor.exe" Value="[#PagenorExe]" Type="string" />
+        <ProgId Id="Pagenor.Document" Description="Pagenor Document" Icon="PagenorExe" Advertise="no">
+          <Extension Id="pgnr" ContentType="application/vnd.pagenor+zip">
+            <Verb Id="open" Command="Open" TargetFile="PagenorExe" Argument="&quot;%1&quot;" />
+          </Extension>
+          <Extension Id="pagenor" ContentType="application/vnd.pagenor+zip">
+            <Verb Id="open" Command="Open" TargetFile="PagenorExe" Argument="&quot;%1&quot;" />
+          </Extension>
+        </ProgId>
       </Component>
 
       <Component Id="PagenorCli">

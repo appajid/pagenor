@@ -470,7 +470,7 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
     let mut bytes = vec![];
     row(
         &mut rows,
-        format!("save .pagenor ({} pages)", doc.page_count()),
+        format!("save .pgnr ({} pages)", doc.page_count()),
         median_ms(runs.min(3), || match pagenor_format::save(doc) {
             Ok(b) => bytes = b,
             Err(e) => failed = Some(format!("save: {e}")),
@@ -482,7 +482,7 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
             failed = Some(format!("open: {e}"));
         }
     });
-    row(&mut rows, "open .pagenor", open_ms, Some(300.0));
+    row(&mut rows, "open .pgnr", open_ms, Some(300.0));
     let n = doc.page_count().min(100);
     let pdf = pagenor_pdf::PdfOptions { pages: Some((0..n).collect()), ..Default::default() };
     row(

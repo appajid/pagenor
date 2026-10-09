@@ -4,9 +4,11 @@ use pagenor_engine::Session;
 use pagenor_ui_egui::{DesignApp, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["pagenor", "idml"];
-const IMAGE_EXTS: &[&str] =
-    &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "xlsx", "idml", "pagenor"];
+const DOC_EXTS: &[&str] = &["pgnr", "pagenor", "idml"];
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "xlsx", "idml", "pgnr",
+    "pagenor",
+];
 const CANVAS_ID: &str = "pagenor_canvas";
 const LOADING_ID: &str = "pagenor_loading";
 
@@ -160,7 +162,7 @@ fn mime_for(name: &str) -> &'static str {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("pdf") => "application/pdf",
-        Some("pagenor") => "application/json",
+        Some("pgnr" | "pagenor") => pagenor_engine::doc::file_type::MIME,
         Some("idml") => "application/vnd.adobe.indesign-idml-package",
         _ => "application/octet-stream",
     }

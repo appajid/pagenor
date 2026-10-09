@@ -9,5 +9,6 @@ Icon=org.pagenor.app
 Terminal=false
 StartupNotify=true
 StartupWMClass=org.pagenor.app
+MimeType=application/vnd.pagenor+zip;
 Categories=Graphics;Publishing;
 Keywords=layout;page;desktop publishing;dtp;magazine;book;indesign;idml;typesetting;

@@ -44,6 +44,7 @@
   </supports>
   <provides>
     <binary>pagenor</binary>
+    <mediatype>application/vnd.pagenor+zip</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>

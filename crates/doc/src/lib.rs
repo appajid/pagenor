@@ -18,6 +18,7 @@ pub mod cjk;
 pub mod datamerge;
 mod edit;
 pub mod endnotes;
+pub mod file_type;
 pub mod ids;
 pub mod index;
 pub mod item;

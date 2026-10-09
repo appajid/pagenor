@@ -1,7 +1,7 @@
 //! Headless Pagenor.
 //!
 //! ```text
-//! pagenor-cli run [--in FILE.pagenor|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.pagenor|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
+//! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
 //! pagenor-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
 //! pagenor-cli describe ID          # one command: label, menu, shortcut, parameters
 //! pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -209,7 +209,7 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
         eprintln!("wrote {out} ({} bytes)", r["bytes"]);
         return Ok(());
     }
-    if out.ends_with(".pagenor") {
+    if pagenor_doc::file_type::is_native_name(out) {
         s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
         eprintln!("saved {out}");
         return Ok(());

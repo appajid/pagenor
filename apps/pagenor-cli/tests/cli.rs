@@ -8,10 +8,27 @@ fn cli() -> Command {
 }
 
 #[test]
+fn native_exports_and_reopen_accept_pgnr_and_legacy_extensions() {
+    let dir = std::env::temp_dir().join(format!("pagenor-cli-extensions-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for extension in ["pgnr", "PGNR", "pagenor"] {
+        let path = dir.join(format!("Native.{extension}"));
+        let output = cli().args(["run", "--sample", "--export"]).arg(&path).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"PK"), "native export must not fall through to a PNG renderer");
+        assert_eq!(pagenor_format::load(&bytes).unwrap().page_count(), 4);
+        let output = cli().args(["run", "--in"]).arg(path).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn script_from_stdin_with_references_saves_and_exports() {
     let dir = std::env::temp_dir().join(format!("dc-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (doc, png) = (dir.join("a.pagenor"), dir.join("a.png"));
+    let (doc, png) = (dir.join("a.pgnr"), dir.join("a.png"));
     let mut child = cli()
         .args(["script", "-", "--save", doc.to_str().unwrap(), "--export", png.to_str().unwrap()])
         .stdin(Stdio::piped())

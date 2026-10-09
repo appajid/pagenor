@@ -62,7 +62,7 @@ pub struct Services {
     pub download: Option<DownloadFn>,
     /// Read plain Unicode text from the host system clipboard.
     pub clipboard_text: Option<ClipboardTextFn>,
-    /// Files delivered asynchronously, drained every frame: `.pagenor` → `file.openBytes`,
+    /// Files delivered asynchronously, drained every frame: `.pgnr` / `.pagenor` → `file.openBytes`,
     /// anything else → `file.place`.
     pub inbox: Option<Inbox>,
 }
@@ -618,7 +618,7 @@ impl DesignApp {
             let lower = name.to_ascii_lowercase();
             let r = if lower.ends_with(".ase") {
                 self.run("swatch.load", json!({"base64": b64}))
-            } else if lower.ends_with(".pagenor") || lower.ends_with(".idml") {
+            } else if pagenor_doc::file_type::is_native_name(&name) || lower.ends_with(".idml") {
                 let title = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
                 self.run("file.openBytes", json!({"name": title, "base64": b64}))
             } else {
@@ -691,7 +691,7 @@ impl DesignApp {
                     continue;
                 }
                 let lp = p.to_ascii_lowercase();
-                let cmd = if lp.ends_with(".pagenor") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
+                let cmd = if pagenor_doc::file_type::is_native_name(&p) || lp.ends_with(".idml") { "file.open" } else { "file.place" };
                 let _ = self.run(cmd, json!({"path": p}));
             }
         }
@@ -1058,6 +1058,90 @@ pub fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_save_and_copy_dialogs_use_pgnr_and_keep_copy_state() {
+        let dir = std::env::temp_dir().join(format!("pagenor-ui-pgnr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let names = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = names.clone();
+        let folder = dir.clone();
+        let services = Services {
+            pick_save: Some(Box::new(move |name| {
+                seen.borrow_mut().push(name.to_string());
+                Some(folder.join(name).to_string_lossy().to_string())
+            })),
+            ..Default::default()
+        };
+        let mut app = DesignApp::new(Session::new(), services);
+        app.run("file.new", json!({"title": "தமிழ் Brochure"})).unwrap();
+        app.run("app.save", json!({})).unwrap();
+        assert_eq!(names.borrow().as_slice(), ["தமிழ் Brochure.pgnr"]);
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        let before = (app.session.doc().unwrap().path.clone(), app.session.doc().unwrap().is_dirty(), app.session.doc().unwrap().history.undo.len());
+        app.run("app.saveCopyDialog", json!({})).unwrap();
+        assert_eq!(names.borrow().as_slice(), ["தமிழ் Brochure.pgnr", "தமிழ் Brochure copy.pgnr"]);
+        let after = (app.session.doc().unwrap().path.clone(), app.session.doc().unwrap().is_dirty(), app.session.doc().unwrap().history.undo.len());
+        assert_eq!(before, after);
+        let copy = pagenor_engine::cmd::from_bytes(&std::fs::read(dir.join("தமிழ் Brochure copy.pgnr")).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(copy).unwrap(), serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inbox_opens_new_uppercase_and_legacy_native_documents() {
+        let mut source = Session::new();
+        source.execute("file.new", &json!({})).unwrap();
+        source.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Imported தமிழ்"})).unwrap();
+        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc);
+        let inbox = Inbox::default();
+        for name in ["New.pgnr", "Upper.PGNR", "Legacy.pagenor"] {
+            inbox.lock().unwrap().push((name.into(), bytes.clone()));
+        }
+        let mut app = DesignApp::new(Session::new(), Services { inbox: Some(inbox), ..Default::default() });
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+            output.textures_delta.clear();
+        }
+        assert_eq!(app.session.documents().len(), 3);
+        for doc in app.session.documents() {
+            assert_eq!(doc.doc.stories.values().next().unwrap().text, "Imported தமிழ்");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn desktop_drop_opens_pgnr_and_legacy_documents() {
+        #[derive(Debug)]
+        struct Drop(std::path::PathBuf);
+        impl egui::DroppedFile for Drop {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                std::fs::read(&self.0).map_err(|e| e.to_string())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("pagenor-drop-extensions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = Session::new();
+        source.execute("file.new", &json!({"title": "Dropped"})).unwrap();
+        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc);
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        let ctx = egui::Context::default();
+        for ext in ["pgnr", "PGNR", "pagenor"] {
+            let path = dir.join(format!("Doc.{ext}"));
+            std::fs::write(&path, &bytes).unwrap();
+            let raw = egui::RawInput { dropped_files: vec![std::sync::Arc::new(Drop(path.clone()))], ..Default::default() };
+            let mut output = ctx.run_ui(raw, |ui| app.logic(ui.ctx()));
+            output.textures_delta.clear();
+            assert_eq!(app.session.doc().unwrap().path.as_deref(), path.to_str());
+        }
+        assert_eq!(app.session.documents().len(), 3);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn launch_splash_appears_with_or_without_documents_then_finishes_once() {

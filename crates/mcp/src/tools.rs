@@ -184,14 +184,14 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "open_document",
             "Open document",
-            "Open a .pagenor file as a new, active document.",
+            "Open a .pgnr file as a new, active document.",
             obj(json!({"path": string("File path")}), &["path"]),
             false,
         ),
         tool(
             "save_document",
             "Save document",
-            "Save the active document in the native .pagenor format.",
+            "Save the active document in the native .pgnr format.",
             obj(json!({"path": string("Destination (default: the document's current path)")}), &[]),
             false,
         ),

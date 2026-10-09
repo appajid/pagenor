@@ -189,7 +189,7 @@ impl Document {
             VarKind::ChapterNumber => self.settings.chapter_number.max(1).to_string(),
             VarKind::FileName { extension } => {
                 if *extension {
-                    format!("{}.pagenor", self.title)
+                    format!("{}.{}", self.title, crate::file_type::EXTENSION)
                 } else {
                     self.title.clone()
                 }
@@ -210,6 +210,13 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_name_variable_uses_the_native_extension() {
+        let mut doc = Document::new(&crate::build::NewDocument { title: "தமிழ் brochure".into(), ..Default::default() });
+        doc.text_variables = vec![TextVariable::new("File Name", VarKind::FileName { extension: true })];
+        assert_eq!(doc.variable_value(0, None).as_deref(), Some("தமிழ் brochure.pgnr"));
+    }
 
     #[test]
     fn dates() {

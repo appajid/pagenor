@@ -721,14 +721,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => {
-            let name = app.session.active().map(|d| format!("{}.pagenor", d.doc.title)).unwrap_or_default();
+            let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
                 return Some(app.run("file.saveAs", json!({"path": path})));
             }
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => {
-            let name = app.session.active().map(|d| format!("{} copy.pagenor", d.doc.title)).unwrap_or_default();
+            let name = app.session.active().map(|d| format!("{} copy.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
                 return Some(app.run("file.saveACopy", json!({"path": path})));
             }
@@ -1386,7 +1386,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
 
 /// Save by handing the serialized document to the host as a download (web).
 fn download_document(app: &mut DesignApp) -> Result<Value, String> {
-    let name = app.session.active().map(|d| format!("{}.pagenor", d.doc.title)).ok_or("no document")?;
+    let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).ok_or("no document")?;
     let ser = app.run("file.serialize", json!({}))?;
     let bytes = pagenor_engine::cmd::base64_decode(ser["base64"].as_str().unwrap_or_default());
     if let Some(download) = app.services.download.as_mut() {

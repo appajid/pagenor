@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P02.6: New native documents, copies, packages and web downloads default to
+  `.pgnr`. Shared extension detection keeps `.pagenor` and case variants readable;
+  saving an existing/explicit path preserves it. ZIP contents/version/MIME and
+  private recovery checkpoints are unchanged. Desktop filters and platform package
+  metadata recognize both extensions. Six new regressions and actual macOS Save
+  without a suffix/Open pass. Local gate: 854 passed, 3 ignored; 16 WASM packages,
+  Mac bundle and Windows/Linux strict UI-library checks pass. Native installer
+  and OS file-association validation awaits the milestone matrix.
+
 - P09.1: Desktop launch now shows the supplied splash artwork once for about
   1.2 seconds from its first UI frame, including launches with documents already
   opened or recovered. The transient shared UI state preserves documents and

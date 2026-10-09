@@ -113,7 +113,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                 name: "Graphics and text",
                 extensions: &[
                     "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps", "txt", "docx", "rtf", "md", "xlsx",
-                    "idml", "pagenor", "pagenor", "mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg",
+                    "idml", "pgnr", "pagenor", "mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg",
                 ],
             },
             OpenFilter {
@@ -124,8 +124,8 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "Pagenor, Pagenor or IDML", extensions: &["pagenor", "pagenor", "idml"] },
-            OpenFilter { name: "Pagenor", extensions: &["pagenor"] },
+            OpenFilter { name: "Pagenor or IDML", extensions: &["pgnr", "pagenor", "idml"] },
+            OpenFilter { name: "Pagenor", extensions: pagenor_engine::doc::file_type::EXTENSIONS },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
         ],
     }
@@ -140,7 +140,13 @@ fn services() -> Services {
             }
             dialog.pick_file().map(|p| p.to_string_lossy().to_string())
         })),
-        pick_save: Some(Box::new(|name: &str| rfd::FileDialog::new().set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string()))),
+        pick_save: Some(Box::new(|name: &str| {
+            let mut dialog = rfd::FileDialog::new().set_file_name(name);
+            if pagenor_engine::doc::file_type::is_native_name(name) {
+                dialog = dialog.add_filter("Pagenor", &[pagenor_engine::doc::file_type::EXTENSION]);
+            }
+            dialog.save_file().map(|p| p.to_string_lossy().to_string())
+        })),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok())),
@@ -246,11 +252,16 @@ mod tests {
         for ext in ["csv", "tsv", "tab", "txt", "xlsx"] {
             assert!(exts.contains(&ext), "{ext} is missing from the dataMerge dialog: {exts:?}");
         }
-        assert!(!exts.iter().any(|ext| *ext == "pagenor" || *ext == "idml"), "dataMerge must not fall through to the document filters: {exts:?}");
+        assert!(
+            !exts.iter().any(|ext| ["pgnr", "pagenor", "idml"].contains(ext)),
+            "dataMerge must not fall through to the document filters: {exts:?}"
+        );
         let place = super::open_filters("place");
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = super::open_filters("");
         assert!(documents.iter().any(|filter| filter.extensions.contains(&"pagenor")));
+        assert!(documents.iter().any(|filter| filter.extensions.contains(&"pgnr")));
+        assert!(place.iter().any(|filter| filter.extensions.contains(&"pgnr")));
     }
 }

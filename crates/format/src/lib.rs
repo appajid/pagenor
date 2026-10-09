@@ -1,4 +1,4 @@
-//! The native `.pagenor` format: a zip archive holding
+//! The native `.pgnr` format (previously `.pagenor`): a zip archive holding
 //!
 //! - `mimetype` (stored first, uncompressed): `application/vnd.pagenor+zip`
 //! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `pagenor-doc`)
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use pagenor_doc::{AssetId, Document};
 use serde_json::{Value, json};
 
-pub const MIME: &str = "application/vnd.pagenor+zip";
+pub use pagenor_doc::file_type::MIME;
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -42,7 +42,7 @@ fn ext_for(mime: &str) -> &'static str {
     }
 }
 
-/// Serialize a document to `.pagenor` bytes.
+/// Serialize a document to `.pgnr` bytes.
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let mut buf = Cursor::new(Vec::new());
@@ -72,7 +72,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     Ok(buf.into_inner())
 }
 
-/// Read `.pagenor` bytes (zip, or the legacy single JSON file).
+/// Read `.pgnr` / `.pagenor` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     if bytes.starts_with(b"PK") {
         return load_zip(bytes);

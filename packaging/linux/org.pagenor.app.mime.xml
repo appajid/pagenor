@@ -1,3 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.pagenor+zip">
+    <comment>Pagenor Document</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.pgnr" weight="80"/>
+    <glob pattern="*.pagenor" weight="60"/>
+    <icon name="org.pagenor.app"/>
+  </mime-type>
 </mime-info>

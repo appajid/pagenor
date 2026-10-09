@@ -143,7 +143,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
     let d = s.doc()?.doc.clone();
     let (packed, mut files) = write_links(&d, &dir.join("Links"), None)?;
-    let doc_path = dir.join(format!("{title}.pagenor"));
+    let doc_path = dir.join(format!("{title}.{}", pagenor_doc::file_type::EXTENSION));
     std::fs::write(&doc_path, super::to_bytes(&packed)).map_err(|e| EngineError::Other(format!("{}: {e}", doc_path.display())))?;
     files.insert(0, doc_path);
     // The font files, and what the report says about each font.
@@ -236,7 +236,7 @@ mod tests {
         let out = dir.join("Pkg");
         let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
         let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
-        assert!(files.iter().any(|f| f.ends_with(".pagenor")));
+        assert!(files.iter().any(|f| f.ends_with(".pgnr")));
         assert!(files.iter().any(|f| f.ends_with(".idml")));
         assert!(files.iter().any(|f| f.ends_with(".pdf")));
         assert!(out.join("Links").join("logo.svg").exists());
@@ -244,7 +244,7 @@ mod tests {
         assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
         assert!(report.contains("Preflight:"), "{report}");
         // The packaged document links to its Links folder.
-        let doc_file = files.iter().find(|f| f.ends_with(".pagenor")).unwrap();
+        let doc_file = files.iter().find(|f| f.ends_with(".pgnr")).unwrap();
         let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
         let link = packed.assets.values().next().unwrap().link.clone().unwrap();
         assert!(link.contains("Links"), "{link}");

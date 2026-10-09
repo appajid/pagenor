@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .pagenor or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
+            "{path} — .pgnr or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
             always, file_open),
         cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor JSON or an IDML package", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
@@ -43,7 +43,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p)?;
             Ok(json!({"opened": crate::recovery::open(s, &dir)?}))
         }),
-        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .pagenor file", has_doc, |s, _| {
+        cmd!(query "file.serialize", "Serialize", [], None, "{} → {base64, bytes} the .pgnr file", has_doc, |s, _| {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
@@ -60,7 +60,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(query "snippet.export", "Export Selection as Snippet", ["File", "Export"], None,
-            "{path?} — the selected items (with their stories, styles and images) as a .pagenor snippet; no path: {base64}", super::has_selection, snippet_export),
+            "{path?} — the selected items (with their stories, styles and images) as a .pgnr snippet; no path: {base64}", super::has_selection, snippet_export),
         cmd!(query "place.styles", "Import Options: Styles", [], None,
         "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
         has_doc, |s, p| {
@@ -100,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .pagenor: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .pgnr: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -254,7 +254,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // A page of another layout (IDML or Pagenor): its objects, as one group.
     let lname = name.to_lowercase();
-    if lname.ends_with(".idml") || lname.ends_with(".pagenor") {
+    if lname.ends_with(".idml") || pagenor_doc::file_type::is_native_name(&name) {
         return place_layout_page(s, p, &name, &bytes);
     }
     // EPS: shown and printed through its preview (or a placeholder) at its bounding box size.
@@ -485,7 +485,7 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// The selection as `.pagenor` snippet bytes.
+/// The selection as `.pgnr` snippet bytes.
 pub(crate) fn snippet_bytes(s: &mut Session) -> Result<Vec<u8>> {
     Ok(to_bytes(&super::edit::clip_doc(s)?))
 }
@@ -672,6 +672,29 @@ mod layout_place_tests {
     use crate::Session;
 
     #[test]
+    fn native_pgnr_and_legacy_layouts_open_place_and_keep_existing_save_paths() {
+        let dir = std::env::temp_dir().join(format!("pagenor-native-extensions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = Session::new();
+        source.execute("file.new", &json!({})).unwrap();
+        source.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Layout தமிழ்"})).unwrap();
+        for extension in ["pgnr", "PGNR", "pagenor"] {
+            let path = dir.join(format!("Layout.{extension}"));
+            source.execute("file.saveAs", &json!({"path": path})).unwrap();
+            let mut reopened = Session::new();
+            reopened.execute("file.open", &json!({"path": path})).unwrap();
+            assert_eq!(reopened.doc().unwrap().doc.stories.values().next().unwrap().text, "Layout தமிழ்");
+            reopened.execute("file.save", &json!({})).unwrap();
+            assert_eq!(reopened.doc().unwrap().path.as_deref(), path.to_str());
+            let mut placed = Session::new();
+            placed.execute("file.new", &json!({})).unwrap();
+            placed.execute("file.place", &json!({"path": path, "x": 72, "y": 72})).unwrap();
+            assert!(placed.doc().unwrap().doc.stories.values().any(|s| s.text == "Layout தமிழ்"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn place_a_page_of_an_idml_file_as_a_group() {
         let mut a = Session::new();
         a.execute("file.new", &json!({"pages": 2})).unwrap();
@@ -762,7 +785,7 @@ mod document_fonts_tests {
         let fonts = dir.join(DOCUMENT_FONTS_FOLDER);
         std::fs::write(fonts.join("open.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
         std::fs::write(fonts.join("broken.otf"), b"not a font").unwrap();
-        let path = dir.join("Brochure.pagenor");
+        let path = dir.join("Brochure.pgnr");
         write_document(&path, FAMILY);
         assert!(!FontDb::global().has_family(FAMILY));
 
