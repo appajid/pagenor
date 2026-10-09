@@ -108,6 +108,13 @@ JSON lines to `127.0.0.1:7979`. The app and clients use the same random
 `PAGENOR_CONTROL_TOKEN`; the app generates one if unset. The protocol is described in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 
+### Desktop logs
+
+Desktop diagnostics go to stderr and `logs/pagenor.log` beside the per-user settings.
+Each launch keeps two previous logs; each file is capped at 16 MiB. `RUST_LOG` controls
+levels (default `warn,pagenor*=info`). `--version` leaves logs untouched. See
+[locations, limits and behavior](docs/pagenor/DESKTOP_LOGGING.md).
+
 ### Web
 
 ```sh

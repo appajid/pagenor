@@ -267,3 +267,32 @@ broken diagnostic pipe causing a panic; capability tokens are not passed to a lo
 Regression tests exercise actual loopback transport, auth-before-UI delivery, queue
 pressure, lost replies/reconnection and pointer-event bounds. Validation and remaining
 platform scope are recorded in [control hardening](docs/pagenor/CONTROL_HARDENING.md).
+
+
+## Desktop logging adaptation — P00.6 (2026-10-09)
+
+Adapted [upstream #122](https://github.com/storytold/designcraft/pull/122), by
+@switch87, at verified head `36255f16979853d795370d1130be4c18affd4819`.
+Its logging implementation originates in `4f2595500207de49382851b275da15e23f9aa99e`;
+Git records Gert Pellin as the author of both commits. All three inspected source-file
+blob identities match the pinned head. Original MIT OR Apache-2.0 licences and
+copyright remain applicable; no contributor registry/profile changes are made.
+
+The logger and selected desktop/README integration are adapted with Pagenor names
+and existing settings paths. Timestamped records go to stderr and a current log,
+with two previous launch logs. No new dependency is introduced. Pagenor keeps
+control off by default, token announcements out of the file logger, its current
+recovery/clipboard architecture, lazy document-scoped fonts, branding and `.pgnr`.
+The upstream environment-port shortcut is omitted; invalid explicit control ports
+are diagnosed without echoing supplied values. The existing engine panic hook is
+retained, with the desktop logger installed before it.
+
+Local additions cap individual record formatting and aggregate pending bytes,
+include the cap notice within the file byte budget, stop buffering after file
+failures, flush the sink and preserve UTF-8 boundaries. New Unix diagnostic files
+are private; exclusive creation avoids truncating a file appearing after rotation.
+Startup/open/final-recovery errors use the logger, while unavailable storage falls
+back to safe stderr. Tests cover closed stderr, fresh-process rotation, the existing
+panic hook and control-token exclusion, as well as deterministic file failures.
+[Behavior and local evidence](docs/pagenor/DESKTOP_LOGGING.md) distinguish production
+logger cross-compilation from deferred native platform execution.

@@ -5,6 +5,14 @@
   claimed as tested. Existing native font support is retained; other font
   lifecycle, platform and Indic validation tasks remain open.
 
+- P00.6: Adapted upstream #122 for desktop stderr and rotating diagnostic logs,
+  retaining settings paths, control authentication/off-by-default and existing
+  panic/recovery hooks. Record, pending-byte and file caps handle storage failures
+  safely; tokens bypass file logging. Fresh-process closed-stderr, rotation and
+  token-exclusion tests pass. All seven local gates pass: 1,282 tests, 3 ignored;
+  20 WASM packages. Production logger-only Windows/Linux strict Clippy passes;
+  native platform execution remains a milestone check. [Scope and evidence](docs/pagenor/DESKTOP_LOGGING.md).
+
 - P00.5: Adapted upstream #151 for authenticated desktop control, loopback-only
   clients and bounded framing, connections, requests, UI queue and pointer work.
   Automation remains off by default. Lost replies never replay document edits;

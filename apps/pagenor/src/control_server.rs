@@ -34,7 +34,7 @@ pub fn start(port: u16, ctx: egui::Context) -> Result<Receiver<ControlRequest>, 
     let (token, generated) = control_token()?;
     let (tx, rx) = sync_channel::<ControlRequest>(MAX_PENDING_REQUESTS);
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("failed to bind 127.0.0.1:{port}: {e}"))?;
-    let _ = writeln!(std::io::stderr(), "pagenor: authenticated control server listening on 127.0.0.1:{port}");
+    log::info!("authenticated control server listening on 127.0.0.1:{port}");
     if generated {
         let _ = writeln!(std::io::stderr(), "pagenor: control token: {token}");
         let _ = writeln!(std::io::stderr(), "pagenor: set {TOKEN_ENV} to this token in clients");
@@ -83,7 +83,7 @@ fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui:
             Ok(stream) => stream,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
-                let _ = writeln!(std::io::stderr(), "pagenor: control listener stopped: {e}");
+                log::warn!("control listener stopped: {e}");
                 break;
             }
         };
@@ -99,7 +99,7 @@ fn accept_loop(listener: TcpListener, tx: SyncSender<ControlRequest>, ctx: egui:
             let _slot = slot;
             serve(stream, &tx, &ctx, &token);
         }) {
-            let _ = writeln!(std::io::stderr(), "pagenor: could not serve control connection: {e}");
+            log::warn!("could not serve control connection: {e}");
         }
     }
 }

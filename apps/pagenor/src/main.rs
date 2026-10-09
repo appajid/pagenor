@@ -11,6 +11,7 @@
 mod control_server;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
+mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
 
@@ -41,14 +42,15 @@ impl eframe::App for App {
     }
     fn on_exit(&mut self) {
         if let Err(e) = self.0.prepare_shutdown() {
-            eprintln!("Final recovery failed during termination: {e}");
+            log::error!("Final recovery failed during termination: {e}");
         }
         save_prefs(&self.0);
     }
 }
 
-fn prefs_path() -> Option<std::path::PathBuf> {
-    let base = if cfg!(target_os = "macos") {
+/// Per-user UI/preferences and diagnostics directory, using the existing platform paths.
+fn config_dir() -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
         std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/Pagenor"))
     } else if cfg!(windows) {
         std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Pagenor"))
@@ -57,8 +59,11 @@ fn prefs_path() -> Option<std::path::PathBuf> {
             .map(std::path::PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
             .map(|c| c.join("pagenor"))
-    };
-    base.map(|b| b.join("ui.json"))
+    }
+}
+
+fn prefs_path() -> Option<std::path::PathBuf> {
+    config_dir().map(|b| b.join("ui.json"))
 }
 
 fn load_prefs(app: &mut DesignApp) {
@@ -176,20 +181,46 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(bytes).ok()
 }
 
+/// Malformed values keep automation disabled. Do not echo a supplied value into diagnostics.
+fn control_port_from(value: Option<String>) -> Option<u16> {
+    match value.and_then(|value| value.trim().parse().ok()) {
+        Some(port) => Some(port),
+        None => {
+            log::warn!("--control needs a valid port number; the control channel is off");
+            None
+        }
+    }
+}
+
 fn main() -> eframe::Result {
+    // Capture startup and the existing engine panic/recovery diagnostics.
+    let logger = logging::install();
     let mut control_port: Option<u16> = None; // Pagenor: local automation OFF by default
     let mut files = Vec::new();
     let mut sample = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
+            "--control" => control_port = control_port_from(args.next()),
             "--sample" => sample = true,
             "--version" => {
                 println!("pagenor {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             _ => files.push(a),
+        }
+    }
+    // `--version` returns above without rotating or creating diagnostic files.
+    if let Some(logger) = logger {
+        match config_dir() {
+            Some(dir) => match logger.attach_dir(&dir.join("logs")) {
+                Ok(path) => log::info!("Pagenor {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+                Err(error) => log::warn!("no log file: {error}"),
+            },
+            None => {
+                logger.disable_file();
+                log::warn!("no settings directory; diagnostics use standard error only");
+            }
         }
     }
     let mut options = eframe::NativeOptions {
@@ -219,7 +250,7 @@ fn main() -> eframe::Result {
             b.with_x11();
         }));
     }
-    eframe::run_native(
+    let result = eframe::run_native(
         "Pagenor",
         options,
         Box::new(move |cc| {
@@ -237,8 +268,7 @@ fn main() -> eframe::Result {
                 match control_server::start(port, cc.egui_ctx.clone()) {
                     Ok(rx) => app = app.with_control(rx),
                     Err(error) => {
-                        use std::io::Write as _;
-                        let _ = writeln!(std::io::stderr(), "pagenor: control server: {error}");
+                        log::warn!("control server unavailable: {error}");
                         app.status(format!("Control server unavailable: {error}"));
                     }
                 }
@@ -248,7 +278,7 @@ fn main() -> eframe::Result {
             }
             for f in files {
                 if let Err(e) = app.open_file("file.open", serde_json::json!({"path": f})) {
-                    eprintln!("pagenor: {f}: {e}");
+                    log::error!("Open {f}: {e}");
                 }
             }
             Ok(Box::new(App(
@@ -257,11 +287,25 @@ fn main() -> eframe::Result {
                 None,
             )))
         }),
-    )
+    );
+    if let Err(error) = &result {
+        log::error!("Desktop startup failed: {error}");
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_port_values_that_are_not_ports_keep_automation_disabled() {
+        assert_eq!(super::control_port_from(Some("7979".into())), Some(7979));
+        assert_eq!(super::control_port_from(Some(" 7979 ".into())), Some(7979));
+        assert_eq!(super::control_port_from(None), None);
+        for bad in ["", "abc", "-1", "65536", "99999999999999999999"] {
+            assert_eq!(super::control_port_from(Some(bad.into())), None);
+        }
+    }
+
     #[test]
     fn relink_open_dialog_lists_graphics() {
         let filters = super::open_filters("relink");
