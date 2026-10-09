@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P09.5: Adapted closed #54 with native AI services, persisted review records,
+  docked/floating Chat/Suggestions/Settings and proofreading, acceptance, undo
+  and report controls. Pagenor format 3 and scoped document fonts stay. Input,
+  record, request and worker bounds preserve documents on errors; secrets use
+  platform credential storage. All seven local gates pass: 1,249 tests, 3 ignored,
+  20 WASM packages. CPU pointer review/undo and save/reopen/report checks pass.
+  Live account and native Windows/Linux execution
+  remain unverified. Cross-builds for this group require C toolchains absent on
+  this Mac. [Behavior and limits](docs/ai-assistant.md).
+
 - P08.2: Adapted #98 as a standalone INDD subset reader feeding the existing
   IDML importer. Open/Place filters and visible warnings preserve stable import
   targets, document fonts and .pgnr. Bounded input/model/XML handling retains

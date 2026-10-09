@@ -2266,6 +2266,7 @@ impl<'r> Importer<'r> {
         self.settings.lists = std::mem::take(&mut self.lists);
         // Make sure built-in paragraph styles exist and are first.
         let d = Document {
+            ai: None,
             title,
             settings: self.settings.clone(),
             spreads: std::mem::take(&mut self.spreads).into_iter().map(Arc::new).collect(),

@@ -13,6 +13,7 @@ repository = "https://github.com/appajid/pagenor"
 [workspace.dependencies]
 # internal
 pagenor-archive = { path = "crates/archive" }
+pagenor-ai = { path = "crates/ai" }
 pagenor-geom = { path = "crates/geom" }
 pagenor-color = { path = "crates/color" }
 pagenor-doc = { path = "crates/doc" }

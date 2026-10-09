@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod about;
+pub mod ai;
 pub mod canvas;
 pub mod chrome;
 pub mod control;
@@ -117,6 +118,7 @@ fn default_zone() -> f64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    pub ai: ai::WindowState,
     pub brightness: theme::Brightness,
     pub screen_mode: ScreenMode,
     pub frame_edges: bool,
@@ -233,6 +235,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            ai: ai::WindowState::default(),
             brightness: theme::Brightness::MediumDark,
             screen_mode: ScreenMode::Normal,
             frame_edges: true,
@@ -405,6 +408,7 @@ pub struct Perf {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    pub ai: ai::Assistant,
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
@@ -463,6 +467,7 @@ impl DesignApp {
         pagenor_fonts::FontDb::global().scan_in_background();
         DesignApp {
             pending_pdf: None,
+            ai: ai::Assistant::default(),
             session,
             ui: UiState::default(),
             services,
@@ -561,6 +566,11 @@ impl DesignApp {
             }
         }
 
+        if ai::busy(self)
+            && matches!(id, "ai.suggestion.accept" | "ai.suggestion.acceptAll" | "ai.suggestion.reject" | "ai.records.clear" | "ai.chat.clear")
+        {
+            return Err("Stop the current AI task first.".into());
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
@@ -771,6 +781,7 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        ai::poll(self, ctx);
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {
@@ -1033,6 +1044,7 @@ impl DesignApp {
                 toolbar::show(self, ui);
             }
             if self.ui.hidden_panels == 0 {
+                ai::docked(self, ui);
                 dock::show(self, ui);
             }
         }
@@ -1117,6 +1129,7 @@ impl DesignApp {
         }
         dock::flyout(self, &ctx);
         dock::floating(self, &ctx);
+        ai::floating(self, &ctx);
         story_editor::show(self, &ctx);
         dialogs::show(self, &ctx);
         about::show(self, &ctx);

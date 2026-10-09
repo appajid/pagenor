@@ -11,6 +11,7 @@ description = "Pagenor engine: session, documents, history, selection, command r
 workspace = true
 
 [dependencies]
+pagenor-ai = { workspace = true }
 pagenor-images = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }

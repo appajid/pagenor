@@ -224,3 +224,17 @@ bound actual input/name reads, style inheritance, model traversal, text/attribut
 and generated XML pieces. No Adobe application bundle or actual Adobe-produced
 fixture is copied. Tests construct synthetic documents in Rust; real-file version
 breadth/fidelity remains unverified. [Supported subset](docs/indd.md).
+
+## AI assistant and review backend — P09.5 (2026-10-09)
+
+Adapted closed [#54](https://github.com/storytold/designcraft/pull/54), by
+@ShaoWenbinSaleh, at inspected head
+`21681fb3379ca55ef1c7498ecd19a8f74b16178f`. Original MIT OR Apache-2.0 licences
+and copyright remain applicable. Provider services are L2, persisted review data
+L1 and the UI/worker bridge L6. Pagenor keeps its current format version 3,
+document-scoped fonts, import targets, clipboard bridge, owner branding and
+contributor metadata. Upstream packaging changes, live examples and claims are
+omitted. Local additions bound persisted input, requests, models, workers and
+reports; preserve transaction/history on errors; share rebased snapshots; and
+retain provider model labels and plan-use disclosure. Actual provider and native
+Windows/Linux credential execution remain unverified. [Scope](docs/ai-assistant.md).

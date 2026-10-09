@@ -106,18 +106,28 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {
             let st = s.doc_mut()?;
-            let e = st.history.undo.pop().ok_or_else(|| super::bad("edit.undo", "nothing to undo"))?;
+            let e = st.history.undo.last().cloned().ok_or_else(|| super::bad("edit.undo", "nothing to undo"))?;
+            let mut restored = (*e.doc).clone();
+            if !matches!(e.label.as_str(), "New AI Conversation" | "Clear AI Records") {
+                super::ai::preserve_records(&mut restored, &st.doc)?;
+            }
+            st.history.undo.pop();
             st.history.redo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
-            st.doc = e.doc;
+            st.doc = if restored.ai == e.doc.ai { e.doc } else { Arc::new(restored) };
             st.selection = e.selection;
             st.revision += 1;
             Ok(json!({"undone": e.label}))
         }),
         cmd!(noundo "edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| {
             let st = s.doc_mut()?;
-            let e = st.history.redo.pop().ok_or_else(|| super::bad("edit.redo", "nothing to redo"))?;
+            let e = st.history.redo.last().cloned().ok_or_else(|| super::bad("edit.redo", "nothing to redo"))?;
+            let mut restored = (*e.doc).clone();
+            if !matches!(e.label.as_str(), "New AI Conversation" | "Clear AI Records") {
+                super::ai::preserve_records(&mut restored, &st.doc)?;
+            }
+            st.history.redo.pop();
             st.history.undo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
-            st.doc = e.doc;
+            st.doc = if restored.ai == e.doc.ai { e.doc } else { Arc::new(restored) };
             st.selection = e.selection;
             st.revision += 1;
             Ok(json!({"redone": e.label}))
@@ -266,6 +276,8 @@ pub fn specs() -> Vec<CommandSpec> {
 pub(crate) fn clip_doc(s: &Session) -> Result<pagenor_doc::Document> {
     let st = s.doc()?;
     let mut d = (*st.doc).clone();
+    // A copied object/snippet must not carry the source document's private chat.
+    d.ai = None;
     let keep: Vec<ItemId> = st.selection.items.clone();
     // Gather the selected items (keep their spread coordinates) into spread 0.
     let mut items = Vec::new();

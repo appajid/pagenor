@@ -9,6 +9,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+pub mod ai;
 pub mod anchored;
 pub mod arabic;
 pub mod arrow;
@@ -453,6 +454,8 @@ fn is_zero(v: &u32) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Document {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<Arc<ai::AiDocument>>,
     pub title: String,
     pub settings: DocSettings,
     pub spreads: Vec<Arc<Spread>>,
@@ -704,6 +707,9 @@ impl Document {
             if t.overrides.iter().any(|r| ![r.minimum, r.desired, r.maximum].iter().all(|v| v.is_finite())) {
                 return Err(DocError::Invalid(format!("non-finite mojikumi spacing: {}", t.name)));
             }
+        }
+        if let Some(ai) = &self.ai {
+            ai.check()?;
         }
         let mut ids = std::collections::HashSet::new();
         for sp in self.spreads.iter().chain(self.parents.iter()) {

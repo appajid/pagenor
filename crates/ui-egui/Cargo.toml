@@ -11,6 +11,7 @@ description = "Pagenor egui frontend (InDesign-style UI); swappable — nothing 
 workspace = true
 
 [dependencies]
+pagenor-ai = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }

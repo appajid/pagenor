@@ -87,6 +87,9 @@ fn ext_for(mime: &str) -> &'static str {
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let meta = json!({"format": "pagenor", "version": VERSION, "generator": concat!("Pagenor ", env!("CARGO_PKG_VERSION"))}).to_string();
+    if let Some(ai) = &doc.ai {
+        ai.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
+    }
     let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
     validate_save_parts(json.len(), meta.len(), doc.assets.values().filter(|a| !a.data.is_empty()).map(|a| a.data.len()), SAVE_LIMITS)?;
     let mut buf = Cursor::new(Vec::new());
