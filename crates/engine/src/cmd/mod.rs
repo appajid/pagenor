@@ -291,7 +291,7 @@ pub(crate) fn ok() -> Result<Value> {
     Ok(Value::Null)
 }
 
-pub fn file_bytes(d: &pagenor_doc::Document) -> Vec<u8> {
+pub fn file_bytes(d: &pagenor_doc::Document) -> Result<Vec<u8>> {
     file::to_bytes(d)
 }
 pub fn file_from(b: &[u8]) -> Result<pagenor_doc::Document> {

@@ -25,7 +25,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?.to_string();
-            let bytes = to_bytes(&s.doc()?.doc);
+            let bytes = to_bytes(&s.doc()?.doc)?;
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
@@ -47,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
-            let bytes = to_bytes(doc);
+            let bytes = to_bytes(doc)?;
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
@@ -107,8 +107,8 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-pub fn to_bytes(d: &Document) -> Vec<u8> {
-    pagenor_format::save(d).unwrap_or_default()
+pub fn to_bytes(d: &Document) -> Result<Vec<u8>> {
+    pagenor_format::save(d).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
@@ -219,17 +219,17 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         .map(str::to_string)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
-    {
-        let mut d = (*st.doc).clone();
-        super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
-        if d.data_merge != st.doc.data_merge {
-            st.doc = Arc::new(d);
-            st.revision = st.revision.saturating_add(1);
-        }
-    }
-    let bytes = to_bytes(&st.doc);
+    // Prepare the new relative paths without changing the live document. Serialization or
+    // writing can fail; only a successful save commits these paths and the saved state.
+    let mut d = (*st.doc).clone();
+    super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
+    let bytes = to_bytes(&d)?;
     #[cfg(not(target_arch = "wasm32"))]
     std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    if d.data_merge != st.doc.data_merge {
+        st.doc = Arc::new(d);
+        st.revision = st.revision.saturating_add(1);
+    }
     st.path = Some(path.clone());
     st.saved_revision = st.revision;
     st.saved_doc = st.doc.clone();
@@ -487,12 +487,12 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The selection as `.pgnr` snippet bytes.
 pub(crate) fn snippet_bytes(s: &mut Session) -> Result<Vec<u8>> {
-    Ok(to_bytes(&super::edit::clip_doc(s)?))
+    to_bytes(&super::edit::clip_doc(s)?)
 }
 
 fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
     let d = super::edit::clip_doc(s)?;
-    let bytes = to_bytes(&d);
+    let bytes = to_bytes(&d)?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -917,5 +917,90 @@ mod document_fonts_tests {
         assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
         assert!(glyph_faces(&s).iter().all(|(_, f)| f.family == FAMILY));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod serialization_failure_tests {
+    use super::*;
+    use pagenor_doc::{Asset, AssetId};
+
+    #[test]
+    fn refused_native_save_never_replaces_a_file_with_empty_bytes() {
+        let dir = std::env::temp_dir().join(format!("pagenor-refused-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("existing.pgnr");
+        let old = b"synthetic existing file";
+        std::fs::write(&path, old).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 100, 100], "content": "text", "text": "Keep me"})).unwrap();
+        let csv = dir.join("source.csv");
+        std::fs::write(&csv, b"Name\nSynthetic record\n").unwrap();
+        s.execute("data.source.select", &json!({"path": csv.to_string_lossy()})).unwrap();
+        let recovery_dir = dir.join("recovery");
+        crate::recovery::save(&s, &recovery_dir).unwrap();
+        let snapshots = || {
+            let mut files: Vec<_> = std::fs::read_dir(&recovery_dir)
+                .unwrap()
+                .map(|e| {
+                    let e = e.unwrap();
+                    (e.file_name(), std::fs::read(e.path()).unwrap())
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let checkpoint = snapshots();
+        {
+            let st = s.doc_mut().unwrap();
+            st.path = Some("original.pgnr".into());
+            let d = Arc::make_mut(&mut st.doc);
+            for i in 0..4094 {
+                let id = AssetId(d.alloc());
+                d.assets.insert(
+                    id,
+                    Arc::new(Asset {
+                        id,
+                        page: 0,
+                        name: format!("asset-{i}"),
+                        mime: "application/octet-stream".into(),
+                        link: None,
+                        data: Arc::new(vec![1]),
+                        pixels: None,
+                    }),
+                );
+            }
+        }
+        let saved_revision = s.doc().unwrap().saved_revision;
+        let saved_doc = s.doc().unwrap().saved_doc.clone();
+        let current_doc = s.doc().unwrap().doc.clone();
+        for command in ["file.saveACopy", "file.saveAs", "file.save"] {
+            assert!(s.execute(command, &json!({"path": path.to_string_lossy()})).is_err(), "{command} must fail");
+            assert_eq!(std::fs::read(&path).unwrap(), old, "{command} must preserve existing bytes");
+            let st = s.doc().unwrap();
+            assert_eq!(st.path.as_deref(), Some("original.pgnr"));
+            assert_eq!(st.saved_revision, saved_revision);
+            assert!(Arc::ptr_eq(&st.saved_doc, &saved_doc));
+            assert!(Arc::ptr_eq(&st.doc, &current_doc));
+            assert!(st.is_dirty());
+        }
+        assert!(s.execute("file.serialize", &json!({})).is_err());
+        assert!(crate::recovery::save(&s, &recovery_dir).is_err());
+        assert_eq!(snapshots(), checkpoint, "a refused checkpoint must retain the last valid recovery files");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn refused_native_open_preserves_the_active_document_and_edits() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 100, 100], "content": "text", "text": "Keep me 😀"})).unwrap();
+        let original = s.doc().unwrap().doc.clone();
+        let uid = s.doc().unwrap().uid;
+        assert!(s.execute("file.openBytes", &json!({"name": "broken.pgnr", "base64": base64_encode(b"PK damaged archive")})).is_err());
+        assert_eq!(s.documents().len(), 1);
+        assert_eq!(s.doc().unwrap().uid, uid);
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &original));
+        assert!(s.doc().unwrap().is_dirty());
     }
 }

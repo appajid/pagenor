@@ -38,3 +38,23 @@ and `.pgnr` naming. These are selected patches, not a whole-branch merge.
 | [#117](https://github.com/storytold/designcraft/pull/117) | @skylartaylor | `8662526736d8ee0c08ac61c472fac6fd5c8b317b` | Browser-safe Print, decoded startup flags and canonical MIME; retain .pgnr and legacy naming. |
 | [#115](https://github.com/storytold/designcraft/pull/115) | @IHAGI-c | `36000e75f558da674b6f593af29b79cf6e565b93` | No-break hyphenation guard and regression. |
 | [#111](https://github.com/storytold/designcraft/pull/111) | @aiongg | `ed3e8ba8c3921ae104cf3b2731650fa9fb89a825` | Forward macOS native Edit commands to focused fields; preserve document commands otherwise. |
+
+## Bounded import/save adaptation — P00.3 (2026-10-09)
+
+Adapted [upstream #154](https://github.com/storytold/designcraft/pull/154), by
+@skylartaylor, at inspected head `9cb07a99641c432653a386e5f3e0eb3b8e88b160`.
+All 14 source-file blob identities match the pinned head. The MIT OR Apache-2.0
+licences and original copyright remain applicable.
+
+The port adds the standalone L0 `pagenor-archive` preflight, native format and
+DOCX/XLSX input/output budgets, linear bounded style inheritance and the shared
+quick-xml 0.41 compatibility change. Pagenor preserves `.pgnr`/legacy reading,
+current MIME, document-font scopes and owned recovery checkpoints.
+
+Local additions reject multiple XML roots, budget padded Word-table cells,
+reject duplicate ZIP entries/ambiguous asset IDs, account for actual cumulative
+native reads and compare future format versions without narrowing. The engine
+now propagates serialization errors through save/copy/serialize/snippet/book/
+package callers; failed save preparation leaves live relative paths and saved
+state unchanged. No package-path rewrite or IDML archive/resource confinement
+from #155/#156 is implied. See [limits and scope](docs/pagenor/IMPORT_LIMITS.md).

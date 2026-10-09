@@ -1166,7 +1166,7 @@ mod tests {
         let mut source = Session::new();
         source.execute("file.new", &json!({})).unwrap();
         source.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Imported தமிழ்"})).unwrap();
-        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc);
+        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc).unwrap();
         let inbox = Inbox::default();
         for name in ["New.pgnr", "Upper.PGNR", "Legacy.pagenor"] {
             inbox.lock().unwrap().push((name.into(), bytes.clone()));
@@ -1200,7 +1200,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut source = Session::new();
         source.execute("file.new", &json!({"title": "Dropped"})).unwrap();
-        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc);
+        let bytes = pagenor_engine::cmd::to_bytes(&source.doc().unwrap().doc).unwrap();
         let mut app = DesignApp::new(Session::new(), Services::default());
         let ctx = egui::Context::default();
         for ext in ["pgnr", "PGNR", "pagenor"] {

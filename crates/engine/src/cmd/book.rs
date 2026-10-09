@@ -52,7 +52,7 @@ fn load(path: &str) -> Result<pagenor_doc::Document> {
 
 fn store(path: &str, d: &pagenor_doc::Document) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    return std::fs::write(path, super::file::to_bytes(d)).map_err(|e| EngineError::Other(format!("{path}: {e}")));
+    return std::fs::write(path, super::file::to_bytes(d)?).map_err(|e| EngineError::Other(format!("{path}: {e}")));
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (path, d);

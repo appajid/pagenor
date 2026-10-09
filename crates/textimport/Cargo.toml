@@ -11,6 +11,7 @@ description = "Pagenor text import: plain text, Word (.docx) and RTF into storie
 workspace = true
 
 [dependencies]
+pagenor-archive = { workspace = true }
 pagenor-doc = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }

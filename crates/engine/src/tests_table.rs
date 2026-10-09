@@ -170,7 +170,7 @@ fn file_roundtrip_keeps_tables() {
     s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
     s.execute("text.insert", &json!({"text": "A1"})).unwrap();
     let d = s.doc().unwrap().doc.clone();
-    let bytes = crate::cmd::file_bytes(&d);
+    let bytes = crate::cmd::file_bytes(&d).unwrap();
     let back = crate::cmd::file_from(&bytes).unwrap();
     back.check().unwrap();
     let st = back.story(pagenor_doc::StoryId(sid)).unwrap();

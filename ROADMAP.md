@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+- P00.3: Adapted upstream #154 for bounded ZIP/ZIP64, native and Office
+  import/output processing, with matching native save limits and XML 0.41
+  compatibility. Added padded-table/root/duplicate/read guards and propagated
+  native serialization errors before writes; failed save/recovery checks retain
+  existing files, document state and checkpoints. Full local gate: 907 passed,
+  3 ignored; 17 WASM packages and Windows/Linux strict UI-library checks pass.
+  Import limits and remaining streaming,
+  package-path and IDML confinement work are recorded in
+  [the policy](docs/pagenor/IMPORT_LIMITS.md). Cross-platform native execution
+  and actual Adobe/dongle validation remain pending; no milestone exit/push.
+
 - P00.2: Triaged 53 open upstream PRs and adapted reliability changes from 12,
   with pinned revisions/attribution and a decision register. Fixes cover no-break
   composition, UTF-16 imports, count bounds, damaged-image PDF export, unsaved

@@ -1,8 +1,8 @@
-# Upstream pull-request integration review — P00.2
+# Upstream pull-request integration review — P00.2 / P00.3
 
 Snapshot: 2026-10-09; 53 open pull requests retrieved through GitHub’s API. The public HTML page was older than the API snapshot. This is a bounded snapshot, not a monitor or a claim about future changes. Open PRs are proposals, not upstream releases.
 
-Twelve PRs contribute this local batch. Source patches and regressions were inspected for the adopted changes; the remaining proposals were triaged by their descriptions, changed files, dependencies and conflict with Pagenor work. This table does not claim a full implementation/security audit of every deferred branch. Larger feature branches remain candidates, not automatically rejected.
+Twelve PRs contribute the initial P00.2 batch. P00.3 subsequently adds #154 with the adaptations recorded in provenance and the import-limits note. Source patches and regressions were inspected for the adopted changes; the remaining proposals were triaged by their descriptions, changed files, dependencies and conflict with Pagenor work. This table does not claim a full implementation/security audit of every deferred branch. Larger feature branches remain candidates, not automatically rejected.
 
 Pagenor keeps its product names, owner artwork, `.pgnr` default/legacy compatibility, shared Rust layers and `unsafe_code = "forbid"`. Native font sources and recovery state are not replaced. Dot-prefixed families are omitted from pickers per the owner’s updated preference, while backend lookup remains available. No contributor profiles or upstream instruction changes were copied. No GitHub publishing or remote CI is performed.
 
@@ -18,7 +18,7 @@ Pagenor keeps its product names, owner artwork, `.pgnr` default/legacy compatibi
 | [#168](https://github.com/storytold/designcraft/pull/168) | Fix Windows startup crash by defaulting to DirectX 12 | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
 | [#156](https://github.com/storytold/designcraft/pull/156) | Confine IDML resources and bound package parsing | Not adopted in this batch | Draft, depends on #154. Rejects external IDML resources on non-Unix hosts; unsuitable unchanged for the required Windows workflow. |
 | [#155](https://github.com/storytold/designcraft/pull/155) | Validate engine work counts and package filenames | Not adopted in this batch | Recommended next hardening; larger package path/atomic output rewrite overlaps P02.6 .pgnr output. Integrate with package cross-platform path tests. |
-| [#154](https://github.com/storytold/designcraft/pull/154) | Bound native and Office document parsing | Not adopted in this batch | Recommended next hardening; adds an archive layer and quick-xml upgrade touching native/DOCX/XLSX/IDML. Requires coordinated compatibility integration. |
+| [#154](https://github.com/storytold/designcraft/pull/154) | Bound native and Office document parsing | Adopted in P00.3 | Shared bounded ZIP/native/Office parsing and matching save limits; quick-xml compatibility tested. Adds Pagenor table/duplicate/root/read budgets and save-error propagation. See IMPORT_LIMITS.md. |
 | [#153](https://github.com/storytold/designcraft/pull/153) | Harden temporary files and release inputs | Not adopted in this batch | Recommended next hardening; recovery rewrite overlaps P02.2–P02.4 owned entries/retained snapshots. Port without replacing tested recovery semantics; release inputs separately. |
 | [#152](https://github.com/storytold/designcraft/pull/152) | Apply contextual escaping to HTML and EPUB exports | Adopted with Pagenor adaptation | Independent reliability fix adapted to Pagenor names/current architecture; source and regression tests reviewed. |
 | [#151](https://github.com/storytold/designcraft/pull/151) | Harden the authenticated control channel | Not adopted in this batch | Recommended next hardening; token/framing changes need desktop/CLI/MCP parity. Preserve Pagenor’s automation-off-by-default configuration. |
@@ -71,3 +71,17 @@ Selected PR heads/authors and adaptation details are recorded in `PAGENOR_UPSTRE
 Before adaptation, synthetic tests reproduced the composition panic, supplementary-character loss in both RTF and Tagged Text, and damaged-image PDF failure. Those regressions now pass. The selected 12 head commits were fetched and all 44 source-file blob identities matched the inspected API patches.
 
 CPU-rendered unsaved-close and shared font-menu layouts were inspected. The actual macOS font picker displayed search, favourites and previews; a native input sequence was interrupted by app-state guards, so native keyboard/accelerator delivery remains unverified. The GPU offscreen renderer could not obtain an adapter; the CPU images are headless verification, not native screenshots. An initial focused build exhausted disk space; removing only generated incremental caches allowed the complete gate to pass. No user documents or recovery files were removed. Actual Adobe/dongle activation testing stays pending, as requested.
+
+## P00.3 follow-up validation
+
+The full local gate passes all seven steps: 907 tests passed, 0 failed, 3 ignored
+(24 net additional tests), and 17 WASM packages compile. Windows/Linux strict
+UI-library Clippy checks pass. The new archive
+foundation and native/DOCX/XLSX budgets are covered by synthetic regressions;
+26 existing IDML compatibility tests pass after XML-library unification.
+Native save/error/recovery regressions preserve bytes and session state.
+[Import limits and scope](IMPORT_LIMITS.md) record the 512 MiB initial archive
+policy and the remaining host-buffering, streaming, package and IDML tasks.
+A test compilation initially exhausted disk space; generated caches/examples
+were removed only. A Unicode fixture's numeric reference was corrected before
+the final gate. Deferred PRs remain candidates; no GitHub push or phase exit.
