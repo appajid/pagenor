@@ -33,6 +33,22 @@ impl Dialog {
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "textFrameOptions" => json!({"columns": 1, "gutter": "1p0", "inset": "0p0", "verticalJustification": "top"}),
             "documentSetup" => json!({}),
+            "pdfExport" => {
+                json!({
+                    "preset": "High Quality Print",
+                    "standard": "none",
+                    "compressImages": false,
+                    "flatten": "",
+                    "spreads": false,
+                    "bleed": true,
+                    "marksCrop": false,
+                    "marksBleed": false,
+                    "marksPageInfo": false,
+                    "marksWeight": "0.25",
+                    "marksOffset": "6",
+                    "tagged": true
+                })
+            }
             _ => json!({}),
         };
         if let Value::Object(d) = defaults {
@@ -161,27 +177,34 @@ fn keyboard_shortcuts(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if !recording.is_empty() {
         let pressed = ui.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                egui::Event::Key { key, pressed: true, modifiers, repeat, .. } => Some((*key, *modifiers, *repeat)),
                 _ => None,
             })
         });
-        if let Some((key, m)) = pressed {
-            let sc = match key {
-                egui::Key::Escape => None,
-                egui::Key::Backspace if !m.any() => Some(String::new()),
-                _ => Some(crate::menus::shortcut_string(m, key)),
-            };
-            if let Some(sc) = sc {
-                let msg = match app.run("window.setShortcut", json!({"id": recording, "shortcut": sc})) {
-                    Ok(v) => match v["conflicts"].as_array().filter(|c| !c.is_empty()) {
-                        Some(c) => format!("Also used by: {}", c.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")),
-                        None => String::new(),
-                    },
-                    Err(e) => e,
+        if let Some((key, m, repeat)) = pressed {
+            // Captured keys belong to the recorder, including Enter/Escape. Modifier-only
+            // events leave recording active; a held key's repeat never chooses a binding.
+            ui.input_mut(|i| {
+                i.consume_key(m, key);
+            });
+            if !repeat {
+                let sc = match key {
+                    egui::Key::Escape => None,
+                    egui::Key::Backspace if !m.any() => Some(String::new()),
+                    _ => Some(crate::menus::shortcut_string(m, key)),
                 };
-                d.fields.insert("message".into(), json!(msg));
+                if let Some(sc) = sc {
+                    let msg = match app.run("window.setShortcut", json!({"id":recording,"shortcut":sc})) {
+                        Ok(v) => match v["conflicts"].as_array().filter(|c| !c.is_empty()) {
+                            Some(c) => format!("Also used by: {}", c.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")),
+                            None => String::new(),
+                        },
+                        Err(e) => e,
+                    };
+                    d.fields.insert("message".into(), json!(msg));
+                }
+                d.fields.insert("recording".into(), json!(""));
             }
-            d.fields.insert("recording".into(), json!(""));
         }
     }
     let ql = q.to_lowercase();
@@ -234,6 +257,23 @@ pub fn open_print(app: &mut DesignApp) {
     ));
 }
 
+/// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
+/// (`UiState.pdf_export`) and the active document. `pages` is per-job (not persisted); `flatten`
+/// falls back to the global flattener preset when the persisted value is empty.
+pub fn open_pdf_export(app: &mut DesignApp) {
+    let mut fields = serde_json::to_value(&app.ui.pdf_export).unwrap_or_else(|_| json!({}));
+    if let Value::Object(m) = &mut fields {
+        let title = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
+        m.insert("title".into(), json!(title));
+        m.insert("uid".into(), json!(app.session.active().map(|st| st.uid)));
+        m.insert("pages".into(), json!("all"));
+        if app.ui.pdf_export.flatten.is_empty() {
+            m.insert("flatten".into(), json!(app.ui.flattener));
+        }
+    }
+    app.ui.dialog = Some(Dialog::new("pdfExport", fields));
+}
+
 fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let printers: Vec<String> = d
         .fields
@@ -281,6 +321,128 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+}
+
+/// The presets offered by the Export PDF dialog, in display order. The stored value is the
+/// English name; the caption is translated.
+const PDF_EXPORT_PRESETS: &[&str] = &["High Quality Print", "Press Quality", "Smallest File Size", "PDF/X-4", "PDF/A-2b", "Custom"];
+
+/// Apply a preset's dependent fields. Flatten is only touched by "Smallest File Size"; "Custom"
+/// (and any unknown value) changes nothing.
+fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
+    let (standard, compress, crop, bleed, page_info, flatten) = match preset {
+        "High Quality Print" => ("none", false, false, false, false, None),
+        "Press Quality" => ("none", true, true, true, false, None),
+        "Smallest File Size" => ("none", true, false, false, false, Some("low")),
+        "PDF/X-4" => ("x4", false, true, true, false, None),
+        "PDF/A-2b" => ("a2b", false, false, false, false, None),
+        _ => return,
+    };
+    d.fields.insert("standard".into(), json!(standard));
+    d.fields.insert("compressImages".into(), json!(compress));
+    d.fields.insert("marksCrop".into(), json!(crop));
+    d.fields.insert("marksBleed".into(), json!(bleed));
+    d.fields.insert("marksPageInfo".into(), json!(page_info));
+    if let Some(f) = flatten {
+        d.fields.insert("flatten".into(), json!(f));
+    }
+}
+
+/// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
+/// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
+/// preset back to "Custom".
+fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let head = |ui: &mut egui::Ui, t: &str| {
+        ui.add_space(6.0);
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, t)).font(semibold(12.0)));
+    };
+    // Snapshot the non-preset fields so a manual edit can be detected after drawing.
+    let before = d.fields.clone();
+    let mut preset_clicked = false;
+
+    head(ui, "General");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Preset:"));
+        let cur = d.s("preset");
+        egui::ComboBox::from_id_salt("pdf_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, &cur))).width(200.0).show_ui(
+            ui,
+            |ui| {
+                for p in PDF_EXPORT_PRESETS {
+                    if ui.selectable_label(cur == *p, crate::rtl::widget(ui, crate::i18n::tr(lang, p))).clicked() {
+                        d.fields.insert("preset".into(), json!(*p));
+                        preset_clicked = true;
+                    }
+                }
+            },
+        );
+    });
+    if preset_clicked {
+        let p = d.s("preset");
+        apply_pdf_preset(d, &p);
+    }
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Page Range:"));
+        text_field(ui, d, "pages", 160.0);
+    });
+    check(ui, d, "spreads", crate::i18n::tr(lang, "Spreads"));
+
+    head(ui, "Compression");
+    check(ui, d, "compressImages", crate::i18n::tr(lang, "Compress images"));
+
+    head(ui, "Marks and Bleeds");
+    check(ui, d, "bleed", crate::i18n::tr(lang, "Include document bleed"));
+    check(ui, d, "marksCrop", crate::i18n::tr(lang, "Crop Marks"));
+    check(ui, d, "marksBleed", crate::i18n::tr(lang, "Bleed Marks"));
+    check(ui, d, "marksPageInfo", crate::i18n::tr(lang, "Page Information"));
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+        text_field(ui, d, "marksWeight", 60.0);
+        ui.add_space(8.0);
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
+        text_field(ui, d, "marksOffset", 60.0);
+    });
+
+    head(ui, "Advanced");
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Standard:"));
+        translated_combo(lang, ui, d, "standard", &[("none", "None"), ("x4", "PDF/X-4"), ("a2b", "PDF/A-2b")]);
+    });
+    check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Transparency Flattener:"));
+        translated_combo(lang, ui, d, "flatten", &[("", "None"), ("high", "High"), ("medium", "Medium"), ("low", "Low")]);
+    });
+    if !d.s("error").is_empty() {
+        crate::rtl::label(ui, d.s("error"));
+    }
+
+    // Any edit other than picking a preset means the settings are no longer that preset.
+    if !preset_clicked && d.fields != before {
+        d.fields.insert("preset".into(), json!("Custom"));
+    }
+}
+
+/// Validate numeric controls before opening a save dialog. Exporter validates page ranges and standards.
+fn pdf_export_params(d: &Dialog) -> Result<Value, String> {
+    let measure = |key, label| {
+        d.pt(key)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 14400.0)
+            .ok_or_else(|| format!("{label} must be a finite measure between 0 and 14400 pt"))
+    };
+    let mut p = json!({"standard":d.s("standard"),"compressImages":d.b("compressImages"),"spreads":d.b("spreads"),"bleed":d.b("bleed"),"tagged":d.b("tagged"),
+        "marks":{"crop":d.b("marksCrop"),"bleed":d.b("marksBleed"),"pageInfo":d.b("marksPageInfo"),"weight":measure("marksWeight","Mark weight")?,"offset":measure("marksOffset","Mark offset")?}});
+    for key in ["flatten", "title", "path"] {
+        let value = d.s(key);
+        if !value.is_empty() {
+            p[key] = json!(value);
+        }
+    }
+    let pages = d.s("pages");
+    if !pages.trim().is_empty() && !pages.trim().eq_ignore_ascii_case("all") {
+        p["pages"] = json!(pages);
+    }
+    Ok(p)
 }
 
 /// File › Document Setup, filled from the document.
@@ -837,6 +999,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
+        "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
@@ -1408,6 +1571,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "documentSetup" => document_setup(app, ui, &mut d),
+            "pdfExport" => pdf_export(app, ui, &mut d),
             "alert" => {
                 let file = d.s("file");
                 if !file.is_empty() {
@@ -1419,7 +1583,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             _ => {}
         }
         ui.add_space(12.0);
-        let ok_label = if d.id == "exportPptx" { "Export…" } else if d.id == "closeDocument" { "  Save  " } else if d.id == "findFont" { "Replace All" } else { "  OK  " };
+        let ok_label = if matches!(d.id.as_str(), "exportPptx" | "pdfExport") { "Export…" } else if d.id == "closeDocument" { "  Save  " } else if d.id == "findFont" { "Replace All" } else { "  OK  " };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -1658,6 +1822,31 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.status(format!("Sent {} page(s) to {}", r["pages"], r["printer"].as_str().unwrap_or("the default printer")));
             Ok(r)
         }
+        "pdfExport" => {
+            let result = (|| {
+                if let Some(uid) = d.fields.get("uid").and_then(Value::as_u64)
+                    && app.session.active().map(|st| st.uid) != Some(uid)
+                {
+                    return Err("The document changed. Reopen Export PDF for the current document.".into());
+                }
+                let settings = serde_json::from_value(Value::Object(d.fields.clone())).map_err(|e| e.to_string())?;
+                let params = pdf_export_params(&d)?;
+                let result = crate::menus::export_pdf(app, &params)?;
+                if !result.is_null() {
+                    app.ui.pdf_export = settings;
+                }
+                Ok(result)
+            })();
+            match &result {
+                Err(error) => { let mut d = d; d.fields.insert("error".into(), json!(error)); app.ui.dialog = Some(d); }
+                Ok(Value::Null) => app.ui.dialog = Some(d),
+                Ok(r) => {
+                    let warnings = r["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                    if !warnings.is_empty() { app.ui.dialog = Some(Dialog::new("alert", json!({"title":"PDF Export Warnings","message":warnings}))); }
+                }
+            }
+            result
+        }
         "preferences" => {
             app.run(
                 "prefs.set",
@@ -1888,6 +2077,73 @@ fn regex_ok(p: &str) -> Result<(), ()> {
     regex::Regex::new(p).map(|_| ()).map_err(|_| ())
 }
 
+/// Edit a complete rule so changing one control preserves inherited and previously edited values.
+fn paragraph_rule(ui: &mut egui::Ui, d: &mut Dialog, lang: &str, doc: &pagenor_doc::Document, key: &str, label: &str, inherited: &pagenor_doc::Rule) {
+    let field = format!("p.{key}");
+    let mut rule = match d.fields.get(&field).filter(|v| !v.is_null()) {
+        Some(value) => match serde_json::from_value::<pagenor_doc::Rule>(value.clone()) {
+            Ok(rule) => rule,
+            Err(error) => {
+                crate::rtl::label(ui, format!("{label}: {error}"));
+                return;
+            }
+        },
+        None => inherited.clone(),
+    };
+    let before = rule.clone();
+    ui.checkbox(&mut rule.on, crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(lang, label)).font(semibold(12.0))));
+    ui.add_enabled_ui(rule.on, |ui| {
+        egui::Grid::new(key).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
+            if let Some(value) = crate::widgets::number(ui, &format!("{key}_weight"), Some(rule.weight), " pt", 70.0, 3) {
+                rule.weight = value.clamp(0.0, 14400.0);
+            }
+            ui.end_row();
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Color:"));
+            egui::ComboBox::from_id_salt(format!("{key}_color")).selected_text(crate::rtl::widget(ui, &rule.color)).width(150.0).show_ui(ui, |ui| {
+                for name in std::iter::once(pagenor_doc::TEXT_COLOR).chain(doc.swatches.iter().map(|sw| sw.name.as_str())) {
+                    if ui.selectable_label(rule.color == name, crate::rtl::widget(ui, name)).clicked() {
+                        rule.color = name.into();
+                    }
+                }
+            });
+            ui.end_row();
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Tint:"));
+            if let Some(value) = crate::widgets::number(ui, &format!("{key}_tint"), Some(f64::from(rule.tint) * 100.0), "%", 70.0, 1) {
+                rule.tint = (value.clamp(0.0, 100.0) / 100.0) as f32;
+            }
+            ui.end_row();
+            crate::rtl::label(ui, crate::i18n::tr(lang, "Width:"));
+            egui::ComboBox::from_id_salt(format!("{key}_width"))
+                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, if rule.column_width { "Column" } else { "Text" })))
+                .show_ui(ui, |ui| {
+                    for (value, label) in [(true, "Column"), (false, "Text")] {
+                        if ui.selectable_label(rule.column_width == value, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                            rule.column_width = value;
+                        }
+                    }
+                });
+            ui.end_row();
+            for (attr, label, value) in [
+                ("offset", "Offset:", &mut rule.offset),
+                ("leftIndent", "Left Indent:", &mut rule.left_indent),
+                ("rightIndent", "Right Indent:", &mut rule.right_indent),
+            ] {
+                crate::rtl::label(ui, crate::i18n::tr(lang, label));
+                if let Some(number) = crate::widgets::number(ui, &format!("{key}_{attr}"), Some(*value), " pt", 70.0, 2) {
+                    *value = number.clamp(-14400.0, 14400.0);
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if rule != before
+        && let Ok(value) = serde_json::to_value(rule)
+    {
+        d.fields.insert(field, value);
+    }
+}
+
 fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let name = d.s("name");
     let new = d.b("new");
@@ -1934,6 +2190,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                 ("justify", "Justification"),
                 ("nested", "Drop Caps and Nested Styles"),
                 ("grep", "GREP Style"),
+                ("rule", "Paragraph Rules"),
                 ("color", "Character Color"),
                 ("export", "Export Tagging"),
             ],
@@ -2299,6 +2556,13 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         d.fields.insert("p.koreanCharBreaks".into(), json!(kb));
                     }
                     ui.end_row();
+                });
+            }
+            "rule" => {
+                egui::ScrollArea::vertical().max_height(370.0).show(ui, |ui| {
+                    paragraph_rule(ui, d, &app.ui.language, &doc, "ruleAbove", "Rule Above", &pp.rule_above);
+                    ui.add_space(8.0);
+                    paragraph_rule(ui, d, &app.ui.language, &doc, "ruleBelow", "Rule Below", &pp.rule_below);
                 });
             }
             "color" => character_color(&app.ui.language, ui, d, &CharFields { base: &cv, sparse: false }, &doc),
@@ -3886,5 +4150,201 @@ mod pptx_options_tests {
         assert_eq!(app.ui.dialog.as_ref().unwrap().id, "alert");
         assert!(app.ui.dialog.as_ref().unwrap().s("message").contains("fonts are not embedded"));
         assert_eq!(app.session.active().unwrap().doc.page_count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod pdf_export_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    fn app() -> DesignApp {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({"pages":2})).unwrap();
+        app
+    }
+    #[test]
+    fn pdf_export_persistence_and_per_job_defaults() {
+        let mut app = app();
+        let old: crate::UiState = serde_json::from_value(json!({"language":"en"})).unwrap();
+        assert_eq!(old.pdf_export, crate::PdfExportSettings::default());
+        app.ui.pdf_export.marks_crop = true;
+        app.ui.flattener = "medium".into();
+        let parsed: crate::UiState = serde_json::from_value(serde_json::to_value(&app.ui).unwrap()).unwrap();
+        assert!(parsed.pdf_export.marks_crop);
+        open_pdf_export(&mut app);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("flatten"), "medium");
+        assert_eq!(d.s("pages"), "all");
+        assert_eq!(d.fields["uid"], app.session.active().unwrap().uid);
+    }
+    #[test]
+    fn pdf_export_cancel_and_invalid_fields_keep_options_without_writes() {
+        let mut app = app();
+        let writes = Arc::new(Mutex::new(0));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |_, _| {
+            *sink.lock().unwrap() += 1;
+            Ok(())
+        }));
+        app.services.pick_save = Some(Box::new(|_| None));
+        open_pdf_export(&mut app);
+        app.ui.dialog.as_mut().unwrap().fields.insert("marksCrop".into(), json!(true));
+        assert!(confirm(&mut app).unwrap().is_null());
+        assert!(app.ui.dialog.is_some());
+        assert!(!app.ui.pdf_export.marks_crop);
+        app.ui.dialog.as_mut().unwrap().fields.insert("marksWeight".into(), json!("NaN"));
+        assert!(confirm(&mut app).is_err());
+        assert!(!app.ui.dialog.as_ref().unwrap().s("error").is_empty());
+        assert_eq!(*writes.lock().unwrap(), 0);
+    }
+    #[test]
+    fn pdf_export_browser_and_desktop_use_same_options() {
+        for browser in [false, true] {
+            let mut app = app();
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let sink = writes.clone();
+            if browser {
+                app.services.download = Some(Box::new(move |_, bytes| sink.lock().unwrap().push(bytes.to_vec())));
+            } else {
+                app.services.pick_save = Some(Box::new(|_| Some("/tmp/pagenor-export-test.pdf".into())));
+                app.services.write = Some(Box::new(move |_, bytes| {
+                    sink.lock().unwrap().push(bytes.to_vec());
+                    Ok(())
+                }));
+            }
+            app.run("app.exportPdf", json!({})).unwrap();
+            let d = app.ui.dialog.as_mut().unwrap();
+            apply_pdf_preset(d, "Press Quality");
+            d.fields.insert("preset".into(), json!("Press Quality"));
+            d.fields.insert("pages".into(), json!("2"));
+            d.fields.insert("marksWeight".into(), json!("0p1"));
+            let r = confirm(&mut app).unwrap();
+            assert_eq!(r["pages"], 1);
+            assert!(app.ui.dialog.is_none());
+            assert_eq!(app.ui.pdf_export.preset, "Press Quality");
+            assert!(app.ui.pdf_export.marks_crop);
+            let bytes = writes.lock().unwrap();
+            assert_eq!(bytes.len(), 1);
+            assert!(bytes[0].starts_with(b"%PDF"));
+            open_pdf_export(&mut app);
+            assert_eq!(app.ui.dialog.as_ref().unwrap().s("pages"), "all");
+        }
+    }
+    #[test]
+    fn pdf_export_failure_and_document_switch_do_not_export_or_persist() {
+        let mut app = app();
+        app.services.pick_save = Some(Box::new(|_| Some("/tmp/pagenor-export-test.pdf".into())));
+        app.services.write = Some(Box::new(|_, _| Err("disk full".into())));
+        open_pdf_export(&mut app);
+        app.ui.dialog.as_mut().unwrap().fields.insert("marksCrop".into(), json!(true));
+        assert_eq!(confirm(&mut app).unwrap_err(), "disk full");
+        assert!(app.ui.dialog.is_some());
+        assert!(!app.ui.pdf_export.marks_crop);
+        app.session.execute("file.new", &json!({})).unwrap();
+        assert!(confirm(&mut app).unwrap_err().contains("document changed"));
+    }
+}
+
+#[cfg(test)]
+mod paragraph_rule_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+    #[test]
+    fn rule_controls_preserve_inherited_fields_other_rule_and_one_undo() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let above = json!({"on":true,"weight":2.5,"color":"[Black]","tint":0.75,"columnWidth":true,"offset":6.0,"leftIndent":3.0,"rightIndent":9.0});
+        let below = json!({"on":true,"weight":4.0,"color":"[Paper]","columnWidth":false});
+        app.run("style.paragraph.create", json!({"name":"Rules Parent","para":{"ruleAbove":above,"ruleBelow":below}})).unwrap();
+        app.run("style.paragraph.create", json!({"name":"Rules Child","basedOn":"Rules Parent"})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name":"Rules Child","section":"rule"})));
+        let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h.get_by_label("Rule Above").click();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields["p.ruleAbove"]["on"], false);
+        h.get_by_label("Rule Above").click();
+        h.run_steps(2);
+        h.get_by_value("Column").click();
+        h.run_steps(2);
+        h.get_by_label("Text").click();
+        h.run_steps(2);
+        let changed = &h.state().ui.dialog.as_ref().unwrap().fields["p.ruleAbove"];
+        assert_eq!(changed["weight"], 2.5);
+        assert_eq!(changed["color"], "[Black]");
+        assert_eq!(changed["offset"], 6.0);
+        assert_eq!(changed["leftIndent"], 3.0);
+        assert_eq!(changed["rightIndent"], 9.0);
+        assert_eq!(changed["tint"], 0.75);
+        assert_eq!(changed["columnWidth"], false);
+        confirm(h.state_mut()).unwrap();
+        let attrs = h.state().session.active().unwrap().doc.styles.resolve_para_style("Rules Child").0;
+        assert!(!attrs.rule_above.column_width);
+        assert_eq!(attrs.rule_below.weight, 4.0);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.active().unwrap().doc, before);
+    }
+}
+
+#[cfg(test)]
+mod shortcut_recording_tests {
+    use super::*;
+    use egui_kittest::Harness;
+    fn harness() -> Harness<'static, DesignApp> {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.ui.dialog = Some(Dialog::new("keyboardShortcuts", json!({"recording":"view.guides","query":"guides"})));
+        let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h
+    }
+    fn key(h: &mut Harness<'_, DesignApp>, key: egui::Key, modifiers: egui::Modifiers, repeat: bool) {
+        for pressed in [true, false] {
+            h.event(egui::Event::Key { key, physical_key: None, pressed, repeat, modifiers });
+        }
+        h.run_steps(2);
+    }
+    #[test]
+    fn modifier_only_and_repeat_wait_then_record_control_combination() {
+        let mut h = harness();
+        let modifiers = egui::Modifiers { ctrl: true, command: !cfg!(target_os = "macos"), shift: true, ..Default::default() };
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.run_steps(1);
+        assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("recording"), "view.guides");
+        // A key held before recording starts: egui derives repeat from its down state.
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("recording".into(), json!(""));
+        h.event(egui::Event::Key { key: egui::Key::Q, physical_key: None, pressed: true, repeat: false, modifiers });
+        h.run_steps(1);
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("recording".into(), json!("view.guides"));
+        key(&mut h, egui::Key::Q, modifiers, true);
+        assert!(!h.state().ui.shortcuts.contains_key("view.guides"));
+        key(&mut h, egui::Key::K, modifiers, false);
+        assert_eq!(h.state().ui.shortcuts["view.guides"], if cfg!(target_os = "macos") { "Ctrl+Shift+K" } else { "Cmd+Shift+K" });
+        assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("recording"), "");
+    }
+    #[test]
+    fn escape_cancels_only_recording_and_enter_can_be_recorded() {
+        let mut h = harness();
+        key(&mut h, egui::Key::Escape, egui::Modifiers::NONE, false);
+        assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("recording"), "");
+        assert!(!h.state().ui.shortcuts.contains_key("view.guides"));
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("recording".into(), json!("view.guides"));
+        key(&mut h, egui::Key::Enter, egui::Modifiers::COMMAND, false);
+        assert!(h.state().ui.dialog.is_some());
+        assert_eq!(h.state().ui.shortcuts["view.guides"], "Cmd+Enter");
     }
 }

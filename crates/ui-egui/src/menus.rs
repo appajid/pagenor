@@ -68,7 +68,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
-    ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
+    (
+        "app.exportPdf",
+        "Export PDF…",
+        None,
+        "{path?, …file.exportPdf options} — opens export options without parameters; explicit options export directly",
+    ),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
     ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),
@@ -615,6 +620,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.splitHorizontally",
             "cmd:table.splitVertically",
             "cmd:table.distributeColumns",
+            "cmd:table.distributeRows",
             "-",
             "ui:app.tablePanel",
         ],
@@ -1014,7 +1020,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
             Ok(Value::Null)
         }
-        "app.exportPdf" => export_pdf(app, p),
+        "app.exportPdf" => {
+            if p.is_null() || p.as_object().is_none_or(|m| m.is_empty()) {
+                crate::dialogs::open_pdf_export(app);
+                Ok(Value::Null)
+            } else {
+                export_pdf(app, p)
+            }
+        }
         "app.palette" => {
             app.ui.palette = Some(String::new());
             Ok(Value::Null)
@@ -1272,8 +1285,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 Some(_) => return Some(Err("shortcut: a string or null".into())),
             }
             let sc = shortcut_of(app, cmd);
-            let conflicts: Vec<String> =
-                effective_shortcuts(app).into_iter().filter(|(i, s)| i != cmd && Some(s) == sc.as_ref()).map(|(i, _)| i).collect();
+            let conflicts: Vec<String> = effective_shortcuts(app)
+                .into_iter()
+                .filter(|(i, s)| i != cmd && sc.as_deref().and_then(parse_shortcut).is_some_and(|binding| Some(binding) == parse_shortcut(s)))
+                .map(|(i, _)| i)
+                .collect();
             Ok(json!({"shortcut": sc, "conflicts": conflicts}))
         }
         "window.resetShortcuts" => {
@@ -1455,11 +1471,12 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 return Some(Ok(Value::Null));
             }
             // Workspaces choose which bars and panels are visible.
-            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book");
+            app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Interactive for PDF");
             app.ui.dock_tab = if name == "Typography" { "properties".into() } else { app.ui.dock_tab.clone() };
             app.ui.open_panel = match name {
                 "Typography" => Some("paragraphStyles".into()),
                 "Printing and Proofing" => Some("swatches".into()),
+                "Interactive for PDF" => Some("buttons".into()),
                 _ => None,
             };
             app.ui.workspace = name.to_string();
@@ -1568,16 +1585,20 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
 
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
-fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let path = match p.get("path").and_then(Value::as_str) {
-        Some(s) => Some(s.to_string()),
-        None => {
-            let name = format!("{}.pdf", st.doc.title);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
-        }
+    let name = format!("{}.pdf", st.doc.title);
+    let browser = app.services.download.is_some() && app.services.pick_save.is_none();
+    let path = if browser {
+        name
+    } else {
+        let path = match p.get("path").and_then(Value::as_str) {
+            Some(s) => Some(s.to_string()),
+            None => app.services.pick_save.as_mut().and_then(|f| f(&name)),
+        };
+        let Some(path) = path else { return Ok(Value::Null) };
+        path
     };
-    let Some(path) = path else { return Ok(Value::Null) };
     let mut params = if p.is_object() { p.clone() } else { json!({}) };
     if let Some(o) = params.as_object_mut() {
         o.remove("path");
@@ -1589,6 +1610,10 @@ fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     }
     let r = app.run("file.exportPdf", params)?;
     let bytes = pagenor_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
+    if browser && let Some(download) = app.services.download.as_mut() {
+        download(&path, &bytes);
+        return Ok(json!({"path":path,"bytes":bytes.len(),"pages":r["pages"],"warnings":r["warnings"]}));
+    }
     match app.services.write.as_mut() {
         Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
         None => Err("no writer".into()),
@@ -1633,9 +1658,16 @@ pub fn effective_shortcuts(app: &DesignApp) -> Vec<(String, String)> {
 
 /// A shortcut as written in this app ("Cmd+Alt+Shift+K") from a key press.
 pub fn shortcut_string(m: egui::Modifiers, key: egui::Key) -> String {
+    shortcut_string_for(m, key, cfg!(target_os = "macos"))
+}
+
+fn shortcut_string_for(m: egui::Modifiers, key: egui::Key, mac: bool) -> String {
     let mut s = String::new();
-    if m.command {
+    if m.command || (!mac && m.ctrl) {
         s += "Cmd+";
+    }
+    if mac && m.ctrl {
+        s += "Ctrl+";
     }
     if m.alt {
         s += "Alt+";
@@ -2009,6 +2041,10 @@ pub fn all_menu_items() -> Vec<(String, String)> {
 }
 
 fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
+    parse_shortcut_for(sc, cfg!(target_os = "macos"))
+}
+
+fn parse_shortcut_for(sc: &str, mac: bool) -> Option<(egui::Modifiers, egui::Key)> {
     let mut m = egui::Modifiers::NONE;
     let mut key = None;
     for part in sc.split('+').filter(|s| !s.is_empty()) {
@@ -2016,7 +2052,8 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
             "Cmd" => m.command = true,
             "Shift" => m.shift = true,
             "Alt" => m.alt = true,
-            "Ctrl" => m.ctrl = true,
+            "Ctrl" if mac => m.ctrl = true,
+            "Ctrl" => m.command = true,
             "=" => key = Some(egui::Key::Equals),
             "-" => key = Some(egui::Key::Minus),
             "[" => key = Some(egui::Key::OpenBracket),
@@ -2034,6 +2071,15 @@ fn parse_shortcut(sc: &str) -> Option<(egui::Modifiers, egui::Key)> {
         key = Some(egui::Key::Minus);
     }
     key.map(|k| (m, k))
+}
+
+/// Command is the portable primary accelerator. On macOS Control is independent;
+/// Windows/Linux report Control both as `ctrl` and `command`.
+fn shortcut_modifiers_match(required: egui::Modifiers, actual: egui::Modifiers, mac: bool) -> bool {
+    required.command == (actual.command || (!mac && actual.ctrl))
+        && required.ctrl == (mac && actual.ctrl)
+        && required.shift == actual.shift
+        && required.alt == actual.alt
 }
 
 /// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
@@ -2054,14 +2100,12 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             let id = id.as_str();
             if let Some((m, k)) = parse_shortcut(sc)
                 && k == key
-                && m.command == modifiers.command
-                && m.shift == modifiers.shift
-                && m.alt == modifiers.alt
-                && (m.command || m.alt || !typing)
+                && shortcut_modifiers_match(m, modifiers, cfg!(target_os = "macos"))
+                && (m.command || m.ctrl || m.alt || !typing)
                 && !(id == "edit.clear" && typing)
             {
                 // Single-key shortcuts (W) only when not typing.
-                if !m.command && !m.alt && !m.shift && typing {
+                if !m.command && !m.ctrl && !m.alt && !m.shift && typing {
                     continue;
                 }
                 if id == "edit.clear" || (typing && matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.pasteInPlace")) {
@@ -2080,7 +2124,7 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             continue;
         }
         // Tool shortcuts (single keys, Shift+key).
-        if !typing && !modifiers.command && !modifiers.alt {
+        if !typing && !modifiers.command && !modifiers.ctrl && !modifiers.alt {
             let name = key.name();
             let sc = if modifiers.shift { format!("Shift+{name}") } else { name.to_string() };
             if let Some(tool) = pagenor_tools::tool_for_shortcut(&sc) {
@@ -2789,12 +2833,32 @@ mod tests {
     }
 
     #[test]
+    fn distribute_rows_menu_dispatches_an_undoable_edit() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+        app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+        app.run("table.setRowHeight", json!({"row": 0, "height": 40, "mode": "exactly"})).unwrap();
+        app.run("table.setRowHeight", json!({"row": 1, "height": 80, "mode": "exactly"})).unwrap();
+        app.run("table.selectTable", json!({})).unwrap();
+        activate(&mut app, "table.distributeRows", &Value::Null);
+        assert!(app.ui.dialog.is_none());
+        let info = app.run("table.get", json!({})).unwrap();
+        assert_eq!(info["rows"][0]["height"], 60.0);
+        assert_eq!(info["rows"][1]["height"], 60.0);
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.run("table.get", json!({})).unwrap()["rows"][0]["height"], 40.0);
+    }
+
+    #[test]
     fn every_menu_entry_is_a_command() {
         let mut all = Vec::new();
         for (_, items) in menu_tree() {
             walk(&items, &mut all);
         }
         assert!(all.len() > 80, "{}", all.len());
+        assert!(all.iter().any(|(label, id, _)| label == "Distribute Rows Evenly" && id == "table.distributeRows"));
         for (label, id, params) in &all {
             assert!(ui_label(id).is_some() || pagenor_engine::find_command(id).is_some(), "menu entry {label}: unknown command {id}");
             assert!(!label.is_empty() && label != id, "menu entry {id} has no label");
@@ -2842,5 +2906,77 @@ mod tests {
         run_ui(&mut app, "window.hideMenuItem", &json!({"item": key, "hidden": false})).unwrap().unwrap();
         assert!(app.ui.hidden_menu_items.is_empty());
         assert!(items.len() > 100, "every menu's items are listed: {}", items.len());
+    }
+}
+
+#[cfg(test)]
+mod interactive_workspace_tests {
+    use super::*;
+    #[test]
+    fn interactive_pdf_workspace_opens_forms_and_custom_workspace_retains_it() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("window.workspace", json!({"name":"Interactive for PDF"})).unwrap();
+        assert!(app.ui.control_bar);
+        assert_eq!(app.ui.open_panel.as_deref(), Some("buttons"));
+        app.run("window.newWorkspace", json!({"name":"PDF Editing"})).unwrap();
+        app.run("window.workspace", json!({"name":"Essentials"})).unwrap();
+        assert!(!app.ui.control_bar);
+        app.run("window.workspace", json!({"name":"PDF Editing"})).unwrap();
+        assert!(app.ui.control_bar);
+        assert_eq!(app.ui.open_panel.as_deref(), Some("buttons"));
+    }
+}
+
+#[cfg(test)]
+mod platform_shortcut_tests {
+    use super::*;
+    #[test]
+    fn primary_accelerator_aliases_and_mac_control_remain_distinct() {
+        for mac in [true, false] {
+            let cmd = parse_shortcut_for("Cmd+Shift+K", mac).unwrap().0;
+            let ctrl = parse_shortcut_for("Ctrl+Shift+K", mac).unwrap().0;
+            let event = egui::Modifiers { command: !mac, ctrl: true, shift: true, ..Default::default() };
+            assert!(shortcut_modifiers_match(ctrl, event, mac));
+            assert_eq!(shortcut_modifiers_match(cmd, event, mac), !mac);
+            assert!(!shortcut_modifiers_match(ctrl, egui::Modifiers { shift: true, ..Default::default() }, mac));
+            assert_eq!(cmd == ctrl, !mac);
+        }
+        let both = parse_shortcut_for("Cmd+Ctrl+K", true).unwrap().0;
+        assert!(shortcut_modifiers_match(both, egui::Modifiers { command: true, ctrl: true, ..Default::default() }, true));
+        assert!(!shortcut_modifiers_match(both, egui::Modifiers::COMMAND, true));
+    }
+    #[test]
+    fn custom_control_binding_requires_control_in_real_dispatch() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("window.setShortcut", json!({"id":"view.guides","shortcut":"Ctrl+Shift+Q"})).unwrap();
+        let ctx = egui::Context::default();
+        let initial = app.ui.guides;
+        for ctrl in [false, true] {
+            let modifiers = egui::Modifiers { ctrl, command: ctrl && !cfg!(target_os = "macos"), shift: true, ..Default::default() };
+            let raw = egui::RawInput {
+                events: [true, false]
+                    .map(|pressed| egui::Event::Key { key: egui::Key::Q, physical_key: None, pressed, repeat: false, modifiers })
+                    .into(),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| shortcuts(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            assert_eq!(app.ui.guides, if ctrl { !initial } else { initial });
+        }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_record_format_tests {
+    use super::*;
+    #[test]
+    fn recording_keeps_mac_control_and_portable_windows_linux_primary() {
+        let ctrl = egui::Modifiers { ctrl: true, shift: true, ..Default::default() };
+        assert_eq!(shortcut_string_for(ctrl, egui::Key::K, true), "Ctrl+Shift+K");
+        assert_eq!(shortcut_string_for(ctrl, egui::Key::K, false), "Cmd+Shift+K");
+        let both = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
+        assert_eq!(shortcut_string_for(both, egui::Key::K, true), "Cmd+Ctrl+K");
+        assert_eq!(shortcut_string_for(both, egui::Key::K, false), "Cmd+K");
     }
 }

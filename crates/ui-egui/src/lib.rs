@@ -114,6 +114,49 @@ fn default_zone() -> f64 {
     4.0
 }
 
+/// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
+/// dialog's defaults. Serialised as `pdfExport` with camelCase field names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PdfExportSettings {
+    /// Preset (one of the five presets, or "Custom" after a manual edit).
+    pub preset: String,
+    /// PDF standard (`none`, `x4`, `a2b`).
+    pub standard: String,
+    /// Compression › Compress images (JPEG).
+    pub compress_images: bool,
+    /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
+    pub flatten: String,
+    pub spreads: bool,
+    pub bleed: bool,
+    pub marks_crop: bool,
+    pub marks_bleed: bool,
+    pub marks_page_info: bool,
+    pub marks_weight: String,
+    pub marks_offset: String,
+    /// File › Export PDF › Advanced › Tagged PDF.
+    pub tagged: bool,
+}
+
+impl Default for PdfExportSettings {
+    fn default() -> Self {
+        PdfExportSettings {
+            preset: "High Quality Print".into(),
+            standard: "none".into(),
+            compress_images: false,
+            flatten: "".into(),
+            spreads: false,
+            bleed: true,
+            marks_crop: false,
+            marks_bleed: false,
+            marks_page_info: false,
+            marks_weight: "0.25".into(),
+            marks_offset: "6".into(),
+            tagged: true,
+        }
+    }
+}
+
 /// Persisted UI state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -155,6 +198,8 @@ pub struct UiState {
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
+    /// File › Export PDF… options (persisted; see `PdfExportSettings`).
+    pub pdf_export: PdfExportSettings,
     /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
     #[serde(skip)]
     pub separation: Option<u8>,
@@ -262,6 +307,7 @@ impl Default for UiState {
             dynamic_spelling: false,
             language: String::new(),
             flattener: String::new(),
+            pdf_export: PdfExportSettings::default(),
             separation: None,
             ink_limit: None,
             display_quality: pagenor_render::DisplayQuality::High,
@@ -1033,9 +1079,8 @@ impl DesignApp {
             if dbg {
                 eprintln!("after app bar {:?}", ui.available_rect_before_wrap());
             }
-            if self.ui.control_bar && self.session.active().is_some() && self.ui.hidden_panels == 0 {
-                chrome::control_bar(self, ui);
-            }
+            let control_bar = self.ui.control_bar && self.session.active().is_some() && self.ui.hidden_panels == 0;
+            chrome::control_bar(self, ui, control_bar);
             chrome::status_bar(self, ui);
             if dbg {
                 eprintln!("after status {:?}", ui.available_rect_before_wrap());
@@ -2528,5 +2573,46 @@ mod browser_import_tests {
         assert!(dialogs::confirm(&mut app).is_err());
         assert!(app.pending_pdf.is_none());
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod control_bar_transition_tests {
+    use super::*;
+    use egui_kittest::Harness;
+    #[test]
+    fn canvas_and_tabs_follow_control_bar_on_first_frame_of_transitions() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.ui.control_bar = false;
+        let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        let y = h.state().canvas_rect.unwrap().min.y;
+        for show in [true, false, true, false] {
+            h.state_mut().ui.control_bar = show;
+            h.step();
+            let expected = y + if show { 59.0 } else { 0.0 };
+            assert!((h.state().canvas_rect.unwrap().min.y - expected).abs() < 1.0);
+        }
+        h.state_mut().ui.control_bar = true;
+        h.state_mut().ui.hidden_panels = 1;
+        h.step();
+        assert!((h.state().canvas_rect.unwrap().min.y - y).abs() < 1.0);
+        h.state_mut().ui.hidden_panels = 0;
+        h.step();
+        assert!((h.state().canvas_rect.unwrap().min.y - y - 59.0).abs() < 1.0);
+        h.state_mut().run("file.close", json!({})).unwrap();
+        h.step();
+        h.state_mut().ui.control_bar = false;
+        h.state_mut().run("file.new", json!({})).unwrap();
+        h.step();
+        assert!((h.state().canvas_rect.unwrap().min.y - y).abs() < 1.0);
     }
 }

@@ -108,3 +108,12 @@ partial #155 adaptation), two already present and 37 deferred. #155's guide and
 work-count portions remain candidates. Only stale generated compiler objects
 were removed to recover build disk space; no user documents/recovery were removed.
 No GitHub push or milestone exit.
+
+## P09.6 editor UI follow-up (2026-10-10)
+
+Reviewed current open and closed requests. Adapted #196/#199/#221/#228/#233/
+#226/#231/#217/#219/#224 sequentially, with specific focused tests. Italian #218
+is deferred by the owner. Stacked duplicates of previously handled clipboard,
+close, styles and toolbar changes were excluded. Source blob identities match
+the inspected heads. [Scope and evidence](EDITOR_UI_UPDATES.md); provenance is
+in PAGENOR_UPSTREAM.md. Multipage requests are the next review after this group.

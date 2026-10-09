@@ -571,10 +571,17 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
     widgets::paint_chip(ui.painter(), chip, fc, fg);
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!("Fill: {}", i.fill));
-    swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
-        let _ = app.run("object.fill", json!({"swatch": n}));
-    });
+    let resp = ui.interact(chip, ui.id().with("fillchip"), Sense::click()).on_hover_text(format!("Fill: {} (double-click: Color Picker)", i.fill));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
+    if chip_double_clicked(ui, &resp) {
+        egui::Popup::close_all(ui.ctx());
+        let hex = doc.resolve_color(&i.fill, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"fill","hex":hex})));
+    } else {
+        swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
+            let _ = app.run("object.fill", json!({"swatch": n}));
+        });
+    }
     crate::rtl::paint(
         ui.painter(),
         b.min + vec2(34.0, FIELD_H / 2.0),
@@ -590,10 +597,18 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
     widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
     ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!("Stroke: {}", i.stroke));
-    swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
-        let _ = app.run("object.stroke", json!({"swatch": n}));
-    });
+    let resp =
+        ui.interact(chip, ui.id().with("strokechip"), Sense::click()).on_hover_text(format!("Stroke: {} (double-click: Color Picker)", i.stroke));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
+    if chip_double_clicked(ui, &resp) {
+        egui::Popup::close_all(ui.ctx());
+        let hex = doc.resolve_color(&i.stroke, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"stroke","hex":hex})));
+    } else {
+        swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
+            let _ = app.run("object.stroke", json!({"swatch": n}));
+        });
+    }
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         app.ui.open_panel = Some("stroke".into());
     }
@@ -662,20 +677,29 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     });
 }
 
+/// The first click opens a popup, which captures subsequent background clicks.
+/// Accept repeated clicks on its own anchor even while that popup owns input.
+/// A recent click elsewhere can also make egui classify a double click as a triple.
+fn chip_double_clicked(ui: &Ui, resp: &egui::Response) -> bool {
+    resp.double_clicked()
+        || resp.triple_clicked()
+        || (ui.is_enabled()
+            && egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(resp))
+            && ui.input(|i| {
+                (i.pointer.button_double_clicked(egui::PointerButton::Primary) || i.pointer.button_triple_clicked(egui::PointerButton::Primary))
+                    && i.pointer.interact_pos().is_some_and(|pos| resp.rect.contains(pos))
+            }))
+}
+
 /// Swatch list popup attached to `resp`.
 fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
     let mut picked = None;
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
+        ui.set_max_width(280.0);
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for sw in &doc.swatches {
-                let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
-                let row = ui.horizontal(|ui| {
-                    let (cr, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                    widgets::paint_chip(ui.painter(), cr, c, g);
-                    ui.add(egui::Button::new(&sw.name).frame(false).selected(sw.name == cur))
-                });
-                if row.inner.clicked() {
+                if super::swatch_menu_row(ui, doc, &sw.name, cur) {
                     picked = Some(sw.name.clone());
                     ui.close();
                 }
@@ -2201,5 +2225,101 @@ mod tests {
         h.get_by_label("French").click();
         h.run_steps(2);
         assert_eq!(language(h.state_mut()), "French");
+    }
+}
+
+#[cfg(test)]
+mod swatch_click_tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    use super::*;
+
+    #[test]
+    fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        // A graphic frame: the Appearance section shows a single Fill chip.
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let before = app.session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_ne!(before, "[Paper]");
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // Open the Fill menu from the Appearance chip.
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // Click the *chip* (the row's left edge), not the name.
+        let name = "[Paper]".to_string();
+        let row = h.get_by_label(&name).rect();
+        // The row spans the menu (chip + name), not just the name text.
+        assert!(row.width() > 150.0, "the row is the full menu width, chip included: {row:?}");
+        let p = row.min + vec2(8.0, row.height() / 2.0);
+        h.hover_at(p);
+        h.drag_at(p);
+        h.drop_at(p);
+        h.run_steps(4);
+        let after = h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
+        assert_eq!(after, name, "clicking the swatch chip applies it");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, before);
+    }
+}
+
+#[cfg(test)]
+mod color_picker_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+    #[test]
+    fn double_click_fill_and_stroke_open_picker_and_confirm_undo() {
+        for target in ["fill", "stroke"] {
+            let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let id = app.run("frame.create", json!({"rect":[72,72,300,200]})).unwrap()["id"].as_u64().unwrap();
+            app.run("selection.set", json!({"ids":[id]})).unwrap();
+            let before = app.session.active().unwrap().doc.clone();
+            let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(1440.0, 900.0)).build_ui_state(
+                |ui, app: &mut DesignApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run_steps(3);
+            let pos = h.get_by_label(&format!("{} swatch", if target == "fill" { "Fill" } else { "Stroke" })).rect().center();
+            // A recent click elsewhere can make egui classify the next double as a triple.
+            let outside = egui::pos2(10.0, 10.0);
+            h.hover_at(outside);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            }
+            h.run_steps(1);
+            for _ in 0..2 {
+                h.hover_at(pos);
+                for pressed in [true, false] {
+                    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                }
+                h.run_steps(1);
+            }
+            let d = h.state().ui.dialog.as_ref().expect("double click opens picker");
+            assert_eq!(d.id, "colorPicker");
+            assert_eq!(d.fields["target"], target);
+            h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("hex".into(), json!("#2367ab"));
+            crate::dialogs::confirm(h.state_mut()).unwrap();
+            assert_ne!(h.state().session.active().unwrap().doc, before);
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert_eq!(h.state().session.active().unwrap().doc, before);
+        }
     }
 }

@@ -1,5 +1,13 @@
 # Pagenor roadmap
 
+- P09.6: Completed ten selected UI proposals sequentially: PDF export options,
+  clickable swatches/colour pickers, canvas context actions, paragraph rules,
+  stable control-bar transitions, Interactive PDF workspace, shortcut handling
+  and undoable table-row distribution. Italian translation #218 is deferred.
+  All seven local gates pass: 1,308 tests, 3 ignored; 20 WASM packages.
+  Inspected CPU UI and pointer checks pass.
+  [Behavior and local evidence](docs/pagenor/EDITOR_UI_UPDATES.md).
+
 - Scope update (2026-10-09): The owner cancelled Adobe/dongle activation
   validation. It is no longer pending or a milestone requirement, and is not
   claimed as tested. Existing native font support is retained; other font

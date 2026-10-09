@@ -240,6 +240,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    resp.context_menu(|ui| canvas_context_menu(app, ui));
     if !app.view().is_some_and(|v| v.fitted) {
         fit(app, rect, "spread");
     }
@@ -1879,5 +1880,118 @@ mod tests {
         let Some(rect) = h.state().canvas_rect else { return };
         right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
         assert!(h.query_by_label("   Points").is_none());
+    }
+}
+
+/// Context actions share the same command path as menus, including the host clipboard bridge.
+fn canvas_context_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let Some(st) = app.session.active() else { return };
+    let text = st.selection.text.is_some();
+    let objects = !st.selection.items.is_empty();
+    let entries: &[(&str, &str)] = if text {
+        &[("Cut", "edit.cut"), ("Copy", "edit.copy"), ("Paste", "edit.paste"), ("", ""), ("Select All", "edit.selectAll")]
+    } else if objects {
+        &[
+            ("Cut", "edit.cut"),
+            ("Copy", "edit.copy"),
+            ("Paste", "edit.paste"),
+            ("Duplicate", "edit.duplicate"),
+            ("Delete", "edit.clear"),
+            ("", ""),
+            ("Select All", "edit.selectAll"),
+            ("Deselect All", "edit.deselectAll"),
+        ]
+    } else {
+        &[
+            ("Paste", "edit.paste"),
+            ("", ""),
+            ("Select All", "edit.selectAll"),
+            ("", ""),
+            ("Fit Page in Window", "view.fitPage"),
+            ("Fit Spread in Window", "view.fitSpread"),
+            ("Actual Size", "view.actualSize"),
+        ]
+    };
+    let lang = app.ui.language.clone();
+    for &(label, id) in entries {
+        if id.is_empty() {
+            ui.separator();
+            continue;
+        }
+        context_action(app, ui, &lang, label, id);
+    }
+    if !text && matches!(app.session.tool_id(), "selection" | "directSelection") {
+        ui.separator();
+        context_action(app, ui, &lang, "Group", "object.group");
+        context_action(app, ui, &lang, "Ungroup", "object.ungroup");
+    }
+}
+
+fn context_action(app: &mut DesignApp, ui: &mut egui::Ui, lang: &str, label: &str, id: &str) {
+    if ui.add_enabled(crate::menus::enabled(app, id), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(lang, label)))).clicked() {
+        if let Err(error) = app.run(id, json!({})) {
+            app.status(format!("{label}: {error}"));
+        }
+        ui.close();
+    }
+}
+
+#[cfg(test)]
+mod context_menu_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        h
+    }
+    fn right_click(h: &mut Harness<'_, DesignApp>) {
+        let pos = h.state().canvas_rect.unwrap().center();
+        h.hover_at(pos);
+        h.step();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+        }
+        h.run_steps(3);
+    }
+    #[test]
+    fn right_click_duplicate_preserves_selection_and_undo() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect":[72,72,200,200]})).unwrap()["id"].clone();
+        app.run("selection.set", json!({"ids":[id]})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let selection = app.session.active().unwrap().selection.clone();
+        let mut h = harness(app);
+        right_click(&mut h);
+        assert_eq!(h.state().session.active().unwrap().selection, selection);
+        h.get_by_label("Duplicate").click();
+        h.run_steps(3);
+        assert_ne!(h.state().session.active().unwrap().doc, before);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.active().unwrap().doc, before);
+    }
+    #[test]
+    fn right_click_text_paste_uses_host_unicode_clipboard_and_undo() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.services.clipboard_text = Some(Box::new(|| Some("தமிழ் क्षेत्र".into())));
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect":[72,72,400,200],"content":"text","text":"","caret":true})).unwrap();
+        app.run("text.select", json!({"story":frame["story"],"anchor":0,"focus":0})).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let mut h = harness(app);
+        right_click(&mut h);
+        h.get_by_label("Paste").click();
+        h.run_steps(3);
+        assert!(h.state().session.active().unwrap().doc.stories.values().any(|story| story.text == "தமிழ் क्षेत्र"));
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.active().unwrap().doc, before);
     }
 }

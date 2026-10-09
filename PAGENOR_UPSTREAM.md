@@ -320,3 +320,28 @@ There is no persistent document index or dependency addition. Regression tests,
 local before/after measurements and platform limits are recorded in
 [composition lookup](docs/pagenor/COMPOSITION_LOOKUP.md). This task stays local;
 no remote publication or running macOS bundle replacement is performed.
+
+## Reviewed upstream adaptations — P09.6 (2026-10-10)
+
+Ten UI proposals were completed sequentially with focused interaction/command
+tests. These are selected adaptations from the pinned MIT OR Apache-2.0 source
+heads below, not merges of their stacked branches. Existing font scopes,
+branding, native format, clipboard/recovery and Rust layers are retained.
+
+| PR | Source author | Inspected head revision | Adaptation |
+|---|---|---|---|
+| [#196](https://github.com/storytold/designcraft/pull/196) | @vpkoskinen | `b6ca25cf660a80be6f5a1047f0aab794658c0334` | PDF options/settings; transactional cancel/error handling, document UID guard and desktop/browser delivery. |
+| [#199](https://github.com/storytold/designcraft/pull/199) | @vpkoskinen | `aeaa9f981862ceb3bcabe057ed715b02fc162832` | Whole clickable chip/name rows shared by Properties, shared pickers and task bar. |
+| [#221](https://github.com/storytold/designcraft/pull/221) | @kubuntugamer | `733c4ff52473196ac6b5e8fae5879149a65ca929` | Fill/stroke chip double-click opens the existing RGB picker; safe colour conversion and popup-anchor handling. |
+| [#228](https://github.com/storytold/designcraft/pull/228) | @kubuntugamer | `97b6cd6aac85f97e006de74d53da648a70daaf2b` | Canvas contextual commands with text priority, enablement, shared clipboard bridge and command undo. |
+| [#233](https://github.com/storytold/designcraft/pull/233) | @kubuntugamer | `4d3e584918eb637934034306b5ca345c37c03793` | Paragraph Rules using Pagenor camelCase Rule attributes, retaining inherited/edited values; scrollable rule controls. |
+| [#226](https://github.com/storytold/designcraft/pull/226) | @kubuntugamer | `d8f5f1f31274fc271de7d99927cd6e3b12d2a371` | Stable zero-height hidden control panel, retaining the existing responsive two-row contents. |
+| [#231](https://github.com/storytold/designcraft/pull/231) | @kubuntugamer | `e01810d731d65c189b09efc309522fc0f8254d2e` | Interactive for PDF opens the control bar and Buttons/Forms; custom workspace restoration retained. |
+| [#217](https://github.com/storytold/designcraft/pull/217) | @kubuntugamer | `78be3ce189b52526f844b66957515899a99f2e25` | Platform-aware accelerator aliases, physical Mac Control matching, normalized conflict comparisons. |
+| [#219](https://github.com/storytold/designcraft/pull/219) | @kubuntugamer | `c4990aa338e8fb0ec4a81a37703381dcfabcbdee` | Record physical Mac Control/portable primary combinations; ignore held repeats and consume recorder keys. |
+| [#224](https://github.com/storytold/designcraft/pull/224) | @vbasky | `6aaa4f0b753aa008f3ca18e7910083f79a58a1ad` | Shared row-distribution command/menu/panel with composed-height checks, sparse one-pass height collection and undo. |
+
+Every changed source-file Git blob matches the API snapshot for all ten heads.
+Italian translation #218 is deferred by the owner. Previously handled stacked
+clipboard, close-confirmation, style-deletion, toolbar and typed-dialog changes
+are not overwritten. See [behavior and evidence](docs/pagenor/EDITOR_UI_UPDATES.md).

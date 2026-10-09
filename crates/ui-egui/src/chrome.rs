@@ -150,28 +150,31 @@ fn vsep(ui: &mut egui::Ui) {
 }
 
 /// Two-row context-sensitive Control panel.
-pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
+pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui, show: bool) {
     let t = Tokens::get(ui.ctx());
-    egui::Panel::top("control_bar")
-        .exact_size(59.0)
-        .frame(
-            egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 3 }).stroke(Stroke::new(1.0, t.divider)),
-        )
-        .show(ui, |ui| {
-            // Wider than the window: the bar scrolls sideways.
-            crate::widgets::overflow_scrolling(ui);
-            egui::ScrollArea::horizontal().id_salt("control_bar_scroll").auto_shrink([false, true]).show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    let text_mode =
-                        matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
-                    if text_mode {
-                        control_text(app, ui);
-                    } else {
-                        control_object(app, ui);
-                    }
-                });
+    let frame = if show {
+        egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 3 }).stroke(Stroke::new(1.0, t.divider))
+    } else {
+        egui::Frame::NONE
+    };
+    egui::Panel::top("control_bar").exact_size(if show { 59.0 } else { 0.0 }).show_separator_line(show).frame(frame).show(ui, |ui| {
+        if !show {
+            return;
+        }
+        // Wider than the window: the bar scrolls sideways.
+        crate::widgets::overflow_scrolling(ui);
+        egui::ScrollArea::horizontal().id_salt("control_bar_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                let text_mode =
+                    matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
+                if text_mode {
+                    control_text(app, ui);
+                } else {
+                    control_object(app, ui);
+                }
             });
         });
+    });
 }
 
 /// A field label drawn as a tool icon (hover for its name).
