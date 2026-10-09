@@ -154,3 +154,24 @@ files. Pagenor retains bounded native reads and fallible serialization, u64 futu
 version comparisons, .pgnr names and document font precedence. The migration uses
 indexed bounded style walks and includes endnotes. Current selection style traits
 use scoped fonts and custom variable-axis values. No Indic phase exit is implied.
+
+## Composite fonts and missing-font UI — P04.1 (2026-10-09)
+
+Adapted the dependent final #129 branch, including #126, once. Source blob
+identities match the pinned heads. Original MIT OR Apache-2.0 licences and
+copyright remain applicable; contributor registry/profile files are untouched.
+
+| PR | Source author | Inspected head |
+|---|---|---|
+| [#126](https://github.com/storytold/designcraft/pull/126) | @ShaoWenbinSaleh | `af43dd88c9fbd77c07309a24ee4a9d6345dc726a` |
+| [#129](https://github.com/storytold/designcraft/pull/129) | @ShaoWenbinSaleh | `9f655739fab096e6d809f4687d403dbf28cf4ac1` |
+
+Composite resolution/generated labels, nested objects/preflight, localized aliases,
+replacement suggestions and repeated Find/Replace Font controls are adapted to
+Pagenor's scoped lazy catalogue and typography pipeline. Alias retention is bounded
+and shared across instances; removed faces do not regain picker entries. The exact-style
+refresh invariant and document font precedence remain. The final Mojikumi repair
+scope is retained; withdrawn broad preset/CID changes are excluded. Imported scope
+documents describe source proposals, not development instructions. Details:
+[font replacement scope](docs/pagenor/FONT_REPLACEMENT.md). No Indic phase exit or
+Adobe/dongle validation is implied.

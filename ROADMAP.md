@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P04.1: Adapted upstream #126/#129 for scoped composite resolution, generated
+  labels, localized aliases, glyph coverage, nested objects/preflight and repeated
+  missing-font replacement. Bounded shared metadata preserves lazy menus, live
+  refresh, cached rendering and newly installed exact styles. Open dialog lists
+  refresh with catalogue changes/rescans. Local gate: 1,157 passed, 3 ignored;
+  17 WASM packages. CPU pointer replacement/undo/Done and inspected dialogs pass;
+  Windows/Linux strict UI-library Clippy checks pass. Indic exit gates and real
+  Adobe/dongle activation remain pending. [Scope](docs/pagenor/FONT_REPLACEMENT.md).
+
 - P07.1: Dependent upstream typography/layout proposals #83/#84/#81/#106/#96
   add drop caps/selection, baseline/wrap/defaults, threading, snapping, family
   style linking, text/frame formatting, kerning and empty-paragraph fixes.

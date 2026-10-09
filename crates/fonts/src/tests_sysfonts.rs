@@ -851,7 +851,15 @@ fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool
     *db.catalog.write().unwrap() = native_face_names(metadata)
         .unwrap()
         .into_iter()
-        .map(|f| CatalogEntry { family: f.family, style: f.style, location: CatalogLocation::Native(name.into()), group: f.group, native: f.native })
+        .map(|f| CatalogEntry {
+            family: f.family,
+            style: f.style,
+            location: CatalogLocation::Native(name.into()),
+            group: f.group,
+            native: f.native,
+            aliases: f.aliases,
+            style_aliases: f.style_aliases,
+        })
         .collect();
     db.update_native_available([name.into()], force);
 }
@@ -1153,4 +1161,53 @@ fn native_metadata_limits_expanded_instance_names_before_retaining_snapshots() {
     assert!(native_face_names(&large_names).unwrap_err().contains("face/name limit"));
     let accepted = with_tables(&variable, vec![(*b"fvar", fvar(1024))]).unwrap();
     assert_eq!(native_face_names(&accepted).unwrap().len(), 1024);
+}
+
+#[test]
+fn localized_aliases_stay_lazy_and_follow_retained_face_removal_policy() {
+    let dir = font_dir("localized-catalogue");
+    let bytes = crate::testing::font_with("Pagenor Alias Face", &['A']).unwrap();
+    let bytes = crate::testing::with_names(
+        &bytes,
+        &[(3, 1, 0x409, 1, "Pagenor Alias Face"), (3, 1, 0x804, 1, "别名字体"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x804, 2, "常规")],
+    )
+    .unwrap();
+    let path = dir.join("alias.ttf");
+    std::fs::write(&path, bytes).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let scope = db.scoped(0);
+    assert_eq!(scope.canonical_family("别名字体").as_deref(), Some("Pagenor Alias Face"));
+    assert!(scope.has_style("别名字体", "常规"));
+    assert!(!scope.has_style("别名字体", "Unknown"));
+    assert!(!db.is_loaded("Pagenor Alias Face"));
+    let retained = scope.face("别名字体", "常规");
+    assert_eq!(retained.family, "Pagenor Alias Face");
+    std::fs::remove_file(path).unwrap();
+    db.load_system_fonts();
+    assert!(scope.has_family("别名字体"), "retained file fonts stay resolvable this session");
+    assert!(!scope.families().iter().any(|family| family == "Pagenor Alias Face"));
+    assert!(!scope.has_style("别名字体", "常规"));
+    assert!(Arc::ptr_eq(&retained, &scope.face("别名字体", "常规")), "retained aliases still render existing text");
+    assert!(retained.covers('A'));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn alias_names_are_bounded_independently_of_the_name_table() {
+    let base = crate::testing::font_with("Alias Budget", &['A']).unwrap();
+    let long = "名".repeat(100);
+    let records: Vec<_> = (0..128u16).map(|language| (3, 1, language, 1, long.as_str())).collect();
+    let bytes = crate::testing::with_names(&base, &records).unwrap();
+    let font = skrifa::FontRef::new(&bytes).unwrap();
+    let names = aliases(&font, &[StringId::FAMILY_NAME]);
+    assert!(names.len() <= 64);
+    assert!(names.iter().map(String::len).sum::<usize>() <= 64 << 10);
+    assert_eq!(names.len(), 1, "duplicate aliases do not consume the retained budget");
+    let long_names: Vec<_> = (0..10).map(|i| format!("{}{}", "名".repeat(3000), i)).collect();
+    let records: Vec<_> = long_names.iter().enumerate().map(|(i, name)| (3, 1, i as u16, 1, name.as_str())).collect();
+    let bytes = crate::testing::with_names(&base, &records).unwrap();
+    let font = skrifa::FontRef::new(&bytes).unwrap();
+    let names = aliases(&font, &[StringId::FAMILY_NAME]);
+    assert!(names.len() < long_names.len());
+    assert!(names.iter().map(String::len).sum::<usize>() <= 64 << 10);
 }
