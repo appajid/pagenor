@@ -345,3 +345,15 @@ Every changed source-file Git blob matches the API snapshot for all ten heads.
 Italian translation #218 is deferred by the owner. Previously handled stacked
 clipboard, close-confirmation, style-deletion, toolbar and typed-dialog changes
 are not overwritten. See [behavior and evidence](docs/pagenor/EDITOR_UI_UPDATES.md).
+
+
+## Release-note audit — P00.8 (2026-10-10)
+
+Audited all 34 changes in the [v0.4.0 release](https://github.com/storytold/designcraft/releases/tag/v0.4.0),
+from v0.2.1 at published release head `14e677b24216396e398823ff034d9882322362d1`.
+All 32 application/workflow PR merge revisions are ancestors of Pagenor's initial
+source; current implementations were checked and retained. Distribution/docs
+#132/#135 follow as selected Pagenor adaptations in P10.2. No upstream identifiers,
+branding, contributor profiles or whole-branch merge were introduced.
+[Individual evidence](docs/pagenor/UPSTREAM_040_AUDIT.md). Pagenor 0.3.0 is a local
+application checkpoint, with independent versioning and unchanged format 3.

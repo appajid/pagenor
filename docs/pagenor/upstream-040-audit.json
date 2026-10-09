@@ -1,0 +1,581 @@
+[
+  {
+    "number": 37,
+    "title": "Text: text.select documents its offsets as UTF-8 bytes",
+    "head": "35ed4c3d793ae60432b81ba47af65e45e024c243",
+    "merge_commit": "316e1ffe629c2327481f34749675d6376b250a67",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/37",
+    "changed_paths": [
+      "crates/engine/src/cmd/text.rs"
+    ]
+  },
+  {
+    "number": 38,
+    "title": "Text: carriage returns in typed or created text start paragraphs",
+    "head": "30df3b0df0a3abf6238bf72f9a089ef69505fc83",
+    "merge_commit": "b54fa8d9bb548e1a347f64600d9ff0bcf6f2604c",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/38",
+    "changed_paths": [
+      "crates/engine/src/cmd/mod.rs",
+      "crates/engine/src/cmd/object.rs",
+      "crates/engine/src/cmd/text.rs"
+    ]
+  },
+  {
+    "number": 39,
+    "title": "Engine: commands given ids run without a selection",
+    "head": "078cf6acee7c45d5aa146da85b715c822b4c940a",
+    "merge_commit": "f1767a84fd8a148a08daff8df1ee6b0b86ecca28",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/39",
+    "changed_paths": [
+      "crates/engine/src/cmd/library.rs",
+      "crates/engine/src/cmd/mod.rs",
+      "crates/engine/src/cmd/object.rs",
+      "crates/engine/src/cmd/states.rs"
+    ]
+  },
+  {
+    "number": 41,
+    "title": "PDF: [Paper] prints as no ink in print exports",
+    "head": "ed799db9c75583b1e9651c8a8479f4cd52c76e18",
+    "merge_commit": "108e34ff794ab77923d72814ce2ba92073f38c1d",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/41",
+    "changed_paths": [
+      "crates/pdf/src/export.rs",
+      "crates/pdf/src/tests.rs"
+    ]
+  },
+  {
+    "number": 40,
+    "title": "PDF: placed PDF 1.7 files go into PDF/X-4 exports",
+    "head": "4f185d9676f79a4db84c542bb835051194a0f1b6",
+    "merge_commit": "9fcba1e3db56910518099fa2cf563832296fbabd",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/40",
+    "changed_paths": [
+      "crates/engine/src/cmd/export.rs",
+      "crates/pdf/Cargo.toml",
+      "crates/pdf/src/export.rs"
+    ]
+  },
+  {
+    "number": 42,
+    "title": "PDF: transparency groups blend in CMYK in print exports",
+    "head": "4c5decce03eb718d38cde717d7e771dab4d46eab",
+    "merge_commit": "e7ad37517ec82d512912a330f7cc36d09b0b3c28",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/42",
+    "changed_paths": [
+      "crates/engine/src/cmd/export.rs",
+      "crates/pdf/src/export.rs",
+      "crates/pdf/src/lib.rs",
+      "crates/pdf/src/pdfx.rs"
+    ]
+  },
+  {
+    "number": 43,
+    "title": "CLI: a closed stdout ends designcraft-cli quietly",
+    "head": "2d7b633dd968c2143d9a53b7b06336f24620fa09",
+    "merge_commit": "337e2ab11337dcd4c42b272f575eae7d6d65494d",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/43",
+    "changed_paths": [
+      "apps/designcraft-cli/src/main.rs",
+      "apps/designcraft-cli/src/perf.rs",
+      "apps/designcraft-cli/tests/cli.rs"
+    ]
+  },
+  {
+    "number": 44,
+    "title": "Preflight: placed PDF and SVG graphics have no resolution to check",
+    "head": "c4111bad51fd73a3267ce8093fe6eae93f6d30f8",
+    "merge_commit": "b8e3b2c0291953ad1d2c241bc83529be6ca0e956",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/44",
+    "changed_paths": [
+      "crates/engine/src/cmd/preflight.rs"
+    ]
+  },
+  {
+    "number": 36,
+    "title": "Fix #22: installed fonts are found by name whatever ran before",
+    "head": "750e86465cce5bd6ab5e30212f5237aa11e86240",
+    "merge_commit": "9a50b3f6c5c4e4120c4f694077828e25fce5adaf",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/36",
+    "changed_paths": [
+      "crates/fonts/src/fontdb.rs"
+    ]
+  },
+  {
+    "number": 33,
+    "title": "Snap: smart guides and snapping",
+    "head": "f0b203ec066e2237ac26567d6aa1fbdc82936270",
+    "merge_commit": "99b6228abd26bf3a51aeb378a7a6fe8d9e1b313d",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/33",
+    "changed_paths": [
+      ".gitignore",
+      "ROADMAP.md",
+      "crates/tools/src/snap.rs",
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/dialogs.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/theme.rs",
+      "docs/superpowers/plans/2026-10-05-smart-guides-snapping.md",
+      "docs/superpowers/specs/2026-10-05-smart-guides-snapping-design.md"
+    ]
+  },
+  {
+    "number": 49,
+    "title": "Windows on ARM64: release builds, PE header check, install test on ARM64 hardware",
+    "head": "7756f8adccf1dd46ae37233990234965f9a15ae1",
+    "merge_commit": "48552598012a9e44ad6af444459007e89b7e387f",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/49",
+    "changed_paths": [
+      ".github/workflows/release.yml",
+      ".github/workflows/windows-arm64.yml",
+      "packaging/windows/package.ps1"
+    ]
+  },
+  {
+    "number": 51,
+    "title": "Fonts: use craft-fonts as an optional build input; move the Japanese fonts out",
+    "head": "a6519d8a555156bc372972c292147b76e35b0ab2",
+    "merge_commit": "e8d6cedfea0f68d0b3e8601f60398d42502db70d",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/51",
+    "changed_paths": [
+      ".github/workflows/freebsd.yml",
+      ".github/workflows/release.yml",
+      ".gitignore",
+      "AGENTS.md",
+      "ASSETS.md",
+      "CLAUDE.md",
+      "NOTICE",
+      "README.md",
+      "ROADMAP.md",
+      "assets/fonts/OFL-ShipporiMincho.txt",
+      "assets/fonts/ShipporiMincho-Regular.ttf",
+      "crates/fonts/build.rs",
+      "crates/fonts/src/fontdb.rs",
+      "crates/fonts/src/lib.rs",
+      "crates/images/src/lib.rs",
+      "crates/ui-egui/src/theme.rs",
+      "packaging/env.sh",
+      "packaging/macos/package.sh",
+      "packaging/windows/package.ps1"
+    ]
+  },
+  {
+    "number": 52,
+    "title": "Add Simplified Chinese and Arabic localization with RTL support",
+    "head": "138c6a58a8b46b0cfc3cf486a81b4001bdf80813",
+    "merge_commit": "d582277cc79c4bc9cee174b25b13fb11e6957aa5",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/52",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n.rs"
+    ]
+  },
+  {
+    "number": 95,
+    "title": "Rename PrintCraft to PdfCraft",
+    "head": "47e8ca3d99ce4f6bc3ac66881b924785656045d7",
+    "merge_commit": "f17397c305ecda9d644105f7a4e9b9d65d34bb60",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/95",
+    "changed_paths": [
+      ".github/workflows/windows-arm64.yml",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "README.md",
+      "crates/ui-egui/src/about.rs"
+    ]
+  },
+  {
+    "number": 108,
+    "title": "About: contributor and model credits compiled in (grab bag + table, self-submitted names)",
+    "head": "23886747bf0044e9e942abe1432dcaa13bb7b510",
+    "merge_commit": "927191d25f1ed43d0c018d2b913c9a4f30b95dc9",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/108",
+    "changed_paths": [
+      "AGENTS.md",
+      "Cargo.lock",
+      "contributors/contributors.json",
+      "contributors/people.toml",
+      "crates/ui-egui/Cargo.toml",
+      "crates/ui-egui/build.rs",
+      "crates/ui-egui/src/about.rs",
+      "crates/ui-egui/src/credits.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/menus.rs",
+      "docs/contributors.md",
+      "docs/mcp.md"
+    ]
+  },
+  {
+    "number": 105,
+    "title": "IDML: import scalar InsetSpacing property values",
+    "head": "0629137ef7f79de8c1538afb41428f03ed2ee2a0",
+    "merge_commit": "fd0e801968214600a3b9cd8c8f06c073e9f321f5",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/105",
+    "changed_paths": [
+      "crates/idml/src/import.rs",
+      "crates/idml/src/tests.rs"
+    ]
+  },
+  {
+    "number": 102,
+    "title": "IDML: honor explicit cell edges at table borders",
+    "head": "0f888ef7947c7106cedb621a1963bfa2449fb3bb",
+    "merge_commit": "08b6e335dd6dd36a3e33de341712dd5e68bd81d1",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/102",
+    "changed_paths": [
+      "crates/compose/src/table.rs",
+      "crates/doc/src/table.rs",
+      "crates/idml/src/export.rs",
+      "crates/idml/src/import.rs",
+      "crates/idml/src/tests.rs"
+    ]
+  },
+  {
+    "number": 104,
+    "title": "Render: keep outside-aligned strokes out of closed interiors",
+    "head": "4910e42bcc9f7a9df837de0d43d329a3f7a8f913",
+    "merge_commit": "8d828f6efb78cca6d45891428919d45426180b86",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/104",
+    "changed_paths": [
+      "crates/render/src/lib.rs",
+      "crates/render/tests/stroke_alignment.rs"
+    ]
+  },
+  {
+    "number": 101,
+    "title": "IDML: resolve nested packaged image links after relocation",
+    "head": "089b1ac28fa9e172bc2a5f285e31b033b0c5640c",
+    "merge_commit": "45866e6037b737f4ed34cba253edaaa2ea9b6030",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/101",
+    "changed_paths": [
+      "crates/engine/src/cmd/interchange.rs"
+    ]
+  },
+  {
+    "number": 97,
+    "title": "Fonts: read Microsoft Office's bundled fonts on macOS",
+    "head": "2a3b3e666140d76ecdd5edfd5d4d3808c83d03b3",
+    "merge_commit": "3b8a58fcc48126edca32883c080cfe58a322eae2",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/97",
+    "changed_paths": [
+      "crates/fonts/src/fontdb.rs"
+    ]
+  },
+  {
+    "number": 79,
+    "title": "Transform: Rotate and Shear open their dialogs (#34)",
+    "head": "0193ac9285a2b4c9aaa991d6aa27e021e8a4e10a",
+    "merge_commit": "a42bd84e89747081962b435eb98c2500ef17f839",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/79",
+    "changed_paths": [
+      "crates/ui-egui/src/dialogs.rs",
+      "crates/ui-egui/src/icons.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/toolbar.rs"
+    ]
+  },
+  {
+    "number": 53,
+    "title": "Canvas: middle-mouse drag pans the view",
+    "head": "9bbaa2940a299d5d3b609efb881e8f33144a21b1",
+    "merge_commit": "864d0b6008e466d616e3f910a827c8bc5b2f36cb",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/53",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/control.rs",
+      "crates/ui-egui/src/menus.rs",
+      "docs/control-protocol.md"
+    ]
+  },
+  {
+    "number": 56,
+    "title": "Guides: honor layer protection in move and delete commands",
+    "head": "6e621551081056c2d45f49f9c9f43df54e5ef33a",
+    "merge_commit": "feb3808029d6d57df0fe3884e954a6284049f505",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/56",
+    "changed_paths": [
+      "crates/engine/src/cmd/guides.rs"
+    ]
+  },
+  {
+    "number": 66,
+    "title": "Control: close the connection on input that isn't a request",
+    "head": "7100bf9ec3154a25d87e1ea1e3e0fe115bb8ad9e",
+    "merge_commit": "27909c6cbb8e61831a3c657987531e52c5d3a9bd",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/66",
+    "changed_paths": [
+      "apps/designcraft/src/control_server.rs",
+      "docs/control-protocol.md"
+    ]
+  },
+  {
+    "number": 75,
+    "title": "Preserve and compose Chinese and Arabic typesetting rules",
+    "head": "730d598d48b744d25131fb0df198f2f220f8d99a",
+    "merge_commit": "dd8d3037b1011c73ed13d7282a4aad71aeab6c77",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/75",
+    "changed_paths": [
+      "Cargo.lock",
+      "Cargo.toml",
+      "ROADMAP.md",
+      "crates/compose/Cargo.toml",
+      "crates/compose/src/bidi.rs",
+      "crates/compose/src/breaker.rs",
+      "crates/compose/src/lib.rs",
+      "crates/compose/src/ruby.rs",
+      "crates/compose/src/shape.rs",
+      "crates/compose/src/table.rs",
+      "crates/compose/src/tests.rs",
+      "crates/doc/src/arabic.rs",
+      "crates/doc/src/attrs.rs",
+      "crates/doc/src/cjk.rs",
+      "crates/doc/src/edit.rs",
+      "crates/doc/src/lib.rs",
+      "crates/doc/src/otf.rs",
+      "crates/doc/src/slice.rs",
+      "crates/doc/src/story.rs",
+      "crates/doc/src/styles.rs",
+      "crates/doc/src/table.rs",
+      "crates/engine/src/cmd/fonts.rs",
+      "crates/engine/src/cmd/preflight.rs",
+      "crates/engine/src/cmd/style.rs",
+      "crates/engine/src/cmd/table.rs",
+      "crates/engine/src/cmd/text.rs",
+      "crates/fonts/Cargo.toml",
+      "crates/fonts/src/fontdb.rs",
+      "crates/fonts/src/lib.rs",
+      "crates/idml/src/arabic.rs",
+      "crates/idml/src/cjk.rs",
+      "crates/idml/src/export.rs",
+      "crates/idml/src/import.rs",
+      "crates/idml/src/lib.rs",
+      "crates/idml/src/tests.rs",
+      "docs/arabic-typography.md",
+      "docs/cjk-typography.md"
+    ]
+  },
+  {
+    "number": 58,
+    "title": "PDF/X-4: flag device RGB under the CMYK output intent",
+    "head": "873d2930178e8eebcbb429d15edce329febb6971",
+    "merge_commit": "625e6b0e0165aa0df0761c2fa85fd93e2fa1cc8f",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/58",
+    "changed_paths": [
+      "crates/pdf/src/export.rs",
+      "crates/pdf/src/pdfx.rs"
+    ]
+  },
+  {
+    "number": 85,
+    "title": "CJK: language-aware shaping and fallback, vertical metrics, document fonts, missing-glyph boxes (builds on #75)",
+    "head": "aee756d6047b862e712e4a751ea0c147486669d3",
+    "merge_commit": "1c2aa451cff04b79e8f699ed855173ea054095cb",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/85",
+    "changed_paths": [
+      "ROADMAP.md",
+      "crates/compose/Cargo.toml",
+      "crates/compose/src/breaker.rs",
+      "crates/compose/src/cache.rs",
+      "crates/compose/src/lib.rs",
+      "crates/compose/src/notes.rs",
+      "crates/compose/src/ruby.rs",
+      "crates/compose/src/shape.rs",
+      "crates/compose/src/table.rs",
+      "crates/compose/src/tests.rs",
+      "crates/doc/src/attrs.rs",
+      "crates/doc/src/build.rs",
+      "crates/doc/src/edit.rs",
+      "crates/doc/src/item.rs",
+      "crates/doc/src/lib.rs",
+      "crates/doc/src/story.rs",
+      "crates/doc/src/tests.rs",
+      "crates/engine/Cargo.toml",
+      "crates/engine/src/cmd/anchored.rs",
+      "crates/engine/src/cmd/book.rs",
+      "crates/engine/src/cmd/file.rs",
+      "crates/engine/src/cmd/fonts.rs",
+      "crates/engine/src/cmd/interchange.rs",
+      "crates/engine/src/cmd/mod.rs",
+      "crates/engine/src/cmd/object.rs",
+      "crates/engine/src/cmd/package.rs",
+      "crates/engine/src/cmd/paths.rs",
+      "crates/engine/src/cmd/preflight.rs",
+      "crates/engine/src/cmd/prefs.rs",
+      "crates/engine/src/cmd/table.rs",
+      "crates/engine/src/cmd/text.rs",
+      "crates/engine/src/lib.rs",
+      "crates/engine/src/recovery.rs",
+      "crates/fonts/Cargo.toml",
+      "crates/fonts/src/fontdb.rs",
+      "crates/fonts/src/group.rs",
+      "crates/fonts/src/lib.rs",
+      "crates/fonts/src/testing.rs",
+      "crates/fonts/src/tests_docfonts.rs",
+      "crates/fonts/src/tests_fallback.rs",
+      "crates/fonts/src/tests_sysfonts.rs",
+      "crates/fonts/src/tests_vertical.rs",
+      "crates/fonts/src/vertical.rs",
+      "crates/format/src/lib.rs",
+      "crates/idml/src/export.rs",
+      "crates/idml/src/import.rs",
+      "crates/idml/src/tests.rs",
+      "crates/pdf/Cargo.toml",
+      "crates/pdf/src/export.rs",
+      "crates/pdf/src/links.rs",
+      "crates/pdf/src/tests.rs",
+      "crates/pdf/src/text.rs",
+      "crates/render/src/glyphs.rs",
+      "crates/render/src/lib.rs",
+      "crates/ui-egui/Cargo.toml",
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/dialogs.rs",
+      "crates/ui-egui/src/i18n.rs",
+      "crates/ui-egui/src/i18n/ar.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/panels/glyphs.rs",
+      "crates/ui-egui/src/panels/mod.rs",
+      "crates/ui-egui/src/panels/properties.rs",
+      "crates/ui-egui/src/taskbar.rs",
+      "docs/cjk.md"
+    ]
+  },
+  {
+    "number": 82,
+    "title": "Images: PSD composites decode by colour mode",
+    "head": "330b8c18f25f53178adec2c634f4b612b4e3e5bf",
+    "merge_commit": "9f2f61bfbfb50cffdf451fc82e3b94473a1dcaf7",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/82",
+    "changed_paths": [
+      "Cargo.lock",
+      "Cargo.toml",
+      "ROADMAP.md",
+      "crates/images/Cargo.toml",
+      "crates/images/src/lib.rs",
+      "crates/images/src/psd.rs"
+    ]
+  },
+  {
+    "number": 103,
+    "title": "i18n: add Brazilian Portuguese (pt-br) UI translation",
+    "head": "bd8291c55feb35d575a0d7983cf03f59ba67ee78",
+    "merge_commit": "e97d98977f9c180d9e2b16055d1fc2a5ada78de2",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/103",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n.rs",
+      "crates/ui-egui/src/i18n/pt_br.rs",
+      "crates/ui-egui/src/menus.rs"
+    ]
+  },
+  {
+    "number": 55,
+    "title": "PDF: placed CMYK TIFFs keep their inks",
+    "head": "2c8ea6d1678d2e9c852b14539bda10730718e174",
+    "merge_commit": "8e2a5b1fc35462af0e87235fd11ee8675795ebab",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/55",
+    "changed_paths": [
+      "Cargo.lock",
+      "Cargo.toml",
+      "crates/images/Cargo.toml",
+      "crates/images/src/lib.rs",
+      "crates/pdf/Cargo.toml",
+      "crates/pdf/src/export.rs",
+      "crates/pdf/src/tests.rs"
+    ]
+  },
+  {
+    "number": 78,
+    "title": "Complete Arabic translations, refine Chinese terminology, and cache RTL label layouts",
+    "head": "8d2d180062a0b8973ec66ca685e1a74804e8b015",
+    "merge_commit": "b05fe0aed445f3e2ca71b362fb209ca569935523",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/78",
+    "changed_paths": [
+      "ROADMAP.md",
+      "crates/ui-egui/src/i18n.rs",
+      "crates/ui-egui/src/i18n/ar.rs",
+      "crates/ui-egui/src/rtl.rs"
+    ]
+  },
+  {
+    "number": 76,
+    "title": "Data merge: linked source, placeholders, preview, and tiled merge",
+    "head": "48dfbcfd19120c1e53abd2cb497a59fc11aa6525",
+    "merge_commit": "f4a4c9709b7c552800f15ba3d1f0f68dd75fa165",
+    "ancestor": true,
+    "url": "https://github.com/storytold/designcraft/pull/76",
+    "changed_paths": [
+      "ROADMAP.md",
+      "apps/designcraft/src/main.rs",
+      "crates/doc/src/build.rs",
+      "crates/doc/src/datamerge.rs",
+      "crates/doc/src/lib.rs",
+      "crates/engine/src/cmd/datamerge.rs",
+      "crates/engine/src/cmd/datamerge/fill.rs",
+      "crates/engine/src/cmd/datamerge/mod.rs",
+      "crates/engine/src/cmd/datamerge/parse.rs",
+      "crates/engine/src/cmd/datamerge/tests.rs",
+      "crates/engine/src/cmd/file.rs",
+      "crates/engine/src/cmd/mod.rs",
+      "crates/engine/src/lib.rs",
+      "crates/engine/src/recovery.rs",
+      "crates/idml/src/import.rs",
+      "crates/textimport/src/docx.rs",
+      "crates/textimport/src/lib.rs",
+      "crates/textimport/src/xlsx.rs",
+      "crates/ui-egui/src/dock.rs",
+      "crates/ui-egui/src/i18n.rs",
+      "crates/ui-egui/src/icons.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/panels/datamerge.rs",
+      "crates/ui-egui/src/panels/mod.rs",
+      "docs/agents.md",
+      "docs/control-protocol.md"
+    ]
+  },
+  {
+    "number": 132,
+    "title": "Release: FreeBSD, Flatpak x86_64/aarch64, AppImage zsync; README Downloads",
+    "head": "0f3f15df61547b0cae46941d954eedf84216bd1d",
+    "merge_commit": "865640b70a54d7080dce37d7595955f5e14907f7",
+    "ancestor": false,
+    "url": "https://github.com/storytold/designcraft/pull/132"
+  },
+  {
+    "number": 135,
+    "title": "README Downloads: where to get it, then builds (Windows first)",
+    "head": "c4945ce8a1756f6caadf01f6459a3aefca073a4c",
+    "merge_commit": "d26b91335c5fd1355dda05c33c029557165b2bca",
+    "ancestor": false,
+    "url": "https://github.com/storytold/designcraft/pull/135"
+  }
+]

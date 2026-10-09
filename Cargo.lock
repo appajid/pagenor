@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "eframe",
@@ -3396,7 +3396,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ai"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -3413,11 +3413,11 @@ dependencies = [
 
 [[package]]
 name = "pagenor-archive"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "pagenor-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3433,7 +3433,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-color"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "kurbo",
  "moxcms",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-compose"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "log",
  "miniz_oxide 0.8.9",
@@ -3462,7 +3462,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-doc"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-color",
  "pagenor-geom",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-engine"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "caseless",
  "hayro-cmap",
@@ -3510,7 +3510,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-epub"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-color",
  "pagenor-doc",
@@ -3519,7 +3519,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-fonts"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "core-text",
  "fontconfig",
@@ -3535,7 +3535,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-format"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-geom"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-idml"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-color",
  "pagenor-doc",
@@ -3573,7 +3573,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-images"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-indd"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-mcp"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "image",
  "log",
@@ -3606,7 +3606,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pdf"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "hayro-cmap",
  "hayro-interpret",
@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pptx"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3646,7 +3646,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-render"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "hayro",
  "image",
@@ -3664,7 +3664,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-textimport"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3674,7 +3674,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-tools"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3686,7 +3686,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ui-egui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -3713,7 +3713,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-web"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "eframe",
  "egui",
@@ -6734,7 +6734,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "resvg",
  "serde_json",

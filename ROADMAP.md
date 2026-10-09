@@ -1,5 +1,12 @@
 # Pagenor roadmap
 
+- P00.8: Audited all 34 upstream v0.4.0 release-note changes. The 32 inherited
+  application/workflow contributions remain; #132/#135 distribution work follows
+  in P10.2. Accumulated local application checkpoint is 0.3.0.
+  All seven gates pass: 1,308 tests, 3 ignored; 20 WASM packages.
+  [Per-item audit](docs/pagenor/UPSTREAM_040_AUDIT.md) and
+  [version policy](docs/pagenor/VERSIONING.md).
+
 - P09.6: Completed ten selected UI proposals sequentially: PDF export options,
   clickable swatches/colour pickers, canvas context actions, paragraph rules,
   stable control-bar transitions, Interactive PDF workspace, shortcut handling
