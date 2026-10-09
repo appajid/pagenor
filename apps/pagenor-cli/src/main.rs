@@ -1,7 +1,8 @@
 //! Headless Pagenor.
 //!
 //! ```text
-//! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub] [--pdf-options JSON] [--all-pages DIR]
+//! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub] [--all-pages DIR]
+//! Export options --page, --scale and --pdf-options apply to the exports that follow them.
 //! pagenor-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
 //! pagenor-cli describe ID          # one command: label, menu, shortcut, parameters
 //! pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -131,7 +132,36 @@ fn mcp(args: &[String]) -> Result<(), String> {
     Server::new(backend).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
+/// The first `--page`, `--scale` or `--pdf-options` with no `--export` or `--all-pages` after it.
+/// They apply to the exports that follow them, so one after the last export would do nothing.
+fn option_after_last_export(args: &[String]) -> Option<&str> {
+    let mut unused = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--page" | "--scale" | "--pdf-options" => {
+                unused = unused.or(Some(a.as_str()));
+                it.next();
+            }
+            "--export" | "--all-pages" => {
+                unused = None;
+                it.next();
+            }
+            "--in" | "--cmd" => {
+                it.next();
+            }
+            _ => {}
+        }
+    }
+    unused
+}
+
 fn run(args: &[String]) -> Result<(), String> {
+    if let Some(opt) = option_after_last_export(args) {
+        return Err(format!(
+            "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
+        ));
+    }
     let mut s = Session::new();
     let mut page = 0usize;
     let mut scale = 1.0f64;

@@ -1059,6 +1059,78 @@ pub fn now_ms() -> f64 {
 mod tests {
     use super::*;
 
+    /// An app with one document that has an unsaved edit.
+    fn app_with_unsaved_document() -> DesignApp {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        assert!(!app.session.documents()[0].is_dirty(), "a new document has nothing to save");
+        app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
+        assert!(app.session.documents()[0].is_dirty());
+        app
+    }
+
+    /// File ▸ Close (and its shortcut) closed a document with unsaved changes without asking, and
+    /// closing discards the document's recovery data too.
+    #[test]
+    fn closing_an_unsaved_document_asks_first() {
+        let mut app = app_with_unsaved_document();
+        menus::activate(&mut app, "file.close", &Value::Null);
+        assert_eq!(app.session.documents().len(), 1, "the document stays open until the user answers");
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("closeDocument"));
+        // Cancel: nothing happens.
+        app.ui.dialog = None;
+        assert!(app.session.documents()[0].is_dirty());
+        // The tab's × asks too.
+        menus::close_document(&mut app, Some(0));
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("closeDocument"));
+        assert_eq!(app.session.documents().len(), 1);
+    }
+
+    #[test]
+    fn closing_without_saving_discards_the_document() {
+        let mut app = app_with_unsaved_document();
+        menus::close_document(&mut app, None);
+        app.ui.dialog.as_mut().unwrap().fields.insert("discard".into(), json!(true));
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn closing_with_save_writes_the_file_then_closes() {
+        let mut app = app_with_unsaved_document();
+        let path = std::env::temp_dir().join(format!("pagenor-close-test-{}.pgnr", std::process::id()));
+        app.run("file.saveAs", json!({"path": path})).unwrap();
+        let saved = std::fs::metadata(&path).unwrap().len();
+        app.run("frame.create", json!({"rect": [200, 200, 300, 300]})).unwrap();
+        menus::close_document(&mut app, None);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents().is_empty());
+        let written = std::fs::metadata(&path).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        assert!(written > saved, "the second frame was saved ({saved} → {written} bytes)");
+    }
+
+    /// Save on a document that has no file opens the file picker; cancelling it must not close the
+    /// document. (No picker service here: the same as cancelling.)
+    #[test]
+    fn a_cancelled_save_keeps_the_document_open() {
+        let mut app = app_with_unsaved_document();
+        menus::close_document(&mut app, None);
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.documents().len(), 1);
+        assert!(app.session.documents()[0].is_dirty());
+    }
+
+    #[test]
+    fn closing_a_saved_document_does_not_ask() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        menus::activate(&mut app, "file.close", &Value::Null);
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.dialog.is_none());
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_save_and_copy_dialogs_use_pgnr_and_keep_copy_state() {
@@ -1742,5 +1814,47 @@ mod tests {
         ui.snap_zone = 0.0;
         assert!(!ui.snap_view().snap_to_guides);
         assert_eq!(ui.snap_view().zone_px, 0.0);
+    }
+}
+
+/// The whole window in a headless test harness, at a chosen window size.
+#[cfg(test)]
+pub(crate) mod test_window {
+    use egui_kittest::Harness;
+
+    pub struct Window {
+        pub app: crate::DesignApp,
+        ready: bool,
+    }
+
+    /// The window at `size` with a new document open.
+    pub fn open(mut app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
+        if app.session.active().is_none() {
+            app.run("file.new", serde_json::json!({})).unwrap();
+        }
+        let mut h = Harness::builder().with_size(size).with_max_steps(1000).build_ui_state(
+            |ui, w: &mut Window| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+            },
+            Window { app, ready: false },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.state_mut().ready = true;
+        h.run_steps(6);
+        h
+    }
+
+    /// A primary click at `pos`, then a few frames.
+    pub fn click_at(h: &mut Harness<'static, Window>, pos: egui::Pos2) {
+        h.hover_at(pos);
+        h.drag_at(pos);
+        h.drop_at(pos);
+        h.run_steps(4);
     }
 }

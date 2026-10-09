@@ -9,6 +9,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+#[cfg(any(target_os = "windows", test))]
+mod graphics;
 #[cfg(target_os = "macos")]
 mod native_menu;
 
@@ -25,7 +27,7 @@ impl eframe::App for App {
                 self.1 = Some(native_menu::NativeMenu::install(&mut self.0));
             }
             if let Some(m) = &mut self.1 {
-                m.poll(&mut self.0);
+                m.poll(&mut self.0, ctx);
             }
         }
         self.0.logic(ctx);
@@ -194,6 +196,8 @@ fn main() -> eframe::Result {
             .with_title_shown(false),
         ..Default::default()
     };
+    #[cfg(target_os = "windows")]
+    graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
     options.viewport = options.viewport.with_app_id(APP_ID);
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);

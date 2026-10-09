@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P00.2: Triaged 53 open upstream PRs and adapted reliability changes from 12,
+  with pinned revisions/attribution and a decision register. Fixes cover no-break
+  composition, UTF-16 imports, count bounds, damaged-image PDF export, unsaved
+  close, typed dialogs, macOS Edit routing, Windows backend defaults, export
+  escaping, web startup/Print and CLI option order. Shared font search omits dot
+  families per the owner’s preference while retaining backend access. Local gate:
+  883 passed, 3 ignored; 16 WASM packages, Mac bundle and Windows/Linux strict
+  UI-library checks pass. Larger conflicting/dependent features remain candidates
+  for separate tasks; native platform and browser execution gaps remain open.
+
 - P02.6: New native documents, copies, packages and web downloads default to
   `.pgnr`. Shared extension detection keeps `.pagenor` and case variants readable;
   saving an existing/explicit path preserves it. ZIP contents/version/MIME and

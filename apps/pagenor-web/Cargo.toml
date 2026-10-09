@@ -17,6 +17,8 @@ path = "src/main.rs"
 
 [dependencies]
 pagenor-engine = { workspace = true }
+pagenor-format = { workspace = true }
+form_urlencoded = "1.2"
 pagenor-ui-egui = { workspace = true }
 egui = { workspace = true }
 log = { workspace = true }

@@ -819,6 +819,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "polygonSettings" => crate::i18n::tr(&app.ui.language, "Polygon Settings"),
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
+        "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
@@ -837,7 +838,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
         ui.set_min_width(380.0);
-        ui.set_max_width(if d.id == "newDocument" && crate::i18n::is_rtl(&app.ui.language) { 380.0 } else { 640.0 });
+        ui.set_max_width(if d.id == "closeDocument" || (d.id == "newDocument" && crate::i18n::is_rtl(&app.ui.language)) { 380.0 } else { 640.0 });
         if crate::i18n::is_rtl(&app.ui.language) {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1199,6 +1200,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     });
                 }
             }
+            "closeDocument" => {
+                let text = crate::i18n::tr(&app.ui.language, "“{}” has changes that are not saved. Save them before closing?").replace("{}", &d.s("title"));
+                crate::rtl::label(ui, text);
+            }
             "newWorkspace" => {
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name:"));
@@ -1370,11 +1375,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             _ => {}
         }
         ui.add_space(12.0);
+        let ok_label = if d.id == "closeDocument" { "  Save  " } else { "  OK  " };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  OK  ")).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, ok_label)).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
@@ -1384,6 +1390,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 }
                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(false);
+                }
+                if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
+                    d.fields.insert("discard".into(), json!(true));
+                    result = Some(true);
                 }
             });
         });
@@ -1603,6 +1613,24 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             app.run("document.preferences", doc)
         }
         "newWorkspace" => app.run("window.newWorkspace", json!({"name": d.s("name")})),
+        "closeDocument" => {
+            // The document may have moved in the tab row (or gone) while the dialog was open.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            let index = |app: &DesignApp| app.session.documents().iter().position(|doc| Some(doc.uid) == uid);
+            let Some(i) = index(app) else { return Ok(Value::Null) };
+            if !d.b("discard") {
+                app.run("file.activate", json!({"index": i}))?;
+                app.run("app.save", json!({}))?;
+                // Still unsaved: the save was cancelled (no file chosen). Keep the document open.
+                if app.session.documents().get(i).is_none_or(|doc| doc.is_dirty()) {
+                    return Ok(Value::Null);
+                }
+            }
+            match index(app) {
+                Some(i) => app.run("file.close", json!({"index": i})),
+                None => Ok(Value::Null),
+            }
+        }
         "importOptions" => app.run(
             "file.place",
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
@@ -1685,10 +1713,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                         let parsed = serde_json::from_str::<Value>(v).ok().filter(|x| !x.is_string());
                         p.insert(f.key, parsed.unwrap_or_else(|| json!(v)));
                     }
-                    Some(Value::Bool(b)) => {
-                        p.insert(f.key, json!(b));
+                    Some(Value::String(_)) | None => {}
+                    Some(value) => {
+                        // Control/MCP callers can supply JSON directly. Preserve its type,
+                        // including explicit null, for the command to interpret.
+                        p.insert(f.key, value.clone());
                     }
-                    _ => {}
                 }
             }
             let r = app.run(cid, Value::Object(p));
@@ -1716,14 +1746,14 @@ fn regex_ok(p: &str) -> Result<(), ()> {
 
 fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let name = d.s("name");
-    let Some(st) = app.session.active() else { return };
-    let Some(style) = st.doc.styles.para(&name).cloned() else {
+    let Some(doc) = app.session.active().map(|s| s.doc.clone()) else { return };
+    let Some(style) = doc.styles.para(&name).cloned() else {
         ui.label(format!("No style named {name}"));
         return;
     };
-    let names: Vec<String> = st.doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| *n != name).collect();
-    let (pp, cp) = st.doc.styles.resolve_para_style(&name);
-    let units = st.doc.settings.horizontal_units;
+    let names: Vec<String> = doc.styles.paragraph.iter().map(|p| p.name.clone()).filter(|n| *n != name).collect();
+    let (pp, cp) = doc.styles.resolve_para_style(&name);
+    let units = doc.settings.horizontal_units;
     let pv = serde_json::to_value(&pp).unwrap_or_default();
     let cv = serde_json::to_value(&cp).unwrap_or_default();
     let cur = |d: &Dialog, k: &str, base: &Value| d.fields.get(k).cloned().unwrap_or_else(|| base.clone());
@@ -1973,15 +2003,12 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             "chars" => {
                 let fonts = crate::panels::fonts(app);
-                let menu = crate::panels::font_menu(app);
                 egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Family:"));
                     let fam = cur(d, "c.fontFamily", &cv["fontFamily"]).as_str().unwrap_or("").to_string();
-                    egui::ComboBox::from_id_salt("psfam").selected_text(crate::panels::font_label(app, &menu, &fam)).width(200.0).show_ui(ui, |ui| {
-                        if let Some(f) = crate::panels::font_menu_rows(app, ui, &menu, &fam) {
-                            d.fields.insert("c.fontFamily".into(), json!(f));
-                        }
-                    });
+                    if let Some(f) = crate::panels::font_combo(app, ui, "psfam", &fam, 200.0) {
+                        d.fields.insert("c.fontFamily".into(), json!(f));
+                    }
                     ui.end_row();
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Style:"));
                     let sty = cur(d, "c.fontStyle", &cv["fontStyle"]).as_str().unwrap_or("").to_string();
@@ -2110,10 +2137,10 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
             "color" => {
                 let cur_fill = cur(d, "c.fill", &cv["fill"]).as_str().unwrap_or("").to_string();
-                let swatches: Vec<String> = st.doc.swatches.iter().map(|s| s.name.clone()).collect();
+                let swatches: Vec<String> = doc.swatches.iter().map(|s| s.name.clone()).collect();
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     for sw in swatches {
-                        let (c, g) = crate::widgets::swatch_colors(&st.doc, &sw, 1.0);
+                        let (c, g) = crate::widgets::swatch_colors(&doc, &sw, 1.0);
                         ui.horizontal(|ui| {
                             let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                             crate::widgets::paint_chip(ui.painter(), r, c, g);
@@ -2683,12 +2710,11 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Replace With")).font(semibold(12.0)));
     let db = crate::panels::fonts(app);
-    let menu = crate::panels::font_menu(app);
-    let english = app.session.prefs.show_font_names_in_english;
-    let fam_opts: Vec<(&str, &str)> = menu.iter().map(|f| (f.family.as_str(), f.label(english))).collect();
     egui::Grid::new("ff_to").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Font Family:"));
-        combo(ui, d, "toFamily", &fam_opts);
+        if let Some(f) = crate::panels::font_combo(app, ui, "toFamily", &d.s("toFamily"), 170.0) {
+            d.fields.insert("toFamily".into(), json!(f));
+        }
         ui.end_row();
         let styles = db.styles(&d.s("toFamily"));
         let st_opts: Vec<(&str, &str)> = styles.iter().map(|s| (s.as_str(), s.as_str())).collect();
@@ -2707,6 +2733,73 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command_app(id: &str, fields: Value) -> DesignApp {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
+        app
+    }
+
+    #[test]
+    fn generic_new_document_preserves_typed_values_and_text_entry() {
+        for pages in [json!(2), json!(" 2 ")] {
+            let mut app = command_app(
+                "file.new",
+                json!({
+                    "preset": "A4", "pages": pages, "facingPages": false, "gutter": 0,
+                    "margins": {"top": 10, "bottom": 20, "inside": 30, "outside": 40},
+                    "title": "  ", "status": "internal", "primaryTextFrame": true
+                }),
+            );
+            confirm(&mut app).unwrap();
+            let doc = &app.session.active().unwrap().doc;
+            assert_eq!(doc.page_count(), 2);
+            assert!(!doc.settings.facing_pages);
+            assert!(doc.title.starts_with("Untitled-"));
+            for page in doc.spreads.iter().flat_map(|s| &s.pages) {
+                assert!((page.width - 595.2755905511812).abs() < 0.01);
+                assert!((page.height - 841.8897637795277).abs() < 0.01);
+                assert_eq!(page.columns.gutter, 0.0);
+                assert_eq!(page.margins.top, 10.0);
+                assert_eq!(page.margins.outside, 40.0);
+            }
+            assert!(doc.spreads.iter().all(|s| s.items.is_empty()), "undocumented fields stay excluded");
+            assert!(app.ui.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn generic_command_preserves_array_geometry() {
+        let mut app = command_app("file.new", json!({}));
+        confirm(&mut app).unwrap();
+        app.ui.dialog = Some(Dialog::new("cmd:frame.create", json!({"rect": [10, 20, 110, 220]})));
+        confirm(&mut app).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        let item = doc.spreads.iter().flat_map(|s| &s.items).next().unwrap();
+        assert_eq!(item.bounds(), pagenor_geom::Rect::new(10.0, 20.0, 110.0, 220.0));
+    }
+
+    #[test]
+    fn generic_explicit_null_uses_the_commands_existing_semantics() {
+        // file.new accepts null width by using the selected preset's width.
+        for width in [Value::Null, json!("null")] {
+            let mut app = command_app("file.new", json!({"preset": "A4", "width": width, "title": "  Sample layout  "}));
+            confirm(&mut app).unwrap();
+            let doc = &app.session.active().unwrap().doc;
+            assert_eq!(doc.title, "Sample layout");
+            assert!((doc.settings.page_width - 595.2755905511812).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn generic_invalid_number_retains_dialog_without_creating_document() {
+        let mut app = command_app("file.new", json!({"width": 0}));
+        assert!(confirm(&mut app).is_err());
+        assert!(app.session.active().is_none());
+        let dialog = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.fields["width"], 0);
+        assert!(dialog.fields["status"].as_str().unwrap().contains("page size out of range"));
+    }
 
     #[test]
     fn parses_command_params() {

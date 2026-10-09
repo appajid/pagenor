@@ -90,6 +90,19 @@ CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo run --release -p pagenor   # absolut
 Without it, Japanese falls back to the system's fonts (none on the web). Release builds always
 include it.
 
+The Windows desktop host selects DirectX 12 by default. An explicit
+`WGPU_BACKEND` overrides that choice for graphics troubleshooting, for example:
+
+```powershell
+$env:WGPU_BACKEND = "vulkan"
+& .\pagenor.exe
+Remove-Item Env:WGPU_BACKEND
+```
+
+For CLI rendering, put `--page`, `--scale` and `--pdf-options` before the
+`--export` or `--all-pages` that should use them. A trailing export option is an
+error rather than silently ignored.
+
 To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is described in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 
