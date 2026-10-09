@@ -3000,6 +3000,7 @@ dependencies = [
  "pagenor-geom",
  "pagenor-idml",
  "pagenor-images",
+ "pagenor-indd",
  "pagenor-pdf",
  "pagenor-pptx",
  "pagenor-render",
@@ -3087,6 +3088,15 @@ dependencies = [
  "pagenor-fonts",
  "resvg",
  "tiff",
+]
+
+[[package]]
+name = "pagenor-indd"
+version = "0.2.1"
+dependencies = [
+ "image",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

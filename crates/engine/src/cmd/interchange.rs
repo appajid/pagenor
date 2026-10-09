@@ -98,18 +98,31 @@ fn read_packaged_link(link: &str, dir: Option<&std::path::Path>) -> Option<(Stri
     None
 }
 
+pub(crate) const INDD_WARNING: &str = "INDD import supports a subset. Check the layout before saving: threading, frame insets/baselines, master items, tables, tracking/kerning, effects, wrap and corner options are not fully imported. Use an IDML export from the source application for broader compatibility.";
+
 pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, dir, name) = if let Some(b) = str_param(p, "base64") {
-        (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").to_string()))
+        if b.len() > (super::file::MAX_ASSET_FILE_BYTES as usize).div_ceil(3).saturating_mul(4) {
+            return Err(bad("file.openIdml", "input exceeds 256 MiB"));
+        }
+        (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").trim_end_matches(".indd").to_string()))
     } else if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
-        let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let b = super::file::read_asset_file(path, super::file::MAX_ASSET_FILE_BYTES)?;
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = Vec::new();
         let pp = std::path::Path::new(path);
         (b, pp.parent().map(|d| d.to_path_buf()), pp.file_stem().map(|n| n.to_string_lossy().to_string()))
     } else {
         return Err(bad("file.openIdml", "missing `path` or `base64`"));
+    };
+    let indd = pagenor_indd::is_indd(&bytes);
+    // InDesign documents are converted to an IDML package first.
+    let bytes = if pagenor_indd::is_indd(&bytes) {
+        let title = name.as_deref().map(|n| format!("{n}.indd")).unwrap_or_else(|| "document.indd".into());
+        pagenor_indd::to_idml_named(&bytes, &title).map_err(|e| EngineError::Other(e.to_string()))?
+    } else {
+        bytes
     };
     let mut d = import(&bytes, dir.as_deref())?;
     if let Some(n) = name {
@@ -123,7 +136,9 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let mut st = DocState::new(d, None);
     st.fonts = fonts;
     let i = s.add_document(st);
-    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+    Ok(
+        json!({"index": i, "documentFonts": faces, "warnings": warnings, "importWarnings": if indd { vec![INDD_WARNING] } else { Vec::<&str>::new() }}),
+    )
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

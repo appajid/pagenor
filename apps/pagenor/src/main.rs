@@ -121,7 +121,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                 name: "Graphics and text",
                 extensions: &[
                     "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps", "txt", "docx", "rtf", "md", "xlsx",
-                    "idml", "pgnr", "pagenor", "mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg",
+                    "idml", "indd", "pgnr", "pagenor", "mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg",
                 ],
             },
             OpenFilter {
@@ -132,9 +132,10 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "Pagenor or IDML", extensions: &["pgnr", "pagenor", "idml"] },
+            OpenFilter { name: "Pagenor, IDML or InDesign", extensions: &["pgnr", "pagenor", "idml", "indd"] },
             OpenFilter { name: "Pagenor", extensions: pagenor_engine::doc::file_type::EXTENSIONS },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
+            OpenFilter { name: "InDesign Document (INDD)", extensions: &["indd"] },
         ],
     }
 }

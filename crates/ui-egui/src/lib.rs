@@ -584,6 +584,17 @@ impl DesignApp {
                 _ => {}
             }
         }
+        if let Ok(result) = &r
+            && let Some(warnings) = result["importWarnings"].as_array().filter(|w| !w.is_empty())
+        {
+            let message = warnings.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+            self.status(&message);
+            if let Some(dialog) = self.ui.dialog.as_mut() {
+                dialog.fields.insert("importWarnings".into(), json!(message));
+            } else {
+                self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title":"Import Warnings","message":message})));
+            }
+        }
         if r.is_ok()
             && matches!(id, "font.replace" | "edit.undo" | "edit.redo" | "font.rescan")
             && let Some(dialog) = self.ui.dialog.as_mut().filter(|d| d.id == "findFont")
@@ -1190,7 +1201,7 @@ impl DesignApp {
 /// and IDML.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    pagenor_doc::file_type::is_native_name(name) || n.ends_with(".idml")
+    pagenor_doc::file_type::is_native_name(name) || n.ends_with(".idml") || n.ends_with(".indd")
 }
 
 pub fn now_ms() -> f64 {

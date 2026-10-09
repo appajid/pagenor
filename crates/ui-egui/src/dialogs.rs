@@ -864,6 +864,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             crate::rtl::label(ui, egui::RichText::new(title).font(semibold(16.0)));
         }
         ui.add_space(10.0);
+        if let Some(warnings) = d.fields.get("importWarnings").and_then(Value::as_str) { ui.label(warnings); ui.add_space(8.0); }
         match d.id.as_str() {
             "exportPptx" => {
                 for (key, label) in [("pages", "Pages (blank = all):"), ("title", "Title:"), ("author", "Author:")] {

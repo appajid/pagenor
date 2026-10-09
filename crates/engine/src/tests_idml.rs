@@ -363,3 +363,34 @@ fn type_para_sets_a_drop_cap_that_survives_idml() {
     // IDML has no attribute for the drop cap's character style.
     assert_eq!(p.drop_cap_style, None);
 }
+
+#[test]
+fn opens_indesign_documents() {
+    let indd = pagenor_indd::synthetic::sample().build();
+    let mut s = Session::new();
+    let b64 = crate::cmd::base64_encode(&indd);
+    let result = s.execute("file.openBytes", &json!({"base64": b64, "name": "card.indd"})).unwrap();
+    assert!(result["importWarnings"][0].as_str().unwrap().contains("subset"));
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.title, "card");
+    assert_eq!(d.page_count(), 1);
+    let texts: Vec<&str> = d.stories.values().map(|st| st.text.as_str()).collect();
+    assert!(texts.iter().any(|t| t.contains("Hello") && t.contains("World")), "{texts:?}");
+    // file.open routes the extension too.
+    let dir = std::env::temp_dir().join(format!("pagenor-indd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("card.indd");
+    std::fs::write(&p, &indd).unwrap();
+    s.execute("file.open", &json!({"path": p.to_string_lossy()})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.title, "card");
+    let _ = std::fs::remove_dir_all(&dir);
+    // Damaged documents are an error, not a crash.
+    let mut broken = indd.clone();
+    broken.truncate(8192);
+    let b64 = crate::cmd::base64_encode(&broken);
+    let before = s.docs.len();
+    assert!(s.execute("file.openBytes", &json!({"base64": b64, "name": "broken.indd"})).is_err());
+    assert_eq!(s.docs.len(), before);
+    let placed = s.execute("file.place", &json!({"base64":crate::cmd::base64_encode(&indd),"name":"placed.indd"})).unwrap();
+    assert!(placed["importWarnings"].is_array());
+}

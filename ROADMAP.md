@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P08.2: Adapted #98 as a standalone INDD subset reader feeding the existing
+  IDML importer. Open/Place filters and visible warnings preserve stable import
+  targets, document fonts and .pgnr. Bounded input/model/XML handling retains
+  failed-import state. All seven local gates pass: 1,220 tests, 3 ignored,
+  19 WASM packages. Windows/Linux strict UI-library Clippy checks pass.
+  CPU warning/layout inspection uses a synthetic Rust fixture; real-file
+  version breadth/fidelity and native platform execution remain unverified.
+  [Supported subset](docs/indd.md).
+
 - P08.1: Adapted #150/#170 EPS/Links and editable PowerPoint export. The Links
   picker lists graphics; replacement batches prepare before mutation. EPS retains
   source and uses previews. Export options/warnings preserve document font scopes

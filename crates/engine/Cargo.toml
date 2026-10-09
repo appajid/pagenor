@@ -25,6 +25,7 @@ pagenor-textimport = { workspace = true }
 pagenor-pdf = { workspace = true }
 pagenor-tools = { workspace = true }
 pagenor-idml = { workspace = true }
+pagenor-indd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -37,6 +38,7 @@ caseless = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+pagenor-indd = { workspace = true, features = ["synthetic"] }
 pagenor-fonts = { workspace = true, features = ["testing"] }
 zip = { workspace = true }
 hayro-syntax = "0.7.2"

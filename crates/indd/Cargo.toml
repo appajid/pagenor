@@ -1,0 +1,21 @@
+[package]
+name = "pagenor-indd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Pagenor InDesign document (.indd) import via IDML"
+
+[lints]
+workspace = true
+
+[features]
+# Synthetic documents for tests in other crates.
+synthetic = []
+
+[dependencies]
+thiserror = { workspace = true }
+image = { workspace = true }
+zip = { workspace = true }
+

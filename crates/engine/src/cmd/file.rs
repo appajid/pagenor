@@ -18,9 +18,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .pgnr or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
+            "{path} — .pgnr, .idml or .indd; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor JSON or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor document, IDML package or INDD subset", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -159,7 +159,8 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if path.to_ascii_lowercase().ends_with(".idml") {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".idml") || lower.ends_with(".indd") {
             return super::interchange::open_idml(s, p);
         }
         let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -200,8 +201,9 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry.
-    if pagenor_idml::is_idml(&b) {
+    // IDML packages are recognised by their stored `mimetype` first entry, InDesign documents by
+    // their master page header.
+    if pagenor_idml::is_idml(&b) || pagenor_indd::is_indd(&b) {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;
@@ -246,8 +248,12 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, link) = read_source(p)?;
     // A page of another layout (IDML or Pagenor): its objects, as one group.
     let lname = name.to_lowercase();
-    if lname.ends_with(".idml") || pagenor_doc::file_type::is_native_name(&name) {
-        return place_layout_page(s, p, &name, &bytes);
+    if lname.ends_with(".idml") || lname.ends_with(".indd") || pagenor_doc::file_type::is_native_name(&name) {
+        let mut result = place_layout_page(s, p, &name, &bytes)?;
+        if pagenor_indd::is_indd(&bytes) {
+            result["importWarnings"] = json!([super::interchange::INDD_WARNING]);
+        }
+        return Ok(result);
     }
     // Keep the EPS source for link comparison; rendering uses its preview at the bounding box size.
     let eps_size = eps_size(&bytes, "file.place")?;
@@ -552,7 +558,10 @@ fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
     const ID: &str = "file.place";
-    let src = if name.to_lowercase().ends_with(".idml") {
+    let src = if pagenor_indd::is_indd(bytes) {
+        let idml = pagenor_indd::to_idml_named(bytes, name).map_err(|e| bad(ID, e.to_string()))?;
+        super::interchange::import(&idml, None)?
+    } else if name.to_lowercase().ends_with(".idml") {
         pagenor_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?

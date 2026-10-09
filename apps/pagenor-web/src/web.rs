@@ -5,9 +5,9 @@ use pagenor_engine::Session;
 use pagenor_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["pgnr", "pagenor", "idml"];
+const DOC_EXTS: &[&str] = &["pgnr", "pagenor", "idml", "indd"];
 const IMAGE_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "xlsx", "idml", "pgnr",
+    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "xlsx", "idml", "indd", "pgnr",
     "pagenor",
 ];
 const CANVAS_ID: &str = "pagenor_canvas";

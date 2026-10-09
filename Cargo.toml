@@ -22,6 +22,7 @@ pagenor-images = { path = "crates/images" }
 pagenor-render = { path = "crates/render" }
 pagenor-pdf = { path = "crates/pdf" }
 pagenor-idml = { path = "crates/idml" }
+pagenor-indd = { path = "crates/indd" }
 pagenor-epub = { path = "crates/epub" }
 pagenor-pptx = { path = "crates/pptx" }
 pagenor-textimport = { path = "crates/textimport" }

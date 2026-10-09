@@ -208,3 +208,19 @@ OS/2 metadata. The options dialog preserves errors/cancellation and shows export
 warnings. The source contributor-profile change is omitted. EPS uses previews
 without interpreting PostScript. Native PowerPoint compatibility and cross-platform
 GUI execution are separate milestone checks. [Behavior and limits](docs/pagenor/EXPORT_INTERCHANGE.md).
+
+## INDD subset import — P08.2 (2026-10-09)
+
+Adapted [#98](https://github.com/storytold/designcraft/pull/98), by @denizkoekden,
+at inspected head `5593c8a61e8c9ec42b76177781635cb3ac0c8f69`. Source blob
+identities match the pinned snapshot. Original MIT OR Apache-2.0 licences and
+copyright remain applicable. Pagenor uses a standalone L0 reader and its existing
+IDML importer; unrelated layer reclassification is omitted.
+
+Open/Place/native/web filters preserve `.pgnr`, import target identities and
+scoped document fonts. Subset warnings are visible, imported documents start
+unsaved, and failed conversions do not add partial documents. Local additions
+bound actual input/name reads, style inheritance, model traversal, text/attributes
+and generated XML pieces. No Adobe application bundle or actual Adobe-produced
+fixture is copied. Tests construct synthetic documents in Rust; real-file version
+breadth/fidelity remains unverified. [Supported subset](docs/indd.md).
