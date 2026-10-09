@@ -8,8 +8,10 @@ The 32 application/workflow contributions below are already ancestors of the
 fork's initial source. Their current implementation paths were checked; recent
 Pagenor adaptations and stronger font/recovery/clipboard/control behavior remain.
 Reapplying these branches would duplicate work and could remove those fixes.
-The two missing listed changes are distribution/documentation #132 and #135,
-which are completed separately in P10.2. No blanket upstream merge is needed.
+The two missing listed changes, distribution/documentation #132 and #135,
+are adapted in P10.2. All 34 listed items are now accounted for: 32 retained
+inherited implementations and two selected adaptations. No blanket upstream merge
+is needed. Native package execution remains separate from source completion.
 
 | PR | Change | Current evidence / action |
 |---|---|---|
@@ -45,15 +47,15 @@ which are completed separately in P10.2. No blanket upstream merge is needed.
 | [#55](https://github.com/storytold/designcraft/pull/55) | PDF: placed CMYK TIFFs keep their inks | `images/lib.rs` and `cmyk_tiff_keeps_its_inks`: ink-preserving CMYK TIFF PDF path. |
 | [#78](https://github.com/storytold/designcraft/pull/78) | Complete Arabic translations, refine Chinese terminology, and cache RTL label layouts | `ui-egui/i18n/ar.rs`, Chinese catalogue and `rtl.rs`: translations and RTL label-layout cache. |
 | [#76](https://github.com/storytold/designcraft/pull/76) | Data merge: linked source, placeholders, preview, and tiled merge | `doc/datamerge.rs`, engine commands and panel: linked sources/placeholders/preview/tiled merge; P09.3 advanced additions retained. |
-| [#132](https://github.com/storytold/designcraft/pull/132) | Release: FreeBSD, Flatpak x86_64/aarch64, AppImage zsync; README Downloads | Pending P10.2: FreeBSD packages, both Flatpak architectures and AppImage zsync; existing nfpm description is already Pagenor page layout. |
-| [#135](https://github.com/storytold/designcraft/pull/135) | README Downloads: where to get it, then builds (Windows first) | Pending P10.2: truthful Pagenor downloads/build-format documentation using its own repository. |
+| [#132](https://github.com/storytold/designcraft/pull/132) | Release: FreeBSD, Flatpak x86_64/aarch64, AppImage zsync; README Downloads | `packaging/freebsd/package.sh`, `linux/flatpak-bundle.sh`, source/bundle manifests, `linux/package.sh` and `release.yml`: adapted FreeBSD tar, matching-architecture Flatpak bundles and owner AppImage zsync routing. Bounded extraction, X11 host permissions, notices and synthetic regression checks added. Existing nfpm description retained; maintainer corrected to the owner. |
+| [#135](https://github.com/storytold/designcraft/pull/135) | README Downloads: where to get it, then builds (Windows first) | `README.md` Downloads/build-format table (Windows first) and `docs/releasing.md`: Pagenor’s own repository, local build status, package commands, signing and native-validation scope. |
 
 ## Version checkpoint
 
 Pagenor 0.3.0 records the accumulated application features and verified inherited
-release behavior since its retained 0.2.1 label. The subsequent P10.2 distribution
-checkpoint advances to 0.4.0. These are local source versions, not published
-releases or GitHub tags. Workspace packages inherit one version; native document
+release behavior since its retained 0.2.1 label. P10.2 distribution additions
+also stay at **0.3.0**, as requested by the owner on 2026-10-10. This is a local
+source version, not a published release or GitHub tag. Workspace packages inherit one version; native document
 format version 3 and `.pgnr` compatibility do not change.
 
 The full seven-step gate is required before each checkpoint commit. Actual
@@ -68,3 +70,11 @@ remain. The owner cancelled Adobe/dongle validation; this audit does not revive 
 P00.8 validation: all seven local gates pass at 0.3.0: **1,308 passed, zero failed,
 3 existing ignored; 20 WASM packages**. External Cargo.lock packages are byte-for-byte
 unchanged as parsed records. [Pinned item revisions](upstream-040-audit.json).
+
+P10.2 validation: all seven local gates pass at **0.3.0**, with **1,308 passed,
+zero failed, 3 existing ignored; 20 WASM packages**. Eight additional synthetic
+packaging tests pass, covering both architectures, archive rejection, licence
+contents, update URLs/stale files and workflow routing/publication gates. All ten
+packaging shell scripts pass Bash syntax checks and ShellCheck 0.11.0; all
+workflows pass actionlint 1.7.12. The new platform packages have not been built
+or installed on their native hosts during this local task.

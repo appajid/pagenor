@@ -9,7 +9,12 @@ Versions below are local development checkpoints; no new release is published.
   supplied owner branding/splash, editor/style/PDF controls, advanced data merge,
   typography/threading, INDD subset import, EPS/PowerPoint and reviewed AI edits.
 - Retain and audit all 32 inherited application/workflow contributions listed in
-  the upstream v0.4.0 release. Distribution/documentation #132/#135 follow in 0.4.0.
+  the upstream v0.4.0 release. Adapt distribution/documentation #132/#135
+  under the same 0.3.0 version, as requested by the owner.
+- Add FreeBSD tar packaging, Flatpak bundles for x86_64/aarch64 and AppImage
+  zsync update routing to Pagenor’s repository, plus download/build documentation.
+  Package notices include the owner branding rights and bundled-font licences.
+  Native package execution and publication remain milestone checks.
 - Keep the Rust architecture, unsafe-code prohibition and native document format 3.
 
 See [release audit](docs/pagenor/UPSTREAM_040_AUDIT.md),

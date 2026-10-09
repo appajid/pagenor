@@ -47,16 +47,23 @@ warn() {
 # Copy licence and readme files that exist into a package directory.
 copy_docs() {
   local dest="$1" f
-  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT; do
+  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE PAGENOR_UPSTREAM.md; do
     if [ -f "$ROOT/$f" ]; then cp "$ROOT/$f" "$dest/"; fi
+  done
+  for f in brand app-icon; do
+    if [ -f "$ROOT/assets/$f/LICENSE.txt" ]; then cp "$ROOT/assets/$f/LICENSE.txt" "$dest/LICENSE-Pagenor-$f.txt"; fi
   done
   copy_font_licences "$dest"
 }
 
 # Builds made with craft-fonts (CRAFT_FONTS_DIR, set by the release workflow) embed its fonts, so
-# the package carries their licences as OFL-<family-dir>.txt. Nothing without CRAFT_FONTS_DIR.
+# the package carries their licences as OFL-<family-dir>.txt. Bundled Latin font licences
+# are always included, even without CRAFT_FONTS_DIR.
 copy_font_licences() {
   local dest="$1" f
+  for f in "$ROOT"/assets/fonts/OFL-*.txt; do
+    if [ -f "$f" ]; then cp "$f" "$dest/"; fi
+  done
   [ -n "${CRAFT_FONTS_DIR:-}" ] || return 0
   for f in "$CRAFT_FONTS_DIR"/fonts/*/OFL.txt; do
     if [ -f "$f" ]; then cp "$f" "$dest/OFL-$(basename "$(dirname "$f")").txt"; fi

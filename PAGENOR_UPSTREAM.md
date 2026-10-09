@@ -353,7 +353,36 @@ Audited all 34 changes in the [v0.4.0 release](https://github.com/storytold/desi
 from v0.2.1 at published release head `14e677b24216396e398823ff034d9882322362d1`.
 All 32 application/workflow PR merge revisions are ancestors of Pagenor's initial
 source; current implementations were checked and retained. Distribution/docs
-#132/#135 follow as selected Pagenor adaptations in P10.2. No upstream identifiers,
+#132/#135 are selected Pagenor adaptations in P10.2. No upstream identifiers,
 branding, contributor profiles or whole-branch merge were introduced.
 [Individual evidence](docs/pagenor/UPSTREAM_040_AUDIT.md). Pagenor 0.3.0 is a local
 application checkpoint, with independent versioning and unchanged format 3.
+
+
+## Distribution and download documentation — P10.2 (2026-10-10)
+
+Adapted the following MIT OR Apache-2.0 source snapshots locally. All ten
+changed source-file blob identities (nine from #132, one from #135) match their
+pinned API/Git records. Original copyright/licences remain applicable; generated
+contributor registries and self-submitted profiles remain untouched.
+
+| PR | Source author | Inspected head | Adaptation |
+|---|---|---|---|
+| [#132](https://github.com/storytold/designcraft/pull/132) | @echelon | `0f3f15df61547b0cae46941d954eedf84216bd1d` | FreeBSD tar packaging, x86_64/aarch64 Flatpak bundles, AppImage zsync and unsigned release-job separation. |
+| [#135](https://github.com/storytold/designcraft/pull/135) | @echelon | `c4945ce8a1756f6caadf01f6459a3aefca073a4c` | Download/build-format documentation, Windows first, adapted to Pagenor’s own repository and actual local status. |
+
+Pagenor keeps version **0.3.0** per the owner’s instruction, format 3, `.pgnr`,
+Rust layers, scoped lazy fonts, clipboard/recovery, supplied artwork and owner
+rights. Existing nfpm page-layout description/vendor are retained; the default
+maintainer no longer refers to an upstream address. Notices and bundled-font
+licences are retained across the adapted package formats. Flatpak allows X11
+because Pagenor’s Linux host explicitly selects it; network remains opt-in.
+
+Local additions validate and bound release-tar extraction and both ELF machine
+headers, keep dry-run stubs out of release artifacts, remove stale zsync metadata,
+route updates to the builder’s own repository, and bound FreeBSD VM resources to
+match the existing private-runner budget. Source and bundle manifests agree.
+Synthetic package checks and static workflow/script checks do not establish
+native installation/execution. All 34 release-note items are accounted for in
+[the audit](docs/pagenor/UPSTREAM_040_AUDIT.md); actual native package/signing
+validation remains a milestone task. No GitHub push or publication is performed.

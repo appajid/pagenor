@@ -41,13 +41,42 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
   Line breaks are identical on screen and in PDF.
 - **Fast.** Multithreaded SIMD rendering (vello_cpu), copy-on-write documents with O(1) undo
   snapshots, and cached composition.
-- **Open.** A documented native format, IDML import and export, PNG and editable PowerPoint export, and PDF on the roadmap.
+- **Open.** A documented native format, IDML import and export, PNG, PDF and editable PowerPoint export.
   No subscription, no licence server, no telemetry.
 - **Agent-native.** Every menu item, tool gesture, panel control and dialog can be driven over a
   JSON control channel and an **MCP server**, so Claude and other agents can lay out and edit
   documents like a designer. See [`docs/control-protocol.md`](docs/control-protocol.md) and
   [`docs/mcp.md`](docs/mcp.md).
 - **Everywhere.** One Rust codebase for desktop and the web.
+
+## Downloads and build formats
+
+Pagenor's [release page](https://github.com/appajid/pagenor/releases) is the source
+for published Pagenor builds and their notes. The current 0.3.0 work is local;
+new installers have not been published. Build locally with the Quick start above.
+Do not substitute another project's downloads for Pagenor.
+
+The release pipeline prepares these formats when run at a completed milestone.
+`<ver>` comes from Cargo.toml; `SHA256SUMS.txt` accompanies release artifacts.
+
+| Platform | Architectures | Formats |
+|---|---|---|
+| Windows | x64, ARM64, x86 | `pagenor-<ver>-windows-<arch>.msi`, portable ZIP |
+| macOS | Apple silicon + Intel universal | `pagenor-<ver>-macos-universal.dmg`, universal CLI ZIP |
+| Linux | x86_64, aarch64 | `pagenor-<ver>-linux-<arch>.AppImage`, `.AppImage.zsync`, `.flatpak`, `.deb`, `.rpm`, `.tar.gz` |
+| FreeBSD | x86_64 release job | `pagenor-<ver>-freebsd-x86_64.tar.gz` |
+| Web | WebAssembly | `pagenor-web-<ver>.zip` for static hosting |
+
+Signing/notarization depend on configured credentials; development packages may
+be unsigned. Package definitions and local contract tests do not establish native
+installation or execution on every platform. Those checks remain in the milestone
+matrix. [Packaging procedure](docs/releasing.md) and
+[version policy](docs/pagenor/VERSIONING.md) explain the process.
+
+AppImage update information points to Pagenor's releases (or a fork's own
+`GITHUB_REPOSITORY`), with a matching `.zsync` file. This enables updates through
+an AppImage update tool; it does not imply a built-in automatic updater. Flatpak
+bundles can be installed with `flatpak install --user <file>` after publication.
 
 ## Quick start
 

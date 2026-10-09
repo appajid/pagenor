@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+- P10.2: Adapted the two remaining upstream v0.4.0 release-note items, #132/#135:
+  FreeBSD tar packaging, Flatpak bundles for x86_64/aarch64, AppImage zsync and
+  truthful owner downloads/build documentation. All 34 listed items are accounted
+  for. Pagenor remains **0.3.0** per the owner’s instruction. Bounded archive
+  extraction, host-compatible X11 permissions, owner/bundled-font notices and
+  update routing retain existing architecture and identifiers. All seven local
+  gates pass: 1,308 tests, 3 ignored; 20 WASM packages. Eight additional packaging
+  contracts, ShellCheck and actionlint pass. Native installer/signing/execution
+  checks remain in the milestone matrix; no remote publication.
+  [Release audit](docs/pagenor/UPSTREAM_040_AUDIT.md) and
+  [packaging procedure](docs/releasing.md).
+
 - P00.8: Audited all 34 upstream v0.4.0 release-note changes. The 32 inherited
   application/workflow contributions remain; #132/#135 distribution work follows
   in P10.2. Accumulated local application checkpoint is 0.3.0.

@@ -18,10 +18,10 @@ feature group. Use a prerelease suffix such as `0.5.0-rc.1` for candidates; remo
 it only when the intended release validation is complete. Do not increment for
 each PR or claim a release merely because the local source version changed.
 
-The local 2026-10-10 checkpoints are 0.2.1 → 0.3.0 for accumulated application
-features/release auditing, then 0.4.0 for distribution additions. Pagenor owns its
-version sequence independently of upstream. Future maintenance starts at 0.4.1;
-the next feature group starts at 0.5.0 (candidate suffixes as appropriate).
+The local 2026-10-10 checkpoint is 0.2.1 → 0.3.0 for accumulated application
+features, release auditing and distribution additions. The owner has requested
+that the version stay at 0.3.0 during this work; do not advance it until that
+instruction changes. Pagenor owns its version sequence independently of upstream.
 
 The native document format version is separate. Changing the application version
 does not migrate or rename `.pgnr` documents. File-format changes require their
