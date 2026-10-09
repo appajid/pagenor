@@ -2,6 +2,7 @@
 
 use pagenor_pdf::{Marks, PdfOptions, Standard};
 use serde_json::{Value, json};
+use std::{borrow::Cow, sync::Arc};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
@@ -12,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
-        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes} (no path: {base64, bytes})",
+        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes, warnings} (no path: {base64, bytes, warnings})",
         has_doc, export_epub),
         cmd!(noundo "file.exportFixedEpub", "Export EPUB (Fixed Layout)…", ["File"], None,
         "{path?, title?, author?, language?} — pre-paginated EPUB → {path, bytes} (no path: {base64, bytes})",
@@ -23,8 +24,11 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
-        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
+        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
+        cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: Pagenor's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
+        has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
         has_story_target, export_text),
@@ -51,17 +55,89 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+fn eps_previews(d: &pagenor_doc::Document) -> (Cow<'_, pagenor_doc::Document>, Vec<String>) {
+    // Match the exporter's reading order (including Article exclusions), not every asset
+    // in the document: unused or hidden graphics must not prevent an export.
+    let mut used = std::collections::BTreeSet::new();
+    for block in pagenor_epub::reading_order(d) {
+        let pagenor_epub::Block::Image(id) = block else { continue };
+        let Some(it) = d.item(id) else { continue };
+        let pagenor_doc::Content::Graphic(g) = &it.content else { continue };
+        used.insert(g.asset);
+        if d.assets.get(&g.asset).is_some_and(|a| pagenor_doc::media_kind(&a.mime).is_some())
+            && let Some(poster) = it.media.as_ref().and_then(|m| m.poster)
+        {
+            used.insert(poster);
+        }
+    }
+    let mut out = Cow::Borrowed(d);
+    let mut warnings = Vec::new();
+    for id in used {
+        let Some(a) = d.assets.get(&id).filter(|a| pagenor_images::is_eps(&a.data)) else { continue };
+        let png = pagenor_images::eps_png(&a.data);
+        if png.is_none() {
+            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        }
+        if let Some(a) = out.to_mut().assets.get_mut(&id) {
+            let a = Arc::make_mut(a);
+            a.mime = "image/png".into();
+            a.data = Arc::new(png.unwrap_or_default());
+        }
+    }
+    (out, warnings)
+}
+
 fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = pagenor_epub::HtmlOptions { title: str_param(p, "title").map(str::to_string), language: str_param(p, "language").map(str::to_string) };
-    let text = pagenor_epub::export_html(&st.doc, &opts);
+    let (doc, warnings) = eps_previews(&st.doc);
+    let text = pagenor_epub::export_html(&doc, &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-            Ok(json!({"path": path, "bytes": text.len()}))
+            Ok(json!({"path": path, "bytes": text.len(), "warnings": warnings}))
         }
-        None => Ok(json!({"bytes": text.len(), "text": text})),
+        None => Ok(json!({"bytes": text.len(), "text": text, "warnings": warnings})),
+    }
+}
+
+fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "file.exportPptx";
+    let st = s.doc()?;
+    pagenor_pptx::validate_document(&st.doc).map_err(|e| EngineError::Other(e.to_string()))?;
+    let line_breaks = match str_param(p, "lineBreaks") {
+        None | Some("keep") => pagenor_pptx::LineBreaks::Keep,
+        Some("reflow") => pagenor_pptx::LineBreaks::Reflow,
+        Some(x) => return Err(bad(ID, format!("unknown lineBreaks `{x}` (keep, reflow)"))),
+    };
+    let opts = pagenor_pptx::PptxOptions {
+        pages: pages_param(ID, p, st.doc.page_count())?,
+        line_breaks,
+        title: str_param(p, "title").map(str::to_string),
+        author: str_param(p, "author").map(str::to_string),
+        created: None,
+        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(true),
+    };
+    // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
+    // stays text: a picture of it would drop the rest of its story).
+    let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
+    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, |it| {
+        !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && pagenor_pptx::needs_raster(&st.doc, it)))
+    })?;
+    let doc: &pagenor_doc::Document = raster.as_ref().unwrap_or(&st.doc);
+    let mut r = pagenor_pptx::export_pptx(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    if rasterized > 0 {
+        r.warnings.push(format!("{rasterized} object(s) went in as images"));
+    }
+    match str_param(p, "path") {
+        Some(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            std::fs::write(path, &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            Ok(json!({"path": path, "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings}))
+        }
+        None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings})),
     }
 }
 
@@ -122,7 +198,7 @@ fn page_text(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, abs: usi
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
-    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it));
+    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it))?;
     let epub_doc: &pagenor_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
@@ -155,37 +231,43 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
             None => Ok(serde_json::json!({"base64": super::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages.len()})),
         };
     }
-    let bytes = pagenor_epub::export_epub(epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
+    let (epub_doc, warnings) = eps_previews(epub_doc);
+    let bytes = pagenor_epub::export_epub(&epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(path, &bytes).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
-            Ok(serde_json::json!({"path": path, "bytes": bytes.len()}))
+            Ok(serde_json::json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
         }
-        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len()})),
+        None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings})),
     }
 }
 
-pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
-    const ID: &str = "file.exportPdf";
-
-    let pages = match p.get("pages") {
+/// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
+fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
+    Ok(match p.get("pages") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(pagenor_pdf::parse_page_range(s, page_count).map_err(|e| bad(ID, e.to_string()))?),
+        Some(Value::String(s)) => Some(pagenor_pdf::parse_page_range(s, page_count).map_err(|e| bad(id, e.to_string()))?),
         Some(Value::Array(a)) => {
             let mut v = Vec::new();
             for x in a {
-                let n = x.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {x}")))?;
+                let n = x.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(id, format!("bad page {x}")))?;
                 v.push(n as usize - 1);
             }
             Some(v)
         }
         Some(Value::Number(n)) => {
-            let n = n.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(ID, format!("bad page {n}")))?;
+            let n = n.as_u64().filter(|n| *n >= 1 && (*n as usize) <= page_count).ok_or_else(|| bad(id, format!("bad page {n}")))?;
             Some(vec![n as usize - 1])
         }
-        Some(v) => return Err(bad(ID, format!("bad `pages`: {v}"))),
-    };
+        Some(v) => return Err(bad(id, format!("bad `pages`: {v}"))),
+    })
+}
+
+pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
+    const ID: &str = "file.exportPdf";
+
+    let pages = pages_param(ID, p, page_count)?;
     let spreads = p.get("spreads").and_then(Value::as_bool).unwrap_or(false);
     let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
     let marks = match p.get("marks") {
@@ -336,7 +418,12 @@ fn flatten(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, ppi: f64) 
 
 /// A text frame in a story that runs through other frames (replacing it would reflow the story).
 fn threaded(d: &pagenor_doc::Document, it: &pagenor_doc::Item) -> bool {
-    it.text_frame().and_then(|t| d.story(t.story)).is_some_and(|st| st.frames.len() > 1)
+    fn any(d: &pagenor_doc::Document, it: &pagenor_doc::Item, depth: usize) -> bool {
+        depth >= 64
+            || it.text_frame().and_then(|t| d.story(t.story)).is_some_and(|st| st.frames.len() > 1)
+            || it.children().iter().any(|child| any(d, child, depth + 1))
+    }
+    any(d, it, 0)
 }
 
 /// Soft effects other than the gradient feather (which PDF export draws itself).
@@ -356,7 +443,7 @@ fn raster_effects(it: &pagenor_doc::Item) -> bool {
 
 /// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
-fn rasterize_effects(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache) -> (Option<pagenor_doc::Document>, usize) {
+fn rasterize_effects(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache) -> Result<(Option<pagenor_doc::Document>, usize)> {
     rasterize_where(d, cache, 300.0, |it| raster_effects(it) && !threaded(d, it))
 }
 
@@ -367,18 +454,19 @@ fn rasterize_where(
     cache: &pagenor_compose::Cache,
     ppi: f64,
     pred: impl Fn(&pagenor_doc::Item) -> bool,
-) -> (Option<pagenor_doc::Document>, usize) {
+) -> Result<(Option<pagenor_doc::Document>, usize)> {
     use pagenor_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
     let todo: Vec<(usize, ItemId)> =
         d.spreads.iter().enumerate().flat_map(|(si, sp)| sp.items.iter().filter(|it| !it.hidden && pred(it)).map(move |it| (si, it.id))).collect();
     if todo.is_empty() {
-        return (None, 0);
+        return Ok((None, 0));
     }
     let mut out = d.clone();
     let mut rr = pagenor_render::Renderer::new();
     rr.threads = pagenor_render::default_threads();
     let k = ppi / 72.0;
     let mut n = 0;
+    let mut raster_bytes = 0usize;
     for (si, id) in todo {
         let Some(it) = d.item(id) else { continue };
         let reach = it
@@ -406,6 +494,11 @@ fn rasterize_where(
             view,
             &opts,
         );
+        let png = img.to_png();
+        raster_bytes = raster_bytes.checked_add(png.len()).ok_or_else(|| EngineError::Other("rasterized export size overflow".into()))?;
+        if raster_bytes > 512 * 1024 * 1024 {
+            return Err(EngineError::Other("rasterized export exceeds 512 MiB".into()));
+        }
         let aid = AssetId(out.alloc());
         out.assets.insert(
             aid,
@@ -415,7 +508,7 @@ fn rasterize_where(
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
                 link: None,
-                data: std::sync::Arc::new(img.to_png()),
+                data: std::sync::Arc::new(png),
                 pixels: Some((w, h)),
             }),
         );
@@ -438,7 +531,7 @@ fn rasterize_where(
             n += 1;
         }
     }
-    (Some(out), n)
+    Ok((Some(out), n))
 }
 
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
@@ -506,7 +599,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let base: &pagenor_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
     let (layered, layer_count) = rasterize_layered(base);
     let base2: &pagenor_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
+    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache)?;
     let doc: &pagenor_doc::Document = fx_doc.as_ref().unwrap_or(base2);
     let r = pagenor_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
@@ -892,5 +985,100 @@ mod print_group_tests {
         s.execute("edit.transparencyBlendSpace", &json!({"space": "rgb"})).unwrap();
         let t = text(&mut s);
         assert!(t.contains("/CS/DeviceRGB") && pagenor_pdf::has_rgb_groups(t.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod pptx_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn unzip(b64: &str) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
+        zip::ZipArchive::new(std::io::Cursor::new(super::super::file::base64_decode(b64))).unwrap()
+    }
+
+    fn read(z: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> String {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut z.by_name(name).unwrap(), &mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn sample_exports_editable_slides() {
+        let mut s = Session::new();
+        s.execute("file.newSample", &json!({})).unwrap();
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        assert_eq!(r["slides"], 4);
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        // The swatch table is a PowerPoint table; the cover picture is embedded; text is text.
+        assert!(read(&mut z, "ppt/slides/slide4.xml").contains("<a:tbl>"));
+        assert!(read(&mut z, "ppt/slides/slide1.xml").contains("<p:pic>"));
+        let text: String = read(&mut z, "ppt/slides/slide2.xml").split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
+        assert!(text.contains("Notes on the Grid"), "{text}");
+        assert!(read(&mut z, "ppt/presentation.xml").contains("<p:embeddedFontLst>"));
+
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": false, "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
+        assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
+        assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
+    }
+
+    #[test]
+    fn rasterize_option_places_a_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200], "shape": "ellipse"})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [r["id"]]})).unwrap();
+        let shapes = |s: &mut Session| {
+            let r = s.execute("file.exportPptx", &json!({})).unwrap();
+            read(&mut unzip(r["base64"].as_str().unwrap()), "ppt/slides/slide1.xml")
+        };
+        assert!(shapes(&mut s).contains("prst=\"ellipse\""));
+        s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
+        let x = shapes(&mut s);
+        assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
+    }
+}
+
+#[cfg(test)]
+mod grouped_thread_export_tests {
+    use super::*;
+    use pagenor_doc::{Content, Item, ItemId, ParaFormat, Shape, SpreadRef};
+    use pagenor_geom::{Rect, shapes};
+    #[test]
+    fn grouped_threaded_text_is_kept_as_text_during_powerpoint_export() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let lid = d.default_layer();
+        let (fid, sid) = d
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 130.0), lid, "Threaded words stay editable", ParaFormat::default())
+            .unwrap();
+        let (second, second_story) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 250.0, 350.0), lid, "", ParaFormat::default()).unwrap();
+        if let Content::Text(tf) = &mut d.item_mut(second).unwrap().content {
+            tf.story = sid;
+        }
+        d.stories.remove(&second_story);
+        d.story_mut(sid).unwrap().frames.push(second);
+        let child = d.item(fid).unwrap().clone();
+        let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Group, shapes::rectangle(Rect::new(36.0, 36.0, 250.0, 130.0)));
+        group.content = Content::Group { items: vec![std::sync::Arc::new(child)] };
+        group.effects.inner_glow.on = true;
+        assert!(threaded(d, &group));
+        let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+        sp.items.retain(|it| it.id != fid);
+        sp.items.push(std::sync::Arc::new(group));
+        let r = s.execute("file.exportPptx", &json!({"embedFonts":false})).unwrap();
+        assert!(r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).any(|x| x.contains("can't be exported")));
+        assert!(!r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).any(|x| x.contains("went in as images")));
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut z.by_name("ppt/slides/slide1.xml").unwrap(), &mut xml).unwrap();
+        let text: String = xml.split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
+        assert!(text.contains("Threaded words"), "{xml}");
     }
 }

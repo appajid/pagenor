@@ -26,6 +26,7 @@ impl Dialog {
                 "marginTop": "3p0", "marginBottom": "3p0", "marginInside": "3p0", "marginOutside": "3p0", "bleed": "0p0", "primaryTextFrame": false})
             }
             "goToPage" => json!({"page": "1"}),
+            "exportPptx" => json!({"pages":"", "lineBreaks":"keep", "rasterize":true, "embedFonts":true, "title":"", "author":""}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
@@ -812,6 +813,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
+        "exportPptx" => crate::i18n::tr(&app.ui.language, "Export PowerPoint"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
@@ -863,6 +865,23 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         }
         ui.add_space(10.0);
         match d.id.as_str() {
+            "exportPptx" => {
+                for (key, label) in [("pages", "Pages (blank = all):"), ("title", "Title:"), ("author", "Author:")] {
+                    ui.horizontal(|ui| { crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, label)); text_field(ui, &mut d, key, 230.0); });
+                }
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page ranges use positions, for example 1-3,5."));
+                ui.horizontal(|ui| {
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Text layout:"));
+                    let cur = d.s("lineBreaks");
+                    for (value, label) in [("keep", "Keep Pagenor line breaks"), ("reflow", "Reflow in PowerPoint")] {
+                        if ui.selectable_label(cur == value, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() { d.fields.insert("lineBreaks".into(), json!(value)); }
+                    }
+                });
+                check(ui, &mut d, "rasterize", crate::i18n::tr(&app.ui.language, "Rasterize unsupported objects"));
+                check(ui, &mut d, "embedFonts", crate::i18n::tr(&app.ui.language, "Embed permitted TrueType fonts"));
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Unsupported objects may be approximated; export warnings report the differences."));
+                if !d.s("error").is_empty() { crate::rtl::label(ui, egui::RichText::new(d.s("error")).color(crate::theme::Tokens::get(ui.ctx()).text_strong)); }
+            }
             "newDocument" => {
                 ui.horizontal(|ui| {
                     ui.with_layout(if crate::i18n::is_rtl(&app.ui.language) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }, |ui| {
@@ -1394,12 +1413,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::rtl::label(ui, egui::RichText::new(crate::rtl::isolate(&file)).font(semibold(13.0)));
                     ui.add_space(4.0);
                 }
-                crate::rtl::label(ui, d.s("message"));
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| { crate::rtl::label(ui, d.s("message")); });
             }
             _ => {}
         }
         ui.add_space(12.0);
-        let ok_label = if d.id == "closeDocument" { "  Save  " } else if d.id == "findFont" { "Replace All" } else { "  OK  " };
+        let ok_label = if d.id == "exportPptx" { "Export…" } else if d.id == "closeDocument" { "  Save  " } else if d.id == "findFont" { "Replace All" } else { "  OK  " };
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -1444,6 +1463,20 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         app.cancel_pdf_import();
     }
     match d.id.as_str() {
+        "exportPptx" => {
+            let mut params = json!({"lineBreaks":d.s("lineBreaks"),"rasterize":d.b("rasterize"),"embedFonts":d.b("embedFonts")});
+            for key in ["pages", "title", "author", "path"] { let value = d.s(key); if !value.trim().is_empty() { params[key] = json!(value); } }
+            let result = app.run("app.exportPptx", params);
+            match &result {
+                Err(error) => { let mut d = d; d.fields.insert("error".into(), json!(error)); app.ui.dialog = Some(d); },
+                Ok(Value::Null) => app.ui.dialog = Some(d),
+                Ok(r) => {
+                    let warnings = r["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                    if !warnings.is_empty() { app.ui.dialog = Some(Dialog::new("alert", json!({"title":"PowerPoint Export Warnings","message":warnings}))); }
+                }
+            }
+            result
+        },
         "fontDiscovery" => Ok(Value::Null),
         "newDocument" => {
             let margins = json!({"top": d.m("marginTop").unwrap_or(36.0), "bottom": d.m("marginBottom").unwrap_or(36.0), "inside": d.m("marginInside").unwrap_or(36.0), "outside": d.m("marginOutside").unwrap_or(36.0)});
@@ -3811,5 +3844,46 @@ mod tests {
         confirm(&mut app).expect("OK deletes the style with the default replacement");
         let st = app.session.active().unwrap();
         assert!(st.doc.styles.char_style(&name).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pptx_options_tests {
+    use super::*;
+    #[test]
+    fn options_forward_page_and_font_choices_and_preserve_failed_exports() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages":2,"title":"Presentation"})).unwrap();
+        app.run("frame.create", json!({"rect":[36,36,300,200],"content":"text","text":"Editable text"})).unwrap();
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = writes.clone();
+        app.services.write = Some(Box::new(move |path, bytes| {
+            sink.lock().unwrap().push((path.to_string(), bytes.to_vec()));
+            Ok(())
+        }));
+        app.services.pick_save = Some(Box::new(|name| Some(name.to_string())));
+        app.run("app.exportPptx", json!({})).unwrap();
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.id, "exportPptx");
+        assert_eq!(d.fields["embedFonts"], true);
+        d.fields.insert("pages".into(), json!("0"));
+        assert!(confirm(&mut app).is_err());
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "exportPptx");
+        assert!(!app.ui.dialog.as_ref().unwrap().s("error").is_empty());
+        assert!(writes.lock().unwrap().is_empty());
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("pages".into(), json!("1"));
+        d.fields.insert("lineBreaks".into(), json!("reflow"));
+        d.fields.insert("rasterize".into(), json!(false));
+        d.fields.insert("embedFonts".into(), json!(false));
+        let r = confirm(&mut app).unwrap();
+        assert_eq!(r["slides"], 1);
+        let bytes = writes.lock().unwrap();
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(bytes[0].0, "Presentation.pptx");
+        assert!(bytes[0].1.starts_with(b"PK"));
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "alert");
+        assert!(app.ui.dialog.as_ref().unwrap().s("message").contains("fonts are not embedded"));
+        assert_eq!(app.session.active().unwrap().doc.page_count(), 2);
     }
 }

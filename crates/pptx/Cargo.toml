@@ -1,0 +1,27 @@
+[package]
+name = "pagenor-pptx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Pagenor PowerPoint (PPTX) export: pages as slides of editable shapes, pictures and text"
+
+[lints]
+workspace = true
+
+[dependencies]
+pagenor-geom = { workspace = true }
+pagenor-color = { workspace = true }
+pagenor-doc = { workspace = true }
+pagenor-fonts = { workspace = true }
+pagenor-compose = { workspace = true }
+pagenor-images = { workspace = true }
+skrifa = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+zip = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+quick-xml = { workspace = true }

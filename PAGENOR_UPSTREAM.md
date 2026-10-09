@@ -189,3 +189,22 @@ licences, copyright, Pagenor identifiers and generated contributor metadata:
 Pagenor retains recovery-aware control quit and damaged-raster prevalidation;
 import targets, document font scopes and ordinary clipboard/keyboard routing stay.
 See [behavior and limits](docs/pagenor/TABLE_CONTROL.md).
+
+## EPS/Links and editable PowerPoint export — P08.1 (2026-10-09)
+
+Adapted the following original MIT OR Apache-2.0 proposals locally, retaining
+licences, copyright and Pagenor identifiers. Contributor metadata and owner
+artwork remain unchanged. Source file identities match the pinned heads.
+
+| PR | Source author | Inspected head | Adaptation |
+|---|---|---|---|
+| [#150](https://github.com/storytold/designcraft/pull/150) | @skylartaylor | `b050343a6ca790d7a3e0c7167827260c114affb9` | EPS source/previews, point sizes, graphic Relink filter and transactional replacement preparation. |
+| [#170](https://github.com/storytold/designcraft/pull/170) | @PhilippKrueger | `a075efccd8ab1eccb9db12e48c9bbca2309b974d` | Editable PowerPoint backend, CLI route and export UI. |
+
+Local additions retain format-version migration and document-scoped composition,
+cap actual file reads and export structure/bytes, validate geometry before edits,
+keep grouped threaded text editable, and check embedding eligibility against
+OS/2 metadata. The options dialog preserves errors/cancellation and shows export
+warnings. The source contributor-profile change is omitted. EPS uses previews
+without interpreting PostScript. Native PowerPoint compatibility and cross-platform
+GUI execution are separate milestone checks. [Behavior and limits](docs/pagenor/EXPORT_INTERCHANGE.md).

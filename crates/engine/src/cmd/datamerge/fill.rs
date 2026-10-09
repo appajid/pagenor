@@ -648,9 +648,9 @@ fn story_layer(doc: &pagenor_doc::Document, story: StoryId) -> pagenor_doc::Laye
     doc.story(story).and_then(|st| st.frames.first().copied()).and_then(|id| doc.item(id)).map(|it| it.layer).unwrap_or_else(|| doc.default_layer())
 }
 
-fn clamp_long_side(px: (u32, u32)) -> (f64, f64) {
-    let w = f64::from(px.0);
-    let h = f64::from(px.1);
+fn clamp_long_side(px: (f64, f64)) -> (f64, f64) {
+    let w = px.0;
+    let h = px.1;
     let long = w.max(h);
     if !long.is_finite() || long <= 144.0 || long <= 0.0 {
         return (w.max(0.0), h.max(0.0));
@@ -661,7 +661,7 @@ fn clamp_long_side(px: (u32, u32)) -> (f64, f64) {
 
 fn inline_picture_item(doc: &mut pagenor_doc::Document, loaded: Option<&LoadedPicture>, layer: pagenor_doc::LayerId, link_images: bool) -> Item {
     let (w, h, graphic) = if let Some(pic) = loaded {
-        let (w, h) = clamp_long_side(pic.px);
+        let (w, h) = clamp_long_side(pic.natural);
         let aid = AssetId(doc.alloc());
         let link = link_images.then(|| pic.link.clone()).flatten();
         doc.assets.insert(
@@ -777,6 +777,7 @@ struct LoadedPicture {
     name: String,
     link: Option<String>,
     px: (u32, u32),
+    natural: (f64, f64),
 }
 
 fn load_picture(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> Option<LoadedPicture> {
@@ -786,8 +787,9 @@ fn load_picture(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> 
             return None;
         }
         let px = pagenor_render::image_size(&bytes)?;
+        let natural = pagenor_render::image_natural_size(&bytes)?;
         let name = url.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("image").to_string();
-        return Some(LoadedPicture { bytes, name, link: Some(url.to_string()), px });
+        return Some(LoadedPicture { bytes, name, link: Some(url.to_string()), px, natural });
     }
     let cands = image_candidates(cell, data_dir, doc_dir);
     let (path, bytes) = cands.iter().find_map(|p| {
@@ -803,8 +805,9 @@ fn load_picture(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> 
         (!bytes.is_empty() && bytes.len() as u64 <= super::MAX_IMAGE_FILE_BYTES).then(|| (p.clone(), bytes))
     })?;
     let px = pagenor_render::image_size(&bytes)?;
+    let natural = pagenor_render::image_natural_size(&bytes)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "image".to_string());
-    Some(LoadedPicture { bytes, name, link: Some(path.to_string_lossy().into_owned()), px })
+    Some(LoadedPicture { bytes, name, link: Some(path.to_string_lossy().into_owned()), px, natural })
 }
 
 fn place_image(
@@ -827,14 +830,33 @@ fn place_image(
         return;
     };
     let (pw, ph) = loaded.px;
+    let (nw, nh) = loaded.natural;
     let bytes = loaded.bytes;
     let Some(inner) = doc.item(item).map(|it| it.inner_bounds()) else {
         report.warnings.push(format!("Record {record}, field {field}: missing image {cell}."));
         report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
         return;
     };
-    let (nw, nh) = (f64::from(pw), f64::from(ph));
     let mode = fitting_of(&options.fitting);
+    let mut g =
+        Graphic { asset: AssetId(0), size: (nw, nh), xf: Affine::translate((inner.x0, inner.y0)), auto_fit: mode, fit_align: 0, crop: [0.0; 4] };
+    if let Some(xf) = g.fitted(inner, mode) {
+        g.xf = xf;
+    }
+    if options.center && nw > 0.0 && nh > 0.0 {
+        let bb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
+        let c = inner.center();
+        let m = bb.center();
+        g.xf = Affine::translate((c.x - m.x, c.y - m.y)) * g.xf;
+    }
+    if super::super::file::validate_placement((nw, nh), inner, g.xf, "data.merge").is_err() {
+        if let Some(it) = doc.item_mut(item) {
+            it.content = Content::Unassigned;
+        }
+        report.missing.push(MissingImage { record, field: field.to_string(), path: cell.to_string() });
+        report.warnings.push(format!("Record {record}, field {field}: image {cell} exceeds finite geometry limits."));
+        return;
+    }
     let aid = AssetId(doc.alloc());
     let name = if loaded.name.is_empty() { field.to_string() } else { loaded.name.clone() };
     let link = options.link_images.then(|| loaded.link.clone()).flatten();
@@ -850,16 +872,7 @@ fn place_image(
             page: 0,
         }),
     );
-    let mut g = Graphic { asset: aid, size: (nw, nh), xf: Affine::translate((inner.x0, inner.y0)), auto_fit: mode, fit_align: 0, crop: [0.0; 4] };
-    if let Some(xf) = g.fitted(inner, mode) {
-        g.xf = xf;
-    }
-    if options.center && nw > 0.0 && nh > 0.0 {
-        let bb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
-        let c = inner.center();
-        let m = bb.center();
-        g.xf = Affine::translate((c.x - m.x, c.y - m.y)) * g.xf;
-    }
+    g.asset = aid;
     if let Some(it) = doc.item_mut(item) {
         it.content = Content::Graphic(g);
     }

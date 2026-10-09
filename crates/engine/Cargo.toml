@@ -20,6 +20,7 @@ pagenor-compose = { workspace = true }
 pagenor-render = { workspace = true }
 pagenor-format = { workspace = true }
 pagenor-epub = { workspace = true }
+pagenor-pptx = { workspace = true }
 pagenor-textimport = { workspace = true }
 pagenor-pdf = { workspace = true }
 pagenor-tools = { workspace = true }

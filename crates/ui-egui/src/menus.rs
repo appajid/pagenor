@@ -28,6 +28,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
     ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
+    ("app.exportPptx", "Export PowerPoint…", None, "{path?, …file.exportPptx options} — editable slides; no parameters opens export options"),
     ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
     ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
     ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
@@ -196,6 +197,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.exportFixedEpub",
             "ui:app.exportInteractivePdf",
             "ui:app.exportHtml",
+            "ui:app.exportPptx",
             "ui:app.exportXml",
             "ui:app.exportText",
             ">Export",
@@ -763,6 +765,17 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "app.exportFixedEpub" => export_bytes(app, p, "epub", "file.exportFixedEpub"),
         "app.exportHtml" => export_bytes(app, p, "html", "file.exportHtml"),
+        "app.exportPptx" => {
+            if p.as_object().is_some_and(serde_json::Map::is_empty) {
+                if app.session.active().is_none() {
+                    return Some(Err("no document".into()));
+                }
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("exportPptx", json!({})));
+                Ok(Value::Null)
+            } else {
+                export_bytes(app, p, "pptx", "file.exportPptx")
+            }
+        }
         "app.exportXml" => export_bytes(app, p, "xml", "file.exportXml"),
         "app.printBooklet" => export_bytes(app, p, "pdf", "file.printBooklet"),
         "app.menus" => {
@@ -1498,7 +1511,8 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
-    let mut params = json!({});
+    let mut params = if cmd == "file.exportPptx" { p.clone() } else { json!({}) };
+    params.as_object_mut().ok_or("export parameters must be an object")?.remove("path");
     if cmd == "file.exportText" {
         let txt = path.to_ascii_lowercase().ends_with(".txt");
         params["format"] = json!(if txt { "txt" } else { "rtf" });
@@ -1509,7 +1523,7 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
         None => pagenor_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default()),
     };
     match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len()})),
+        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "slides": r["slides"], "warnings": r["warnings"]})),
         None => Err("no writer".into()),
     }
 }

@@ -18,7 +18,8 @@ use pagenor_doc::{AssetId, Document, ParaAttrs, Story};
 use serde_json::{Value, json};
 
 pub use pagenor_doc::file_type::MIME;
-pub const VERSION: u32 = 2;
+/// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering.
+pub const VERSION: u32 = 3;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
@@ -76,6 +77,7 @@ fn ext_for(mime: &str) -> &'static str {
         "image/webp" => "webp",
         "image/tiff" => "tif",
         "application/pdf" => "pdf",
+        "application/postscript" => "eps",
         "image/svg+xml" => "svg",
         _ => "bin",
     }
@@ -406,6 +408,37 @@ mod tests {
     use pagenor_doc::{Asset, ParaFormat, SpreadRef};
 
     #[test]
+    fn eps_source_and_preview_documents_keep_current_format_capability() {
+        let mut d = Document::new(&NewDocument::default());
+        let version = |d: &Document| {
+            let bytes = save(d).unwrap();
+            let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut meta = String::new();
+            z.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+            serde_json::from_str::<Value>(&meta).unwrap()["version"].as_u64().unwrap()
+        };
+        assert_eq!(version(&d), u64::from(VERSION));
+        let aid = AssetId(d.alloc());
+        let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n".to_vec();
+        d.assets.insert(
+            aid,
+            Arc::new(Asset {
+                id: aid,
+                name: "logo.eps".into(),
+                mime: "image/png".into(),
+                link: None,
+                data: Arc::new(source.clone()),
+                pixels: Some((40, 20)),
+                page: 0,
+            }),
+        );
+        assert_eq!(version(&d), u64::from(VERSION), "retain current capability even when legacy metadata says PNG");
+        assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.as_slice(), source);
+        Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"\x89PNG\r\n\x1a\npreview".to_vec());
+        assert_eq!(version(&d), u64::from(VERSION), "saving never downgrades new paragraph defaults");
+    }
+
+    #[test]
     fn roundtrip_with_assets() {
         let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
         let lid = d.default_layer();
@@ -626,14 +659,26 @@ mod tests {
     #[test]
     fn rejects_garbage_and_newer_versions() {
         assert!(load(b"nope").is_err());
-        let mut buf = Cursor::new(Vec::new());
-        {
-            let mut z = zip::ZipWriter::new(&mut buf);
-            z.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
-            z.write_all(br#"{"version": 99}"#).unwrap();
-            z.finish().unwrap();
+        for version in [99u64, u64::from(u32::MAX) + 2] {
+            let mut buf = Cursor::new(Vec::new());
+            {
+                let mut z = zip::ZipWriter::new(&mut buf);
+                z.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+                z.write_all(json!({"version": version}).to_string().as_bytes()).unwrap();
+                z.finish().unwrap();
+            }
+            assert!(matches!(load(&buf.into_inner()), Err(FormatError::TooNew(v)) if v == version));
         }
-        assert!(matches!(load(&buf.into_inner()), Err(FormatError::TooNew(99))));
+    }
+
+    #[test]
+    fn format_two_keeps_new_paragraph_defaults_when_read_by_format_three() {
+        let d = Document::new(&NewDocument::default());
+        let json = serde_json::to_vec(&d).unwrap();
+        let bytes = archive(&[("meta.json", br#"{"format":"pagenor","version":2}"#), ("document.json", &json)]);
+        let loaded = load(&bytes).unwrap();
+        assert_eq!(loaded.styles, d.styles);
+        assert_eq!(loaded.settings, d.settings);
     }
 
     fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {

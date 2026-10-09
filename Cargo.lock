@@ -3001,6 +3001,7 @@ dependencies = [
  "pagenor-idml",
  "pagenor-images",
  "pagenor-pdf",
+ "pagenor-pptx",
  "pagenor-render",
  "pagenor-textimport",
  "pagenor-tools",
@@ -3071,6 +3072,7 @@ dependencies = [
  "pagenor-color",
  "pagenor-doc",
  "pagenor-geom",
+ "pagenor-images",
  "quick-xml",
  "thiserror 2.0.21",
  "zip",
@@ -3120,6 +3122,24 @@ dependencies = [
  "pagenor-images",
  "thiserror 2.0.21",
  "tiff",
+]
+
+[[package]]
+name = "pagenor-pptx"
+version = "0.2.1"
+dependencies = [
+ "image",
+ "pagenor-color",
+ "pagenor-compose",
+ "pagenor-doc",
+ "pagenor-fonts",
+ "pagenor-geom",
+ "pagenor-images",
+ "quick-xml",
+ "serde_json",
+ "skrifa 0.47.0",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

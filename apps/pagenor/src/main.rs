@@ -112,6 +112,10 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "dataMerge" => {
             &[OpenFilter { name: "Data source (CSV, TSV, text, Excel, JSON)", extensions: &["csv", "tsv", "tab", "txt", "xlsx", "xls", "json"] }]
         }
+        "relink" => &[OpenFilter {
+            name: "Graphics",
+            extensions: &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"],
+        }],
         "place" => &[
             OpenFilter {
                 name: "Graphics and text",
@@ -251,6 +255,16 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relink_open_dialog_lists_graphics() {
+        let filters = super::open_filters("relink");
+        let exts: Vec<&str> = filters.iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
+        for ext in ["png", "jpg", "tif", "psd", "svg", "pdf", "ai", "eps"] {
+            assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
+        }
+        assert!(!exts.contains(&"pagenor") && !exts.contains(&"idml"));
+    }
+
     #[test]
     fn data_merge_open_dialog_lists_table_extensions() {
         let filters = super::open_filters("dataMerge");

@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P08.1: Adapted #150/#170 EPS/Links and editable PowerPoint export. The Links
+  picker lists graphics; replacement batches prepare before mutation. EPS retains
+  source and uses previews. Export options/warnings preserve document font scopes
+  and native format migration; new saves use format 3. Local gate: 1,207 passed,
+  3 ignored; 18 WASM packages, all seven steps. Windows/Linux strict UI-library
+  Clippy checks pass. Inspected CPU Links/dialogs and pointer Reflow/embedding
+  choices produce editable slide XML. PostScript interpretation, native PowerPoint
+  and native platform/browser execution remain milestone checks.
+  [Scope](docs/pagenor/EXPORT_INTERCHANGE.md).
+
 - P09.4: Adapted upstream #128/#118 for RTL table defaults/panel controls,
   document-binding story defaults, PDF/A raster interpolation and typing/story/
   page contracts. Pagenor recovery-aware quit and damaged-raster validation stay.
