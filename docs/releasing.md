@@ -1,9 +1,10 @@
 # Building Pagenor release packages
 
 The source version is the workspace Cargo.toml value; see
-[pagenor/VERSIONING.md](pagenor/VERSIONING.md). The 0.3.0 checkpoint
-is local work, not published downloads. Keep routine development local and run
-the native macOS/Windows/Linux matrix at the owner's completed milestone.
+[pagenor/VERSIONING.md](pagenor/VERSIONING.md). Version 0.3.0 is a development preview, published to GitHub at the owner’s
+2026-10-10 request. Its release notes distinguish the verified Apple-silicon Mac
+development bundle from pending Windows/Linux/FreeBSD packages. Keep routine
+development local and run the native matrix at the completed milestone.
 
 ## Local prerequisites and commands
 
@@ -70,5 +71,9 @@ At the milestone, the release workflow builds macOS, Windows, Linux, Flatpak,
 FreeBSD and web artifacts, then creates a draft with SHA256SUMS.txt. Unsigned jobs
 (version, Linux, Flatpak, FreeBSD and web) need no release secrets/environment;
 macOS, Windows and draft publishing keep the restricted release environment.
-A published version is never overwritten. Publishing/remote CI is not part of
-this local task; native installer/signing/font/GUI tests remain phase exit gates.
+A published version is never overwritten. The owner authorized the v0.3.0 development prerelease and current source upload
+on 2026-10-10. Its known validation scope is recorded in the release notes; it
+does not complete the native installer/signing/font/GUI phase exit gates. Do not
+push the release branch again for an already published version: that pipeline
+refuses to replace published artifacts. Future release-version changes require
+the owner’s version-hold instruction to change.

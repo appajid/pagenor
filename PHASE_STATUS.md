@@ -7,7 +7,9 @@ in `ROADMAP.md` are implementation history, not proof that a phase exit gate pas
 Owner workflow: make and test changes locally on macOS, keeping the shared code
 compatible with Windows/Linux and WASM. Publish to GitHub and run the native
 macOS/Windows/Linux matrix at a completed milestone; routine task commits stay
-local. A task completion does not by itself complete a roadmap milestone.
+local. On 2026-10-10 the owner additionally authorized publishing the current
+0.3.0 development preview and source to GitHub; native package and phase exit
+gates remain open. A task completion does not by itself complete a roadmap milestone.
 
 | Phase | Priority | Work | Status / evidence |
 |---|---|---|---|

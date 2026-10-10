@@ -52,8 +52,11 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 ## Downloads and build formats
 
 Pagenor's [release page](https://github.com/appajid/pagenor/releases) is the source
-for published Pagenor builds and their notes. The current 0.3.0 work is local;
-new installers have not been published. Build locally with the Quick start above.
+for Pagenor builds and their notes. Version **0.3.0 is a development preview**:
+its Apple-silicon macOS development bundle is ad-hoc signed and not notarized.
+Windows/Linux/FreeBSD installers remain pending native package validation; the
+release notes identify the available artifacts and completed checks. Build from
+source with the Quick start below.
 Do not substitute another project's downloads for Pagenor.
 
 The release pipeline prepares these formats when run at a completed milestone.

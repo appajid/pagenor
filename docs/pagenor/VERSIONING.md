@@ -27,7 +27,11 @@ The native document format version is separate. Changing the application version
 does not migrate or rename `.pgnr` documents. File-format changes require their
 own compatibility/migration work and tests.
 
-Local development commits stay local. Publish tags, releases and platform builds
-at the owner's milestone, following PHASE_STATUS.md. A GitHub release requires
-actual native matrix/package validation; signing/notarization status must be
-reported accurately. Never reuse a published version for different artifacts.
+Routine development stays local. The owner authorized a **v0.3.0 development
+prerelease** on 2026-10-10, with matching source, the verified Apple-silicon Mac
+development build, release notes and checksums. GitHub’s prerelease flag does
+not change the 0.3.0 Cargo version. Release notes must identify pending native
+platform/package validation and signing/notarization status accurately. A stable
+cross-platform release requires the actual native matrix/package validation at
+the milestone, following PHASE_STATUS.md. Never reuse a published version for
+different artifacts.

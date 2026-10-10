@@ -1,6 +1,7 @@
 # Pagenor changelog
 
-Versions below are local development checkpoints; no new release is published.
+Version 0.3.0 is a development preview; it is not a completed cross-platform
+release milestone. GitHub release notes record the available artifacts and checks.
 
 ## 0.3.0 — 2026-10-10
 

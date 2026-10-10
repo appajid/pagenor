@@ -1,5 +1,13 @@
 # Pagenor roadmap
 
+- P10.3: Prepare the owner-authorized GitHub v0.3.0 development prerelease, with
+  the verified Apple-silicon Mac bundle, matching source, release notes and SHA-256
+  checksums. Version stays 0.3.0. Release notes explicitly retain pending native
+  Windows/Linux/FreeBSD package/signing checks; no milestone is declared complete.
+  Restore the pre-existing actionlint archive checksum and checkout pin in
+  packaging lint before publication. Local seven-step gate and eight packaging
+  contracts pass; GitHub check results are reported separately.
+
 - P10.2: Adapted the two remaining upstream v0.4.0 release-note items, #132/#135:
   FreeBSD tar packaging, Flatpak bundles for x86_64/aarch64, AppImage zsync and
   truthful owner downloads/build documentation. All 34 listed items are accounted
