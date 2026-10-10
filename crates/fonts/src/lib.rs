@@ -455,6 +455,18 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_family_name_wins_over_the_name_without_its_format_suffix() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("Pagenor Test Suffix (OTF)", &['a']).unwrap());
+        assert_eq!(db.face("Pagenor Test Suffix (OTF)", "Regular").family, "Pagenor Test Suffix (OTF)");
+        assert_eq!(db.face(&format!("{DEFAULT_FAMILY} (TT)"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} (T1)")));
+        assert!(!db.has_family(&format!("{DEFAULT_FAMILY} (Bold)")));
+        assert!(!db.has_family("Pagenor Test Suffix"));
+    }
+
+    #[test]
     fn outlines_and_metrics() {
         let db = FontDb::global();
         let face = db.face(DEFAULT_FAMILY, "Bold");

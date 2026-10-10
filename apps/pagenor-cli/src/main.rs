@@ -34,6 +34,13 @@ mod perf;
 use pagenor_engine::Session;
 use serde_json::{Value, json};
 
+/// Usage for explicit help and invalid commands.
+const USAGE: &str = "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli links\n       pagenor-cli --version";
+
+fn usage_footer() -> String {
+    format!("\nProject: {}  ·  Issues: {}", pagenor_engine::links::GITHUB, pagenor_engine::links::ISSUES)
+}
+
 /// stdout went away. A reader that stopped early (a closed pipe) ends the program quietly, as
 /// ripgrep does; any other write error is reported.
 fn stdout_failed(e: std::io::Error) -> ! {
@@ -76,11 +83,14 @@ fn main() -> ExitCode {
             outln!("Project   {GITHUB}\nIssues    {ISSUES}");
             ExitCode::SUCCESS
         }
+        Some("--help" | "-h" | "help") => {
+            outln!("{USAGE}");
+            outln!("{}", usage_footer());
+            ExitCode::SUCCESS
+        }
         _ => {
-            eprintln!(
-                "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli links\n       pagenor-cli --version"
-            );
-            eprintln!("\nProject: {}  ·  Issues: {}", pagenor_engine::links::GITHUB, pagenor_engine::links::ISSUES);
+            eprintln!("{USAGE}");
+            eprintln!("{}", usage_footer());
             ExitCode::FAILURE
         }
     }

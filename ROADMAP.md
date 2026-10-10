@@ -35,6 +35,17 @@
   [Per-item audit](docs/pagenor/UPSTREAM_040_AUDIT.md) and
   [version policy](docs/pagenor/VERSIONING.md).
 
+- P09.7: Adapted 23 new upstream proposals: eight UI improvements, six compatibility
+  fixes and nine multipage/composition changes. Quick Apply, compact controls, A6,
+  scrolling dialogs, Paragraph Rules and safe Windows caption actions accompany
+  scoped Smart Text Reflow, spanning bands, tabs/page breaks, column rules and table
+  style/fitting corrections. Font scopes/lazy discovery, `.pgnr`, recovery and version
+  **0.3.0** remain. All seven local gates pass: 1,443 tests, 3 ignored; 20 WASM
+  packages. Inspected CPU UI and pointer/undo/import regressions pass; native
+  Windows/Linux execution remains a milestone check. The local macOS development
+  app build, plist and ad-hoc signature verification pass. No publication.
+  [Scope, provenance and evidence](docs/pagenor/UPSTREAM_EDITOR_PUBLISHING.md).
+
 - P09.6: Completed ten selected UI proposals sequentially: PDF export options,
   clickable swatches/colour pickers, canvas context actions, paragraph rules,
   stable control-bar transitions, Interactive PDF workspace, shortcut handling

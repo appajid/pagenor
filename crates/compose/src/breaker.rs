@@ -254,7 +254,7 @@ fn cjk_break(a: &Glyph, b: &Glyph, sp: &Spacing) -> bool {
 
 pub fn is_forced(c: char) -> bool {
     use pagenor_doc::story::*;
-    matches!(c, FORCED_LINE_BREAK | COLUMN_BREAK | FRAME_BREAK | PAGE_BREAK)
+    c == FORCED_LINE_BREAK || is_break_char(c)
 }
 
 /// Optical margin protrusion of `c` as fractions of its advance: (left edge, right edge).
@@ -449,7 +449,7 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
             return b;
         }
     }
-    greedy(glyphs, hyph_after, sp, width)
+    greedy(glyphs, hyph_after, sp, width, &|_, _, _| 0.0)
 }
 
 /// Upper bound on the hyphen-count states tracked per breakpoint.
@@ -693,8 +693,9 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
     if out.is_empty() {
         out.push(Break { start: 0, end: n, next: n, hyphen: false, forced: true });
     }
-    // Lines produced past the paragraph end (e.g. a trailing forced break) are dropped.
-    let trailing_forced = glyphs.last().is_some_and(|g| is_forced(g.ch));
+    // Lines produced past the paragraph end are dropped, except the empty line after a trailing
+    // forced line break (a trailing column, frame or page break ends the paragraph).
+    let trailing_forced = glyphs.last().is_some_and(|g| g.ch == pagenor_doc::story::FORCED_LINE_BREAK);
     out.retain(|b| b.start < n || (b.start == n && trailing_forced));
     out
 }
@@ -708,7 +709,16 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
 }
 
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
-pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn Fn(usize) -> f64) -> Vec<Break> {
+///
+/// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
+/// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
+pub fn greedy(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    width: &dyn Fn(usize) -> f64,
+    tab: &dyn Fn(usize, f64, usize) -> f64,
+) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::new();
     let mut start = 0;
@@ -747,17 +757,18 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 i += 1;
                 continue;
             }
+            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
             let hang_r = right_hang(g, sp);
             let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
             if sp.kinsoku_priority == 2
-                && x + g.adv - hang_r > w
+                && x + adv - hang_r > w
                 && let Some((end, hyphen)) = last_natural
             {
                 brk = Some((end, hyphen, false));
                 break;
             }
-            if x + g.adv - hang_r > w + available.max(0.0)
+            if x + adv - hang_r > w + available.max(0.0)
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
@@ -772,7 +783,7 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
                 });
                 break;
             }
-            x += g.adv;
+            x += adv;
             shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
@@ -809,9 +820,10 @@ pub fn greedy(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn F
         start = next;
         line += 1;
     }
-    // A forced break as the very last glyph leaves an empty final line (InDesign shows it).
+    // A forced line break as the very last glyph leaves an empty final line (InDesign shows it);
+    // a column, frame or page break there ends the paragraph.
     if let Some(last) = glyphs.last()
-        && is_forced(last.ch)
+        && last.ch == pagenor_doc::story::FORCED_LINE_BREAK
     {
         out.push(Break { start: n, end: n, next: n, hyphen: false, forced: true });
     }

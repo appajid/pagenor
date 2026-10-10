@@ -462,6 +462,14 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.text_story_mut(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let mut r = r.start.min(st.len())..r.end.min(st.len());
+        // Between a break character and its return is the end of that paragraph: typing there goes
+        // to the start of the next one.
+        if r.is_empty()
+            && st.text.get(r.start..).is_some_and(|t| t.starts_with('\n'))
+            && st.text.get(..r.start).and_then(|t| t.chars().next_back()).is_some_and(pagenor_doc::is_break_char)
+        {
+            r = r.start + 1..r.start + 1;
+        }
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -484,8 +492,13 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        // A column, frame or page break ends its paragraph.
+        let mut text = if text.contains(pagenor_doc::is_break_char) {
+            pagenor_doc::end_paragraphs_at_breaks(&text, st.text.get(r.end..).and_then(|t| t.chars().next()))
+        } else {
+            text.clone()
+        };
         // Typing next to a table anchor starts a paragraph of its own.
-        let mut text = text.clone();
         let mut trail = 0;
         if t.cell.is_none() && !text.is_empty() && st.table_at(r.start).is_some() {
             let pi = st.para_at(r.start);
@@ -638,6 +651,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             let start = if word { prev_word(&st.text, r.start) } else { prev_char(&st.text, r.start) };
             start..r.start
         };
+        let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
             let at = super::changes::mark_deleted(st, r.clone());
@@ -649,6 +663,20 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
+}
+
+/// A break character and the return after it end one paragraph: deleting either deletes both.
+fn with_break_pair(text: &str, r: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let Some(del) = text.get(r.clone()) else { return r };
+    let mut chars = del.chars();
+    match (chars.next(), chars.next()) {
+        (Some('\n'), None) => match text.get(..r.start).and_then(|t| t.chars().next_back()) {
+            Some(b) if pagenor_doc::is_break_char(b) => r.start.saturating_sub(b.len_utf8())..r.end,
+            _ => r,
+        },
+        (Some(b), None) if pagenor_doc::is_break_char(b) && text.get(r.end..).is_some_and(|t| t.starts_with('\n')) => r.start..r.end + 1,
+        _ => r,
+    }
 }
 
 pub fn next_char(s: &str, i: usize) -> usize {
@@ -902,24 +930,39 @@ pub(crate) fn apply_char_attrs(d: &mut pagenor_doc::Document, targets: &[Target]
 }
 
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
+    let empty = serde_json::Map::new();
+    let obj = attrs.as_object().unwrap_or(&empty);
+    // A rule object changes only the rule fields it names, so each paragraph gets its own attrs
+    // over its resolved rule; this pass validates them.
     let mut a = ParaAttrs::default();
-    if let Some(o) = attrs.as_object() {
-        for (k, v) in o {
-            a.set_json(k, v).map_err(|e| bad("type.para", e))?;
-        }
+    for (k, v) in obj {
+        a.set_json_over(k, v, &pagenor_doc::ParaProps::default()).map_err(|e| bad("type.para", e))?;
     }
     // `null` removes the override (back to the style's value).
-    let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+    let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
     let targets = format_targets(s);
     s.edit(|d, _| {
+        let styles = d.styles.clone();
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
+                let mut error = None;
                 st.format_paras(t.range.clone(), |p| {
+                    let (current, _) = styles.resolve_para(p);
+                    let mut a = a.clone();
+                    for (k, v) in obj {
+                        if let Err(e) = a.set_json_over(k, v, &current) {
+                            error = Some(e);
+                            return;
+                        }
+                    }
                     p.para.merge(&a);
                     for k in &cleared {
                         let _ = p.para.set_json(k, &Value::Null);
                     }
                 });
+                if let Some(e) = error {
+                    return Err(bad("type.para", e));
+                }
             }
         }
         ok()
@@ -1609,6 +1652,47 @@ mod autocorrect_tests {
 }
 
 #[cfg(test)]
+mod break_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Type › Insert Break Character: the break ends its paragraph, the caret starts the next one.
+    #[test]
+    fn inserted_break_ends_its_paragraph() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "OneTwo\nThree"})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let story = |s: &Session| s.doc().unwrap().doc.stories[&sid].clone();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 3, "focus": 3})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e011}", "raw": true})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nTwo\nThree");
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, "One\u{e011}\n".len());
+        // At the end of a paragraph the break takes the place of its return.
+        let at = story(&s).text.find("\nThree").unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e002}", "raw": true})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "One\u{e011}\nTwo\u{e002}\nThree");
+        assert_eq!(st.paras.len(), 3);
+        st.check().unwrap();
+        // Typing after the break goes to the next paragraph; deleting the break or its return
+        // removes both.
+        let at = "One\u{e011}".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nxTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at + 1, "focus": at + 1})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": "OnexTwo".len(), "focus": "OnexTwo".len()})).unwrap();
+        s.execute("text.delete", &json!({"forward": true})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwoThree");
+    }
+}
+
+#[cfg(test)]
 mod language_tests {
     use serde_json::json;
 
@@ -1969,5 +2053,55 @@ mod story_query_contract_tests {
         assert_eq!(s.execute("story.get", &json!({"frame":f["id"]})).unwrap()["text"], "");
         s.execute("text.select", &json!({"story":f["story"],"anchor":0})).unwrap();
         assert_eq!(s.execute("story.get", &json!({})).unwrap()["text"], "");
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn a_partial_rule_edit_keeps_the_other_fields() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let rule = json!({"on": true, "weight": 3.0, "color": "[Black]", "tint": 0.5, "columnWidth": false, "offset": 4.0, "leftIndent": 6.0, "rightIndent": 2.0});
+        s.execute("style.paragraph.create", &json!({"name": "Ruled", "para": {"ruleBelow": rule}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "One\nTwo"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Ruled"})).unwrap();
+        // Local: only the colour changes; the rest is inherited from the style.
+        s.execute("type.para", &json!({"attrs": {"ruleBelow": {"color": "[Registration]"}}})).unwrap();
+        let attrs = s.execute("type.selectionAttrs", &json!({})).unwrap();
+        let mut want = rule.clone();
+        want["color"] = json!("[Registration]");
+        assert_eq!(attrs["para"]["ruleBelow"], want);
+        assert_eq!(attrs["para"]["ruleAbove"]["on"], false, "the other rule is untouched");
+        // Style: only the weight changes.
+        s.execute("style.paragraph.edit", &json!({"name": "Ruled", "para": {"ruleBelow": {"weight": 1.5}}})).unwrap();
+        let st = s.doc().unwrap().doc.styles.para("Ruled").cloned().unwrap();
+        let below = serde_json::to_value(st.para.rule_below.unwrap()).unwrap();
+        let mut want = rule.clone();
+        want["weight"] = json!(1.5);
+        assert_eq!(below, want);
+        assert!(s.execute("type.para", &json!({"attrs": {"ruleBelow": {"thickness": 2}}})).is_err(), "unknown rule field");
+    }
+
+    #[test]
+    fn rule_above_width_follows_column_or_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Short"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let mut widths = vec![];
+        for column in [true, false] {
+            s.execute("type.para", &json!({"ruleAbove": {"on": true, "columnWidth": column}})).unwrap();
+            let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+            widths.push(cs.frames[0].decos[0].rect.width());
+        }
+        assert!((widths[0] - 328.0).abs() < 1e-6, "column: {widths:?}");
+        assert!(widths[1] < 100.0, "text: {widths:?}");
     }
 }

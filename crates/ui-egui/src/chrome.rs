@@ -5,7 +5,7 @@ use pagenor_doc::{Align, Content};
 use pagenor_geom::Unit;
 use serde_json::json;
 
-use crate::panels::{self, SelInfo};
+use crate::panels;
 use crate::theme::{Tokens, semibold};
 use crate::widgets::{caption, measure, number};
 use crate::{DesignApp, icons};
@@ -18,7 +18,14 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
         .exact_size(43.0)
         .frame(egui::Frame::NONE.fill(t.app_bar).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: 7 }))
         .show(ui, |ui| {
-            let full = ui.max_rect();
+            let bar_rect = ui.max_rect();
+            let mut full = bar_rect;
+            if app.custom_titlebar {
+                full.max.x = (full.right() - 146.0).max(full.left() + 1.0);
+            }
+            let mut body_ui = ui.new_child(egui::UiBuilder::new().id_salt("app_bar_body").max_rect(full));
+            body_ui.set_clip_rect(body_ui.clip_rect().intersect(full));
+            let ui = &mut body_ui;
             let mut menus_end = full.min.x;
             let mut tools_start = full.max.x;
             // The right-hand controls' width, measured last frame: in a window too narrow for them
@@ -58,52 +65,67 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         ui.add_space(8.0);
                         let current = app.ui.workspace.clone();
                         let shown = crate::i18n::workspace_name(&app.ui.language, &current);
-                        ui.menu_button(crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)), |ui| {
-                            let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
-                            for w in
-                                ["Essentials", "Advanced", "Book", "Digital Publishing", "Interactive for PDF", "Printing and Proofing", "Typography"]
-                                    .into_iter()
-                                    .map(str::to_string)
-                                    .chain(customs.iter().cloned())
-                            {
+                        crate::menus::menu_button(
+                            ui,
+                            crate::rtl::widget(ui, egui::RichText::new(format!("{shown} ▾")).font(semibold(11.5)).color(t.text)),
+                            |ui| {
+                                let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
+                                for w in [
+                                    "Essentials",
+                                    "Advanced",
+                                    "Book",
+                                    "Digital Publishing",
+                                    "Interactive for PDF",
+                                    "Printing and Proofing",
+                                    "Typography",
+                                ]
+                                .into_iter()
+                                .map(str::to_string)
+                                .chain(customs.iter().cloned())
+                                {
+                                    if ui
+                                        .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
+                                        .clicked()
+                                    {
+                                        let _ = app.run("window.workspace", json!({"name": w}));
+                                        ui.close();
+                                    }
+                                }
+                                ui.separator();
                                 if ui
-                                    .selectable_label(w == current, crate::rtl::widget(ui, crate::i18n::workspace_name(&app.ui.language, &w)))
+                                    .button(crate::rtl::widget(
+                                        ui,
+                                        format!(
+                                            "{} {}",
+                                            crate::i18n::tr(&app.ui.language, "Reset"),
+                                            crate::i18n::workspace_name(&app.ui.language, &current)
+                                        ),
+                                    ))
                                     .clicked()
                                 {
-                                    let _ = app.run("window.workspace", json!({"name": w}));
+                                    let _ = app.run("window.resetWorkspace", json!({}));
                                     ui.close();
                                 }
-                            }
-                            ui.separator();
-                            if ui
-                                .button(crate::rtl::widget(
-                                    ui,
-                                    format!(
-                                        "{} {}",
-                                        crate::i18n::tr(&app.ui.language, "Reset"),
-                                        crate::i18n::workspace_name(&app.ui.language, &current)
-                                    ),
-                                ))
-                                .clicked()
-                            {
-                                let _ = app.run("window.resetWorkspace", json!({}));
-                                ui.close();
-                            }
-                            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
-                                let _ = app.run("window.newWorkspace", json!({}));
-                                ui.close();
-                            }
-                            if !customs.is_empty() {
-                                ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")), |ui| {
-                                    for w in &customs {
-                                        if ui.button(w).clicked() {
-                                            let _ = app.run("window.deleteWorkspace", json!({"name": w}));
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                            }
-                        });
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Workspace…"))).clicked() {
+                                    let _ = app.run("window.newWorkspace", json!({}));
+                                    ui.close();
+                                }
+                                if !customs.is_empty() {
+                                    crate::menus::menu_button(
+                                        ui,
+                                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Workspace")),
+                                        |ui| {
+                                            for w in &customs {
+                                                if ui.button(w).clicked() {
+                                                    let _ = app.run("window.deleteWorkspace", json!({"name": w}));
+                                                    ui.close();
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
+                            },
+                        );
                         ui.add_space(6.0);
                         if icons::button(ui, "share", 22.0, false, crate::i18n::tr(&app.ui.language, "Share")).clicked() {
                             app.status("Export a PDF, IDML or package to share — no cloud account needed.");
@@ -128,13 +150,110 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             let galley = crate::rtl::plain(ui.ctx(), &title, egui::FontId::proportional(11.5), t.text);
             let w = galley.size().x;
             let cx = full.center().x;
+            if app.custom_titlebar {
+                let drag = egui::Rect::from_min_max(egui::pos2(menus_end, full.top()), egui::pos2(tools_start.max(menus_end), full.top() + 36.0));
+                let response = ui.interact(drag, egui::Id::new("window_title_drag"), Sense::click_and_drag());
+                if response.double_clicked() {
+                    let on = !ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    let _ = app.run("window.maximize", json!({"on": on}));
+                } else if response.drag_started_by(egui::PointerButton::Primary) {
+                    let _ = app.run("window.drag", json!({}));
+                }
+                app.flush_window_commands(ui.ctx());
+            }
             if cx - w / 2.0 > menus_end + 12.0 && cx + w / 2.0 < tools_start - 12.0 {
                 ui.painter().galley(egui::pos2(cx - w / 2.0, full.min.y + 18.0 - galley.size().y / 2.0), galley, t.text);
+            }
+            if app.custom_titlebar {
+                let caption_rect = egui::Rect::from_min_max(
+                    egui::pos2(bar_rect.right() - 146.0, bar_rect.top()),
+                    egui::pos2(bar_rect.right(), bar_rect.top() + 36.0),
+                );
+                let mut caption_ui = ui.new_child(
+                    egui::UiBuilder::new().id_salt("window_caption").max_rect(caption_rect).layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                caption_ui.set_clip_rect(caption_rect);
+                caption_buttons(app, &mut caption_ui);
             }
         });
     let r = resp.response.rect;
     ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - 7.0), r.max), 0.0, t.pasteboard);
     ui.painter().line_segment([egui::pos2(r.min.x, r.max.y), egui::pos2(r.max.x, r.max.y)], Stroke::new(1.0, t.border));
+}
+
+/// Windows caption buttons. The macOS traffic lights remain native.
+fn caption_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+    let spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    for (command, label) in
+        [("window.close", "Close"), ("window.maximize", if maximized { "Restore" } else { "Maximize" }), ("window.minimize", "Minimize")]
+    {
+        let (rect, _) = ui.allocate_exact_size(vec2(46.0, 36.0), Sense::hover());
+        let response = ui.interact(rect, egui::Id::new(command), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+        let hovered = response.hovered();
+        if hovered {
+            ui.painter().rect_filled(rect, 0.0, if command == "window.close" { Color32::from_rgb(196, 43, 28) } else { t.hover });
+        }
+        let color = if hovered && command == "window.close" { Color32::WHITE } else { t.text };
+        let stroke = Stroke::new(1.0, color);
+        let icon = egui::Rect::from_center_size(rect.center(), vec2(10.0, 10.0));
+        match command {
+            "window.close" => {
+                ui.painter().line_segment([icon.left_top(), icon.right_bottom()], stroke);
+                ui.painter().line_segment([icon.right_top(), icon.left_bottom()], stroke);
+            }
+            "window.maximize" if maximized => {
+                let back = icon.translate(vec2(2.0, -2.0));
+                ui.painter().line_segment([back.left_top(), back.right_top()], stroke);
+                ui.painter().line_segment([back.right_top(), back.right_bottom()], stroke);
+                ui.painter().rect_stroke(icon, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+            "window.maximize" => {
+                ui.painter().rect_stroke(icon, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+            _ => {
+                ui.painter().line_segment([icon.left_center(), icon.right_center()], stroke);
+            }
+        }
+        if response.clicked() {
+            let params = if command == "window.maximize" { json!({"on": !maximized}) } else { json!({}) };
+            let _ = app.run(command, params);
+            app.flush_window_commands(ui.ctx());
+        }
+        response.on_hover_text(crate::i18n::tr(&app.ui.language, label));
+    }
+    ui.spacing_mut().item_spacing.x = spacing;
+    ui.add_space(8.0);
+}
+
+/// Undecorated Windows windows need resize grips as well as caption controls.
+pub(crate) fn resize_borders(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if ui.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+        return;
+    }
+    let r = ui.ctx().content_rect();
+    let edge = 4.0;
+    let corner = 10.0;
+    let rect = |x0, y0, x1, y1| egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+    for (name, region, cursor) in [
+        ("northWest", rect(r.left(), r.top(), r.left() + corner, r.top() + corner), egui::CursorIcon::ResizeNwSe),
+        ("northEast", rect(r.right() - corner, r.top(), r.right(), r.top() + corner), egui::CursorIcon::ResizeNeSw),
+        ("southWest", rect(r.left(), r.bottom() - corner, r.left() + corner, r.bottom()), egui::CursorIcon::ResizeNeSw),
+        ("southEast", rect(r.right() - corner, r.bottom() - corner, r.right(), r.bottom()), egui::CursorIcon::ResizeNwSe),
+        ("north", rect(r.left() + corner, r.top(), r.right() - corner, r.top() + edge), egui::CursorIcon::ResizeVertical),
+        ("south", rect(r.left() + corner, r.bottom() - edge, r.right() - corner, r.bottom()), egui::CursorIcon::ResizeVertical),
+        ("west", rect(r.left(), r.top() + corner, r.left() + edge, r.bottom() - corner), egui::CursorIcon::ResizeHorizontal),
+        ("east", rect(r.right() - edge, r.top() + corner, r.right(), r.bottom() - corner), egui::CursorIcon::ResizeHorizontal),
+    ] {
+        let response = ui.interact(region, egui::Id::new(("window_resize", name)), Sense::drag()).on_hover_cursor(cursor);
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            let _ = app.run("window.resize", json!({"edge": name}));
+            app.flush_window_commands(ui.ctx());
+        }
+    }
 }
 
 impl DesignApp {
@@ -163,216 +282,23 @@ pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui, show: bool) {
         }
         // Wider than the window: the bar scrolls sideways.
         crate::widgets::overflow_scrolling(ui);
-        egui::ScrollArea::horizontal().id_salt("control_bar_scroll").auto_shrink([false, true]).show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                let text_mode =
-                    matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
-                if text_mode {
-                    control_text(app, ui);
-                } else {
-                    control_object(app, ui);
-                }
+        egui::ScrollArea::horizontal()
+            .id_salt("control_bar_scroll")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .max_height(crate::object_control::HEIGHT)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    let text_mode =
+                        matches!(app.session.tool_id(), "type" | "verticalType") || app.session.active().is_some_and(|d| d.selection.text.is_some());
+                    if text_mode {
+                        control_text(app, ui);
+                    } else {
+                        crate::object_control::show(app, ui);
+                    }
+                });
             });
-        });
     });
-}
-
-/// A field label drawn as a tool icon (hover for its name).
-fn icon_caption(ui: &mut egui::Ui, icon: &str, tip: &str) {
-    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-    icons::paint(ui.painter(), r, icon, Tokens::get(ui.ctx()).icon);
-    resp.on_hover_ui(|ui| {
-        crate::rtl::label(ui, tip);
-    });
-}
-
-fn control_object(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    let info = panels::sel_info(app);
-    // Reference point proxy.
-    let (r, _) = ui.allocate_exact_size(vec2(30.0, 44.0), Sense::hover());
-    let t = Tokens::get(ui.ctx());
-    icons::paint(ui.painter(), egui::Rect::from_center_size(r.center(), vec2(26.0, 26.0)), "ref-point", t.icon);
-    ui.painter().rect_filled(egui::Rect::from_center_size(r.center() + vec2(-7.8, -7.8), vec2(4.0, 4.0)), 0.0, t.text_strong);
-    let (x, y, w, h) = match &info {
-        Some(SelInfo { page_rect, .. }) => (Some(page_rect.x0), Some(page_rect.y0), Some(page_rect.width()), Some(page_rect.height())),
-        None => (None, None, None, None),
-    };
-    egui::Grid::new("ctl_xywh").num_columns(4).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "X:"));
-        if let Some(v) = measure(ui, "cx", x, units, 64.0) {
-            let _ = app.run("transform.set", json!({"x": v}));
-        }
-        caption(ui, crate::i18n::tr(&app.ui.language, "W:"));
-        if let Some(v) = measure(ui, "cw", w, units, 64.0) {
-            let _ = app.run("transform.set", json!({"width": v}));
-        }
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Y:"));
-        if let Some(v) = measure(ui, "cy", y, units, 64.0) {
-            let _ = app.run("transform.set", json!({"y": v}));
-        }
-        caption(ui, crate::i18n::tr(&app.ui.language, "H:"));
-        if let Some(v) = measure(ui, "ch", h, units, 64.0) {
-            let _ = app.run("transform.set", json!({"height": v}));
-        }
-        ui.end_row();
-    });
-    vsep(ui);
-    // Scale, rotation and shear (absolute; see Transformations are Totals).
-    let tv = if info.is_some() { app.session.execute("transform.info", &json!({})).ok() } else { None };
-    let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
-    egui::Grid::new("ctl_srs").num_columns(4).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
-        icon_caption(ui, "tool-scale", crate::i18n::tr(&app.ui.language, "Scale X Percentage"));
-        if let Some(v) = number(ui, "csx", tv_get("scaleX"), "%", 56.0, 1) {
-            let _ = app.run("transform.set", json!({"scaleX": v}));
-        }
-        icon_caption(ui, "tool-rotate", crate::i18n::tr(&app.ui.language, "Rotation Angle"));
-        if let Some(v) = number(ui, "crot", tv_get("rotation"), "°", 50.0, 1) {
-            let _ = app.run("transform.set", json!({"rotation": v}));
-        }
-        ui.end_row();
-        icon_caption(ui, "tool-scale", crate::i18n::tr(&app.ui.language, "Scale Y Percentage"));
-        if let Some(v) = number(ui, "csy", tv_get("scaleY"), "%", 56.0, 1) {
-            let _ = app.run("transform.set", json!({"scaleY": v}));
-        }
-        icon_caption(ui, "tool-shear", crate::i18n::tr(&app.ui.language, "Shear X Angle"));
-        if let Some(v) = number(ui, "cshr", tv_get("shear"), "°", 50.0, 1) {
-            let _ = app.run("transform.set", json!({"shear": v}));
-        }
-        ui.end_row();
-    });
-    vsep(ui);
-    // Rotate / flip.
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if icons::button(ui, "tool-rotate", 20.0, false, crate::i18n::tr(&app.ui.language, "Rotate 90° Counterclockwise")).clicked() {
-                let _ = app.run("transform.rotate", json!({"angle": 90}));
-            }
-            if ui
-                .small_button("⇋")
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Flip Horizontal"));
-                })
-                .clicked()
-            {
-                let _ = app.run("transform.flip", json!({"axis": "horizontal"}));
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .small_button("↻")
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Rotate 90° Clockwise"));
-                })
-                .clicked()
-            {
-                let _ = app.run("transform.rotate", json!({"angle": -90}));
-            }
-            if ui
-                .small_button("⇵")
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Flip Vertical"));
-                })
-                .clicked()
-            {
-                let _ = app.run("transform.flip", json!({"axis": "vertical"}));
-            }
-        });
-    });
-    vsep(ui);
-    // Fill / stroke.
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Fill"));
-            panels::swatch_picker(app, ui, "ctlfill", info.as_ref().map(|i| i.fill.clone()), |app, name| {
-                let _ = app.run("object.fill", json!({"swatch": name}));
-            });
-        });
-        ui.horizontal(|ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Stroke"));
-            panels::swatch_picker(app, ui, "ctlstroke", info.as_ref().map(|i| i.stroke.clone()), |app, name| {
-                let _ = app.run("object.stroke", json!({"swatch": name}));
-            });
-            if let Some(v) = number(ui, "csw", info.as_ref().map(|i| i.stroke_weight), " pt", 46.0, 3) {
-                let _ = app.run("object.stroke", json!({"weight": v}));
-            }
-        });
-    });
-    vsep(ui);
-    // Opacity, fx.
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Opacity"));
-            if let Some(v) = number(ui, "cop", info.as_ref().map(|i| i.opacity * 100.0), "%", 42.0, 0) {
-                let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
-            }
-        });
-        ui.horizontal(|ui| {
-            if icons::button(ui, "panel-effects", 20.0, info.as_ref().is_some_and(|i| i.shadow), crate::i18n::tr(&app.ui.language, "Drop Shadow"))
-                .clicked()
-            {
-                let _ = app.run("object.dropShadow", json!({}));
-            }
-        });
-    });
-    vsep(ui);
-    // Fitting.
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            for (icon, mode, tip) in [
-                ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
-                ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
-                ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
-            ] {
-                if icons::button(ui, icon, 20.0, false, tip).clicked() {
-                    let _ = app.run("object.fit", json!({"mode": mode}));
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            for (icon, mode, tip) in [("fit-frame", "fitFrameToContent", "Fit Frame to Content"), ("fit-center", "centerContent", "Center Content")] {
-                if icons::button(ui, icon, 20.0, false, tip).clicked() {
-                    let _ = app.run("object.fit", json!({"mode": mode}));
-                }
-            }
-        });
-    });
-    vsep(ui);
-    // Text wrap.
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            for (icon, mode, tip) in [
-                ("wrap-none", "none", "No Text Wrap"),
-                ("wrap-bbox", "boundingBox", "Wrap Around Bounding Box"),
-                ("wrap-contour", "contour", "Wrap Around Object Shape"),
-            ] {
-                let on = info.as_ref().is_some_and(|i| i.wrap == mode);
-                if icons::button(ui, icon, 20.0, on, tip).clicked() {
-                    let _ = app.run("object.textWrap", json!({"mode": mode}));
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            for (icon, mode, tip) in [("wrap-jump", "jumpObject", "Jump Object"), ("wrap-next", "jumpToNextColumn", "Jump to Next Column")] {
-                let on = info.as_ref().is_some_and(|i| i.wrap == mode);
-                if icons::button(ui, icon, 20.0, on, tip).clicked() {
-                    let _ = app.run("object.textWrap", json!({"mode": mode}));
-                }
-            }
-        });
-    });
-    if let Some(i) = &info
-        && let Some(cols) = i.columns
-    {
-        vsep(ui);
-        ui.vertical(|ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Columns"));
-            if let Some(v) = number(ui, "ccols", Some(cols as f64), "", 36.0, 0) {
-                let _ = app.run("object.textFrameOptions", json!({"columns": v.max(1.0) as u64}));
-            }
-        });
-    }
 }
 
 fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -566,7 +492,7 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     return;
                 }
                 let z = app.view().map(|v| v.zoom).unwrap_or(1.0);
-                ui.menu_button(egui::RichText::new(format!("{:.2}% ▾", z * 100.0)).font(small.clone()), |ui| {
+                crate::menus::menu_button(ui, egui::RichText::new(format!("{:.2}% ▾", z * 100.0)).font(small.clone()), |ui| {
                     for p in [0.05, 0.125, 0.25, 0.5, 0.75, 1.0, 2.0, 4.0, 8.0, 16.0] {
                         if ui.button(format!("{}%", p * 100.0)).clicked() {
                             let _ = app.run("view.zoom", json!({"zoom": p}));
@@ -712,7 +638,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ));
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    for p in pagenor_doc::build::PRESETS.iter().take(10) {
+                    for p in pagenor_doc::build::PRESETS.iter().filter(|p| p.intent == pagenor_doc::Intent::Print) {
                         let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
                         let hov = resp.hovered();
                         ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
@@ -795,8 +721,15 @@ mod tests {
         assert!(window.contains_rect(last) && bar.contains_rect(last), "{last:?} outside the bar {bar:?}");
         assert_eq!(test_window::panel_rect(&h, "control_bar").height(), bar.height(), "the bar keeps its height");
         // A popup opened from a scrolled control opens at that control.
+        // Object appearance controls require a real selection.
+        h.state_mut().app.run("file.new", serde_json::json!({})).unwrap();
+        h.state_mut().app.run("frame.create", serde_json::json!({"rect":[72,72,120,120]})).unwrap();
+        h.state_mut().app.run("edit.selectAll", serde_json::json!({})).unwrap();
+        h.run_steps(4);
+        let appearance = h.ctx.read_response(egui::Id::new(("object_control", "appearance"))).unwrap().rect;
+        wheel(&mut h, bar.center(), vec2(w / 2.0 - appearance.center().x, 0.0));
         let fill = h.get_by_label("Fill").rect();
-        let chip = pos2(fill.max.x + 15.0, fill.center().y);
+        let chip = fill.center();
         h.hover_at(chip);
         h.drag_at(chip);
         h.drop_at(chip);
@@ -839,6 +772,161 @@ mod tests {
         wheel(&mut h, bar, vec2(0.0, -3000.0));
         // The text frame's last group: its caption gets only what is left of the row.
         let columns = h.get_by_label("Columns").rect();
-        assert!(columns.height() < 20.0 && columns.width() > columns.height(), "Columns wraps: {columns:?}");
+        assert!(columns.height() <= 20.0 && bar.y > columns.bottom(), "the Columns icon fits above its field: {columns:?}");
+    }
+}
+
+#[cfg(test)]
+mod window_control_tests {
+    use super::*;
+
+    struct WindowHarness {
+        ctx: egui::Context,
+        app: DesignApp,
+        time: f64,
+        maximized: bool,
+        size: egui::Vec2,
+    }
+
+    impl WindowHarness {
+        fn new() -> Self {
+            let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.custom_titlebar = true;
+            let ctx = egui::Context::default();
+            crate::theme::install_fonts(&ctx, "");
+            let mut harness = Self { ctx, app, time: 0.0, maximized: false, size: vec2(1440.0, 900.0) };
+            harness.frame(vec![]);
+            harness.frame(vec![]);
+            harness
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<egui::ViewportCommand> {
+            self.time += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().maximized = Some(self.maximized);
+            let mut output = self.ctx.run_ui(input, |ui| {
+                app_bar(&mut self.app, ui);
+                resize_borders(&mut self.app, ui);
+            });
+            output.textures_delta.clear();
+            output.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+        }
+
+        fn press(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+            self.frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ])
+        }
+
+        fn click(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+            let mut commands = self.press(pos);
+            commands.extend(self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }]));
+            commands
+        }
+
+        fn caption_center(&self, id: &str) -> egui::Pos2 {
+            self.ctx.read_response(egui::Id::new(id)).unwrap().rect.center()
+        }
+    }
+
+    #[test]
+    fn caption_buttons_minimize_maximize_restore_and_close() {
+        let mut h = WindowHarness::new();
+        for (id, command) in
+            [("window.minimize", egui::ViewportCommand::Minimized(true)), ("window.maximize", egui::ViewportCommand::Maximized(true))]
+        {
+            let p = h.caption_center(id);
+            assert!(h.click(p).contains(&command), "{id}");
+        }
+        h.maximized = true;
+        h.frame(vec![]);
+        let p = h.caption_center("window.maximize");
+        assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(false)));
+        let p = h.caption_center("window.close");
+        assert!(h.click(p).contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn title_area_drags_and_double_clicks_but_menus_do_not_drag() {
+        let mut h = WindowHarness::new();
+        let title = h.ctx.read_response(egui::Id::new("window_title_drag")).unwrap().rect;
+        assert!(title.width() > 0.0, "there is a drag region between menus and tools");
+        let p = title.center();
+        let mut commands = h.press(p);
+        commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
+        assert!(commands.contains(&egui::ViewportCommand::StartDrag));
+
+        let mut h = WindowHarness::new();
+        h.click(p);
+        assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(true)));
+
+        let mut h = WindowHarness::new();
+        let p = egui::pos2(70.0, 18.0); // File menu, outside the title's drag region.
+        let mut commands = h.press(p);
+        commands.extend(h.frame(vec![egui::Event::PointerMoved(title.center())]));
+        assert!(!commands.contains(&egui::ViewportCommand::StartDrag));
+    }
+
+    #[test]
+    fn edges_resize_only_when_the_window_is_restored() {
+        let mut h = WindowHarness::new();
+        let p = egui::pos2(1438.0, 400.0);
+        let mut commands = h.press(p);
+        commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
+        assert!(commands.contains(&egui::ViewportCommand::BeginResize(egui::ResizeDirection::East)));
+        let mut h = WindowHarness::new();
+        h.maximized = true;
+        h.frame(vec![]);
+        let mut commands = h.press(p);
+        commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
+        assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::BeginResize(_))));
+    }
+
+    #[test]
+    fn native_window_actions_are_unavailable_without_custom_chrome() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        assert!(!crate::menus::enabled(&app, "window.close"));
+        assert!(app.run("window.close", json!({})).is_err());
+        assert!(app.pending_window_commands.is_empty());
+        app.custom_titlebar = true;
+        assert!(app.run("window.resize", json!({"edge": "invalid"})).is_err());
+        assert!(app.pending_window_commands.is_empty());
+    }
+
+    #[test]
+    fn caption_close_preserves_unsaved_document_recovery_guard() {
+        let mut h = WindowHarness::new();
+        h.app.run("file.new", json!({})).unwrap();
+        h.app.run("frame.create", json!({"rect": [10,10,100,100], "content": "text", "text": "Unsaved"})).unwrap();
+        h.frame(vec![]);
+        let point = h.caption_center("window.close");
+        assert!(!h.click(point).contains(&egui::ViewportCommand::Close));
+        assert!(h.app.session.active().unwrap().is_dirty());
+        assert!(h.app.recovery_failed);
+    }
+
+    #[test]
+    fn caption_buttons_fit_the_minimum_window_width() {
+        let mut h = WindowHarness::new();
+        h.size = vec2(900.0, 560.0);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        for id in ["window.minimize", "window.maximize", "window.close"] {
+            let rect = h.ctx.read_response(egui::Id::new(id)).unwrap().rect;
+            assert!(rect.left() >= 0.0 && rect.right() <= h.size.x, "{id}: {rect:?}");
+            let p = rect.center();
+            assert!(!h.click(p).is_empty(), "{id} remains clickable");
+        }
     }
 }

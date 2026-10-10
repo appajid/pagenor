@@ -386,3 +386,13 @@ Synthetic package checks and static workflow/script checks do not establish
 native installation/execution. All 34 release-note items are accounted for in
 [the audit](docs/pagenor/UPSTREAM_040_AUDIT.md); actual native package/signing
 validation remains a milestone task. No GitHub push or publication is performed.
+
+
+## Reviewed upstream adaptations — P09.7 (2026-10-10)
+
+The new-PR pass adapts 23 selected proposals: eight editor UI changes followed by
+six compatibility fixes and nine multipage/composition changes. Pagenor stays
+0.3.0. The existing architecture, lazy scoped fonts, native extension, owner
+branding, clipboard and recovery paths are retained. See the per-PR author/head
+provenance, combined-branch adjustments and verification limits in
+[editor and publishing updates](docs/pagenor/UPSTREAM_EDITOR_PUBLISHING.md).

@@ -985,6 +985,15 @@ fn typo_ascent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Optio
     plausible(Some(v), upem)
 }
 
+/// `family` without the font-format suffix layout apps append when a family is installed in
+/// several formats (`Minion Pro (OTF)` → `Minion Pro`), if it has one.
+fn without_format_suffix(family: &str) -> Option<&str> {
+    const FORMATS: [&str; 6] = ["OTF", "TT", "TTF", "TTC", "OTC", "T1"];
+    let (base, suffix) = family.trim_end().strip_suffix(')')?.rsplit_once('(')?;
+    let base = base.trim_end();
+    (!base.is_empty() && FORMATS.iter().any(|f| f.eq_ignore_ascii_case(suffix.trim()))).then_some(base)
+}
+
 /// The named style part of a style with axis settings (`Bold {wght:650}` → `Bold`).
 pub fn base_style(style: &str) -> &str {
     style.split('{').next().unwrap_or(style).trim()
@@ -1975,6 +1984,10 @@ impl ScopedFonts<'_> {
     /// Resolve localized and legacy family names without confusing replacement fonts with
     /// installed originals. Document-local aliases take precedence over shared fonts.
     pub fn canonical_family(&self, family: &str) -> Option<String> {
+        self.exact_canonical_family(family).or_else(|| without_format_suffix(family).and_then(|base| self.exact_canonical_family(base)))
+    }
+
+    fn exact_canonical_family(&self, family: &str) -> Option<String> {
         let matches = |f: &&Arc<FontFace>| same_family(&f.family, family) || f.family_aliases.iter().any(|alias| same_family(alias, family));
         if let Some(face) = self.own().iter().find(matches) {
             return Some(face.family.clone());

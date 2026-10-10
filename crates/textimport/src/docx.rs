@@ -335,7 +335,7 @@ impl Ctx {
         for e in p.els() {
             match e.name.as_str() {
                 "r" => self.run(e, st, allow_notes)?,
-                "hyperlink" | "smartTag" | "ins" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
+                "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
                 _ => {}
             }
         }
@@ -496,6 +496,8 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
     ctx.blocks(body, &mut st, true)?;
+    // A page or column break ends its paragraph.
+    st.end_paragraphs_at_breaks();
     // Only styles that are used, plus what they are based on.
     let used_p: HashSet<String> = st.paras.iter().map(|p| p.style.clone()).collect();
     let used_c: HashSet<String> = st.runs().map(|(_, f)| f.style.clone()).collect();
@@ -567,6 +569,24 @@ mod tests {
         assert_eq!(i.para_styles[0].chars.size, Some(16.0));
         assert_eq!(i.para_styles[0].para.space_before, Some(12.0));
         assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
+    }
+
+    /// A page break ends its paragraph: the text after it is a paragraph of its own (same style).
+    #[test]
+    fn page_break_ends_its_paragraph() {
+        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H"><w:name w:val="Chapter"/></w:style></w:styles>"#);
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>End of one</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="H"/></w:pPr><w:r><w:br w:type="page"/><w:t>Two</w:t><w:br w:type="column"/></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, &styles, "")).unwrap().story;
+        st.check().unwrap();
+        let (pb, cb) = (pagenor_doc::PAGE_BREAK, pagenor_doc::COLUMN_BREAK);
+        assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
+        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
     }
 
     #[test]
@@ -655,5 +675,23 @@ mod tests {
         let imported = import(&docx(&xml, "", "")).unwrap();
         assert_eq!(imported.story.text, "தமிழ் 😀 𠮷 & <");
         assert_eq!(imported.story.chars[0].format.over.font_family.as_deref(), Some("A&B"));
+    }
+    #[test]
+    fn tracked_changes_import_as_accepted_including_moves() {
+        // Regression (#256): text in a tracked move destination (`w:moveTo`) vanished on import.
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t xml:space="preserve">Kept text. </w:t></w:r>
+                <w:moveTo w:id="1" w:author="A"><w:r><w:t xml:space="preserve">MOVED HERE.</w:t></w:r>
+                  <w:del w:id="5" w:author="A"><w:r><w:delText>MOVED THEN DELETED</w:delText></w:r></w:del></w:moveTo>
+                <w:r><w:t xml:space="preserve"> Plain </w:t></w:r>
+                <w:ins w:id="2" w:author="A"><w:r><w:t>INSERTED</w:t></w:r></w:ins>
+                <w:del w:id="3" w:author="A"><w:r><w:delText>DELETED</w:delText></w:r></w:del></w:p>
+              <w:p><w:moveFrom w:id="4" w:author="A"><w:r><w:t>MOVED HERE.</w:t></w:r></w:moveFrom><w:r><w:t>End.</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let i = import(&docx(&document, "", "")).unwrap();
+        i.story.check().unwrap();
+        assert_eq!(i.story.text, "Kept text. MOVED HERE. Plain INSERTED\nEnd.");
     }
 }

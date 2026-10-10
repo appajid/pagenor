@@ -19,8 +19,8 @@ mod tooling;
 
 use std::sync::Arc;
 
-use pagenor_compose::Cache;
-use pagenor_doc::{Document, LayerId, Selection};
+use pagenor_compose::{Cache, ComposedStory};
+use pagenor_doc::{Document, LayerId, Selection, Story, StoryId};
 use serde_json::Value;
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
@@ -184,7 +184,8 @@ pub struct Prefs {
     /// English names instead of their native ones. Documents store the English name either way.
     pub show_font_names_in_english: bool,
     /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
-    /// (added while it oversets, empty ones at the end removed).
+    /// (added when an edit makes it overset, empty ones at the end removed; deleted pages and
+    /// frames are not put back).
     pub smart_text_reflow: bool,
     /// Preferences › Autocorrect: typing a space or punctuation after a listed word replaces it.
     pub autocorrect: bool,
@@ -425,7 +426,7 @@ impl Session {
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+            self.smart_reflow(before.as_ref().map(|(uid, doc, _)| (*uid, doc)));
         }
         // Live captions follow their sources.
         if spec.undoable
@@ -454,43 +455,52 @@ impl Session {
         Ok(r)
     }
 
-    /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
+    /// Smart Text Reflow for the primary story after a command (`before`: the document's uid and
+    /// the document as it was): add threaded pages when [`reflow_adds_pages`] says so; remove
     /// trailing pages whose only object is an empty frame of it.
-    fn smart_reflow(&mut self) {
+    fn smart_reflow(&mut self, before: Option<(u64, &Arc<Document>)>) {
         let Some(st) = self.active() else { return };
         if st.interaction.is_some() {
             return;
         }
         let Some(sid) = st.doc.settings.primary_story else { return };
         let Some(story) = st.doc.story(sid) else { return };
+        // The same document before the command (none: the command made or opened it) and the
+        // story's layout in it, composed first so that the cache ends up with the layout as it is.
+        let before = before.filter(|(uid, _)| *uid == st.uid).map(|(_, doc)| (doc, self.cache.get(doc, sid, None)));
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
         if !overset && !empty_tail {
             return;
         }
+        if overset
+            && let Some((old, was)) = &before
+            && !reflow_adds_pages(old, &st.doc, sid, was, &cs)
+        {
+            return;
+        }
         let mut d = (*st.doc).clone();
         if overset {
             let _ = cmd::place_text_autoflow(&mut d, sid, 500);
-        } else {
-            // Drop empty trailing frames on the last pages (one frame, nothing else there).
-            while let Some(story) = d.story(sid) {
-                if story.frames.len() < 2 {
-                    break;
-                }
-                let Some(&last) = story.frames.last() else { break };
-                let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
-                if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
-                    break;
-                }
-                let Some(page) = d.page_of_item(last) else { break };
-                let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|i| d.page_of_item(i.id) == Some(page)).count() == 1;
-                if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
-                    break;
-                }
-                if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
-                    break;
-                }
+        }
+        // Drop empty trailing frames on the last pages (one frame, nothing else there).
+        while let Some(story) = d.story(sid) {
+            if story.frames.len() < 2 {
+                break;
+            }
+            let Some(&last) = story.frames.last() else { break };
+            let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
+            if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
+                break;
+            }
+            let Some(page) = d.page_of_item(last) else { break };
+            let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|i| d.page_of_item(i.id) == Some(page)).count() == 1;
+            if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
+                break;
+            }
+            if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
+                break;
             }
         }
         if let Some(st) = self.active_mut() {
@@ -540,6 +550,47 @@ impl Session {
         st.revision += 1;
         Ok(r)
     }
+}
+
+/// Does Smart Text Reflow add pages for the command that turned `old` into `new` and left the
+/// primary story `sid` overset (`was`, `now`: its layout in each)? Not when the command removed
+/// pages or frames of the story (they would only come back), and not when the story was overset
+/// already and the command didn't edit it.
+fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, was: &ComposedStory, now: &ComposedStory) -> bool {
+    let (Some(a), Some(b)) = (old.story(sid), new.story(sid)) else { return true };
+    // A story that just became the primary one is reflowed.
+    if old.settings.primary_story != Some(sid) {
+        return true;
+    }
+    let kept: std::collections::HashSet<_> = b.frames.iter().copied().collect();
+    if new.page_count() < old.page_count() || a.frames.iter().any(|f| !kept.contains(f)) {
+        return false;
+    }
+    // It fitted: the command made it overset.
+    was.overset_at.is_none() || story_edited(a, b, was.overset_at != now.overset_at)
+}
+
+/// Did the command edit the story: change its text (in cells and footnotes too), or anything
+/// else in it so that more or less of it fits (`refit`)? The frames it flows through don't count,
+/// nor do rewrites that change nothing: a style rename touches every story that uses the style
+/// and bumps the revision of every text.
+fn story_edited(was: &Story, now: &Story, refit: bool) -> bool {
+    if std::ptr::eq(was, now) {
+        return false;
+    }
+    if was.text != now.text {
+        return true;
+    }
+    let (mut a, mut b) = (was.clone(), now.clone());
+    let mut texts = [Vec::new(), Vec::new()];
+    for (st, texts) in [&mut a, &mut b].into_iter().zip(&mut texts) {
+        st.frames.clear();
+        st.for_each_text_mut(&mut |t| {
+            t.rev = 0;
+            texts.push(t.text.clone());
+        });
+    }
+    a != b && (refit || texts[0] != texts[1])
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {

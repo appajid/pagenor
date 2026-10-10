@@ -3563,6 +3563,7 @@ name = "pagenor-idml"
 version = "0.3.0"
 dependencies = [
  "pagenor-color",
+ "pagenor-compose",
  "pagenor-doc",
  "pagenor-geom",
  "pagenor-images",

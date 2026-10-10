@@ -17,6 +17,7 @@ pub mod dock;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
+mod object_control;
 pub mod panels;
 pub mod render_worker;
 mod rtl;
@@ -494,6 +495,10 @@ pub struct DesignApp {
     startup_splash: Option<startup::Splash>,
     font_generation: u64,
     pub integrated_titlebar: bool,
+    /// The desktop host requests custom Windows caption controls.
+    pub custom_titlebar: bool,
+    pub(crate) window_maximized: bool,
+    pending_window_commands: Vec<egui::ViewportCommand>,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
     /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
@@ -542,6 +547,9 @@ impl DesignApp {
             startup_splash: None,
             font_generation: 0,
             integrated_titlebar: false,
+            custom_titlebar: false,
+            window_maximized: false,
+            pending_window_commands: Vec::new(),
             native_menu: false,
             native_shortcuts: Default::default(),
             last_time: 0.0,
@@ -827,6 +835,7 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ai::poll(self, ctx);
         if !self.color_applied {
             self.color_applied = true;
@@ -883,7 +892,24 @@ impl DesignApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_close_request(ctx);
+        self.flush_window_commands(ctx);
         self.flush_clipboard(ctx);
+    }
+
+    pub(crate) fn queue_window_command(&mut self, command: egui::ViewportCommand) -> Result<(), String> {
+        if self.pending_window_commands.len() >= 64 {
+            return Err("too many pending window actions".into());
+        }
+        self.pending_window_commands.push(command);
+        Ok(())
+    }
+
+    pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
+        for command in std::mem::take(&mut self.pending_window_commands) {
+            ctx.send_viewport_cmd(command);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.handle_close_request(ctx);
     }
 
     /// Flush current edits before desktop shutdown, without marking documents saved.
@@ -1179,6 +1205,9 @@ impl DesignApp {
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
+        if self.custom_titlebar {
+            chrome::resize_borders(self, ui);
+        }
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
