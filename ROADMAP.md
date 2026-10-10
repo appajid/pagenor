@@ -1,5 +1,13 @@
 # Pagenor roadmap
 
+- P10.4: GitHub packaging contracts reproduced a runner-only assertion failure:
+  Actions warnings are on stdout, local warnings on stderr. The same AppImage
+  contract now checks both routes and stale-update removal in both environments.
+  No application source, artifact binary or version change. Version stays 0.3.0;
+  All seven local gates and eight packaging contracts pass, including a local
+  reproduction with GITHUB_ACTIONS=true. The development release remains draft
+  while its GitHub packaging check is rerun.
+
 - P10.3: Prepare the owner-authorized GitHub v0.3.0 development prerelease, with
   the verified Apple-silicon Mac bundle, matching source, release notes and SHA-256
   checksums. Version stays 0.3.0. Release notes explicitly retain pending native

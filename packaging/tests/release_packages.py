@@ -193,9 +193,14 @@ if os.environ.get('PAGENOR_TEST_ZSYNC')=='1': Path(sys.argv[-1]+'.zsync').write_
                            'LICENSE-Pagenor-brand.txt', 'LICENSE-Pagenor-app-icon.txt']:
                 self.assertTrue((appdir / 'usr/share/doc/pagenor' / notice).is_file(), notice)
         env['PAGENOR_TEST_ZSYNC'] = '0'
-        result = self.run_script('packaging/linux/package.sh', '--skip-build', '--formats', 'appimage', env=env)
-        self.assertIn('zsyncmake not found', result.stderr)
-        self.assertFalse(Path(args[-1] + '.zsync').exists(), 'an old update file must never describe a new AppImage')
+        for actions in ['', 'true']:
+            env['GITHUB_ACTIONS'] = actions
+            result = self.run_script('packaging/linux/package.sh', '--skip-build', '--formats', 'appimage', env=env)
+            diagnostics = result.stdout if actions else result.stderr
+            self.assertIn('zsyncmake not found', diagnostics)
+            if actions:
+                self.assertIn('::warning::', diagnostics)
+            self.assertFalse(Path(args[-1] + '.zsync').exists(), 'an old update file must never describe a new AppImage')
 
 
 if __name__ == '__main__':
