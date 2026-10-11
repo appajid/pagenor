@@ -26,7 +26,9 @@
     <Property Id="ARPPRODUCTICON" Value="PagenorIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="Pagenor" />
+      <Directory Id="INSTALLFOLDER" Name="Pagenor">
+        <Directory Id="LICENSEFOLDER" Name="licenses" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
@@ -37,6 +39,7 @@
 
   <Fragment>
     <ComponentGroup Id="PagenorFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.BinDir)\licenses\**" Directory="LICENSEFOLDER" />
       <Component Id="PagenorApp" Guid="54E2E178-B8D0-54DC-B725-D4F32DDA891F">
         <File Id="PagenorExe" Source="$(var.BinDir)\pagenor.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Pagenor"

@@ -89,6 +89,24 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item (Join-Path $Bin 'pagenor.exe'), (Join-Path $Bin 'pagenor-cli.exe') $Stage
 Copy-Item (Join-Path $Root 'assets\app-icon\pagenor-document.ico') $Stage
 
+# The installed app and the portable build carry the same software, branding and
+# embedded-font notices. Stage them before WiX harvests the installer payload.
+$Notices = Join-Path $Stage 'licenses'
+New-Item -ItemType Directory -Force -Path $Notices | Out-Null
+foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'COPYRIGHT', 'NOTICE', 'PAGENOR_UPSTREAM.md') {
+  $p = Join-Path $Root $f
+  if (Test-Path $p) { Copy-Item $p $Notices }
+}
+foreach ($kind in 'brand', 'app-icon') {
+  Copy-Item (Join-Path $Root "assets\$kind\LICENSE.txt") (Join-Path $Notices "LICENSE-Pagenor-$kind.txt")
+}
+Copy-Item (Join-Path $Root 'assets\fonts\OFL-*.txt') $Notices
+if ($env:CRAFT_FONTS_DIR) {
+  foreach ($ofl in Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts\*\OFL.txt') -ErrorAction SilentlyContinue) {
+    Copy-Item $ofl.FullName (Join-Path $Notices "OFL-$($ofl.Directory.Name).txt")
+  }
+}
+
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'pagenor.exe') (Join-Path $Stage 'pagenor-cli.exe')
 
 # ---- MSI ---------------------------------------------------------------------------------------
@@ -108,16 +126,7 @@ Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 Copy-Item (Join-Path $Stage 'pagenor-document.ico') $Portable
-foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
-  $p = Join-Path $Root $f
-  if (Test-Path $p) { Copy-Item $p $Portable }
-}
-# Builds made with craft-fonts (CRAFT_FONTS_DIR) embed its fonts: ship their licences.
-if ($env:CRAFT_FONTS_DIR) {
-  foreach ($ofl in Get-ChildItem -Path (Join-Path $env:CRAFT_FONTS_DIR 'fonts\*\OFL.txt') -ErrorAction SilentlyContinue) {
-    Copy-Item $ofl.FullName (Join-Path $Portable "OFL-$($ofl.Directory.Name).txt")
-  }
-}
+Copy-Item (Join-Path $Notices '*') $Portable
 $Zip = Join-Path $Dist "pagenor-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

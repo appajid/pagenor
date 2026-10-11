@@ -31,6 +31,9 @@ class ReleasePackages(unittest.TestCase):
         legacy = [r.attrib for r in aliases if r.attrib['Key'] == r'Software\Classes\.pagenor']
         self.assertTrue(any(r.get('Name') is None and r['Value'] == 'Pagenor.Document' for r in legacy))
         self.assertTrue(any(r.get('Name') == 'Content Type' and r['Value'] == extensions[0].attrib['ContentType'] for r in legacy))
+        payload = wix.find('.//w:Files', ns)
+        self.assertEqual(payload.attrib['Directory'], 'LICENSEFOLDER')
+        self.assertEqual(payload.attrib['Include'], r'$(var.BinDir)\licenses\**')
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='pagenor-packaging-')

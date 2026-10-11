@@ -272,6 +272,9 @@ jobs:
           }
           $icon = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\Pagenor.Document\DefaultIcon"
           if ($icon."(default)" -notmatch "pagenor-document.ico") { throw "document icon association is incorrect" }
+          foreach ($notice in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'LICENSE-Pagenor-brand.txt', 'LICENSE-Pagenor-app-icon.txt', 'OFL-Inter.txt') {
+            if (-not (Test-Path (Join-Path $dir "licenses\$notice"))) { throw "missing installed notice: $notice" }
+          }
           $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
           if (Test-Path (Join-Path $dir 'pagenor.exe')) { throw 'uninstall left pagenor.exe behind' }

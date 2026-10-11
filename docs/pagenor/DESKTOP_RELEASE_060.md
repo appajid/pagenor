@@ -27,6 +27,8 @@ each desktop, printer and proprietary font configuration.
   unit-test binaries, supporting OpenSSL, GnuTLS and Schannel. An additional
   untrusted-certificate check preserves production certificate validation.
 - The EPS relink fixture constructs nested paths portably on Windows.
+- Windows MSI and portable packages include matching software, provenance,
+  owner-branding and bundled/optional font notices.
 - Existing full-platform signing and release workflows remain available; the
   desktop milestone workflow uses pinned actions and requests no signing secrets.
 
