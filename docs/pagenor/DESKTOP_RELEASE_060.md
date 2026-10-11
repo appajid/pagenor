@@ -29,6 +29,8 @@ each desktop, printer and proprietary font configuration.
 - The EPS relink fixture constructs nested paths portably on Windows.
 - Windows MSI and portable packages include matching software, provenance,
   owner-branding and bundled/optional font notices.
+- Recovery-directory setup compiles without Unix-only mutable bindings on Windows;
+  Unix recovery directories retain their private permission mode.
 - Existing full-platform signing and release workflows remain available; the
   desktop milestone workflow uses pinned actions and requests no signing secrets.
 

@@ -108,12 +108,14 @@ pub fn run_dir(root: &Path) -> Result<PathBuf> {
     let _coordinator = root_lock(&root)?;
     for n in 0..64 {
         let dir = root.join(format!("run-{}-{n}", std::process::id()));
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
             builder.mode(0o700);
-        }
+            builder
+        };
         match builder.create(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
