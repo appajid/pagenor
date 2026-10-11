@@ -10,6 +10,20 @@ MSI installation/association checks, Linux packaging and Flatpak CLI smoke tests
 [Distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md). Final run evidence will
 be added after the hosted build completes.
 
+P11.12 build evidence (2026-10-12): final candidate source
+`0ed0c53af1ae748443082e5d94fedd9fe9abacc4` passes all seven local gates
+(2,306 tests; seven ignored) and native Linux gates (2,302 tests; seven ignored).
+Rust 1.95 checks pass. Universal Mac DMG/CLI and Linux x86_64
+AppImage/Debian/RPM/tar/zsync candidates are built and verified. GitHub refused
+the final Windows and Linux ARM64 jobs before startup due to account
+payments/spending limits; dependent Flatpak/publication jobs were skipped.
+Earlier Windows installers and Linux ARM64/Flatpak builds passed their native
+package smoke checks but are intermediate source snapshots. No v0.6.0 release
+is published. [Final run](https://github.com/appajid/pagenor/actions/runs/38180716355).
+Source is reviewable in [PR #3](https://github.com/appajid/pagenor/pull/3);
+default-branch integration awaits approval after automatic review rejected the
+broad direct push. The owner's Mac session was left open.
+
 P11.11 completes the twenty UI-first proposals through #491, with compatible later
 reliability/publishing fixes. The implementation batch passes all seven gates
 (2,306 tests passed, seven ignored; twenty WASM packages), native Mac UI inspection

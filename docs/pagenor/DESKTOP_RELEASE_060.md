@@ -46,3 +46,26 @@ each desktop, printer and proprietary font configuration.
 
 Pagenor branding rights belong to Appaji Ambarisha. Application code retains its
 MIT OR Apache-2.0 licence; package notices preserve upstream and font provenance.
+
+## Candidate status — 2026-10-12
+
+Final source: `0ed0c53af1ae748443082e5d94fedd9fe9abacc4`.
+[Native run](https://github.com/appajid/pagenor/actions/runs/38180716355) builds
+and verifies Linux x86_64 AppImage/Debian/RPM/tar/zsync candidates and passes
+all seven Linux gates (2,302 tests, no failures, seven ignored). All seven local
+Mac gates pass (2,306 tests, no failures, seven ignored); Rust 1.95 checks pass.
+The matching universal Mac DMG/CLI passes strict signatures in the finished
+image and install-copy, architecture/icon/notice checks and native ARM PDF export.
+It is ad-hoc signed and not notarized; native Intel GUI validation remains open.
+
+GitHub refused final Windows x64/x86/ARM64 and Linux ARM64 jobs before startup,
+reporting failed account payments or insufficient spending limit. Hosted Mac
+quality was blocked too. Dependent Flatpak/publication jobs were skipped.
+No v0.6.0 GitHub release has been published. Resolve account billing and rerun
+failed jobs in the prepared native run before publishing.
+
+Earlier Windows packages at `444f875` passed all three native installer,
+association/icon, CLI export and uninstall checks but retain the subsequently
+corrected IDML path issue. Linux ARM64/Flatpak packages at `c8c0d1b` passed native
+package/CLI checks. These are intermediate snapshots, separate from the final
+candidates. Source integration is in [PR #3](https://github.com/appajid/pagenor/pull/3).
