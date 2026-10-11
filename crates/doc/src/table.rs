@@ -62,11 +62,30 @@ pub struct CellStroke {
     pub color: String,
     pub tint: f32,
     pub kind: StrokeType,
+    /// Painted in the gaps of dashed, dotted and striped types.
+    #[serde(skip_serializing_if = "is_no_swatch")]
+    pub gap_color: String,
+    #[serde(skip_serializing_if = "is_full")]
+    pub gap_tint: f32,
+}
+
+fn is_no_swatch(s: &str) -> bool {
+    s == pagenor_color::swatch::NONE
+}
+fn is_full(t: &f32) -> bool {
+    *t == 1.0
 }
 
 impl Default for CellStroke {
     fn default() -> Self {
-        CellStroke { weight: 1.0, color: pagenor_color::swatch::BLACK.into(), tint: 1.0, kind: StrokeType::Solid }
+        CellStroke {
+            weight: 1.0,
+            color: pagenor_color::swatch::BLACK.into(),
+            tint: 1.0,
+            kind: StrokeType::Solid,
+            gap_color: pagenor_color::swatch::NONE.into(),
+            gap_tint: 1.0,
+        }
     }
 }
 
@@ -904,7 +923,7 @@ impl Table {
 fn append_story(s: &mut Story, other: &Story) {
     if s.is_empty() {
         *s = Story { id: s.id, ..other.clone() };
-        s.rev += 1;
+        s.rev = s.rev.wrapping_add(1);
         return;
     }
     let base = s.len();
@@ -981,7 +1000,7 @@ impl Story {
     /// Mutable table (copy-on-write); bumps the story revision.
     pub fn table_mut(&mut self, id: u64) -> Option<&mut Table> {
         let t = self.tables.get_mut(&id)?;
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         Some(Arc::make_mut(t))
     }
 
@@ -1006,7 +1025,7 @@ impl Story {
         let api = self.para_at(anchor);
         self.paras[api].table = Some(id);
         self.fix_tables();
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         anchor
     }
 

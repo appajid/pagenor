@@ -1,5 +1,13 @@
 # Upstream pull-request integration review — P00.2 / P00.3 / P00.4
 
+## Latest recheck — 11 October 2026
+
+The latest live open/closed API review and selective adoption decisions are
+recorded in [the 11 October recheck](UPSTREAM_20261011_RECHECK.md). It covers
+168 open and 178 closed requests, 43 new open proposals, two recent closed
+requests and four updated heads from the previously adapted P11 group. This
+is a review checkpoint; no new app patch, version or publication is implied.
+
 Scope update (2026-10-09): The owner removed Adobe/dongle activation validation
 from pending work and milestone requirements. Earlier validation reports below
 retain their historical scope; those pending references are superseded. Existing

@@ -10,7 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use vello_cpu::Pixmap;
 
-use crate::{decode_pixmap_page, halve};
+use crate::{decode_pixmap_page_with_scope, halve};
+
+// SVG pixels depend on the document scope and the current font catalogue.
+type SourceKey = (usize, u32, u32, u64);
+type Key = (SourceKey, u8);
 
 /// Decoded pixels kept (bytes).
 const BUDGET: usize = 768 << 20;
@@ -23,12 +27,12 @@ struct Entry {
 
 #[derive(Default)]
 struct Cache {
-    /// (bytes address, PDF page, mip level).
-    map: HashMap<(usize, u32, u8), Entry>,
+    /// (bytes address, PDF page, font scope, font generation), mip level.
+    map: HashMap<Key, Entry>,
     bytes: usize,
     clock: u64,
     /// Assets that failed to decode (don't retry every frame).
-    bad: HashMap<(usize, u32), Arc<Vec<u8>>>,
+    bad: HashMap<SourceKey, Arc<Vec<u8>>>,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -42,7 +46,7 @@ fn with<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
     f(g.get_or_insert_with(Cache::default))
 }
 
-fn lookup(key: (usize, u32, u8)) -> Option<Arc<Pixmap>> {
+fn lookup(key: Key) -> Option<Arc<Pixmap>> {
     with(|c| {
         c.clock += 1;
         let clock = c.clock;
@@ -53,17 +57,17 @@ fn lookup(key: (usize, u32, u8)) -> Option<Arc<Pixmap>> {
     })
 }
 
-fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>) {
+fn store(bytes: &Arc<Vec<u8>>, source: SourceKey, level: u8, pm: Arc<Pixmap>) {
     with(|c| {
         c.clock += 1;
-        let key = (Arc::as_ptr(bytes) as usize, page, level);
+        let key = (source, level);
         let n = size_of(&pm);
         if let Some(old) = c.map.insert(key, Entry { _bytes: bytes.clone(), pm, stamp: c.clock }) {
             c.bytes -= size_of(&old.pm);
         }
         c.bytes += n;
         if c.bytes > BUDGET {
-            let mut v: Vec<(u64, (usize, u32, u8))> = c.map.iter().map(|(k, e)| (e.stamp, *k)).collect();
+            let mut v: Vec<(u64, Key)> = c.map.iter().map(|(k, e)| (e.stamp, *k)).collect();
             v.sort_unstable();
             for (_, k) in v {
                 if c.bytes <= BUDGET * 3 / 4 {
@@ -80,44 +84,56 @@ fn store(bytes: &Arc<Vec<u8>>, page: u32, level: u8, pm: Arc<Pixmap>) {
     });
 }
 
-/// Full-resolution decode of `bytes` (cached).
+fn source_key(bytes: &Arc<Vec<u8>>, page: u32, scope: u32) -> SourceKey {
+    let (scope, generation) = if pagenor_images::is_svg(bytes) { (scope, pagenor_fonts::FontDb::global().scan_generation()) } else { (0, 0) };
+    (Arc::as_ptr(bytes) as usize, page, scope, generation)
+}
+
+/// Full-resolution decode of `bytes` (cached), without document-local fonts.
 pub fn decoded(bytes: &Arc<Vec<u8>>, page: u32) -> Option<Arc<Pixmap>> {
-    let id = Arc::as_ptr(bytes) as usize;
-    if let Some(pm) = lookup((id, page, 0)) {
+    decoded_with_key(bytes, source_key(bytes, page, 0))
+}
+
+fn decoded_with_key(bytes: &Arc<Vec<u8>>, source: SourceKey) -> Option<Arc<Pixmap>> {
+    if let Some(pm) = lookup((source, 0)) {
         return Some(pm);
     }
-    if with(|c| c.bad.contains_key(&(id, page))) {
+    if with(|c| c.bad.contains_key(&source)) {
         return None;
     }
     // Decode outside the lock: other threads keep drawing cached images meanwhile.
-    match decode_pixmap_page(bytes, page) {
+    match decode_pixmap_page_with_scope(bytes, source.1, source.2) {
         Some(pm) => {
             let pm = Arc::new(pm);
-            store(bytes, page, 0, pm.clone());
+            store(bytes, source, 0, pm.clone());
             Some(pm)
         }
         None => {
-            with(|c| c.bad.insert((id, page), bytes.clone()));
+            with(|c| c.bad.insert(source, bytes.clone()));
             None
         }
     }
 }
 
-/// The mip level of `bytes` closest above `on_screen` device pixels per point for a graphic
-/// `width_pt` points wide.
+/// The mip level closest above `on_screen` device pixels per point.
 pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Option<Arc<Pixmap>> {
-    let full = decoded(bytes, page)?;
+    mip_with_scope(bytes, page, width_pt, on_screen, 0)
+}
+
+/// Document-aware SVG decode. Raster/PDF cache sharing is unchanged.
+pub fn mip_with_scope(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64, scope: u32) -> Option<Arc<Pixmap>> {
+    let source = source_key(bytes, page, scope);
+    let full = decoded_with_key(bytes, source)?;
     let ppt = full.width() as f64 / width_pt.max(1e-6);
-    let id = Arc::as_ptr(bytes) as usize;
     let mut pm = full;
     let mut level = 0u8;
     while ppt / (1u64 << (level + 1)) as f64 >= on_screen * 1.2 && pm.width() > 64 && pm.height() > 64 && level < 8 {
         level += 1;
-        pm = match lookup((id, page, level)) {
+        pm = match lookup((source, level)) {
             Some(p) => p,
             None => {
                 let half = Arc::new(halve(&pm));
-                store(bytes, page, level, half.clone());
+                store(bytes, source, level, half.clone());
                 half
             }
         };
@@ -132,4 +148,43 @@ pub fn clear() {
         c.bad.clear();
         c.bytes = 0;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn svg_cache_separates_document_fonts_and_refreshes_memory_fonts() {
+        let fonts = pagenor_fonts::FontDb::global();
+        let root = std::env::temp_dir().join(format!("pagenor-svg-cache-{}", std::process::id()));
+        for (name, glyph) in [("one", 'X'), ("two", 'W')] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("font.ttf"), pagenor_fonts::testing::font_with_glyph("Source Sans 3", &['A'], glyph).unwrap())
+                .unwrap();
+        }
+        // Publish the initial lazy catalogue before asserting cache hits in a stable generation.
+        let _ = fonts.families();
+        let one = fonts.load_document_fonts(&root.join("one")).scope;
+        let two = fonts.load_document_fonts(&root.join("two")).scope;
+        assert_ne!(one, 0);
+        assert_ne!(two, 0);
+        let data = Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="Source Sans 3">A</text></svg>"#.to_vec());
+        let first = mip_with_scope(&data, 0, 100.0, 1.0, one).unwrap();
+        let second = mip_with_scope(&data, 0, 100.0, 1.0, two).unwrap();
+        assert_ne!(first.data(), second.data());
+        assert!(Arc::ptr_eq(&first, &mip_with_scope(&data, 0, 100.0, 1.0, one).unwrap()));
+        let refresh = Arc::new(br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="Pagenor SVG Refresh">A</text></svg>"#.to_vec());
+        let before = decoded(&refresh, 0).unwrap();
+        assert_eq!(fonts.add_font(pagenor_fonts::testing::font_with_glyph("Pagenor SVG Refresh", &['A'], 'X').unwrap()), 1);
+        let after = decoded(&refresh, 0).unwrap();
+        assert_ne!(before.data(), after.data());
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert!(Arc::ptr_eq(&after, &decoded(&refresh, 0).unwrap()));
+        fonts.close_scope(one);
+        let closed = mip_with_scope(&data, 0, 100.0, 1.0, one).unwrap();
+        assert_ne!(closed.data(), first.data(), "closed scopes must not reuse their former SVG glyphs");
+        fonts.close_scope(two);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

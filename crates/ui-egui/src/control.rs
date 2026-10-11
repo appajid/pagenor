@@ -6,7 +6,7 @@
 //! - `document.inspect`: document summary; `ui.inspect`: UI state
 //! - `ui.menu.list`: flattened menu tree
 //! - `ui.tool.select {tool}`, `ui.tool.list`
-//! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
+//! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick|tripleclick, x, y, space?: "doc"|"screen"}], mods?}`:
 //!   drive the active tool through the same path as the mouse
 //! - `ui.key {key, shift?, alt?, cmd?}`: synthetic keyboard input
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
@@ -144,6 +144,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                     "up" => PointerKind::Up,
                     "move" => PointerKind::Move,
                     "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+                    "tripleclick" | "triclick" => PointerKind::TripleClick,
                     other => return err(format!("unknown pointer kind `{other}`")),
                 };
                 let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
@@ -294,7 +295,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 app.ui.control_bar = v;
             }
             if p.get("closePanel").is_some() {
-                app.ui.open_panel = None;
+                r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
                 app.ui.dock_expanded = v;
@@ -311,7 +312,14 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         },
         "ui.dialog.open" => {
             let Some(id) = s("id") else { return err("missing `id`") };
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "textFrameOptions" {
+                crate::dialogs::text_frame_options_dialog(app, fields)
+            } else {
+                let mut dialog = crate::dialogs::Dialog::new(id, fields);
+                dialog.unit = app.session.active().map_or(pagenor_geom::Unit::Picas, |s| s.doc.settings.horizontal_units);
+                dialog
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -417,6 +425,21 @@ mod automation_contract_tests {
             Outcome::Screenshot { .. } => panic!("unexpected screenshot"),
         }
     }
+    #[test]
+    fn triple_click_control_selects_a_composed_line() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let text = "First line\nSecond line";
+        app.run("frame.create", json!({"content":"text","rect":[72,72,500,200],"text":text})).unwrap();
+        app.session.set_tool("type");
+        for kind in ["tripleclick", "triclick"] {
+            let r = call(&mut app, &ctx, "ui.pointer", json!({"events":[{"kind":kind,"x":90,"y":80}]}));
+            assert_eq!(r["ok"], true, "{r}");
+            let t = app.session.doc().unwrap().selection.text.unwrap();
+            assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "First line");
+        }
+    }
+
     #[test]
     fn synthetic_pointer_work_is_bounded() {
         let mut app = app();

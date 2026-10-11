@@ -8,6 +8,10 @@ use crate::model::{parse_path, parse_runs, parse_text};
 use crate::synthetic::{hierarchy, object, rect_path, sample};
 use crate::{InddError, is_indd, to_idml, to_idml_named};
 
+mod indic;
+mod portfolio;
+mod story_leaves;
+
 fn unzip(idml: &[u8]) -> BTreeMap<String, String> {
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(idml)).unwrap();
     let mut out = BTreeMap::new();
@@ -183,7 +187,7 @@ fn shared_embedded_file_is_read_once_and_output_is_budgeted() {
 fn decoders_tolerate_short_input() {
     assert!(parse_path(&[1, 0, 0, 0, 5, 0]).is_empty());
     assert!(parse_runs(&[0; 9]).is_empty());
-    assert_eq!(parse_text(&[0; 3]), "");
+    assert!(matches!(parse_text(&[0; 3]), Err(InddError::Damaged(_))));
     let p = parse_path(&rect_path(0.0, 0.0, 10.0, 5.0));
     assert_eq!(p.len(), 1);
     assert_eq!(p[0].points.len(), 4);

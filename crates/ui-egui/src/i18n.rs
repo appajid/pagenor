@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::OnceLock};
 
 mod ar;
 mod pt_br;
+mod ru;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -16,6 +17,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("zh", "简体中文"),
     ("ar", "العربية"),
     ("pt-br", "Português (Brasil)"),
+    ("ru", "Русский"),
 ];
 
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
@@ -34,6 +36,19 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("New", ["Neu", "Nouveau", "Nuevo", "新規", "新建"]),
     ("New Document…", ["Neues Dokument …", "Nouveau document…", "Nuevo documento…", "新規ドキュメント…", "新建文档…"]),
     ("Open…", ["Öffnen …", "Ouvrir…", "Abrir…", "開く…", "打开…"]),
+    ("Open Recent", ["Zuletzt geöffnet", "Ouvrir un document récent", "Abrir reciente", "最近使った書類を開く", "打开最近文档"]),
+    ("Recent Documents", ["Zuletzt verwendete Dokumente", "Documents récents", "Documentos recientes", "最近使った書類", "最近文档"]),
+    (
+        "No recent documents yet.",
+        [
+            "Noch keine zuletzt verwendeten Dokumente.",
+            "Aucun document récent.",
+            "Todavía no hay documentos recientes.",
+            "最近使った書類はありません。",
+            "暂无最近文档。",
+        ],
+    ),
+    ("Unsaved document", ["Ungespeichertes Dokument", "Document non enregistré", "Documento sin guardar", "未保存の書類", "未保存的文档"]),
     ("Close", ["Schließen", "Fermer", "Cerrar", "閉じる", "关闭"]),
     ("Save", ["Speichern", "Enregistrer", "Guardar", "保存", "保存"]),
     ("Save As…", ["Speichern unter …", "Enregistrer sous…", "Guardar como…", "別名で保存…", "另存为…"]),
@@ -57,6 +72,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Find/Change…", ["Suchen/Ersetzen …", "Rechercher/Remplacer…", "Buscar/Cambiar…", "検索と置換…", "查找/更改…"]),
     ("Check Spelling…", ["Rechtschreibprüfung …", "Vérifier l'orthographe…", "Revisar ortografía…", "スペルチェック…", "拼写检查…"]),
     ("Preferences…", ["Voreinstellungen …", "Préférences…", "Preferencias…", "環境設定…", "首选项…"]),
+    ("Settings…", ["Einstellungen …", "Réglages…", "Ajustes…", "設定…", "设置…"]),
     (
         "Keyboard Shortcuts…",
         ["Tastaturbefehle …", "Raccourcis clavier…", "Métodos abreviados de teclado…", "キーボードショートカット…", "键盘快捷键…"],
@@ -88,6 +104,42 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Character", ["Zeichen", "Caractère", "Carácter", "文字", "字符"]),
     ("Paragraph", ["Absatz", "Paragraphe", "Párrafo", "段落", "段落"]),
     ("Tabs", ["Tabulatoren", "Tabulations", "Tabulaciones", "タブ", "制表符"]),
+    (
+        "Left-aligned tab",
+        ["Linksbündiger Tabulator", "Tabulation alignée à gauche", "Tabulación alineada a la izquierda", "左揃えタブ", "左对齐制表符"],
+    ),
+    ("Centered tab", ["Zentrierter Tabulator", "Tabulation centrée", "Tabulación centrada", "中央揃えタブ", "居中对齐制表符"]),
+    (
+        "Right-aligned tab",
+        ["Rechtsbündiger Tabulator", "Tabulation alignée à droite", "Tabulación alineada a la derecha", "右揃えタブ", "右对齐制表符"],
+    ),
+    (
+        "Tab aligned on a character",
+        [
+            "Am Zeichen ausgerichteter Tabulator",
+            "Tabulation alignée sur un caractère",
+            "Tabulación alineada en un carácter",
+            "文字揃えタブ",
+            "按字符对齐制表符",
+        ],
+    ),
+    ("X:", ["X:", "X :", "X:", "X:", "X:"]),
+    ("Leader:", ["Füllzeichen:", "Points de suite :", "Carácter de relleno:", "リーダー:", "前导符:"]),
+    ("Align On:", ["Ausrichten an:", "Aligner sur :", "Alinear en:", "揃える文字:", "对齐位置:"]),
+    (
+        "Position panel above text frame",
+        [
+            "Bedienfeld über dem Textrahmen platzieren",
+            "Placer le panneau au-dessus du bloc de texte",
+            "Colocar el panel sobre el marco de texto",
+            "パネルをテキストフレームの上に配置",
+            "将面板置于文本框上方",
+        ],
+    ),
+    ("Clear All", ["Alle löschen", "Tout effacer", "Borrar todo", "すべてを消去", "全部清除"]),
+    ("Delete Tab", ["Tabulator löschen", "Supprimer la tabulation", "Eliminar tabulación", "タブを削除", "删除制表符"]),
+    ("Repeat Tab", ["Tabulator wiederholen", "Répéter la tabulation", "Repetir tabulación", "タブを繰り返し", "重复制表符"]),
+    ("Reset Indents", ["Einzüge zurücksetzen", "Réinitialiser les retraits", "Restablecer sangrías", "インデントをリセット", "重置缩进"]),
     ("Glyphs", ["Glyphen", "Glyphes", "Glifos", "字形", "字形"]),
     ("Story", ["Textabschnitt", "Article", "Artículo", "ストーリー", "文章"]),
     ("Character Styles", ["Zeichenformate", "Styles de caractère", "Estilos de carácter", "文字スタイル", "字符样式"]),
@@ -401,6 +453,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Mobile", ["Mobile", "Mobile", "Mobile", "Mobile", "移动设备"]),
     ("Move Selection Here", ["Move Selection Here", "Move Selection Here", "Move Selection Here", "Move Selection Here", "将所选内容移至此处"]),
+    (
+        "Select; drag to move the selection to another layer",
+        [
+            "Auswählen; ziehen, um die Auswahl auf eine andere Ebene zu verschieben",
+            "Sélectionner ; faire glisser pour déplacer la sélection vers un autre calque",
+            "Seleccionar; arrastre para mover la selección a otra capa",
+            "選択（ドラッグで選択範囲を別のレイヤーへ移動）",
+            "选择；拖动可将所选内容移至其他图层",
+        ],
+    ),
     ("Move to Color Group", ["Move to Color Group", "Move to Color Group", "Move to Color Group", "Move to Color Group", "移动到颜色组"]),
     ("Move to Group", ["Move to Group", "Move to Group", "Move to Group", "Move to Group", "移动到组"]),
     ("Multiline", ["Multiline", "Multiline", "Multiline", "Multiline", "多行"]),
@@ -576,6 +638,26 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Trim", ["Trim", "Trim", "Trim", "Trim", "裁切"]),
+    (
+        "Bounding Box (Visible Layers Only)",
+        [
+            "Begrenzungsrahmen (nur sichtbare Ebenen)",
+            "Cadre de sélection (calques visibles uniquement)",
+            "Cuadro delimitador (solo capas visibles)",
+            "バウンディングボックス（表示レイヤーのみ）",
+            "边界框（仅可见图层）",
+        ],
+    ),
+    (
+        "Bounding Box (All Layers)",
+        [
+            "Begrenzungsrahmen (alle Ebenen)",
+            "Cadre de sélection (tous les calques)",
+            "Cuadro delimitador (todas las capas)",
+            "バウンディングボックス（すべてのレイヤー）",
+            "边界框（所有图层）",
+        ],
+    ),
     ("Type:", ["Type:", "Type:", "Type:", "Type:", "类型："]),
     ("Typical", ["Typical", "Typical", "Typical", "Typical", "典型"]),
     ("UI Size:", ["UI Size:", "UI Size:", "UI Size:", "UI Size:", "UI 大小："]),
@@ -2074,7 +2156,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("No text selected", ["No text selected", "No text selected", "No text selected", "No text selected", "未选择文本"]),
-    ("Search", ["Search", "Search", "Search", "Search", "搜索"]),
+    ("Search", ["Suchen", "Rechercher", "Buscar", "Search", "搜索"]),
     ("Essentials", ["Essentials", "Essentials", "Essentials", "Essentials", "基本功能"]),
     ("Advanced", ["Advanced", "Advanced", "Advanced", "Advanced", "高级"]),
     ("Digital Publishing", ["Digital Publishing", "Digital Publishing", "Digital Publishing", "Digital Publishing", "数字出版"]),
@@ -2208,12 +2290,17 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "逆时针旋转 90°",
         ],
     ),
+    ("Rotate 180°", ["180° drehen", "Rotation à 180°", "Girar 180°", "180°回転", "旋转 180°"]),
     ("Rotation Angle", ["Rotation Angle", "Rotation Angle", "Rotation Angle", "Rotation Angle", "旋转角度"]),
     ("Rows", ["Rows", "Rows", "Rows", "Rows", "行数"]),
     ("Run", ["Run", "Run", "Run", "Run", "运行"]),
     ("Scale X Percentage", ["Scale X Percentage", "Scale X Percentage", "Scale X Percentage", "Scale X Percentage", "水平缩放百分比"]),
     ("Scale Y Percentage", ["Scale Y Percentage", "Scale Y Percentage", "Scale Y Percentage", "Scale Y Percentage", "垂直缩放百分比"]),
-    ("Search commands", ["Search commands", "Search commands", "Search commands", "Search commands", "搜索命令"]),
+    ("Search commands", ["Befehle suchen", "Rechercher des commandes", "Buscar comandos", "Search commands", "搜索命令"]),
+    (
+        "No matching commands",
+        ["Keine passenden Befehle", "Aucune commande correspondante", "Ningún comando coincide", "一致するコマンドはありません", "没有匹配的命令"],
+    ),
     ("Search fonts", ["Search fonts", "Search fonts", "Search fonts", "Search fonts", "搜索字体"]),
     (
         "Search styles and commands…",
@@ -2341,7 +2428,6 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Baseline Shift:", ["Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "Baseline Shift:", "基线偏移："]),
     ("Skew:", ["Skew:", "Skew:", "Skew:", "Skew:", "倾斜："]),
     ("Language:", ["Language:", "Language:", "Language:", "Language:", "语言："]),
-    ("Tint:", ["Tint:", "Tint:", "Tint:", "Tint:", "色调："]),
     ("Figure Style:", ["Figure Style:", "Figure Style:", "Figure Style:", "Figure Style:", "数字样式："]),
     ("Underline On", ["Underline On", "Underline On", "Underline On", "Underline On", "启用下划线"]),
     ("Strikethrough On", ["Strikethrough On", "Strikethrough On", "Strikethrough On", "Strikethrough On", "启用删除线"]),
@@ -2856,6 +2942,383 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ("Missing", ["Fehlend", "Manquante", "Ausente", "不明", "缺失"]),
     ("Modified", ["Geändert", "Modifiée", "Modificada", "変更あり", "已更改"]),
     ("{count} records", ["{count} Datensätze", "{count} enregistrements", "{count} registros", "{count} 件", "{count} 条记录"]),
+    // File › New › Document
+    ("Recent", ["Zuletzt verwendet", "Récents", "Recientes", "最近使用", "最近"]),
+    ("Saved", ["Gespeichert", "Enregistrés", "Guardados", "保存済み", "已保存"]),
+    ("[Default]", ["[Standard]", "[Par défaut]", "[Predeterminado]", "[初期設定]", "[默认]"]),
+    ("Your Recent Items", ["Zuletzt verwendete Elemente", "Éléments récents", "Elementos recientes", "最近使用した項目", "最近使用的项目"]),
+    (
+        "Saved Presets",
+        ["Gespeicherte Vorgaben", "Paramètres prédéfinis enregistrés", "Ajustes preestablecidos guardados", "保存済みプリセット", "已保存的预设"],
+    ),
+    (
+        "Blank Document Presets",
+        [
+            "Vorgaben für leere Dokumente",
+            "Paramètres prédéfinis de document vierge",
+            "Ajustes preestablecidos de documento en blanco",
+            "空のドキュメントプリセット",
+            "空白文档预设",
+        ],
+    ),
+    (
+        "No saved presets yet. Set the details, then click Save Document Preset.",
+        [
+            "Noch keine gespeicherten Vorgaben. Legen Sie die Details fest und klicken Sie auf Dokumentvorgabe speichern.",
+            "Aucun paramètre prédéfini enregistré. Définissez les détails, puis cliquez sur Enregistrer le paramètre prédéfini de document.",
+            "Aún no hay ajustes preestablecidos guardados. Defina los detalles y haga clic en Guardar ajuste preestablecido de documento.",
+            "保存済みのプリセットはありません。詳細を設定してから「ドキュメントプリセットを保存」をクリックしてください。",
+            "尚无已保存的预设。请设置详细信息，然后单击“存储文档预设”。",
+        ],
+    ),
+    ("Delete Preset", ["Vorgabe löschen", "Supprimer le paramètre prédéfini", "Eliminar ajuste preestablecido", "プリセットを削除", "删除预设"]),
+    (
+        "Preset Details",
+        ["Vorgabedetails", "Détails du paramètre prédéfini", "Detalles del ajuste preestablecido", "プリセットの詳細", "预设详细信息"],
+    ),
+    ("Document Name", ["Dokumentname", "Nom du document", "Nombre del documento", "ドキュメント名", "文档名称"]),
+    (
+        "Save Document Preset",
+        [
+            "Dokumentvorgabe speichern",
+            "Enregistrer le paramètre prédéfini de document",
+            "Guardar ajuste preestablecido de documento",
+            "ドキュメントプリセットを保存",
+            "存储文档预设",
+        ],
+    ),
+    (
+        "Save Document Preset As:",
+        [
+            "Dokumentvorgabe speichern unter:",
+            "Enregistrer le paramètre prédéfini de document sous :",
+            "Guardar ajuste preestablecido de documento como:",
+            "ドキュメントプリセットの保存名:",
+            "存储文档预设为：",
+        ],
+    ),
+    ("Preset Name", ["Vorgabename", "Nom du paramètre prédéfini", "Nombre del ajuste preestablecido", "プリセット名", "预设名称"]),
+    ("Save Preset", ["Vorgabe speichern", "Enregistrer le paramètre prédéfini", "Guardar ajuste preestablecido", "プリセットを保存", "存储预设"]),
+    ("Start #", ["Startseitennr.", "N° de début", "N.º inicial", "開始ページ番号", "起始页码"]),
+    ("Column Gutter", ["Spaltenabstand", "Gouttière", "Medianil", "列間隔", "栏间距"]),
+    // Layout › Numbering & Section Options
+    ("Start Section", ["Abschnittsanfang", "Début de section", "Iniciar sección", "セクション開始", "开始新章节"]),
+    (
+        "Automatic Page Numbering",
+        [
+            "Automatische Seitennummerierung",
+            "Numérotation automatique des pages",
+            "Numeración de páginas automática",
+            "自動ページ番号",
+            "自动编排页码",
+        ],
+    ),
+    (
+        "Start Page Numbering at:",
+        ["Seitennummerierung beginnen bei:", "Commencer la numérotation à :", "Iniciar numeración de páginas en:", "開始ページ番号:", "起始页码："],
+    ),
+    ("Section Prefix:", ["Abschnittspräfix:", "Préfixe de section :", "Prefijo de sección:", "セクションプレフィックス:", "章节前缀："]),
+    ("Section Marker:", ["Abschnittsmarke:", "Marqueur de section :", "Marcador de sección:", "セクションマーカー:", "章节标志符："]),
+    (
+        "Include Prefix when Numbering Pages",
+        [
+            "Präfix in Seitennummerierung einschließen",
+            "Inclure le préfixe lors de la numérotation des pages",
+            "Incluir prefijo al numerar páginas",
+            "ページ番号にプレフィックスを含める",
+            "编排页码时包含前缀",
+        ],
+    ),
+    (
+        "Document Chapter Numbering",
+        [
+            "Kapitelnummerierung des Dokuments",
+            "Numérotation des chapitres du document",
+            "Numeración de capítulos del documento",
+            "ドキュメントの章番号",
+            "文档章节编号",
+        ],
+    ),
+    (
+        "Automatic Chapter Numbering",
+        [
+            "Automatische Kapitelnummerierung",
+            "Numérotation automatique des chapitres",
+            "Numeración de capítulos automática",
+            "自動章番号",
+            "自动为章节编号",
+        ],
+    ),
+    (
+        "Start Chapter Numbering at:",
+        [
+            "Kapitelnummerierung beginnen bei:",
+            "Commencer la numérotation des chapitres à :",
+            "Iniciar numeración de capítulos en:",
+            "開始章番号:",
+            "起始章节编号：",
+        ],
+    ),
+    (
+        "Same as Previous Document in the Book",
+        [
+            "Wie vorheriges Dokument im Buch",
+            "Identique au document précédent du livre",
+            "Igual que el documento anterior del libro",
+            "ブック内の前のドキュメントと同じ",
+            "与书籍中的上一文档相同",
+        ],
+    ),
+    ("Book Name:", ["Buchname:", "Nom du livre :", "Nombre del libro:", "ブック名:", "书籍名称："]),
+    ("N/A", ["–", "S.O.", "N/D", "なし", "不适用"]),
+    // Paragraph Rules.
+    ("Paragraph Rules…", ["Absatzlinien …", "Filets de paragraphe…", "Filetes de párrafo…", "段落境界線…", "段落线…"]),
+    ("Paragraph Rules", ["Absatzlinien", "Filets de paragraphe", "Filetes de párrafo", "段落境界線", "段落线"]),
+    ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
+    ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
+    ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
+    ("Swatch Options…", ["Farbfeldoptionen …", "Options de nuance…", "Opciones de muestra…", "スウォッチオプション…", "色板选项…"]),
+    ("Swatch Options", ["Farbfeldoptionen", "Options de nuance", "Opciones de muestra", "スウォッチオプション", "色板选项"]),
+    (
+        "Color Group Options…",
+        ["Farbgruppenoptionen …", "Options du groupe de couleurs…", "Opciones de grupo de colores…", "カラーグループオプション…", "颜色组选项…"],
+    ),
+    ("Layer Options", ["Ebenenoptionen", "Options de calque", "Opciones de capa", "レイヤーオプション", "图层选项"]),
+    (
+        "Layer Options for \"{name}\"…",
+        [
+            "Ebenenoptionen für „{name}“ …",
+            "Options du calque « {name} »…",
+            "Opciones de capa para «{name}»…",
+            "「{name}」のレイヤーオプション…",
+            "“{name}”的图层选项…",
+        ],
+    ),
+    ("Swatch Name:", ["Farbfeldname:", "Nom de la nuance :", "Nombre de muestra:", "スウォッチ名:", "色板名称:"]),
+    (
+        "Name with Color Value",
+        ["Name mit Farbwert", "Nommer d'après la valeur chromatique", "Nombre con valor de color", "カラー値を名前にする", "以颜色值命名"],
+    ),
+    ("Color Type:", ["Farbtyp:", "Type de couleur :", "Tipo de color:", "カラータイプ:", "颜色类型:"]),
+    ("Process", ["Prozessfarbe", "Quadrichromie", "Cuatricromía", "プロセス", "印刷色"]),
+    ("Spot", ["Volltonfarbe", "Ton direct", "Tinta plana", "特色", "专色"]),
+    ("Color Mode:", ["Farbmodus:", "Mode colorimétrique :", "Modo de color:", "カラーモード:", "颜色模式:"]),
+    ("Base Color:", ["Grundfarbe:", "Couleur de base :", "Color base:", "ベースカラー:", "基准颜色:"]),
+    (
+        "Edit the gradient's stops in the Gradient panel.",
+        [
+            "Die Verlaufsregler bearbeiten Sie im Verlaufsbedienfeld.",
+            "Modifiez les arrêts du dégradé dans le panneau Dégradé.",
+            "Edite las paradas del degradado en el panel Degradado.",
+            "グラデーションの分岐点はグラデーションパネルで編集します。",
+            "在“渐变”面板中编辑渐变的色标。",
+        ],
+    ),
+    (
+        "This swatch can't be edited.",
+        [
+            "Dieses Farbfeld kann nicht bearbeitet werden.",
+            "Cette nuance ne peut pas être modifiée.",
+            "Esta muestra no se puede editar.",
+            "このスウォッチは編集できません。",
+            "此色板无法编辑。",
+        ],
+    ),
+    ("Light Blue", ["Hellblau", "Bleu clair", "Azul claro", "ライトブルー", "浅蓝色"]),
+    ("Red", ["Rot", "Rouge", "Rojo", "レッド", "红色"]),
+    ("Green", ["Grün", "Vert", "Verde", "グリーン", "绿色"]),
+    ("Blue", ["Blau", "Bleu", "Azul", "ブルー", "蓝色"]),
+    ("Yellow", ["Gelb", "Jaune", "Amarillo", "イエロー", "黄色"]),
+    ("Magenta", ["Magenta", "Magenta", "Magenta", "マゼンタ", "洋红色"]),
+    ("Cyan", ["Cyan", "Cyan", "Cian", "シアン", "青色"]),
+    ("Black", ["Schwarz", "Noir", "Negro", "ブラック", "黑色"]),
+    ("Orange", ["Orange", "Orange", "Naranja", "オレンジ", "橙色"]),
+    ("Dark Green", ["Dunkelgrün", "Vert foncé", "Verde oscuro", "ダークグリーン", "深绿色"]),
+    ("Teal", ["Blaugrün", "Bleu canard", "Verde azulado", "ティール", "蓝绿色"]),
+    ("Tan", ["Hellbraun", "Fauve", "Tostado", "タン", "棕褐色"]),
+    ("Brown", ["Braun", "Marron", "Marrón", "ブラウン", "褐色"]),
+    ("Violet", ["Violett", "Violet", "Violeta", "バイオレット", "紫罗兰色"]),
+    ("Gold", ["Gold", "Or", "Dorado", "ゴールド", "金色"]),
+    ("Show Layer", ["Ebene einblenden", "Afficher le calque", "Mostrar capa", "レイヤーを表示", "显示图层"]),
+    ("Lock Layer", ["Ebene fixieren", "Verrouiller le calque", "Bloquear capa", "レイヤーをロック", "锁定图层"]),
+    ("Print Layer", ["Ebene drucken", "Imprimer le calque", "Imprimir capa", "レイヤーをプリント", "打印图层"]),
+    (
+        "Suppress Text Wrap When Layer is Hidden",
+        [
+            "Textumfluss bei ausgeblendeter Ebene unterdrücken",
+            "Supprimer l'habillage quand le calque est masqué",
+            "Suprimir ceñir texto cuando la capa está oculta",
+            "非表示レイヤーのテキストの回り込みを無視",
+            "图层隐藏时禁止文本绕排",
+        ],
+    ),
+    // Cell strokes.
+    ("Gap Tint:", ["Lückenfarbton:", "Teinte de l'espace:", "Matiz del hueco:", "すき間の濃淡:", "间隙色调："]),
+    ("Strokes and Fills…", ["Konturen und Flächen …", "Contours et fonds…", "Trazos y rellenos…", "線と塗り…", "描边和填色…"]),
+    ("Cell Stroke", ["Zellkontur", "Contour de cellule", "Trazo de celda", "セルの線", "单元格描边"]),
+    ("Cell Fill", ["Zellfläche", "Fond de cellule", "Relleno de celda", "セルの塗り", "单元格填色"]),
+    ("Cell edges", ["Zellkanten", "Bords de cellule", "Bordes de celda", "セルの境界線", "单元格边缘"]),
+    (
+        "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
+        [
+            "Klicken Sie auf eine Linie, um sie ein- oder auszuschließen. Doppelklick wählt alle äußeren oder alle inneren Linien; Dreifachklick wählt alle aus oder hebt die Auswahl auf.",
+            "Cliquez sur une ligne pour l'inclure ou l'exclure. Un double-clic sélectionne toutes les lignes extérieures ou intérieures ; un triple-clic sélectionne ou désélectionne tout.",
+            "Haga clic en una línea para incluirla o excluirla. Doble clic selecciona todas las líneas exteriores o interiores; triple clic selecciona o borra todas.",
+            "線をクリックすると、含めるか除外するかを切り替えます。ダブルクリックで外側または内側の線をすべて選択し、トリプルクリックですべてを選択または解除します。",
+            "单击线条可将其包含或排除。双击选择所有外侧或所有内侧线条；三击选择或清除全部。",
+        ],
+    ),
+    // Paragraph Style Options: Paragraph Border, Paragraph Shading, Keep Options, Span Columns, Bullets and Numbering.
+    ("Paragraph Border", ["Absatzrahmen", "Contour de paragraphe", "Borde de párrafo", "段落囲み罫", "段落边框"]),
+    ("Paragraph Shading", ["Absatzschattierung", "Ombrage de paragraphe", "Sombreado de párrafo", "段落の背景色", "段落底纹"]),
+    ("Keep Options", ["Umbruchoptionen", "Options d'enchaînement", "Opciones de separación", "段落分離禁止オプション", "保持选项"]),
+    ("Span Columns", ["Spalten überspannen", "Étendre sur les colonnes", "Abarcar columnas", "段抜きと段分割", "跨栏"]),
+    ("Top:", ["Oben:", "Haut:", "Arriba:", "上:", "上："]),
+    ("Left:", ["Links:", "Gauche:", "Izquierda:", "左:", "左："]),
+    ("Bottom:", ["Unten:", "Bas:", "Abajo:", "下:", "下："]),
+    ("Right:", ["Rechts:", "Droite:", "Derecha:", "右:", "右："]),
+    ("Keep with Next:", ["Nicht trennen von nächsten:", "Lier aux suivantes:", "Conservar con siguientes:", "次の段落と分離禁止:", "与下一段保持："]),
+    ("Keep Lines Together", ["Zeilen nicht trennen", "Lignes solidaires", "Conservar líneas juntas", "行を分離しない", "保持各行同页"]),
+    (
+        "All Lines in Paragraph",
+        ["Alle Zeilen im Absatz", "Toutes les lignes du paragraphe", "Todas las líneas del párrafo", "段落のすべての行", "段落中所有行"],
+    ),
+    (
+        "At Start/End of Paragraph",
+        ["Am Anfang/Ende des Absatzes", "Au début/à la fin du paragraphe", "Al inicio/final del párrafo", "段落の始めと終わり", "在段落开头/结尾"],
+    ),
+    ("End:", ["Ende:", "Fin:", "Final:", "終了位置:", "结束："]),
+    ("Start Paragraph:", ["Absatzbeginn:", "Début de paragraphe:", "Inicio de párrafo:", "段落の開始位置:", "段落开始："]),
+    ("Anywhere", ["Überall", "N'importe où", "En cualquier lugar", "任意の位置", "任意位置"]),
+    ("In Next Column", ["In nächster Spalte", "Dans la colonne suivante", "En la siguiente columna", "次の段", "于下一栏"]),
+    ("In Next Frame", ["In nächstem Rahmen", "Dans le bloc suivant", "En el siguiente marco", "次のフレーム", "于下一框架"]),
+    ("On Next Page", ["Auf nächster Seite", "Sur la page suivante", "En la página siguiente", "次のページ", "于下一页"]),
+    (
+        "On Next Odd Page",
+        ["Auf nächster ungerader Seite", "Sur la page impaire suivante", "En la siguiente página impar", "次の奇数ページ", "于下一奇数页"],
+    ),
+    (
+        "On Next Even Page",
+        ["Auf nächster gerader Seite", "Sur la page paire suivante", "En la siguiente página par", "次の偶数ページ", "于下一偶数页"],
+    ),
+    ("Paragraph Layout:", ["Absatzlayout:", "Disposition du paragraphe:", "Diseño de párrafo:", "段落レイアウト:", "段落版面："]),
+    ("Single Column", ["Eine Spalte", "Colonne simple", "Una columna", "単一段", "单栏"]),
+    ("Split Column", ["Spalte unterteilen", "Diviser la colonne", "Dividir columna", "段分割", "拆分栏"]),
+    ("Columns:", ["Spalten:", "Colonnes:", "Columnas:", "段:", "栏数："]),
+    ("All", ["Alle", "Toutes", "Todas", "すべて", "全部"]),
+    ("Inside Gutter:", ["Innerer Spaltenabstand:", "Gouttière intérieure:", "Medianil interior:", "内側の間隔:", "内栏间距："]),
+    ("Outside Gutter:", ["Äußerer Spaltenabstand:", "Gouttière extérieure:", "Medianil exterior:", "外側の間隔:", "外栏间距："]),
+    ("List Type:", ["Listentyp:", "Type de liste:", "Tipo de lista:", "リストタイプ:", "列表类型："]),
+    ("Bullets", ["Aufzählungszeichen", "Puces", "Viñetas", "箇条書き記号", "项目符号"]),
+    ("Numbers", ["Nummerierung", "Numéros", "Números", "自動番号", "编号"]),
+    ("Bullet Character:", ["Aufzählungszeichen:", "Caractère de puce:", "Carácter de viñeta:", "箇条書き記号:", "项目符号字符："]),
+    ("Text After:", ["Text danach:", "Texte après:", "Texto después:", "後続テキスト:", "后续文本："]),
+    (
+        "Corner Size and Shape",
+        ["Eckengröße und -form", "Taille et forme des angles", "Tamaño y forma de esquinas", "角のサイズとシェイプ", "角大小和形状"],
+    ),
+    ("Top Left:", ["Oben links:", "En haut à gauche:", "Superior izquierda:", "左上:", "左上："]),
+    ("Top Right:", ["Oben rechts:", "En haut à droite:", "Superior derecha:", "右上:", "右上："]),
+    ("Bottom Right:", ["Unten rechts:", "En bas à droite:", "Inferior derecha:", "右下:", "右下："]),
+    ("Bottom Left:", ["Unten links:", "En bas à gauche:", "Inferior izquierda:", "左下:", "左下："]),
+    ("Rounded", ["Abgerundet", "Arrondi", "Redondeado", "角丸", "圆角"]),
+    ("Inverse Rounded", ["Umgekehrt abgerundet", "Arrondi inversé", "Redondeado inverso", "逆角丸", "反向圆角"]),
+    ("Inset", ["Eingezogen", "En retrait", "Hundido", "内側に切り欠き", "内凹"]),
+    ("Fancy", ["Verziert", "Fantaisie", "Decorativo", "装飾", "花式"]),
+    ("Top Edge:", ["Obere Kante:", "Bord supérieur:", "Borde superior:", "上端:", "上边缘："]),
+    ("Bottom Edge:", ["Untere Kante:", "Bord inférieur:", "Borde inferior:", "下端:", "下边缘："]),
+    ("Em Box Top", ["Geviert oben", "Haut du cadratin", "Parte superior del cuadratín", "仮想ボディの上", "全角框顶部"]),
+    ("Descent", ["Unterlänge", "Jambage inférieur", "Descendente", "ディセント", "下伸部"]),
+    ("Em Box Bottom", ["Geviert unten", "Bas du cadratin", "Parte inferior del cuadratín", "仮想ボディの下", "全角框底部"]),
+    (
+        "Display Border if Paragraph Splits Across Frames/Columns",
+        [
+            "Rahmen anzeigen, wenn der Absatz auf Rahmen/Spalten verteilt ist",
+            "Afficher le contour si le paragraphe est réparti sur plusieurs blocs/colonnes",
+            "Mostrar borde si el párrafo se divide entre marcos/columnas",
+            "段落がフレームや段をまたぐときに囲み罫を表示",
+            "段落跨框架/栏拆分时显示边框",
+        ],
+    ),
+    (
+        "Merge Consecutive Borders and Shading",
+        [
+            "Aufeinanderfolgende Rahmen und Schattierungen zusammenführen",
+            "Fusionner les contours et trames consécutifs",
+            "Combinar bordes y sombreados consecutivos",
+            "連続する囲み罫と背景色を結合",
+            "合并连续的边框和底纹",
+        ],
+    ),
+    ("Clip to Frame", ["Auf Rahmen beschneiden", "Découper selon le bloc", "Recortar al marco", "フレームでクリップ", "剪切到框架"]),
+    (
+        "Do not Print or Export",
+        ["Nicht drucken oder exportieren", "Ne pas imprimer ni exporter", "No imprimir ni exportar", "印刷・書き出ししない", "不打印或导出"],
+    ),
+    ("Space Before Span:", ["Abstand vor Überspannung:", "Espace avant l'étendue:", "Espacio antes de abarcar:", "段抜き前のアキ:", "跨栏前间距："]),
+    (
+        "Space After Span:",
+        ["Abstand nach Überspannung:", "Espace après l'étendue:", "Espacio después de abarcar:", "段抜き後のアキ:", "跨栏后间距："],
+    ),
+    ("Space Before Split:", ["Abstand vor Teilung:", "Espace avant la division:", "Espacio antes de dividir:", "段分割前のアキ:", "拆分前间距："]),
+    ("Space After Split:", ["Abstand nach Teilung:", "Espace après la division:", "Espacio después de dividir:", "段分割後のアキ:", "拆分后间距："]),
+    ("Level:", ["Ebene:", "Niveau:", "Nivel:", "レベル:", "级别："]),
+    ("Glyphs…", ["Glyphen…", "Glyphes…", "Glifos…", "字形…", "字形…"]),
+    ("(Paragraph Font)", ["(Absatzschrift)", "(Police du paragraphe)", "(Fuente del párrafo)", "(段落のフォント)", "(段落字体)"]),
+    (
+        "Restart Numbers at This Level After:",
+        [
+            "Nummerierung auf dieser Ebene neu beginnen nach:",
+            "Recommencer la numérotation à ce niveau après:",
+            "Reiniciar números en este nivel después de:",
+            "このレベルの番号を振り直すきっかけ:",
+            "在此级别后重新编号：",
+        ],
+    ),
+    (
+        "Any Previous Level",
+        ["Einer beliebigen höheren Ebene", "Tout niveau précédent", "Cualquier nivel anterior", "任意の上位レベル", "任何上一级别"],
+    ),
+    ("Tab Position:", ["Tabulatorposition:", "Position de la tabulation:", "Posición de tabulación:", "タブ位置:", "制表符位置："]),
+    (
+        "Paragraph Borders and Shading…",
+        [
+            "Absatzrahmen und -schattierung…",
+            "Contours et trames de paragraphe…",
+            "Bordes y sombreado de párrafo…",
+            "段落囲み罫と段落背景色…",
+            "段落边框和底纹…",
+        ],
+    ),
+    (
+        "Paragraph Borders and Shading",
+        [
+            "Absatzrahmen und -schattierung",
+            "Contours et trames de paragraphe",
+            "Bordes y sombreado de párrafo",
+            "段落囲み罫と段落背景色",
+            "段落边框和底纹",
+        ],
+    ),
+    ("Span Columns…", ["Spalten überspannen…", "Étendre sur les colonnes…", "Abarcar columnas…", "段抜きと段分割…", "跨栏…"]),
+    (
+        "Bullets and Numbering…",
+        ["Aufzählungszeichen und Nummerierung…", "Puces et numérotation…", "Viñetas y numeración…", "箇条書き記号と番号付け…", "项目符号和编号…"],
+    ),
+    ("List:", ["Liste:", "Liste:", "Lista:", "リスト:", "列表："]),
+    ("Number:", ["Zahl:", "Numéro:", "Número:", "番号:", "编号："]),
+    ("Mode:", ["Modus:", "Mode:", "Modo:", "モード:", "模式："]),
+    (
+        "Continue from Previous Number",
+        [
+            "Ab vorheriger Zahl fortfahren",
+            "Continuer à partir du numéro précédent",
+            "Continuar desde el número anterior",
+            "前の番号から継続",
+            "从上一编号继续",
+        ],
+    ),
+    ("Start At", ["Beginnen bei", "Commencer à", "Empezar en", "開始番号", "起始编号"]),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -2875,18 +3338,46 @@ fn column(lang: &str) -> Option<usize> {
 }
 
 /// `s` in `lang` (English, or the string itself, when there's no translation).
+pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
+    if lang == "ru" {
+        return ru::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map_or_else(|| tr(lang, s), |(_, _, text)| text);
+    }
+    tr(lang, s)
+}
+
 pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     static TRANSLATIONS: OnceLock<HashMap<&'static str, [&'static str; 5]>> = OnceLock::new();
     static ARABIC: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     static PORTUGUESE_BR: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    static RUSSIAN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     if lang == "pt-br" {
         return PORTUGUESE_BR.get_or_init(|| pt_br::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "ru" {
+        return RUSSIAN.get_or_init(|| ru::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     let Some(c) = column(lang) else { return s };
     TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied().unwrap_or(s)
+}
+
+#[cfg(test)]
+pub(crate) fn russian_catalog() -> Vec<&'static str> {
+    ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
+}
+
+/// Ukrainian and Russian have several plural forms, so their count captions put the category
+/// before the value ("сторінок: 5", "страниц: 5") and every number stays grammatical; other
+/// languages keep the existing value-first caption.
+pub fn category_first(lang: &str) -> bool {
+    lang == "ru"
+}
+
+/// Caption for a counted category, e.g. `count_label("ru", "pages", 5)` is "страниц: 5".
+pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
+    if category_first(lang) { format!("{}: {count}", tr(lang, noun)) } else { format!("{count} {}", tr(lang, noun)) }
 }
 
 /// Localize reserved built-in style names only; user-defined names are document data.
@@ -2923,8 +3414,11 @@ mod tests {
         for (key, expected) in pt_br::TABLE {
             assert_eq!(tr("pt-br", key), *expected, "pt-br: {key}");
         }
+        for (key, expected) in ru::TABLE {
+            assert_eq!(tr("ru", key), *expected, "ru: {key}");
+        }
         let unknown = String::from("A user-defined untranslated label");
-        for lang in ["ar", "pt-br", "zh", "ja", "de", "fr", "es", "", "unknown"] {
+        for lang in ["ru", "ar", "pt-br", "zh", "ja", "de", "fr", "es", "", "unknown"] {
             assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()));
         }
     }
@@ -2953,6 +3447,68 @@ mod tests {
         for (i, (en, t)) in TABLE.iter().enumerate() {
             assert!(TABLE[..i].iter().all(|(e, _)| e != en), "duplicate {en}");
             assert!(t.iter().all(|x| !x.is_empty()), "{en}");
+        }
+    }
+
+    #[test]
+    fn russian_catalog_covers_existing_keys_and_preserves_placeholders() {
+        let catalog: std::collections::HashMap<_, _> = ru::TABLE.iter().copied().collect();
+        assert_eq!(catalog.len(), ru::TABLE.len(), "duplicate Russian keys");
+        // Captions can be looked up directly from menus even when they have no row in the
+        // legacy multilingual table. Verify the actual lookup for every Russian caption.
+        for (key, translation) in ru::TABLE {
+            assert_eq!(tr("ru", key), *translation, "Russian lookup: {key}");
+        }
+        let placeholders =
+            |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<Vec<_>>();
+        for (key, translation) in ru::TABLE {
+            assert!(!translation.trim().is_empty(), "empty {key}");
+            assert_eq!(key.starts_with(' '), translation.starts_with(' '), "leading space: {key}");
+            assert_eq!(key.ends_with(' '), translation.ends_with(' '), "trailing space: {key}");
+            assert!(!translation.contains(['ґ', 'є', 'і', 'ї', 'Ґ', 'Є', 'І', 'Ї']), "Ukrainian letter in {key}");
+            let mut source = placeholders(key);
+            let mut translated = placeholders(translation);
+            source.sort();
+            translated.sort();
+            assert_eq!(source, translated, "placeholders: {key}");
+        }
+    }
+
+    #[test]
+    fn russian_is_selectable_ltr_and_resolves_contexts_styles_and_menu_paths() {
+        assert!(LANGUAGES.contains(&("ru", "Русский")));
+        assert!(!is_rtl("ru"));
+        assert_eq!(tr("ru", "File"), "Файл");
+        assert_eq!(tr("ru", "Type"), "Текст");
+        assert_eq!(tr("ru", "Spread"), "Разворот");
+        assert_eq!(tr("ru", "Story"), "Материал");
+        assert_eq!(tr("ru", "Unknown label"), "Unknown label");
+        assert_eq!(tr_context("ru", "Columns", "table"), "Столбцы");
+        assert_eq!(tr("ru", "Columns"), "Колонки");
+        assert_eq!(tr_context("ru", "Group", "selection"), "Группа");
+        assert_eq!(tr("ru", "Group"), "Сгруппировать");
+        assert_eq!(tr_context("ru", "Custom caption", "custom"), "Custom caption");
+        assert_eq!(tr("ru", "through"), "включительно");
+        assert_eq!(tr("ru", "up to"), "не включая");
+        assert_eq!(tr("ru", "Edit/Spelling"), "Редактирование/Орфография");
+        assert_eq!(tr("ru", "Type/Insert Special Character/Quotation Marks"), "Текст/Вставить специальный символ/Кавычки");
+        assert_eq!(style_name("ru", "[Basic Paragraph]"), "[Основной абзац]");
+        assert_eq!(style_name("ru", "My layout style"), "My layout style");
+        assert_eq!(workspace_name("ru", "Essentials"), "Основное");
+        assert_eq!(workspace_name("ru", "My workspace"), "My workspace");
+        // Fixed standard names stay identical.
+        assert_eq!(tr("ru", "PDF/X-4"), "PDF/X-4");
+    }
+
+    #[test]
+    fn russian_counts_use_category_captions_for_every_number() {
+        assert!(category_first("ru") && !category_first("uk") && !category_first("de") && !category_first(""));
+        for n in [0, 1, 2, 4, 5, 11, 12, 21, 22, 25, 101, 111] {
+            assert_eq!(count_label("ru", "pages", n), format!("страниц: {n}"));
+            assert_eq!(count_label("ru", "objects", n), format!("объектов: {n}"));
+            assert_eq!(count_label("ru", "errors", n), format!("ошибок: {n}"));
+            let pages = tr("ru", "{pages} Pages in {spreads} Spreads").replace("{pages}", &n.to_string()).replace("{spreads}", &n.to_string());
+            assert_eq!(pages, format!("Страниц: {n}; разворотов: {n}"));
         }
     }
 

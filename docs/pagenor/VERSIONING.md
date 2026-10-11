@@ -18,10 +18,17 @@ feature group. Use a prerelease suffix such as `0.5.0-rc.1` for candidates; remo
 it only when the intended release validation is complete. Do not increment for
 each PR or claim a release merely because the local source version changed.
 
-The local 2026-10-10 checkpoint is 0.2.1 → 0.3.0 for accumulated application
-features, release auditing and distribution additions. The owner has requested
-that the version stay at 0.3.0 during this work; do not advance it until that
-instruction changes. Pagenor owns its version sequence independently of upstream.
+The 2026-10-10 checkpoint advanced 0.2.1 → 0.3.0. On 2026-10-11 the owner
+lifted the version hold and authorised relevant minor updates. The local version
+advances to **0.4.0** for accumulated Welcome/recent-document, keyboard/input,
+new-document, chapter/section/tab-stop and editor improvements, plus the branded
+macOS installer. This is a local development checkpoint, not a published stable
+release. Pagenor owns its version sequence independently of upstream.
+
+The next completed selected upstream group advances **0.4.0 → 0.5.0** on
+2026-10-11: 47 proposals plus two prerequisite changes, full local quality gates
+and an inspected Mac build. This is a local development checkpoint; native
+Windows/Linux validation and publication remain separate milestone work.
 
 The native document format version is separate. Changing the application version
 does not migrate or rename `.pgnr` documents. File-format changes require their
@@ -35,3 +42,7 @@ platform/package validation and signing/notarization status accurately. A stable
 cross-platform release requires the actual native matrix/package validation at
 the milestone, following PHASE_STATUS.md. Never reuse a published version for
 different artifacts.
+
+The next maintenance checkpoint is **0.5.1**, for canvas/table/panel usability and
+a larger status bar. This continues the 0.5 editor group; the native document
+format remains 3. Local verification is recorded in EDITOR_USABILITY.md.

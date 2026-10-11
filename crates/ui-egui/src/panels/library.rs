@@ -192,6 +192,7 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.ui.scripts.push((format!("Script {}", app.ui.scripts.len() + 1), "# command.id {json} per line\n".into()));
             sel = app.ui.scripts.len() - 1;
         }
+        #[cfg(not(target_arch = "wasm32"))]
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("script"))
         {

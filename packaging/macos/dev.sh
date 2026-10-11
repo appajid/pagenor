@@ -30,7 +30,8 @@ APP="$WORK/Pagenor.app"
 mkdir -p "$WORK"
 
 # Do not replace an executable that is still serving an open document.
-if [ -f "$APP/Contents/MacOS/Pagenor" ] && lsof -t "$APP/Contents/MacOS/Pagenor" >/dev/null 2>&1; then
+# Icon/preview readers may hold ordinary file descriptors after the app exits.
+if [ -f "$APP/Contents/MacOS/Pagenor" ] && lsof -a -d txt -t "$APP/Contents/MacOS/Pagenor" >/dev/null 2>&1; then
   echo "error: quit the local Pagenor.app before rebuilding it" >&2
   exit 1
 fi
@@ -46,6 +47,7 @@ BUNDLE="$STAGE/Pagenor.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$CARGO_TARGET_DIR/$PROFILE/pagenor" "$BUNDLE/Contents/MacOS/Pagenor"
 cp "$ROOT/assets/app-icon/pagenor.icns" "$BUNDLE/Contents/Resources/Pagenor.icns"
+cp "$ROOT/assets/app-icon/pagenor-document.icns" "$BUNDLE/Contents/Resources/PagenorDocument.icns"
 copy_font_licences "$BUNDLE/Contents/Resources"
 SHORT_VERSION="${VERSION%%-*}"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \

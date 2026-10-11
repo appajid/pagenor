@@ -16,21 +16,45 @@ pagenor-engine = { workspace = true }
 pagenor-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
 egui = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 getrandom = "0.3"
 arboard = { workspace = true }
+
+[dev-dependencies]
+# Decode real portal variants on every test host without starting a desktop service.
+zbus = "5.19"
+async-channel = "2"
+futures-lite = "2"
+async-io = "2"
+tempfile = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for pagenor.exe; build.rs only uses it when the target is Windows.
 winresource = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+egui-winit = { version = "0.36.2", default-features = false, features = ["clipboard"] }
 rfd = { workspace = true }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The same winit eframe uses: to pick the X11 backend (file drag-and-drop) in main.rs.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# XDG Settings portal appearance signals; already used by the AccessKit stack.
+zbus = "5.19"
+async-channel = "2"
+futures-lite = "2"
+
+[target.'cfg(windows)'.dependencies]
+# EnumDisplayDevices (src/gpu.rs): which GPU drives the display, so the window draws on the GPU
+# that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
+# Win32 (MIT); the `user` feature is User32.dll only.
+winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSTextInputContext"] }

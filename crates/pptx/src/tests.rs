@@ -205,6 +205,7 @@ fn pictures_are_cropped_to_their_frames() {
             data: Arc::new(png(200, 100)),
             pixels: Some((200, 100)),
             page: 0,
+            ..Default::default()
         }),
     );
     let id = rect_item(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0), Shape::Rectangle);
@@ -218,6 +219,7 @@ fn pictures_are_cropped_to_their_frames() {
             auto_fit: pagenor_doc::Fitting::None,
             fit_align: 0,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
     });
     let mut z = export(&d, &PptxOptions::default());

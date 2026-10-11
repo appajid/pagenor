@@ -136,6 +136,8 @@ struct Ex<'a> {
     /// Index topics (paths) and their See / See also cross-references.
     index_topics: BTreeSet<Vec<String>>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Concrete table dash arrays registered by stories and sparse style resources.
+    table_dash_patterns: BTreeMap<String, Vec<f64>>,
 }
 
 impl<'a> Ex<'a> {
@@ -150,6 +152,7 @@ impl<'a> Ex<'a> {
             xref_sources: Vec::new(),
             index_topics: BTreeSet::new(),
             index_xrefs: Vec::new(),
+            table_dash_patterns: BTreeMap::new(),
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {
@@ -649,6 +652,14 @@ impl<'a> Ex<'a> {
                 root.push(el.attr("Self", id).attr("Name", &st.name));
             }
         }
+        for (id, pattern) in &self.table_dash_patterns {
+            root.push(
+                El::new("DashedStrokeStyle")
+                    .attr("Self", id)
+                    .attr("Name", id)
+                    .attr("DashArray", pattern.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")),
+            );
+        }
         for s in STROKE_STYLES {
             root.push(El::new("StrokeStyle").attr("Self", format!("StrokeStyle/$ID/{s}")).attr("Name", format!("$ID/{s}")));
         }
@@ -723,6 +734,14 @@ impl<'a> Ex<'a> {
         let mut root = pkg_root("Preferences");
         root.push(
             El::new("DocumentPreference")
+                .attr(
+                    "PagenorDefaultMaster",
+                    d.default_parent()
+                        .and_then(|id| d.parents.iter().find(|p| p.id == id))
+                        .and_then(|p| p.parent.as_ref())
+                        .map(|p| p.prefix.clone())
+                        .unwrap_or_default(),
+                )
                 .attr("PageHeight", num(s.page_height))
                 .attr("PageWidth", num(s.page_width))
                 // InDesign creates this many pages before reading the spreads and replaces only the first
@@ -859,6 +878,11 @@ impl<'a> Ex<'a> {
                 }
                 (ps.para.clone(), ps.chars.clone())
             };
+            let parent = match ps.based_on.as_deref() {
+                Some(b) if ps.name != pagenor_doc::NO_PARA_STYLE => styles.resolve_para_style(b).0,
+                _ => pagenor_doc::ParaProps::default(),
+            };
+            let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent));
             self.para_attrs(&mut el, &mut props, &pa);
             self.char_attrs(&mut el, &mut props, &ca);
             pg.insert(&ps.name, with_props(el, props));
@@ -1348,6 +1372,9 @@ impl<'a> Ex<'a> {
         n!(last_line_indent, "LastLineIndent");
         n!(space_before, "SpaceBefore");
         n!(space_after, "SpaceAfter");
+        if let Some(v) = a.same_para_style_spacing {
+            el.set("SameParaStyleSpacing", v.map(num).unwrap_or_else(|| "Ignore".into()));
+        }
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");
         // The drop cap's character style isn't written: IDML has no attribute for it (InDesign
@@ -1429,6 +1456,8 @@ impl<'a> Ex<'a> {
                 }
             }
         }
+        n!(split_inside_gutter, "SplitColumnInsideGutter");
+        n!(split_outside_gutter, "SplitColumnOutsideGutter");
         if let Some(r) = &a.rule_above {
             self.rule(el, props, "RuleAbove", r);
         }
@@ -1459,6 +1488,18 @@ impl<'a> Ex<'a> {
                 },
             );
         }
+        if let Some(n) = a.number_style {
+            props.push(p("NumberingFormat", "string", names::numbering_format_out(n)));
+        }
+        if let Some(x) = &a.number_expression {
+            el.set("NumberingExpression", names::list_text_out(x));
+        }
+        if let Some(x) = &a.list_separator {
+            el.set("BulletsTextAfter", names::list_text_out(x));
+        }
+        if let Some(c) = a.bullet_char.as_deref().and_then(|s| s.chars().next()) {
+            props.push(El::new("BulletChar").attr("BulletCharacterType", "UnicodeOnly").attr("BulletCharacterValue", u32::from(c).to_string()));
+        }
         if let Some(b) = a.balance_ragged {
             props.push(p("BalanceRaggedLines", "enumeration", if b { "FullyBalanced" } else { "NoBalancing" }));
         }
@@ -1487,6 +1528,80 @@ impl<'a> Ex<'a> {
             for (i, side) in SIDES.iter().enumerate() {
                 el.set(&format!("ParagraphBorder{side}Offset"), num(o[i]));
             }
+        }
+        if let Some(t) = &a.border_type {
+            props.push(p("ParagraphBorderType", "object", names::stroke_type_out(t)));
+        }
+        if let Some(c) = a.border_cap {
+            el.set("ParagraphBorderStrokeEndCap", names::cap_out(c));
+        }
+        if let Some(j) = a.border_join {
+            el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
+        }
+        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
+            if let Some(cs) = corners {
+                for (c, k) in cs.iter().zip(CORNERS) {
+                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
+                }
+            }
+        }
+        if let Some(w) = a.border_width {
+            el.set("ParagraphBorderWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.border_top {
+            el.set("ParagraphBorderTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.border_bottom {
+            el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(border_display_if_splits, "ParagraphBorderDisplayIfSplits");
+        b!(border_merge, "MergeConsecutiveParaBorders");
+        if let Some(c) = &a.border_gap_color {
+            props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
+        }
+        n!(border_gap_tint, "ParagraphBorderGapTint", pct);
+        if let Some(w) = a.shading_width {
+            el.set("ParagraphShadingWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.shading_top {
+            el.set("ParagraphShadingTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.shading_bottom {
+            el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(shading_clip, "ParagraphShadingClipToFrame");
+        b!(shading_nonprinting, "ParagraphShadingSuppressPrinting");
+        n!(span_space_before, "SpanColumnMinSpaceBefore");
+        n!(span_space_after, "SpanColumnMinSpaceAfter");
+        n!(list_level, "NumberingLevel");
+        for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
+            if let Some(st) = style {
+                props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
+            }
+        }
+        if let Some(v) = a.bullet_align {
+            el.set("BulletsAlignment", names::list_align_out(v));
+        }
+        if let Some(v) = a.number_align {
+            el.set("NumberingAlignment", names::list_align_out(v));
+        }
+        b!(restart_numbers, "NumberingApplyRestartPolicy");
+        if let Some(level) = a.restart_after_level {
+            let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
+            props.push(
+                El::new("NumberingRestartPolicies")
+                    .attr("RestartPolicy", policy)
+                    .attr("LowerLevel", level.to_string())
+                    .attr("UpperLevel", level.to_string()),
+            );
+        }
+        if let Some(f) = &a.bullet_font {
+            props.push(p("BulletsFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
+        }
+        if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
+            props.push(p("BulletsFontStyle", "string", f.clone()));
         }
     }
 
@@ -1562,6 +1677,7 @@ impl<'a> Ex<'a> {
                 .attr("Self", uid(pg.id.0))
                 .attr("Name", name)
                 .attr("AppliedMaster", applied.map(|s| uid(s.0)).unwrap_or_else(|| "n".into()))
+                .attr("PagenorInheritParentSettings", bool_s(pg.inherit_parent_settings))
                 .attr("OverrideList", "")
                 .attr("GeometricBounds", format!("0 0 {} {}", num(pg.height), num(pg.width)))
                 .attr("ItemTransform", format!("1 0 0 1 {} {}", num(pg.x - ox), num(-oy)))
@@ -1664,7 +1780,8 @@ impl<'a> Ex<'a> {
         let mut el = with_props(el, props);
         // Transparency.
         let ds = &it.effects.drop_shadow;
-        if it.opacity < 1.0 || it.blend != pagenor_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 {
+        let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
+        if it.opacity < 1.0 || it.blend != pagenor_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on {
             let mut t = El::new("TransparencySetting");
             t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
             if ds.on {
@@ -1683,6 +1800,40 @@ impl<'a> Ex<'a> {
             if it.effects.feather > 0.0 {
                 t.push(El::new("FeatherSetting").attr("Mode", "Standard").attr("Width", num(it.effects.feather)));
             }
+            if df.on {
+                let [top, left, bottom, right] = df.widths;
+                t.push(
+                    El::new("DirectionalFeatherSetting")
+                        .attr("Applied", "true")
+                        .attr("LeftWidth", num(left))
+                        .attr("RightWidth", num(right))
+                        .attr("TopWidth", num(top))
+                        .attr("BottomWidth", num(bottom)),
+                );
+            }
+            if gf.on {
+                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
+                if let Some([x0, y0, x1, y1]) = gf.vector {
+                    // Gradient Feather tool vector: start, length and angle in the item's space.
+                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
+                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
+                } else {
+                    g.set("Angle", num(gf.angle));
+                }
+                let id = uid(it.id.0);
+                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
+                    let mut s = El::new("OpacityGradientStop")
+                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
+                        .attr("Opacity", pct(opacity as f64))
+                        .attr("Location", num(location));
+                    if i > 0 {
+                        s.set("Midpoint", "50");
+                    }
+                    g.push(s);
+                }
+                t.push(g);
+            }
             el.push(t);
         }
         if let Content::Text(t) = &it.content {
@@ -1696,21 +1847,7 @@ impl<'a> Ex<'a> {
                 );
             }
         }
-        let w = &it.wrap;
-        el.push(with_props(
-            El::new("TextWrapPreference")
-                .attr("Inverse", bool_s(w.invert))
-                .attr("ApplyToMasterPageOnly", "false")
-                .attr("TextWrapSide", names::wrap_side_out(w.side))
-                .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-            vec![
-                El::new("TextWrapOffset")
-                    .attr("Top", num(w.offsets[0]))
-                    .attr("Left", num(w.offsets[1]))
-                    .attr("Bottom", num(w.offsets[2]))
-                    .attr("Right", num(w.offsets[3])),
-            ],
-        ));
+        el.push(text_wrap_pref(&it.wrap));
         match &it.content {
             Content::Group { items } => {
                 for c in items {
@@ -1752,7 +1889,7 @@ impl<'a> Ex<'a> {
             "Image"
         })
         .attr("Self", self.fresh());
-        if let Some((pw, ph)) = asset.pixels
+        if let Some((pw, ph)) = asset.pixels.filter(|_| !is_pdf)
             && g.size.0 > 0.0
             && g.size.1 > 0.0
         {
@@ -1768,6 +1905,9 @@ impl<'a> Ex<'a> {
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
         let mut el = with_props(el, props);
+        if !g.wrap.is_default() {
+            el.push(text_wrap_pref(&g.wrap));
+        }
         let uri = match &asset.link {
             Some(l) => path_to_uri(l),
             None => format!("file:{}", asset.name),
@@ -1791,6 +1931,17 @@ impl<'a> Ex<'a> {
                 .attr("ImportPolicy", "NoAutoImport")
                 .attr("ExportPolicy", "NoAutoExport"),
         );
+        if is_pdf {
+            // `GraphicBounds` span the chosen box, as graphic space does. Without `PDFAttribute`
+            // the page would be cropped to its visible content, which changes the graphic's size
+            // and so its scale and position.
+            el.push(
+                El::new("PDFAttribute")
+                    .attr("PageNumber", asset.page.saturating_add(1))
+                    .attr("PDFCrop", names::pdf_crop_out(asset.pdf_crop))
+                    .attr("TransparentBackground", "true"),
+            );
+        }
         el
     }
 
@@ -2176,14 +2327,30 @@ impl<'a> Ex<'a> {
         paras
     }
 
-    fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &pagenor_doc::CellStroke) {
+    fn table_stroke_type(&mut self, kind: &pagenor_doc::StrokeType) -> String {
+        if let pagenor_doc::StrokeType::Dashed { pattern } = kind
+            && !pattern.is_empty()
+        {
+            let id = names::table_dash_style_id(pattern);
+            self.table_dash_patterns.entry(id.clone()).or_insert_with(|| pattern.clone());
+            id
+        } else {
+            names::stroke_type_out(kind)
+        }
+    }
+
+    fn cell_stroke_attrs(&mut self, el: &mut El, prefix: &str, s: &pagenor_doc::CellStroke) {
         el.set(&format!("{prefix}StrokeWeight"), num(s.weight));
         el.set(&format!("{prefix}StrokeColor"), self.sw(&s.color));
         el.set(&format!("{prefix}StrokeTint"), pct(s.tint as f64));
-        el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(&s.kind));
+        el.set(&format!("{prefix}StrokeType"), self.table_stroke_type(&s.kind));
+        if s.gap_color != pagenor_color::swatch::NONE || s.gap_tint != 1.0 {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(&s.gap_color));
+            el.set(&format!("{prefix}StrokeGapTint"), pct(s.gap_tint as f64));
+        }
     }
 
-    fn partial_cell_stroke_attrs(&self, el: &mut El, prefix: &str, attrs: &pagenor_doc::CellStrokeAttrs) {
+    fn partial_cell_stroke_attrs(&mut self, el: &mut El, prefix: &str, attrs: &pagenor_doc::CellStrokeAttrs) {
         if let Some(value) = attrs.weight {
             el.set(&format!("{prefix}StrokeWeight"), num(value));
         }
@@ -2194,7 +2361,13 @@ impl<'a> Ex<'a> {
             el.set(&format!("{prefix}StrokeTint"), pct(value as f64));
         }
         if let Some(value) = &attrs.kind {
-            el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(value));
+            el.set(&format!("{prefix}StrokeType"), self.table_stroke_type(value));
+        }
+        if let Some(value) = &attrs.gap_color {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.gap_tint {
+            el.set(&format!("{prefix}StrokeGapTint"), pct(value as f64));
         }
     }
 
@@ -2225,7 +2398,7 @@ impl<'a> Ex<'a> {
         }
     }
 
-    fn partial_alt_stroke_attrs(&self, el: &mut El, kind: &str, attrs: &pagenor_doc::AltStrokesAttrs) {
+    fn partial_alt_stroke_attrs(&mut self, el: &mut El, kind: &str, attrs: &pagenor_doc::AltStrokesAttrs) {
         if let Some(value) = attrs.first {
             el.set(&format!("Start{kind}StrokeCount"), value);
         }
@@ -2238,7 +2411,7 @@ impl<'a> Ex<'a> {
             && let Some(value) = &attrs.next_stroke.kind
         {
             el.attrs.retain(|(key, _)| key != "EndColumnStrokeType");
-            el.set("EndColumnLineStyle", names::stroke_type_out(value));
+            el.set("EndColumnLineStyle", self.table_stroke_type(value));
         }
         if let Some(value) = attrs.skip_first {
             el.set(&format!("SkipFirstAlternatingStroke{kind}s"), value);
@@ -2297,7 +2470,7 @@ impl<'a> Ex<'a> {
                 self.cell_stroke_attrs(&mut el, &format!("End{kind}"), &strokes.next_stroke);
                 if kind == "Column" {
                     el.attrs.retain(|(key, _)| key != "EndColumnStrokeType");
-                    el.set("EndColumnLineStyle", names::stroke_type_out(&strokes.next_stroke.kind));
+                    el.set("EndColumnLineStyle", self.table_stroke_type(&strokes.next_stroke.kind));
                 }
                 el.set(&format!("SkipFirstAlternatingStroke{kind}s"), strokes.skip_first);
                 el.set(&format!("SkipLastAlternatingStroke{kind}s"), strokes.skip_last);
@@ -2384,7 +2557,9 @@ impl<'a> Ex<'a> {
     fn psr_el(&mut self, pf: &ParaFormat) -> El {
         let mut el = El::new("ParagraphStyleRange").attr("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &pf.style));
         let mut props = Vec::new();
-        self.para_attrs(&mut el, &mut props, &pf.para);
+        let styles = &self.d.styles;
+        let pa = with_list_tab(pf.para.clone(), || (styles.resolve_para(pf).0, styles.resolve_para_style(&pf.style).0));
+        self.para_attrs(&mut el, &mut props, &pa);
         self.char_attrs(&mut el, &mut props, &pf.chars);
         with_props(el, props)
     }
@@ -2400,6 +2575,37 @@ impl<'a> Ex<'a> {
         self.char_attrs(&mut el, &mut props, &f.over);
         with_props(el, props)
     }
+}
+
+/// The left stop the composer adds for a list's Tab Position, if it adds one.
+fn list_tab_stop(pp: &pagenor_doc::ParaProps) -> Option<f64> {
+    if !matches!(pp.list_type, ListType::Bullets | ListType::Numbers) {
+        return None;
+    }
+    pp.list_tab.filter(|t| t.is_finite() && *t >= 0.0 && !pp.tabs.iter().any(|s| (s.position - t).abs() < 1e-6))
+}
+
+/// IDML has no attribute for the bullets-and-numbering Tab Position, so it is written as the left
+/// stop the composer adds for it, in the TabList of each level (style or paragraph) that sets the
+/// list type, the tab position or the tabs. `resolved` gives this level's resolved attributes and
+/// those it inherits; the stop comes back on import as an ordinary tab stop.
+fn with_list_tab(mut a: ParaAttrs, resolved: impl FnOnce() -> (pagenor_doc::ParaProps, pagenor_doc::ParaProps)) -> ParaAttrs {
+    if a.list_tab.is_none() && a.tabs.is_none() && a.list_type.is_none() {
+        return a;
+    }
+    let (here, parent) = resolved();
+    let stop = list_tab_stop(&here);
+    // An inherited TabList holds the parent's stop; a level that ends the list writes its tabs without it.
+    if stop.is_none() && list_tab_stop(&parent).is_none() {
+        return a;
+    }
+    let mut tabs = here.tabs;
+    if let Some(t) = stop {
+        tabs.push(pagenor_doc::TabStop { position: t, align: pagenor_doc::TabAlign::Left, leader: String::new(), align_on: String::new() });
+        tabs.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    a.tabs = Some(tabs);
+    a
 }
 
 /// Style folder tree (names `A/B/C` → groups A, B).
@@ -2457,6 +2663,28 @@ fn margin_el(pg: &pagenor_doc::Page) -> El {
 }
 
 /// `rule_color` is the IDML reference of the column rule's swatch.
+/// `TextWrapPreference` of a page item or a placed graphic.
+fn text_wrap_pref(w: &pagenor_doc::TextWrap) -> El {
+    with_props(
+        El::new("TextWrapPreference")
+            .attr("Inverse", bool_s(w.invert))
+            .attr("ApplyToMasterPageOnly", "false")
+            .attr("TextWrapSide", names::wrap_side_out(w.side))
+            .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
+        w.path
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(path_geometry)
+            .chain([El::new("TextWrapOffset")
+                .attr("Top", num(w.offsets[0]))
+                .attr("Left", num(w.offsets[1]))
+                .attr("Bottom", num(w.offsets[2]))
+                .attr("Right", num(w.offsets[3]))])
+            .collect(),
+    )
+    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", "false"))
+}
+
 fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
     let mut inset = El::new("InsetSpacing").attr("type", "list");
     for v in o.inset {
@@ -2476,26 +2704,16 @@ fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
         .attr("AutoSizingType", names::auto_size_out(o.auto_size))
         .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)]);
     let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
-    let d = TextFrameOptions::default();
-    let rule_set = o.column_rule
-        || o.column_rule_weight != d.column_rule_weight
-        || o.column_rule_color != d.column_rule_color
-        || o.column_rule_tint != d.column_rule_tint
-        || o.column_rule_offset != d.column_rule_offset
-        || o.column_rule_top_inset != d.column_rule_top_inset
-        || o.column_rule_bottom_inset != d.column_rule_bottom_inset;
-    let el = if rule_set {
-        el.attr("ColumnRuleOverride", bool_s(o.column_rule))
-            .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
-            .attr("ColumnRuleStrokeColor", rule_color)
-            .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
-            .attr("ColumnRuleOffset", num(o.column_rule_offset))
-            .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
-            .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
-            .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset))
-    } else {
-        el
-    };
+    // Written on every frame: on import a frame takes any value it lacks from its object style.
+    let el = el
+        .attr("ColumnRuleOverride", bool_s(o.column_rule))
+        .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
+        .attr("ColumnRuleStrokeColor", rule_color)
+        .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
+        .attr("ColumnRuleOffset", num(o.column_rule_offset))
+        .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
+        .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
+        .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset));
     with_props(el, vec![inset])
 }
 

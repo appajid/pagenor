@@ -235,6 +235,25 @@ fn page_names_follow_sections() {
 }
 
 #[test]
+fn hostile_section_start_numbers_saturate() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let first = d.sections.iter_mut().find(|s| s.start == 0).unwrap();
+    first.start_number = Some(u32::MAX);
+    let continuing = Section { start: 2, start_number: None, ..first.clone() };
+    d.sections.push(continuing);
+    assert_eq!(d.page_number(1), u32::MAX);
+    assert_eq!(d.page_number(2), u32::MAX);
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+    for section in &mut d.sections {
+        section.style = NumberStyle::Symbols;
+    }
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+    d.sections.clear();
+    assert_eq!(d.page_number(usize::MAX), u32::MAX);
+    assert_eq!(d.page_name(usize::MAX), u32::MAX.to_string());
+}
+
+#[test]
 fn document_serde_roundtrip() {
     let mut d = doc();
     let lid = d.default_layer();
@@ -341,4 +360,53 @@ fn find_many_handles_deep_groups_on_a_small_thread_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn chapter_settings_legacy_defaults_and_labels_round_trip() {
+    let mut d = doc();
+    let old: DocSettings = serde_json::from_value(serde_json::json!({"chapterNumber": 7})).unwrap();
+    assert_eq!(old.chapter_style, NumberStyle::Arabic);
+    assert_eq!(old.chapter_source, ChapterSource::Automatic);
+    d.settings = old;
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), d.default_layer(), "Heading", ParaFormat::default()).unwrap();
+    let anchor = d.paragraph_anchor(sid, 0).unwrap();
+    for (style, label) in [
+        (NumberStyle::Arabic, "7"),
+        (NumberStyle::UpperRoman, "VII"),
+        (NumberStyle::LowerRoman, "vii"),
+        (NumberStyle::UpperLetters, "G"),
+        (NumberStyle::LowerLetters, "g"),
+        (NumberStyle::ArabicLeadingZero, "07"),
+        (NumberStyle::ArabicThreeDigits, "007"),
+        (NumberStyle::ArabicFourDigits, "0007"),
+    ] {
+        d.settings.chapter_style = style;
+        d.settings.chapter_source = ChapterSource::UserDefined;
+        let restored: Document = serde_json::from_slice(&serde_json::to_vec(&d).unwrap()).unwrap();
+        assert_eq!(restored.settings, d.settings);
+        assert_eq!(restored.chapter_label(), label);
+        assert_eq!(restored.xref_values(anchor).unwrap().chapter, label);
+    }
+    d.settings.chapter_style = NumberStyle::Symbols;
+    d.settings.chapter_number = u32::MAX;
+    assert_eq!(d.chapter_label(), "99999");
+    d.settings.chapter_style = NumberStyle::UpperRoman;
+    assert!(d.chapter_label().len() < 200);
+}
+
+/// A placed PDF saved before its crop choice was stored loads with the crop box (the whole page),
+/// and that default isn't written out.
+#[test]
+fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
+    let a: Asset = serde_json::from_str(r#"{"id": 7, "name": "a.pdf", "mime": "application/pdf", "page": 1}"#).unwrap();
+    assert_eq!((a.pdf_crop, a.pdf_box, a.shown_box()), (PdfCrop::Crop, None, None));
+    let json = serde_json::to_string(&a).unwrap();
+    assert!(!json.contains("pdfCrop") && !json.contains("pdfBox"), "{json}");
+    let trim = Asset { pdf_crop: PdfCrop::Trim, pdf_box: Some([0.1, 0.1, 0.9, 0.9]), ..a };
+    let back: Asset = serde_json::from_str(&serde_json::to_string(&trim).unwrap()).unwrap();
+    assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
+    // A box with no area shows the whole page.
+    assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }

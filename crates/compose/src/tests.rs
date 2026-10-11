@@ -3,6 +3,32 @@ use pagenor_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef};
 use pagenor_geom::Rect;
 
 use super::*;
+#[test]
+fn same_para_style_spacing_replaces_space_between_same_style_paragraphs() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 700.0);
+    let base = ParaAttrs { space_before: Some(5.0), space_after: Some(10.0), ..Default::default() };
+    // `other_last`: the last paragraph gets a different paragraph style.
+    let baselines = |para: ParaAttrs, other_last: bool| {
+        let (mut d, sid, _) = doc_with("A\n\nB", rect, para);
+        if other_last && let Some(st) = d.stories.get_mut(&sid) {
+            std::sync::Arc::make_mut(st).paras[2].style = "Other".into();
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let tight_attrs = ParaAttrs { same_para_style_spacing: Some(Some(0.0)), ..base.clone() };
+    let normal = baselines(base.clone(), false);
+    let tight = baselines(tight_attrs.clone(), false);
+    let wide = baselines(ParaAttrs { same_para_style_spacing: Some(Some(20.0)), ..base }, false);
+    let mixed = baselines(tight_attrs, true);
+    assert_eq!(normal.len(), 3);
+    // Ordinary spacing: space after (10) + space before (5) between each pair, empty paragraph included.
+    assert!((normal[1] - normal[0] - 14.4 - 15.0).abs() < 1e-6, "{normal:?}");
+    assert!((tight[1] - tight[0] - 14.4).abs() < 1e-6 && (tight[2] - tight[1] - 14.4).abs() < 1e-6, "{tight:?}");
+    assert!((wide[2] - wide[1] - 14.4 - 20.0).abs() < 1e-6, "{wide:?}");
+    // A different style keeps the ordinary spacing at its boundary.
+    assert!((mixed[1] - mixed[0] - 14.4).abs() < 1e-6 && (mixed[2] - mixed[1] - 14.4 - 15.0).abs() < 1e-6, "{mixed:?}");
+}
 
 const LOREM: &str = "Typography is the art and technique of arranging type to make written language legible, readable and appealing when displayed. \
 The arrangement of type involves selecting typefaces, point sizes, line lengths, line spacing, and letter spacing, and adjusting the space between pairs of letters.";
@@ -32,6 +58,39 @@ fn composes_simple_paragraph() {
     // Lines fit their measure.
     for l in &lines {
         assert!(l.end_x <= l.x1 + 0.5, "line overflows: {} > {}", l.end_x, l.x1);
+    }
+}
+
+#[test]
+fn indic_composition_keeps_consonants_vowel_signs_and_conjuncts_in_one_fallback_face() {
+    use pagenor_fonts::testing::font_with;
+    let cases = [
+        ("Telugu", "కి", "క్షి", &['క', '్', 'ష'][..], &['క', '్', 'ష', 'ి'][..]),
+        ("Hindi", "कि", "क्षि", &['क', '्', 'ष'][..], &['क', '्', 'ष', 'ि'][..]),
+        ("Kannada", "ಕಿ", "ಕ್ಷಿ", &['ಕ', '್', 'ಷ'][..], &['ಕ', '್', 'ಷ', 'ಿ'][..]),
+        ("Malayalam", "കി", "ക്ഷി", &['ക', '്', 'ഷ'][..], &['ക', '്', 'ഷ', 'ി'][..]),
+    ];
+    for (language, vowel, conjunct, bases, full) in cases {
+        let db = FontDb::with_font_dirs(vec![]);
+        db.set_system_fallback(false);
+        db.add_font(font_with("Pagenor Partial Indic", bases).unwrap());
+        db.add_font(font_with("Pagenor Whole Indic", full).unwrap());
+        for text in [vowel.to_string(), conjunct.to_string(), conjunct.replacen(full[1], &format!("{}\u{200D}", full[1]), 1)] {
+            let (mut doc, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+            doc.settings.glyph_fallback = true;
+            doc.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+                f.over.font_family = Some("Pagenor Partial Indic".into());
+                f.over.language = Some(language.into());
+            });
+            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db);
+            let glyphs: Vec<_> = all_lines(&cs).iter().flat_map(|l| &l.glyphs).collect();
+            assert!(!glyphs.is_empty());
+            assert!(glyphs.iter().all(|g| g.face.family == "Pagenor Whole Indic"), "{text}: {glyphs:?}");
+            assert!(glyphs.iter().all(|g| g.gid != 0), "{text}: {glyphs:?}");
+            doc.settings.glyph_fallback = false;
+            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db);
+            assert!(all_lines(&cs).iter().flat_map(|l| &l.glyphs).all(|g| g.face.family == "Pagenor Partial Indic"));
+        }
     }
 }
 
@@ -361,7 +420,7 @@ fn jump_object_keeps_grid_aligned_lines_on_the_grid() {
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);
-    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode };
+    let ex = |x0: f64, y0: f64, x1: f64, y1: f64, mode| Exclusion { rect: Rect::new(x0, y0, x1, y1), mode, side: Default::default(), contour: None };
     let f = &mut specs[0];
     f.exclusions.push(ex(f64::NAN, f64::NAN, f64::NAN, f64::NAN, WrapMode::JumpObject));
     f.exclusions.push(ex(-1e308, 300.0, 1e308, f64::INFINITY, WrapMode::JumpObject));
@@ -378,6 +437,83 @@ fn hostile_wrap_geometry_terminates() {
     for l in &cs.frames[0].lines {
         assert!(l.baseline.is_finite() && l.baseline - l.ascent >= 40.0 && l.baseline + l.descent <= 300.0, "{}", l.baseline);
     }
+}
+
+/// A text frame (0,0)-(300,800) with an ellipse (110,100)-(190,200) wrapped as `mode`/`side`.
+fn doc_with_ellipse(mode: WrapMode, side: WrapSide) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let mut it = pagenor_doc::Item::new(id, lid, pagenor_doc::Shape::Oval, pagenor_geom::shapes::ellipse(Rect::new(110.0, 100.0, 190.0, 200.0)));
+    it.wrap.mode = mode;
+    it.wrap.side = side;
+    it.wrap.offsets = [4.0; 4];
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    (d, sid)
+}
+
+#[test]
+fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (&w[0], &w[1])).collect();
+    assert!(pairs.len() >= 4, "{} lines share a baseline", pairs.len());
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    for (l, r) in &pairs {
+        // Left segment, then the right one; the text runs on from one to the other.
+        assert!(l.x1 < 150.0 && r.x0 > 150.0, "{} {}", l.x1, r.x0);
+        assert_eq!(l.range.end, r.range.start);
+        // No glyph inside the wrapped outline at its line.
+        let (a, b) = ex.contour.as_ref().unwrap().band_extent(l.baseline - l.ascent, l.baseline + l.descent).unwrap();
+        let n = l.glyphs.len().saturating_sub(1);
+        // The left segment's last glyph may be the space the line breaks at.
+        for g in l.glyphs.iter().take(n).chain(&r.glyphs).filter(|g| g.visible) {
+            assert!(g.x + g.adv <= a + 0.5 || g.x >= b - 0.5, "glyph at {}..{} in {a}..{b}", g.x, g.x + g.adv);
+        }
+    }
+    // Lines beside the narrow top of the ellipse reach closer to its centre than those at its middle.
+    let mid = pairs.iter().map(|(l, _)| l.x1).fold(f64::INFINITY, f64::min);
+    let top = pairs.first().unwrap().0.x1;
+    assert!(top > mid + 5.0, "top {top}, middle {mid}");
+    assert!(!cs.is_overset());
+}
+
+#[test]
+fn one_sided_wrap_leaves_the_other_side_empty() {
+    for (side, right) in [(WrapSide::RightSide, true), (WrapSide::LeftSide, false), (WrapSide::LargestArea, false)] {
+        let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, side);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let beside: Vec<&Line> = cs.frames[0].lines.iter().filter(|l| l.baseline - l.ascent < 200.0 && l.baseline + l.descent > 100.0).collect();
+        assert!(!beside.is_empty());
+        let mut rows: Vec<f64> = beside.iter().map(|l| l.baseline).collect();
+        rows.dedup();
+        assert_eq!(rows.len(), beside.len(), "{side:?}: one segment per line");
+        for l in beside {
+            assert!(if right { l.x0 >= 194.0 - 1e-6 } else { l.x1 <= 106.0 + 1e-6 }, "{side:?}: {}..{}", l.x0, l.x1);
+        }
+    }
+}
+
+#[test]
+fn contour_wrap_follows_the_outline_band_by_band() {
+    let (d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    let c = ex.contour.as_ref().unwrap();
+    let width = |y0: f64, y1: f64| c.band_extent(y0, y1).map_or(0.0, |(a, b)| b - a);
+    let (top, mid, bottom) = (width(100.0, 104.0), width(146.0, 154.0), width(196.0, 200.0));
+    // 80 wide plus the 4 pt offset each side at the middle; much narrower at the ends.
+    assert!((mid - 88.0).abs() < 0.5, "{mid}");
+    assert!(top < mid - 20.0 && bottom < mid - 20.0, "{top} {mid} {bottom}");
+    // The band is the line's height, not its baseline: a band reaching the middle is full width.
+    assert!((width(120.0, 150.0) - 88.0).abs() < 0.5);
+    // Outside the outline and its offset: no block.
+    assert!(c.band_extent(205.0, 210.0).is_none());
+    // A bounding-box wrap blocks the rectangle at every band.
+    let (d, sid) = doc_with_ellipse(WrapMode::BoundingBox, WrapSide::BothSides);
+    let ex = &frame_specs(&d, sid)[0].exclusions[0];
+    assert!(ex.contour.is_none());
+    assert_eq!(ex.rect, Rect::new(106.0, 96.0, 194.0, 204.0));
 }
 
 #[test]
@@ -494,6 +630,73 @@ fn glyph_scaling_and_letter_spacing_are_applied() {
     assert!(wide(0.5) > wide(0.0) + 10.0 * 0.5 * 2.0);
 }
 
+/// Width of `text` set at 48 pt with `kerning`, and the advance of each visible glyph.
+fn set_with_kerning(text: &str, kerning: pagenor_doc::Kerning) -> (f64, Vec<(char, f64)>) {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 200.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(48.0);
+        f.over.kerning = Some(kerning);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let advs = l.glyphs.iter().filter(|g| g.visible).map(|g| (text[g.byte..].chars().next().unwrap_or(' '), g.adv)).collect();
+    (l.end_x - l.x0, advs)
+}
+
+#[test]
+fn optical_kerning_closes_open_pairs_and_leaves_stems() {
+    use pagenor_doc::Kerning;
+    // `AV` and `To` set tighter than unkerned; `nn`, the reference pair, stays as the font set it.
+    for pair in ["AV", "To", "r."] {
+        let (none, _) = set_with_kerning(pair, Kerning::None);
+        let (optical, _) = set_with_kerning(pair, Kerning::Optical);
+        assert!(optical < none - 0.5, "{pair}: optical {optical:.2} vs none {none:.2}");
+    }
+    let (none, _) = set_with_kerning("nn", Kerning::None);
+    let (optical, _) = set_with_kerning("nn", Kerning::Optical);
+    assert!((none - optical).abs() < 48.0 * 0.02, "nn: optical {optical:.2} vs none {none:.2}");
+    // Optical is measured, not the font's pairs: `HH` has no kern pair but its gap is wider
+    // than `nn`'s, so it closes up under Optical and not under Metrics.
+    let (metrics, _) = set_with_kerning("HH", Kerning::Metrics);
+    let (optical, _) = set_with_kerning("HH", Kerning::Optical);
+    assert!(optical < metrics - 0.5, "HH: optical {optical:.2} vs metrics {metrics:.2}");
+}
+
+#[test]
+fn optical_kerning_is_bounded_and_skips_spaces() {
+    use pagenor_doc::Kerning;
+    let text = "Sphinx of black quartz, judge my vow. 1997 “Park” AWAY";
+    let (_, none) = set_with_kerning(text, Kerning::None);
+    let (_, optical) = set_with_kerning(text, Kerning::Optical);
+    assert_eq!(none.len(), optical.len());
+    for ((c, a), (_, b)) in none.iter().zip(&optical) {
+        let em = (b - a) / 48.0;
+        assert!((-0.12 - 1e-6..=0.06 + 1e-6).contains(&em), "{c:?}: {em:.3} em");
+        if c.is_whitespace() {
+            assert!((a - b).abs() < 1e-9, "space before a word keeps its width");
+        }
+    }
+    // The glyph before a space is not kerned against it either.
+    let (_, none) = set_with_kerning("r ", Kerning::None);
+    let (_, optical) = set_with_kerning("r ", Kerning::Optical);
+    assert!((none[0].1 - optical[0].1).abs() < 1e-9);
+}
+
+#[test]
+fn optical_kerning_leaves_dash_pairs_alone() {
+    use pagenor_doc::Kerning;
+    // Two bars end to end have a near-zero ink gap; pulling them towards the stem gap would
+    // break `--` and the double em dash `——` that Chinese sets as one continuous rule.
+    for text in ["--", "\u{2014}\u{2014}", "a--b", "\u{2013}\u{2013}"] {
+        let (none_w, none) = set_with_kerning(text, Kerning::None);
+        let (optical_w, optical) = set_with_kerning(text, Kerning::Optical);
+        assert!((none_w - optical_w).abs() < 1e-9, "{text:?}: optical {optical_w:.3} vs none {none_w:.3}");
+        for ((c, a), (_, b)) in none.iter().zip(&optical) {
+            assert!((a - b).abs() < 1e-9, "{text:?} {c:?}: {a:.3} vs {b:.3}");
+        }
+    }
+}
+
 #[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");
@@ -557,6 +760,110 @@ fn hyphenation_skips_a_no_break_word_at_the_start() {
     // The no-break word stays whole on the first line.
     let first = all_lines(&cs)[0];
     assert!(!first.hyphenated && first.range.end >= 15, "{:?}", &text[first.range.clone()]);
+}
+
+/// Natural advance of each glyph of `text` by byte, and a frame width that puts the first three
+/// words on a justified line with one word space of extra to share.
+fn three_word_measure(text: &str) -> (std::collections::HashMap<usize, f64>, f64) {
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let adv = line.glyphs.iter().map(|g| (g.byte, g.adv)).collect::<std::collections::HashMap<_, _>>();
+    let third_end = text.find(" dddd").unwrap();
+    let gap = line.glyphs.iter().find(|g| g.byte == third_end).unwrap();
+    (adv, gap.x - line.x0 + gap.adv + 2.0 * line.x0)
+}
+
+fn justified_first_line(text: &str, width: f64, no_break: Option<std::ops::Range<usize>>) -> Line {
+    let para = ParaAttrs { align: Some(Align::LeftJustified), word_space_max: Some(4.0), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 1000.0), para);
+    if let Some(run) = no_break {
+        d.story_mut(sid).unwrap().format_chars(run, |f| f.over.no_break = Some(true));
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0].clone();
+    assert!((line.end_x - line.x1).abs() < 0.1, "line ends at {} not {}", line.end_x, line.x1);
+    line
+}
+
+#[test]
+fn no_break_spaces_stretch_on_justified_lines() {
+    let text = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+    let (natural, width) = three_word_measure(text);
+    // The run holds one of the line's two spaces, then both.
+    for run in [0..9, 0..14] {
+        let line = justified_first_line(text, width, Some(run.clone()));
+        assert_eq!(text[line.range.clone()].trim_end(), "aaaa bbbb cccc");
+        let words = line.glyphs.iter().filter(|g| g.byte < 14);
+        let (spaces, letters): (Vec<_>, Vec<_>) = words.partition(|g| text.as_bytes()[g.byte] == b' ');
+        assert_eq!(spaces.len(), 2);
+        for s in &spaces {
+            assert!(s.adv > natural[&s.byte] + 1.0 && (s.adv - spaces[0].adv).abs() < 1e-6, "run {run:?}: space at {} is {}", s.byte, s.adv);
+        }
+        for g in letters {
+            assert!((g.adv - natural[&g.byte]).abs() < 1e-6, "run {run:?}: letter at {} is {}", g.byte, g.adv);
+        }
+    }
+}
+
+#[test]
+fn nonbreaking_space_stretches_and_fixed_width_one_does_not() {
+    for (nb, stretches) in [('\u{A0}', true), ('\u{202F}', false)] {
+        let text = format!("aaaa{nb}bbbb cccc dddd eeee ffff gggg hhhh");
+        let (natural, width) = three_word_measure(&text);
+        let line = justified_first_line(&text, width, None);
+        let nb_glyph = line.glyphs.iter().find(|g| g.byte == 4).unwrap();
+        let space = line.glyphs.iter().find(|g| text.as_bytes()[g.byte] == b' ').unwrap();
+        assert!(space.adv > natural[&space.byte] + 1.0);
+        if stretches {
+            assert!((nb_glyph.adv - space.adv).abs() < 1e-6, "{nb:?}: {} vs {}", nb_glyph.adv, space.adv);
+        } else {
+            assert!((nb_glyph.adv - natural[&4]).abs() < 1e-6, "{nb:?}: {} vs {}", nb_glyph.adv, natural[&4]);
+        }
+    }
+}
+
+#[test]
+fn jidori_run_keeps_its_width_on_a_justified_line() {
+    fn first_line(text: &str, width: f64, para: ParaAttrs, run: std::ops::Range<usize>) -> Line {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 1000.0), para);
+        d.story_mut(sid).unwrap().format_chars(run, |f| f.over.jidori = Some(6));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    }
+    for sp in ['\u{A0}', ' '] {
+        let text = format!("aa{sp}aa bbbb cccc dddd eeee ffff gggg hhhh");
+        let run = 0..4 + sp.len_utf8();
+        let run_width = |l: &Line| l.glyphs.iter().filter(|g| run.contains(&g.byte)).map(|g| g.adv).sum::<f64>();
+        let ragged = first_line(&text, 1000.0, ParaAttrs::default(), run.clone());
+        let gap = ragged.glyphs.iter().find(|g| g.byte == text.find(" dddd").unwrap()).unwrap();
+        let width = gap.x - ragged.x0 + gap.adv + 2.0 * ragged.x0;
+        let para = ParaAttrs { align: Some(Align::LeftJustified), word_space_max: Some(4.0), ..Default::default() };
+        let line = first_line(&text, width, para, run.clone());
+        assert_eq!(text[line.range.clone()].trim_end(), format!("aa{sp}aa bbbb cccc"));
+        assert!((line.end_x - line.x1).abs() < 0.1, "{sp:?}: line ends at {} not {}", line.end_x, line.x1);
+        assert!((run_width(&line) - run_width(&ragged)).abs() < 1e-6, "{sp:?}: run is {} not {}", run_width(&line), run_width(&ragged));
+    }
+}
+
+#[test]
+fn nonbreaking_space_alone_fills_a_justified_line() {
+    let text = "10\u{A0}km 1234";
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ragged = all_lines(&cs)[0];
+    let natural = ragged.glyphs.iter().map(|g| (g.byte, g.adv)).collect::<std::collections::HashMap<_, _>>();
+    let m = ragged.glyphs.iter().find(|g| g.byte == 5).unwrap();
+    let width = m.x - ragged.x0 + m.adv + 15.0 + 2.0 * ragged.x0;
+    let line = justified_first_line(text, width, None);
+    assert_eq!(text[line.range.clone()].trim_end(), "10\u{A0}km");
+    for g in line.glyphs.iter().filter(|g| g.byte < 6) {
+        if g.byte == 2 {
+            assert!((g.adv - natural[&2] - 15.0).abs() < 0.1, "U+00A0 is {}", g.adv);
+        } else {
+            assert!((g.adv - natural[&g.byte]).abs() < 1e-6, "glyph at {} is {}", g.byte, g.adv);
+        }
+    }
 }
 
 /// Story of `n` one-line filler paragraphs followed by `extra` paragraphs, in a 2-column frame.
@@ -3420,6 +3727,105 @@ fn spanning_paragraph_in_rtl_and_vertical_frames() {
     assert!(cs.frames[0].lines.iter().any(|l| l.para == h));
 }
 
+// ---------- split columns ----------
+
+/// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
+/// Returns the index of the first split paragraph.
+fn split_doc(split: usize, after: usize, rect: Rect, cfg: (u32, f64, f64)) -> (Document, StoryId, ItemId, usize) {
+    let mut paras: Vec<&str> = vec![LOREM; 1 + split + after];
+    paras[0] = "An introduction set at the full measure of the column, before the split block.";
+    let (mut d, sid, fid) = doc_with(&paras.join("\n"), rect, ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    for p in &mut st.paras[1..=split] {
+        p.para.span_columns = Some(SpanColumns::Split(cfg.0));
+        p.para.split_inside_gutter = Some(cfg.1);
+        p.para.split_outside_gutter = Some(cfg.2);
+    }
+    (d, sid, fid, 1)
+}
+
+/// The sub-columns of `col`: (x0, x1) of each.
+fn sub_columns(col: Rect, (n, inside, outside): (u32, f64, f64)) -> Vec<(f64, f64)> {
+    let w = (col.width() - 2.0 * outside - inside * (n - 1) as f64) / n as f64;
+    (0..n).map(|k| col.x0 + outside + k as f64 * (w + inside)).map(|x| (x, x + w)).collect()
+}
+
+/// The split paragraphs' lines, by sub-column.
+fn split_lines<'a>(ft: &'a FrameText, paras: std::ops::Range<usize>, subs: &[(f64, f64)]) -> Vec<Vec<&'a Line>> {
+    let mut by_sub = vec![Vec::new(); subs.len()];
+    for l in ft.lines.iter().filter(|l| paras.contains(&l.para)) {
+        let k = subs.iter().position(|&(x0, x1)| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6);
+        let k = k.unwrap_or_else(|| panic!("line of para {} at {}..{} is in no sub-column of {subs:?}", l.para, l.x0, l.x1));
+        by_sub[k].push(l);
+    }
+    by_sub
+}
+
+#[test]
+fn split_paragraphs_are_set_in_balanced_sub_columns() {
+    for cfg in [(2, 12.0, 10.0), (3, 6.0, 0.0)] {
+        let (d, sid, _, s) = split_doc(2, 1, Rect::new(0.0, 0.0, 400.0, 700.0), cfg);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let ft = &cs.frames[0];
+        assert_no_overlap(ft);
+        let by_sub = split_lines(ft, s..s + 2, &sub_columns(ft.columns[0], cfg));
+        let counts: Vec<usize> = by_sub.iter().map(Vec::len).collect();
+        assert!(counts.iter().all(|&n| n > 0), "{cfg:?}: {counts:?}");
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "{cfg:?}: balanced {counts:?}");
+        // Every sub-column starts on the same baseline, below the paragraph before the block.
+        let firsts: Vec<f64> = by_sub.iter().map(|v| v[0].baseline).collect();
+        assert!(firsts.iter().all(|b| (b - firsts[0]).abs() < 1e-6), "{cfg:?}: {firsts:?}");
+        let intro = ft.lines.iter().filter(|l| l.para == 0).map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(firsts[0] > intro && firsts[0] < intro + 20.0, "{cfg:?}: block at {} after {intro}", firsts[0]);
+        // The text after the block continues at the full measure below its deepest sub-column.
+        let bottom = by_sub.iter().flatten().map(|l| line_box(l).1).fold(f64::NEG_INFINITY, f64::max);
+        let next = ft.lines.iter().find(|l| l.para == s + 2).unwrap();
+        assert!(line_box(next).0 >= bottom - 0.5 && line_box(next).0 < bottom + 20.0, "{cfg:?}: {} after {bottom}", line_box(next).0);
+        assert!((next.x0 - ft.columns[0].x0).abs() < 1e-6 && (next.x1 - ft.columns[0].x1).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn split_block_in_the_second_column_and_at_the_story_end() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(3, 0, Rect::new(0.0, 0.0, 540.0, 400.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.story_mut(sid).unwrap().paras[s].para.start_paragraph = Some(StartParagraph::NextColumn);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    assert!(ft.lines.iter().filter(|l| l.para >= s).all(|l| l.column == 1));
+    let by_sub = split_lines(ft, s..s + 3, &sub_columns(ft.columns[1], cfg));
+    // Nothing follows the block: it fills its first sub-column to the bottom of the frame, then
+    // the next.
+    let (a, b) = (&by_sub[0], &by_sub[1]);
+    assert!(!a.is_empty() && !b.is_empty() && a.len() > b.len() + 1, "{} and {} lines", a.len(), b.len());
+    let low = a.last().unwrap();
+    assert!(low.baseline + low.descent > 400.0 - low.leading, "the first sub-column ends at {}", low.baseline);
+    assert!((a[0].baseline - b[0].baseline).abs() < 1e-6);
+}
+
+#[test]
+fn split_block_flows_into_the_next_column() {
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, fid, s) = split_doc(6, 1, Rect::new(0.0, 0.0, 540.0, 200.0), cfg);
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    for c in 0..2 {
+        let in_col: Vec<&Line> = ft.lines.iter().filter(|l| l.column == c as u32).collect();
+        let lines: Vec<&Line> = in_col.iter().copied().filter(|l| (s..s + 6).contains(&l.para)).collect();
+        let subs = sub_columns(ft.columns[c], cfg);
+        assert!(subs.iter().all(|&(x0, x1)| lines.iter().any(|l| (l.x0 - x0).abs() < 1e-6 && (l.x1 - x1).abs() < 1e-6)), "column {c}");
+    }
+    // The block continues at the top of the second column.
+    let top = ft.lines.iter().find(|l| l.column == 1).unwrap();
+    assert!((s..s + 6).contains(&top.para) && top.baseline < 20.0);
+}
+
 #[test]
 fn embedded_text_frames_compose_and_footnotes_retain_object_sources() {
     use pagenor_doc::{AnchorPosition, AnchoredObject};
@@ -3974,4 +4380,305 @@ fn page_start_options_skip_same_page_frames_and_use_section_numbers() {
             assert_eq!(target, if start == StartParagraph::NextOddPage { 2 } else { 3 });
         }
     }
+}
+
+/// Each paragraph's list label as text: its label glyphs (laid before the paragraph's own text)
+/// matched back to characters of the label font; tabs and other invisible glyphs are skipped.
+fn list_labels(cs: &ComposedStory, alphabet: &str) -> Vec<String> {
+    all_lines(cs)
+        .iter()
+        .filter(|l| l.first_in_para)
+        .map(|l| {
+            l.glyphs
+                .iter()
+                .take_while(|g| g.len == 0)
+                .filter(|g| g.visible)
+                .map(|g| alphabet.chars().find(|c| g.face.glyph_for(*c) == g.gid).unwrap_or('?'))
+                .collect()
+        })
+        .collect()
+}
+
+const LABEL_CHARS: &str = "0123456789ABCDIVXabcdivx.\u{2022} Tabel";
+
+fn numbered(style: pagenor_doc::NumberStyle, expression: &str) -> ParaAttrs {
+    ParaAttrs {
+        list_type: Some(pagenor_doc::ListType::Numbers),
+        number_style: Some(style),
+        number_expression: Some(expression.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn numbered_lists_follow_their_format_and_expression() {
+    use pagenor_doc::NumberStyle as N;
+    let cases: [(N, &str, [&str; 3]); 4] = [
+        (N::UpperLetters, "^#.^t", ["A.", "B.", "C."]),
+        (N::LowerRoman, "^#.^t", ["i.", "ii.", "iii."]),
+        (N::ArabicThreeDigits, "^#.^t", ["001.", "002.", "003."]),
+        (N::Arabic, "Tabel ^#^t", ["Tabel 1", "Tabel 2", "Tabel 3"]),
+    ];
+    for (style, expression, want) in cases {
+        let (d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(style, expression));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), want, "{style:?} {expression}");
+    }
+}
+
+#[test]
+fn numbering_from_the_largest_start_number_does_not_overflow() {
+    let (mut d, sid, _) = doc_with("One\nTwo", Rect::new(0.0, 0.0, 300.0, 300.0), numbered(pagenor_doc::NumberStyle::Arabic, "^#."));
+    d.story_mut(sid).unwrap().paras[0].para.start_at = Some(Some(u32::MAX));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let max = format!("{}.", u32::MAX);
+    assert_eq!(list_labels(&cs, LABEL_CHARS), [max.clone(), max]);
+}
+
+#[test]
+fn empty_paragraphs_get_no_bullet_or_number() {
+    let bullets = ParaAttrs { list_type: Some(pagenor_doc::ListType::Bullets), ..Default::default() };
+    let (d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), bullets);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["\u{2022}", "", "\u{2022}", ""]);
+    // An empty paragraph doesn't use up a number, in a story's own list or a named one.
+    for name in ["", "Steps"] {
+        let attrs = ParaAttrs { list_name: Some(name.into()), ..numbered(pagenor_doc::NumberStyle::Arabic, "^#.^t") };
+        let (mut d, sid, _) = doc_with("One\n\nTwo\n", Rect::new(0.0, 0.0, 300.0, 300.0), attrs);
+        if !name.is_empty() {
+            d.settings.lists.push(pagenor_doc::NumberedList { name: name.into(), continue_across_stories: false });
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.", "", "2.", ""], "list `{name}`");
+    }
+}
+
+// ---------- paragraph border and shading ----------
+
+fn bordered(text: &str, rect: Rect, para: ParaAttrs) -> ComposedStory {
+    let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), ..para };
+    let (d, sid, _) = doc_with(text, rect, para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+fn has_curves(bp: &pagenor_geom::BezPath) -> bool {
+    bp.elements().iter().any(|e| matches!(e, pagenor_geom::PathEl::CurveTo(..) | pagenor_geom::PathEl::QuadTo(..)))
+}
+
+#[test]
+fn rounded_border_corners_are_curves_and_dotted_borders_paint_their_gap_first() {
+    use pagenor_geom::corners::{Corner, CornerShape};
+    let rounded = [Corner { shape: CornerShape::Rounded, size: 6.0 }; 4];
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs { border_corners: Some(rounded), ..Default::default() });
+    let paths: Vec<_> = cs.frames[0].decos.iter().filter_map(|dc| dc.path.as_ref()).collect();
+    assert_eq!(paths.len(), 1, "one stroked outline");
+    assert!(has_curves(paths[0]));
+    // Square corners: plain edges, no curves.
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    assert!(cs.frames[0].decos.iter().all(|dc| dc.path.is_none()));
+    // A dotted border with a gap colour: the gap under the dots.
+    let dotted = ParaAttrs { border_type: Some(pagenor_doc::StrokeType::Dotted), border_gap_color: Some("[Paper]".into()), ..Default::default() };
+    let cs = bordered("Boxed text", Rect::new(0.0, 0.0, 300.0, 200.0), dotted);
+    let colors: Vec<&str> = cs.frames[0].decos.iter().filter(|dc| dc.path.is_some()).map(|dc| dc.color.as_str()).collect();
+    assert_eq!(colors, ["[Paper]", "[Black]"]);
+}
+
+/// The width of the widest border edge (the top and bottom edges span the box).
+fn border_width(cs: &ComposedStory) -> f64 {
+    cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect.width()).fold(0.0, f64::max)
+}
+
+#[test]
+fn a_text_width_border_is_narrower_than_a_column_width_one() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let column = border_width(&bordered("Short", rect, ParaAttrs::default()));
+    let text = border_width(&bordered("Short", rect, ParaAttrs { border_width: Some(pagenor_doc::BoxWidth::Text), ..Default::default() }));
+    assert!((column - 302.0).abs() < 1e-6, "column and both side strokes: {column}");
+    assert!(text > 2.0 && text < 60.0, "text: {text}");
+}
+
+/// Edges of a plain border by frame column: (column, count).
+fn edges_per_column(cs: &ComposedStory) -> Vec<usize> {
+    let cols = &cs.frames[0].columns;
+    cols.iter()
+        .map(|c| {
+            cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]" && dc.rect.center().x > c.x0 - 2.0 && dc.rect.center().x < c.x1 + 2.0).count()
+        })
+        .collect()
+}
+
+#[test]
+fn a_split_paragraph_closes_its_border_in_each_column_only_when_set_to() {
+    let text = format!("{LOREM} {LOREM}");
+    let compose = |display: bool| {
+        let para = ParaAttrs { border_on: Some(true), border_weights: Some([1.0; 4]), border_display_if_splits: Some(display), ..Default::default() };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 90.0), para);
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let open = compose(false);
+    assert!(open.frames[0].lines.iter().any(|l| l.column == 1), "the paragraph reaches the second column");
+    // Open at the split: top and sides in the first column, sides and bottom in the second.
+    assert_eq!(edges_per_column(&open), [3, 3]);
+    assert_eq!(edges_per_column(&compose(true)), [4, 4]);
+}
+
+#[test]
+fn consecutive_paragraphs_with_the_same_border_share_one_box() {
+    let compose = |merge: bool| {
+        let para = ParaAttrs { space_after: Some(10.0), border_merge: Some(merge), ..Default::default() };
+        bordered("One\nTwo\nThree", Rect::new(0.0, 0.0, 300.0, 300.0), para)
+    };
+    let merged = compose(true);
+    let edges: Vec<Rect> = merged.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    assert_eq!(edges.len(), 4, "one box: {edges:?}");
+    let lines = &merged.frames[0].lines;
+    let (first, last) = (&lines[0], &lines[lines.len() - 1]);
+    let left = edges.iter().find(|r| r.height() > r.width()).unwrap();
+    assert!((left.y0 - (first.baseline - first.ascent)).abs() < 1e-6 && (left.y1 - (last.baseline + last.descent)).abs() < 1e-6, "{left:?}");
+    assert_eq!(compose(false).frames[0].decos.iter().filter(|dc| dc.color == "[Black]").count(), 12, "a box each");
+}
+
+#[test]
+fn shading_clips_to_the_frame_and_can_stay_off_print() {
+    let para = ParaAttrs {
+        shading_on: Some(true),
+        shading_offsets: Some([50.0; 4]),
+        shading_clip: Some(true),
+        shading_nonprinting: Some(true),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("Shaded", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let area = cs.frames[0].columns[0];
+    let shade = &cs.frames[0].decos[0];
+    assert!(shade.nonprinting);
+    assert!(shade.rect.x0 >= area.x0 - 1e-6 && shade.rect.y0 >= area.y0 - 1e-6 && shade.rect.x1 <= area.x1 + 1e-6, "{:?} in {area:?}", shade.rect);
+}
+
+// ---------- span space, bullets and numbering ----------
+
+#[test]
+fn space_before_and_after_a_span_moves_the_span_and_the_text_below() {
+    let at = |before: f64, after: f64| {
+        let (mut d, sid, _, h) = span_doc(1, 1, Rect::new(0.0, 0.0, 600.0, 800.0));
+        let p = &mut d.story_mut(sid).unwrap().paras[h].para;
+        p.span_space_before = Some(before);
+        p.span_space_after = Some(after);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let first = |pi: usize| cs.frames[0].lines.iter().find(|l| l.para == pi).map(|l| l.baseline).unwrap();
+        (first(h), first(h + 1))
+    };
+    let (span0, below0) = at(0.0, 0.0);
+    let (span1, below1) = at(24.0, 0.0);
+    assert!((span1 - span0 - 24.0).abs() < 0.01, "{span0} → {span1}");
+    assert!((below1 - below0 - 24.0).abs() < 0.01, "the text below moves with it");
+    let (span2, below2) = at(0.0, 18.0);
+    assert!((span2 - span0).abs() < 0.01 && (below2 - below0 - 18.0).abs() < 0.01, "{below0} → {below2}");
+}
+
+#[test]
+fn span_space_applies_only_where_the_paragraph_spans_columns() {
+    // Every paragraph spans with 12 pt span space after; the frame has `columns` columns.
+    let tops = |columns: u32, span: bool| {
+        let (mut d, sid, fid) = doc_with("One\nTwo\nThree", Rect::new(0.0, 0.0, 400.0, 400.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = columns;
+        for p in &mut d.story_mut(sid).unwrap().paras {
+            if span {
+                p.para.span_columns = Some(SpanColumns::Span(0));
+            }
+            p.para.span_space_after = Some(12.0);
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        first_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let plain = tops(1, false);
+    assert_eq!(plain.len(), 3);
+    assert_eq!(tops(1, true), plain, "a span in a one-column frame adds no space");
+    let spread = tops(3, true);
+    let gap = |v: &[f64], i: usize| v[i + 1] - v[i];
+    assert!((gap(&spread, 0) - gap(&plain, 0) - 12.0).abs() < 0.01, "{spread:?} vs {plain:?}");
+}
+
+/// The first line of each paragraph.
+fn first_lines(cs: &ComposedStory) -> Vec<&Line> {
+    all_lines(cs).into_iter().filter(|l| l.first_in_para).collect()
+}
+
+#[test]
+fn a_right_aligned_number_ends_at_the_line_start() {
+    use pagenor_doc::{ListAlign, ListType};
+    let compose = |align: ListAlign| {
+        let para = ParaAttrs {
+            list_type: Some(ListType::Numbers),
+            number_align: Some(align),
+            left_indent: Some(36.0),
+            first_line_indent: Some(-18.0),
+            ..Default::default()
+        };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // The label "1.\t": its first two glyphs are the number and the full stop.
+    let cs = compose(ListAlign::Left);
+    let col = cs.frames[0].columns[0];
+    let l = first_lines(&cs)[0];
+    assert!((l.glyphs[0].x - (col.x0 + 18.0)).abs() < 0.01, "left: starts at the line start");
+    let text_x = l.glyphs.iter().find(|g| g.len > 0).unwrap().x;
+    let cs = compose(ListAlign::Right);
+    let l = first_lines(&cs)[0];
+    let end = l.glyphs[1].x + l.glyphs[1].adv;
+    assert!((end - (col.x0 + 18.0)).abs() < 0.01, "right: ends at the line start ({end})");
+    assert!((l.glyphs.iter().find(|g| g.len > 0).unwrap().x - text_x).abs() < 0.01, "the text stays at the tab stop");
+}
+
+#[test]
+fn level_two_numbering_restarts_after_level_one() {
+    let para = numbered(pagenor_doc::NumberStyle::Arabic, "^1.^#");
+    let (mut d, sid, _) = doc_with("A\nB\nC\nD\nE", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    for (p, level) in d.story_mut(sid).unwrap().paras.iter_mut().zip([1, 2, 2, 1, 2]) {
+        p.para.list_level = Some(level);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // `^1` is level 1's number, `^#` the paragraph's own level.
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.1"]);
+    // Without the restart, level 2 carries on.
+    for p in &mut d.story_mut(sid).unwrap().paras {
+        p.para.restart_numbers = Some(false);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(list_labels(&cs, LABEL_CHARS), ["1.1", "1.1", "1.2", "2.2", "2.3"]);
+}
+
+#[test]
+fn the_tab_position_places_the_text_after_the_label() {
+    use pagenor_doc::ListType;
+    let compose = |tab: Option<f64>| {
+        let para = ParaAttrs { list_type: Some(ListType::Bullets), list_tab: Some(tab), ..Default::default() };
+        let (d, sid, _) = doc_with("Item", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let col = cs.frames[0].columns[0];
+        first_lines(&cs)[0].glyphs.iter().find(|g| g.len > 0).unwrap().x - col.x0
+    };
+    assert!((compose(Some(50.0)) - 50.0).abs() < 0.01);
+    assert!((compose(None) - 36.0).abs() < 0.01, "the default tab stop");
+}
+
+#[test]
+fn paragraph_mark_size_counts_in_its_line_auto_leading() {
+    let gaps = |mark_size: f64| {
+        let (mut d, sid, _) = doc_with("One\nTwo\nThree", Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(7..8, |f| f.over.size = Some(mark_size));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let b: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+        assert_eq!(b.len(), 3);
+        (b[1] - b[0], b[2] - b[1])
+    };
+    // A 12 pt line ending in a 14 pt return: 14 × 120% above it, the next line unchanged.
+    let (above, below) = gaps(14.0);
+    assert!((above - 16.8).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
+    let (above, below) = gaps(12.0);
+    assert!((above - 14.4).abs() < 1e-6, "{above}");
+    assert!((below - 14.4).abs() < 1e-6, "{below}");
 }

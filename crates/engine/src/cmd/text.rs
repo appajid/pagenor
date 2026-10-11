@@ -22,6 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             release
         ),
         cmd!(noundo "text.extendTo", "Extend Text Selection", [], None, "{frame, point}", has_doc, |s, p| place(s, p, true)),
+        cmd!(noundo "text.selectLine", "Select Line", [], None, "{frame, point} — the composed line under the point", has_doc, |s, p| select_at(s, p, "line")),
         cmd!(noundo "text.selectWord", "Select Word", [], None, "{frame, point} — the word (or run of spaces) under the point", has_doc, |s, p| {
             select_at(s, p, "word")
         }),
@@ -138,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?, composer?, tabs?, …}}",
+            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, tabs?, …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
@@ -378,7 +379,43 @@ fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
     if needs_convert {
         s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
     }
-    let (sid, b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    let (sid, mut b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    if extend && cell.is_none() {
+        let st = s.doc()?;
+        let cs = s.cache.get(&st.doc, sid, None);
+        if let Some(loc) = st.doc.find(frame)
+            && let Some(it) = st.doc.item_at(&loc)
+            && let Some(fi) = cs.frames.iter().position(|f| f.frame == frame)
+        {
+            let inner = (st.doc.parent_xf(&loc) * st.doc.text_xf(it)).inverse() * pt;
+            // Only selection extension beyond a hard paragraph end includes its separator.
+            // Ordinary caret placement, soft wraps, forced breaks and EOF keep compose::hit's result.
+            if extend
+                && st.doc.story(sid).is_some_and(|story| story.text.as_bytes().get(b) == Some(&b'\n'))
+                && cs.frames.get(fi).is_some_and(|f| {
+                    f.lines.iter().any(|l| {
+                        if !l.last_in_para || l.range.end != b {
+                            return false;
+                        }
+                        let end = compose::caret_x(l, b);
+                        // Glyphs stay in source order: the final source cluster sets the end's direction.
+                        let rtl = l.glyphs.iter().rev().find(|g| g.len > 0).map(|g| g.rtl).unwrap_or_else(|| {
+                            // Glyphless lines take their effective paragraph direction, including style inheritance.
+                            st.doc
+                                .story(sid)
+                                .and_then(|story| story.paras.get(l.para))
+                                .is_some_and(|p| st.doc.styles.resolve_para(p).0.direction == pagenor_doc::TextDirection::RightToLeft)
+                        });
+                        // Ignore affine forward/inverse noise at an exactly mapped caret.
+                        let past = if rtl { end - inner.x } else { inner.x - end };
+                        past > pagenor_geom::EPS
+                    })
+                })
+            {
+                b = b.saturating_add(1);
+            }
+        }
+    }
     // Drag and drop: a press inside the selected text keeps it (to be dragged).
     if !extend {
         s.text_drag = s.doc()?.selection.text.is_some_and(|t| t.story == sid && t.cell == cell && !t.range().is_empty() && t.range().contains(&b));
@@ -743,7 +780,7 @@ pub(crate) fn set_story_direction(d: &mut pagenor_doc::Document, stories: &[Stor
             && st.vertical != vertical
         {
             st.vertical = vertical;
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
     }
 }
@@ -812,8 +849,10 @@ fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> 
     let (fi, x, baseline, _, _) = compose::caret(cs, pos)?;
     let lines: Vec<(usize, &compose::Line)> = cs.frames.iter().enumerate().flat_map(|(i, f)| f.lines.iter().map(move |l| (i, l))).collect();
     let cur = lines.iter().position(|(i, l)| *i == fi && (l.baseline - baseline).abs() < 0.01 && pos >= l.range.start && pos <= l.range.end)?;
-    let target = if up { cur.checked_sub(1)? } else { cur + 1 };
-    let (tf, tl) = lines.get(target)?;
+    let (_, l) = lines.get(cur)?;
+    // The next row: segments of the same line (beside a wrap object) share its baseline.
+    let other_row = |(i, t): &&(usize, &compose::Line)| *i != fi || (t.baseline - l.baseline).abs() > 1e-6;
+    let (tf, tl) = if up { lines.get(..cur)?.iter().rfind(other_row)? } else { lines.get(cur + 1..)?.iter().find(other_row)? };
     compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
 }
 
@@ -876,6 +915,18 @@ fn typing_format(s: &Session) -> Option<&TypingFormat> {
     s.typing_format.as_ref().filter(|f| f.doc == st.uid && f.at.story == t.story && f.at.cell == t.cell && f.at.range() == t.range())
 }
 
+pub(crate) fn validate_char_fill(document: &pagenor_doc::Document, attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    if let Some(fill) = &attrs.fill
+        && document.swatch(fill).is_none()
+    {
+        return Err(bad(
+            command_id,
+            format!("unknown character fill `{fill}`; create a swatch with `swatch.create` and use its returned name as `fill`"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
     let mut a = CharAttrs::default();
     if let Some(o) = attrs.as_object() {
@@ -883,6 +934,7 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
             a.set_json(k, v).map_err(|e| bad("type.char", e))?;
         }
     }
+    validate_char_fill(&s.doc()?.doc, &a, "type.char")?;
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let targets = format_targets(s);
     // A caret in text: the format is for the next typing.
@@ -916,7 +968,7 @@ pub(crate) fn apply_char_attrs(d: &mut pagenor_doc::Document, targets: &[Target]
                 && let Some(run) = st.chars.first_mut()
             {
                 run.format.over.merge(a);
-                st.rev += 1;
+                st.rev = st.rev.wrapping_add(1);
             }
             continue;
         }
@@ -1052,8 +1104,18 @@ fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
         apply_typing_format(&mut cf, f);
     }
     let cp = st.doc.styles.resolve_char(&base, &cf);
+    let selected: String = story
+        .text
+        .get(r.start..r.end)
+        .unwrap_or_default()
+        .chars()
+        .take(256)
+        .map(|c| if c.is_control() || c == pagenor_doc::OBJECT_MARK { ' ' } else { c })
+        .skip_while(|c| c.is_whitespace())
+        .take(60)
+        .collect();
     Ok(json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
-        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count()}))
+        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count(), "selectedText": selected.trim()}))
 }
 
 fn apply_typing_format(cf: &mut pagenor_doc::CharFormat, f: &TypingFormat) {
@@ -2039,6 +2101,9 @@ mod vertical_caret_tests {
         assert_eq!(mv(&mut s, "up", false, false), 3 * c);
     }
 }
+#[cfg(test)]
+#[path = "text/tests_payload.rs"]
+mod tests_payload;
 
 #[cfg(test)]
 mod story_query_contract_tests {
@@ -2103,5 +2168,50 @@ mod rule_tests {
         }
         assert!((widths[0] - 328.0).abs() < 1e-6, "column: {widths:?}");
         assert!(widths[1] < 100.0, "text: {widths:?}");
+    }
+}
+
+#[cfg(test)]
+mod double_triple_click_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Double-click (`text.selectWord`) selects the clicked word; triple-click
+    /// (`text.selectLine`) selects the whole composed line.
+    #[test]
+    fn select_word_and_select_line() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "Hello brave world\nSecond line here"}))
+            .unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        // Spread point of the glyph at byte `b`.
+        let at = |s: &Session, b: usize| {
+            let d = &s.doc().unwrap().doc;
+            let cs = pagenor_compose::compose_story(d, pagenor_doc::StoryId(sid), &Default::default());
+            let (l, g) = cs.frames[0].lines.iter().find_map(|l| l.glyphs.iter().find(|g| g.byte == b).map(|g| (l, g))).unwrap();
+            json!([g.x + g.adv * 0.25, l.baseline - 3.0])
+        };
+        let text = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text.clone();
+
+        // Double-click inside "brave" selects just that word.
+        let b = text.find("brave").unwrap() + 1;
+        s.execute("text.selectWord", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "brave");
+
+        // Triple-click anywhere on the first line selects the whole line.
+        let b = text.find("world").unwrap() + 1;
+        s.execute("text.selectLine", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "Hello brave world");
+
+        // Triple-click on the second line selects only that line.
+        let b = text.find("Second").unwrap() + 2;
+        s.execute("text.selectLine", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "Second line here");
     }
 }

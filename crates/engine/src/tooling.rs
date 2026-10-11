@@ -93,6 +93,7 @@ impl Session {
             layer,
             snap: view.snap,
             unit: view.unit,
+            scale_strokes: self.prefs.scale_strokes,
         };
         Some(f(self.tool.as_mut(), &cx))
     }
@@ -117,6 +118,15 @@ impl Session {
         self.with_ctx(view, |t, cx| t.cursor(cx, p, mods)).unwrap_or_default()
     }
 
+    /// Canvas centres of the content grabbers the Selection tool shows: the selected frame's and
+    /// the one under `hover`.
+    pub fn content_grabbers(&mut self, hover: Option<pagenor_geom::Point>, view: ViewInfo) -> Vec<pagenor_geom::Point> {
+        if self.tool.id() != "selection" {
+            return vec![];
+        }
+        self.with_ctx(view, |_, cx| pagenor_tools::select::grabbers(cx, hover).into_iter().map(|(_, c)| c).collect()).unwrap_or_default()
+    }
+
     pub fn tool_busy(&self) -> bool {
         self.tool.busy()
     }
@@ -138,6 +148,7 @@ impl Session {
                 Action::Dialog(id, params) => self.ui_requests.push(UiRequest::Dialog { id, params }),
                 Action::SwitchTool(id) => self.set_tool(&id),
                 Action::View(params) => self.ui_requests.push(UiRequest::View { params }),
+                Action::Handled => {}
             }
         }
         Ok(())

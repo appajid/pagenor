@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use pagenor_doc::build::{NewDocument, PRESETS};
-use pagenor_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, Selection, Shape};
+use pagenor_doc::{Asset, AssetId, Content, Document, Graphic, Item, ItemId, PdfCrop, Selection, Shape};
 use pagenor_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
 
@@ -13,21 +13,42 @@ use crate::{DocState, EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
-            "{preset?: \"Letter\"|\"A4\"|…, width?, height?, pages?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, title?}",
+            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?}",
             always, file_new),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
-        cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
+        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
+            let mut presets: Vec<Value> = PRESETS.iter().map(serde_json::to_value).collect::<std::result::Result<_, _>>().map_err(|e| EngineError::Other(e.to_string()))?;
+            presets.extend(
+                s.prefs
+                    .document_presets
+                    .iter()
+                    .map(|p| json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "saved": true})),
+            );
+            Ok(Value::Array(presets))
+        }),
+        cmd!(noundo "file.savePreset", "Save Document Preset", [], None,
+            "{name, …the settings file.new takes} — kept with the preferences; `file.new {preset: name}` uses it. A saved preset of that name is replaced; built-in names are refused",
+            always, save_preset),
+        cmd!(noundo "file.deletePreset", "Delete Document Preset", [], None, "{name} — a saved document preset", always, |s, p| {
+            let name = str_param(p, "name").unwrap_or_default().trim().to_string();
+            let before = s.prefs.document_presets.len();
+            s.prefs.document_presets.retain(|x| !x.title.eq_ignore_ascii_case(&name));
+            if s.prefs.document_presets.len() == before {
+                return Err(bad("file.deletePreset", format!("no saved preset `{name}`")));
+            }
+            ok()
+        }),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .pgnr, .idml or .indd; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
+            "{path, maxBytes?: n, recoverRepeatedStories?: true} — .pgnr, .idml, .indd or experimental PageMaker .p65/.pmd (desktop pmd2raw required); optional actual-read limit; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: skipped fonts and missing IDML package parts}",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor document, IDML package or INDD subset", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — Pagenor document, IDML package, INDD subset or PageMaker (include .p65/.pmd in name; desktop helper required)", always, file_open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?.to_string();
             let bytes = to_bytes(&s.doc()?.doc)?;
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::native_save::write(std::path::Path::new(&path), &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
@@ -62,7 +83,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "snippet.export", "Export Selection as Snippet", ["File", "Export"], None,
             "{path?} — the selected items (with their stories, styles and images) as a .pgnr snippet; no path: {base64}", super::has_selection, snippet_export),
         cmd!(query "place.styles", "Import Options: Styles", [], None,
-        "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
+        "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF/Markdown file brings (for styleMap / styleConflicts)",
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
             let imp = pagenor_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
@@ -100,7 +121,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .pgnr: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .pgnr: that page's objects as a group)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md, .markdown) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -115,18 +136,77 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
     pagenor_format::load(b).map_err(|e| EngineError::Other(e.to_string()))
 }
 
+/// The longest saved preset name, and how many presets are kept.
+const MAX_PRESET_NAME: usize = 100;
+const MAX_PRESETS: usize = 500;
+
+/// A built-in document preset or a saved one, by name (case ignored).
+fn find_preset(s: &Session, name: &str) -> Option<NewDocument> {
+    NewDocument::from_preset(name.trim()).or_else(|| s.prefs.document_presets.iter().find(|p| p.title.eq_ignore_ascii_case(name.trim())).cloned())
+}
+
 fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     let mut nd = match str_param(p, "preset") {
-        Some(name) => NewDocument::from_preset(name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
+        Some(name) => find_preset(s, name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
         None => NewDocument::default(),
     };
+    apply_settings(&mut nd, p);
+    check_size("file.new", &nd)?;
+    s.untitled = s.untitled.saturating_add(1);
+    nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
+    let d = Document::new(&nd);
+    let i = s.add_document(DocState::new(d, None));
+    Ok(json!({"index": i}))
+}
+
+fn save_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("file.savePreset", "missing `name`"))?;
+    if name.chars().count() > MAX_PRESET_NAME {
+        return Err(bad("file.savePreset", format!("a preset name has at most {MAX_PRESET_NAME} characters")));
+    }
+    if NewDocument::from_preset(name).is_some() {
+        return Err(bad("file.savePreset", format!("`{name}` is a built-in preset")));
+    }
+    let mut nd = NewDocument::default();
+    apply_settings(&mut nd, p);
+    check_size("file.savePreset", &nd)?;
+    nd.title = name.to_string();
+    let presets = &mut s.prefs.document_presets;
+    let replacing = presets.iter().filter(|x| x.title.eq_ignore_ascii_case(name)).count();
+    if presets.len().saturating_sub(replacing) >= MAX_PRESETS {
+        return Err(bad("file.savePreset", format!("at most {MAX_PRESETS} saved presets")));
+    }
+    presets.retain(|x| !x.title.eq_ignore_ascii_case(name));
+    presets.push(nd);
+    Ok(json!({"name": name}))
+}
+
+fn check_size(cmd: &str, nd: &NewDocument) -> Result<()> {
+    if !(nd.width > 0.0 && nd.height > 0.0 && nd.width <= 15552.0 && nd.height <= 15552.0) {
+        return Err(bad(cmd, "page size out of range (0 < size ≤ 216 in)"));
+    }
+    if ![nd.gutter, nd.margins.top, nd.margins.bottom, nd.margins.inside, nd.margins.outside].into_iter().all(f64::is_finite) {
+        return Err(bad(cmd, "gutter and margins must be finite measures"));
+    }
+    Ok(())
+}
+
+/// The document settings in `p` (as file.new takes them) over `nd`.
+fn apply_settings(nd: &mut NewDocument, p: &Value) {
+    if let Some(intent) = p.get("intent").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        nd.intent = intent;
+    }
+    if let Some(units) = p.get("units").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        nd.units = units;
+    }
     nd.width = f64_or(p, "width", nd.width);
     nd.height = f64_or(p, "height", nd.height);
-    nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
+    nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v.clamp(1, 9999) as usize).unwrap_or(nd.pages).clamp(1, 9999);
+    nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page).clamp(1, 99_999);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
-    nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
+    nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns).clamp(1, 216);
     nd.gutter = f64_or(p, "gutter", nd.gutter);
-    nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(false);
+    nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
     match p.get("margins") {
         Some(Value::Number(n)) => nd.margins = pagenor_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
         Some(v @ Value::Object(_)) => {
@@ -136,17 +216,32 @@ fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
         }
         _ => {}
     }
-    if let Some(b) = p.get("bleed").and_then(Value::as_f64) {
-        nd.bleed = [b; 4];
+    if let Some(b) = edges(p, "bleed") {
+        nd.bleed = b;
     }
-    s.untitled += 1;
-    nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
-    if nd.width <= 0.0 || nd.height <= 0.0 || nd.width > 15552.0 || nd.height > 15552.0 {
-        return Err(bad("file.new", "page size out of range (0 < size ≤ 216 in)"));
+    if let Some(b) = edges(p, "slug") {
+        nd.slug = b;
     }
-    let d = Document::new(&nd);
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i}))
+    // Preferences may come from older or hand-edited files: bound inherited edge widths too.
+    nd.bleed = nd.bleed.map(clean_edge);
+    nd.slug = nd.slug.map(clean_edge);
+}
+
+/// A bleed or slug parameter: one width for every edge, or [top, bottom, inside, outside].
+fn clean_edge(v: f64) -> f64 {
+    if v.is_finite() { v.clamp(0.0, 1296.0) } else { 0.0 }
+}
+
+fn edges(p: &Value, key: &str) -> Option<[f64; 4]> {
+    match p.get(key)? {
+        Value::Array(a) if a.len() == 4 => Some([
+            clean_edge(a.first()?.as_f64()?),
+            clean_edge(a.get(1)?.as_f64()?),
+            clean_edge(a.get(2)?.as_f64()?),
+            clean_edge(a.get(3)?.as_f64()?),
+        ]),
+        v => v.as_f64().map(|b| [clean_edge(b); 4]),
+    }
 }
 
 fn file_sample(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -159,11 +254,15 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if super::pagemaker::is_name(path) {
+            return super::pagemaker::open(s, p);
+        }
         let lower = path.to_ascii_lowercase();
         if lower.ends_with(".idml") || lower.ends_with(".indd") {
             return super::interchange::open_idml(s, p);
         }
-        let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let limit = p.get("maxBytes").and_then(Value::as_u64).unwrap_or(512 * 1024 * 1024).min(512 * 1024 * 1024);
+        let bytes = read_asset_file(path, limit)?;
         let mut d = from_bytes(&bytes)?;
         super::interchange::resolve_packaged_links(&mut d, std::path::Path::new(path).parent());
         super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
@@ -218,6 +317,9 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
+    if str_param(p, "name").is_some_and(super::pagemaker::is_name) {
+        return super::pagemaker::open(s, p);
+    }
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
     // IDML packages are recognised by their stored `mimetype` first entry, InDesign documents by
     // their master page header.
@@ -245,7 +347,7 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
     let bytes = to_bytes(&d)?;
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    crate::native_save::write(std::path::Path::new(&path), &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if d.data_merge != st.doc.data_merge {
         st.doc = Arc::new(d);
         st.revision = st.revision.saturating_add(1);
@@ -309,19 +411,29 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             .ok_or_else(|| bad("file.place", "can't read that PDF page"))?,
     };
     // 72 ppi by default unless the file says otherwise; scale so it fits the page when huge.
-    let (nw, nh) = eps_size.unwrap_or((pw as f64, ph as f64));
-    // Image Import Options › Crop to: the frame shows that box of the PDF page.
-    let crop_box = match str_param(p, "pdfCrop") {
-        Some(k) if pagenor_render::is_pdf(&bytes) => {
-            if !["crop", "trim", "bleed", "art", "media"].contains(&k) {
-                return Err(bad("file.place", format!("unknown pdfCrop `{k}` (crop, trim, bleed, art, media)")));
-            }
-            pagenor_render::pdf_page_box(&bytes, pdf_page as usize, k).filter(|b| b.2 > 0.0 && b.3 > 0.0)
+    let (nw, nh) = eps_size.or_else(|| pagenor_render::natural_size(&bytes, pdf_page as usize)).unwrap_or((pw as f64, ph as f64));
+    // Image Import Options › Crop to: the graphic spans that box of the PDF page.
+    let is_pdf = pagenor_render::is_pdf(&bytes);
+    let pdf_crop = match str_param(p, "pdfCrop") {
+        Some(k) if is_pdf => PdfCrop::from_name(k)
+            .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)")))?,
+        _ => PdfCrop::Crop,
+    };
+    let mime = pagenor_render::image_mime(&bytes).to_string();
+    let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    // The graphic's natural size: the box in points (the whole page when the box can't be found,
+    // and then the document says so).
+    let (bw, bh) = match crop_pdf(&mut asset) {
+        Some(size) => size,
+        None => {
+            asset.pdf_crop = PdfCrop::Crop;
+            (nw, nh)
         }
-        Some(_) => None,
-        None => None,
     };
     let target_frame = super::id_param(p, "frame").or_else(|| {
+        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some()) {
+            return None;
+        }
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
@@ -334,8 +446,8 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let d = &s.doc()?.doc;
     let (frame_rect, xf, auto_fit) = if let Some(fid) = target_frame {
         let r = d.item(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.inner_bounds();
-        let k = (r.width() / nw).max(r.height() / nh);
-        let xf = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
+        let k = (r.width() / bw).max(r.height() / bh);
+        let xf = Affine::translate((r.x0 + (r.width() - bw * k) / 2.0, r.y0 + (r.height() - bh * k) / 2.0)) * Affine::scale(k);
         (r, xf, pagenor_doc::Fitting::FillProportionally)
     } else {
         let sp = d.spread(spread).ok_or_else(|| bad("file.place", "no such spread"))?;
@@ -343,17 +455,15 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let (x, y) = (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0));
         let w = want_w.unwrap_or_else(|| nw.min(d.settings.page_width * 0.6));
         let k = w / nw;
-        let (bx, by, bw, bh) = crop_box.unwrap_or((0.0, 0.0, nw, nh));
         let r = Rect::new(x, y, x + bw * k, y + bh * k);
-        let xf = Affine::translate((x - bx * k, y - by * k)) * Affine::scale(k);
+        let xf = Affine::translate((x, y)) * Affine::scale(k);
         (r, xf, Default::default())
     };
-    validate_placement((nw, nh), frame_rect, xf, "file.place")?;
+    validate_placement((bw, bh), frame_rect, xf, "file.place")?;
     s.edit(|d, sel| {
-        let aid = AssetId(d.alloc());
-        let mime = pagenor_render::image_mime(&bytes).to_string();
-        d.assets.insert(aid, Arc::new(Asset { page: pdf_page, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)) }));
-        let graphic = Content::Graphic(Graphic { asset: aid, size: (nw, nh), xf, auto_fit, fit_align: 4, crop: [0.0; 4] });
+        let fresh = AssetId(d.alloc());
+        let aid = d.add_asset(Asset { id: fresh, ..asset });
+        let graphic = Content::Graphic(Graphic { asset: aid, size: (bw, bh), xf, auto_fit, fit_align: 4, crop: [0.0; 4], wrap: Default::default() });
         let id = if let Some(fid) = target_frame {
             let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
             it.content = graphic;
@@ -406,6 +516,19 @@ pub fn base64_decode(s: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Sets `a.pdf_box` to where its `pdf_crop` box sits on its page and returns the box's size in
+/// points. The crop box is the whole page and has none; nor has a page that can't be read, which
+/// keeps its crop choice (a missing link relinked later gets its box then).
+pub(crate) fn crop_pdf(a: &mut Asset) -> Option<(f64, f64)> {
+    a.pdf_box = None;
+    if a.pdf_crop == PdfCrop::Crop || !pagenor_render::is_pdf(&a.data) {
+        return None;
+    }
+    let (frac, size) = pagenor_render::pdf_crop_box(&a.data, a.page as usize, a.pdf_crop)?;
+    a.pdf_box = Some(frac);
+    Some(size)
 }
 
 pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)> {
@@ -490,15 +613,20 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
 fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, link) = read_source(p)?;
     let (pw, ph) = pagenor_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
-    let size = eps_size(&bytes, "place.load")?.unwrap_or((pw as f64, ph as f64));
+    let size = eps_size(&bytes, "place.load")?.or_else(|| pagenor_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let aid = s.edit(|d, _| {
-        let aid = AssetId(d.alloc());
+        let fresh = AssetId(d.alloc());
         let mime = pagenor_render::image_mime(&bytes).to_string();
-        d.assets.insert(
-            aid,
-            Arc::new(Asset { page: 0, id: aid, name: name.clone(), mime, link: link.clone(), data: Arc::new(bytes), pixels: Some((pw, ph)) }),
-        );
-        Ok(aid)
+        Ok(d.add_asset(Asset {
+            page: 0,
+            id: fresh,
+            name: name.clone(),
+            mime,
+            link: link.clone(),
+            data: Arc::new(bytes),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        }))
     })?;
     s.loaded = Some((aid, size));
     s.set_tool("placeGun");
@@ -534,7 +662,7 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     };
     validate_placement((nw, nh), frame_rect, xf, "place.drop")?;
     let r = s.edit(|d, sel| {
-        let graphic = Content::Graphic(Graphic { asset: aid, size: (nw, nh), xf, auto_fit, fit_align: 4, crop: [0.0; 4] });
+        let graphic = Content::Graphic(Graphic { asset: aid, size: (nw, nh), xf, auto_fit, fit_align: 4, crop: [0.0; 4], wrap: Default::default() });
         let id = if let Some(fid) = frame {
             d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.content = graphic;
             fid
@@ -565,7 +693,7 @@ fn snippet_export(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": bytes.len(), "items": d.spreads.first().map(|s| s.items.len()).unwrap_or(0)}))
         }
         None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
@@ -580,7 +708,11 @@ fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Re
         let idml = pagenor_indd::to_idml_named(bytes, name).map_err(|e| bad(ID, e.to_string()))?;
         super::interchange::import(&idml, None)?
     } else if name.to_lowercase().ends_with(".idml") {
-        pagenor_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?
+        {
+            let mut d = pagenor_idml::import_idml(bytes).map_err(|e| bad(ID, e.to_string()))?;
+            super::interchange::resolve_pdf_crops(&mut d);
+            d
+        }
     } else {
         from_bytes(bytes)?
     };
@@ -686,7 +818,9 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let mut d = if path.to_ascii_lowercase().ends_with(".idml") {
             let bytes = std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-            pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?
+            let mut d = pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+            super::interchange::resolve_pdf_crops(&mut d);
+            d
         } else {
             from_bytes(&std::fs::read(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?)?
         };
@@ -706,6 +840,138 @@ fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
     {
         let _ = (s, path);
         Err(EngineError::Other("revert isn't available on the web".into()))
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod image_place_tests {
+    use pagenor_doc::{Content, ItemId};
+    use pagenor_geom::Rect;
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn image_file() -> std::io::Result<tempfile::NamedTempFile> {
+        let file = tempfile::Builder::new().suffix(".png").tempfile()?;
+        let png = pagenor_render::Rendered { width: 40, height: 20, pixels: [30, 90, 180, 255].repeat(800) }.to_png();
+        std::fs::write(file.path(), png)?;
+        Ok(file)
+    }
+
+    #[test]
+    fn consecutive_path_placements_create_distinct_graphics() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({"pages": 3, "facingPages": false})).unwrap();
+        let mut placements = Vec::new();
+        let mut originals = Vec::new();
+
+        for (spread, x, y) in [(0, 0.0, 0.0), (1, 70.0, 90.0), (2, 150.0, 210.0)] {
+            let placed = session.execute("file.place", &json!({"path": image.path(), "spread": spread, "x": x, "y": y})).unwrap();
+            let id = ItemId(placed["id"].as_u64().unwrap());
+            assert!(
+                placements.iter().all(|previous: &Value| previous["id"] != placed["id"]),
+                "each explicit placement needs a distinct frame: {placed}"
+            );
+            let document = &session.doc().unwrap().doc;
+            let item = document.item(id).unwrap();
+            assert_eq!(item.bounds(), Rect::new(x, y, x + 40.0, y + 20.0));
+            assert!(document.spreads[spread].items.iter().any(|item| item.id == id));
+            originals.push(serde_json::to_value(item).unwrap());
+            placements.push(placed);
+        }
+
+        let document = &session.doc().unwrap().doc;
+        assert_eq!(document.spreads.iter().flat_map(|spread| &spread.items).filter(|item| matches!(item.content, Content::Graphic(_))).count(), 3);
+        assert_eq!(document.assets.len(), 1, "identical linked placements share their asset");
+        for (placed, original) in placements.iter().zip(originals) {
+            assert_eq!(serde_json::to_value(document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap()).unwrap(), original);
+        }
+        let links = session.execute("links.list", &json!({})).unwrap();
+        assert_eq!(links.as_array().unwrap().len(), 1);
+        for placed in placements {
+            let row = links.as_array().unwrap().iter().find(|row| row["asset"] == placed["asset"]).unwrap();
+            assert_eq!(row["path"], json!(image.path()));
+            let uses = row["uses"].as_array().unwrap();
+            assert_eq!(uses.len(), 3, "all frames using the shared asset are listed");
+            assert!(uses.iter().any(|usage| usage["id"] == placed["id"]));
+        }
+    }
+
+    #[test]
+    fn individual_placement_parameters_bypass_selected_frames() {
+        let image = image_file().unwrap();
+        for graphic in [false, true] {
+            for (key, value, expected) in [
+                ("x", 0, Rect::new(0.0, 36.0, 40.0, 56.0)),
+                ("y", 0, Rect::new(36.0, 0.0, 76.0, 20.0)),
+                ("spread", 0, Rect::new(36.0, 36.0, 76.0, 56.0)),
+                ("width", 0, Rect::new(36.0, 36.0, 36.0, 36.0)),
+                ("width", 80, Rect::new(36.0, 36.0, 116.0, 76.0)),
+            ] {
+                let mut session = Session::new();
+                session.execute("file.new", &json!({})).unwrap();
+                let selected = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+                if graphic {
+                    session.execute("file.place", &json!({"path": image.path()})).unwrap();
+                }
+                let id = ItemId(selected["id"].as_u64().unwrap());
+                let original = serde_json::to_value(session.doc().unwrap().doc.item(id).unwrap()).unwrap();
+                let mut params = json!({"path": image.path()});
+                params[key] = json!(value);
+
+                let placed = session.execute("file.place", &params).unwrap();
+
+                assert_ne!(placed["id"], selected["id"], "{key}={value}, graphic={graphic}");
+                let document = &session.doc().unwrap().doc;
+                assert_eq!(serde_json::to_value(document.item(id).unwrap()).unwrap(), original);
+                assert_eq!(document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap().bounds(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_frame_wins_over_placement_and_selection() {
+        let image = image_file().unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let target = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+        let selected = session.execute("frame.create", &json!({"rect": [300, 320, 400, 420]})).unwrap();
+
+        let placed =
+            session.execute("file.place", &json!({"path": image.path(), "frame": target["id"], "x": 0, "y": 0, "spread": 99, "width": 0})).unwrap();
+
+        assert_eq!(placed["id"], target["id"]);
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(target["id"].as_u64().unwrap())).unwrap();
+        assert_eq!(item.bounds(), Rect::new(100.0, 120.0, 200.0, 220.0));
+        assert!(matches!(item.content, Content::Graphic(_)));
+        assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Unassigned));
+        assert_eq!(document.spreads[0].items.len(), 2);
+    }
+
+    #[test]
+    fn implicit_placement_fills_empty_and_replaces_graphic_selection() {
+        let image = image_file().unwrap();
+        for graphic in [false, true] {
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            let selected = session.execute("frame.create", &json!({"rect": [100, 120, 200, 220]})).unwrap();
+            let previous = graphic.then(|| session.execute("file.place", &json!({"path": image.path()})).unwrap());
+
+            let placed = session.execute("file.place", &json!({"path": image.path()})).unwrap();
+
+            assert_eq!(placed["id"], selected["id"]);
+            if let Some(previous) = previous {
+                assert_eq!(placed["asset"], previous["asset"], "placing the same source reuses its asset");
+            }
+            let document = &session.doc().unwrap().doc;
+            let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+            assert_eq!(item.bounds(), Rect::new(100.0, 120.0, 200.0, 220.0));
+            let Content::Graphic(content) = &item.content else { panic!("placed frame must be graphic") };
+            assert_eq!(json!(content.asset.0), placed["asset"]);
+            assert_eq!(document.spreads[0].items.len(), 1);
+        }
     }
 }
 
@@ -928,7 +1194,122 @@ pub(crate) mod eps_place_tests {
 }
 
 #[cfg(test)]
+mod new_document_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn saved_presets_make_documents_by_name() {
+        let mut s = Session::new();
+        let newsletter = json!({"name": "Newsletter", "units": "millimeters", "width": 595.2755905511812, "height": 841.8897637795277,
+            "pages": 8, "facingPages": false, "columns": 3, "margins": {"top": 20, "bottom": 30, "inside": 40, "outside": 50},
+            "bleed": [9, 9, 0, 9], "primaryTextFrame": true});
+        assert_eq!(s.execute("file.savePreset", &newsletter).unwrap()["name"], "Newsletter");
+        let listed = s.execute("file.presets", &json!({})).unwrap();
+        let saved: Vec<_> = listed.as_array().unwrap().iter().filter(|p| p["saved"] == true).collect();
+        assert_eq!(saved.len(), 1);
+        assert_eq!((&saved[0]["name"], &saved[0]["units"]), (&json!("Newsletter"), &json!("millimeters")));
+        // By name, case ignored; parameters still override the preset.
+        s.execute("file.new", &json!({"preset": "newsletter", "pages": 4})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page_count(), 4);
+        assert!(!d.settings.facing_pages && d.settings.primary_text_frame);
+        assert_eq!(d.settings.horizontal_units, pagenor_geom::Unit::Millimeters);
+        assert_eq!(d.settings.bleed, [9.0, 9.0, 0.0, 9.0]);
+        assert_eq!(d.page(0).unwrap().margins.outside, 50.0);
+        assert!(d.title.starts_with("Untitled-"), "the preset's name isn't the document's");
+        // The same name replaces it.
+        s.execute("file.savePreset", &json!({"name": "NEWSLETTER", "pages": 2})).unwrap();
+        assert_eq!(s.prefs.document_presets.len(), 1);
+        s.execute("file.new", &json!({"preset": "Newsletter"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page_count(), 2);
+        // Built-in names, empty and overlong names and impossible sizes are refused.
+        for bad in [json!({"name": "a4"}), json!({"name": "  "}), json!({}), json!({"name": "x".repeat(101)}), json!({"name": "Huge", "width": 1e9})]
+        {
+            assert!(s.execute("file.savePreset", &bad).is_err(), "{bad}");
+        }
+        s.execute("file.deletePreset", &json!({"name": "newsletter"})).unwrap();
+        assert!(s.execute("file.deletePreset", &json!({"name": "newsletter"})).is_err());
+        assert!(s.execute("file.new", &json!({"preset": "Newsletter"})).is_err());
+    }
+
+    #[test]
+    fn persisted_settings_are_bounded_and_presets_survive_restart() {
+        let mut nd =
+            pagenor_doc::build::NewDocument { pages: usize::MAX, columns: u32::MAX, start_page: u32::MAX, bleed: [1e30; 4], ..Default::default() };
+        super::apply_settings(&mut nd, &json!({}));
+        assert_eq!((nd.pages, nd.columns, nd.start_page), (9999, 216, 99_999));
+        assert_eq!(nd.bleed, [1296.0; 4]);
+        super::apply_settings(&mut nd, &json!({"pages": 4_294_967_296_u64}));
+        assert_eq!(nd.pages, 9999, "clamp before casting on 32-bit hosts");
+        nd.gutter = f64::INFINITY;
+        assert!(super::check_size("file.new", &nd).is_err());
+
+        let mut s = Session::new();
+        s.execute("file.savePreset", &json!({"name": "Telugu booklet", "pages": 4, "columns": 2})).unwrap();
+        let bytes = serde_json::to_vec(&s.prefs).unwrap();
+        let mut restarted = Session::new();
+        restarted.prefs = serde_json::from_slice(&bytes).unwrap();
+        restarted.execute("file.new", &json!({"preset": "Telugu booklet"})).unwrap();
+        assert_eq!(restarted.doc().unwrap().doc.page_count(), 4);
+        assert_eq!(restarted.doc().unwrap().doc.page(0).unwrap().columns.count, 2);
+    }
+
+    #[test]
+    fn preset_limit_failure_is_atomic_and_untitled_counter_does_not_overflow() {
+        let mut s = Session::new();
+        s.prefs.document_presets = (0..501).map(|i| pagenor_doc::build::NewDocument { title: format!("Preset {i}"), ..Default::default() }).collect();
+        let before = s.prefs.document_presets.clone();
+        assert!(s.execute("file.savePreset", &json!({"name": "Preset 0", "pages": 2})).is_err());
+        assert_eq!(s.prefs.document_presets, before, "an over-limit file is unchanged on failure");
+        s.prefs.document_presets.truncate(500);
+        s.execute("file.savePreset", &json!({"name": "Preset 0", "pages": 2})).unwrap();
+        assert_eq!(s.prefs.document_presets.len(), 500);
+        assert!(s.execute("file.savePreset", &json!({"name": "Extra"})).is_err());
+        s.untitled = u32::MAX;
+        s.execute("file.new", &json!({})).unwrap();
+        assert_eq!(s.untitled, u32::MAX);
+    }
+
+    #[test]
+    fn new_document_takes_intent_units_start_page_bleed_and_slug() {
+        let mut s = Session::new();
+        let p = json!({"preset": "A4", "intent": "web", "units": "pixels", "startPage": 4, "bleed": [9, 0, 3, 6], "slug": 18});
+        s.execute("file.new", &p).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.settings.intent, pagenor_doc::Intent::Web);
+        assert_eq!(d.settings.horizontal_units, pagenor_geom::Unit::Pixels);
+        assert_eq!(d.settings.bleed, [9.0, 0.0, 3.0, 6.0]);
+        assert_eq!(d.settings.slug, [18.0; 4]);
+        assert_eq!(d.page_name(0), "4");
+        // Malformed edges are ignored, hostile ones bounded.
+        s.execute("file.new", &json!({"bleed": [1, 2], "slug": [-5, 1e12, 0, 0]})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.settings.bleed, [0.0; 4]);
+        assert_eq!(d.settings.slug, [0.0, 1296.0, 0.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
 mod pdf_crop_tests {
+    #[test]
+    fn placed_pdf_keeps_its_exact_page_size() {
+        // A 100.4 x 50.4 pt page placed 100.4 pt wide is 50.4 pt tall, not stretched to whole points.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 100.4, "height": 50.4, "pages": 1})).unwrap();
+        let b64 = s.execute("file.exportPdf", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+        let mut t = Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        let r = t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "width": 100.4, "x": 0, "y": 0})).unwrap();
+        let id = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
+        let d = &t.doc().unwrap().doc;
+        let it = d.item(id).unwrap();
+        let b = it.bounds();
+        assert!((b.width() - 100.4).abs() < 1e-3 && (b.height() - 50.4).abs() < 1e-3, "{b:?}");
+        let pagenor_doc::Content::Graphic(g) = &it.content else { panic!("not a graphic") };
+        assert!((g.size.0 - 100.4).abs() < 1e-3 && (g.size.1 - 50.4).abs() < 1e-3, "{:?}", g.size);
+    }
     use serde_json::json;
 
     use crate::Session;
@@ -952,6 +1333,58 @@ mod pdf_crop_tests {
         assert!((full.width() - 630.0).abs() < 1e-6, "{full:?}");
         assert!((trim.width() - 612.0).abs() < 1e-3 && (trim.height() - 792.0).abs() < 1e-3, "{trim:?}");
         assert!(t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "nope"})).is_err());
+    }
+
+    /// Placing with `trim` stores the choice; the graphic spans the trim box and draws only it,
+    /// even in a frame larger than the graphic.
+    #[test]
+    fn a_pdf_placed_with_its_trim_box_stores_and_draws_that_box() {
+        // Letter with a 9 pt bleed: black in the bleed's top-left corner and a black square inside.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+        for rect in [[-9, -9, 0, 0], [10, 10, 30, 30]] {
+            let id = s.execute("frame.create", &json!({"rect": rect})).unwrap()["id"].clone();
+            s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+        }
+        let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+
+        let mut t = Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        // `width` is the whole page's (630 pt with its bleed): half size.
+        let r = t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "trim", "width": 315, "x": 100, "y": 100})).unwrap();
+        let id = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
+        let d = t.doc().unwrap().doc.clone();
+        let it = d.item(id).unwrap();
+        let g = it.graphic().unwrap().clone();
+        let a = &d.assets[&g.asset];
+        assert_eq!(a.pdf_crop, pagenor_doc::PdfCrop::Trim);
+        let b = a.shown_box().unwrap();
+        let want = [9.0 / 630.0, 9.0 / 810.0, 621.0 / 630.0, 801.0 / 810.0];
+        assert!(b.iter().zip(want).all(|(x, y)| (x - y).abs() < 1e-4), "{b:?}");
+        assert!((g.size.0 - 612.0).abs() < 1e-3 && (g.size.1 - 792.0).abs() < 1e-3, "{:?}", g.size);
+        let shown = (it.xf * g.xf).transform_rect_bbox(pagenor_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        let fb = it.bounds();
+        for (x, y) in [(shown.x0, 100.0), (shown.y0, 100.0), (shown.x1, 406.0), (shown.y1, 496.0), (fb.x1, 406.0), (fb.y1, 496.0)] {
+            assert!((x - y).abs() < 1e-3, "{shown:?} {fb:?}");
+        }
+
+        // A frame larger than the graphic still shows only the trim box.
+        t.edit(|d, _| {
+            d.item_mut(id).unwrap().path = pagenor_geom::shapes::rectangle(pagenor_geom::Rect::new(90.0, 90.0, 416.0, 506.0));
+            Ok(())
+        })
+        .unwrap();
+        let d = t.doc().unwrap().doc.clone();
+        let mut rr = pagenor_render::Renderer::new();
+        rr.threads = 0;
+        let img = rr.render_page(&d, &t.cache, 0, 1.0, false, &Default::default()).unwrap();
+        let dark = |x: u32, y: u32| img.pixel(x, y)[0] < 60;
+        // The page sits at 95.5: its bleed corner (95.5–100) is cut off, the square (105–115) shows
+        // where it is on the page.
+        assert!(!dark(97, 97), "the bleed is outside the trim box");
+        assert!(!dark(103, 103), "the page is offset by its bleed");
+        assert!(dark(110, 110), "the square inside the trim box");
     }
 }
 
@@ -1274,10 +1707,29 @@ mod serialization_failure_tests {
                         name: format!("asset-{i}"),
                         mime: "application/octet-stream".into(),
                         link: None,
-                        data: Arc::new(vec![1]),
+                        data: Arc::new((i as u32).to_le_bytes().to_vec()),
                         pixels: None,
+                        ..Default::default()
                     }),
                 );
+                // Used, distinct assets exceed the archive limit even after save compaction.
+                let item_id = pagenor_doc::ItemId(d.alloc());
+                let mut item = pagenor_doc::Item::new(
+                    item_id,
+                    d.default_layer(),
+                    pagenor_doc::Shape::Rectangle,
+                    pagenor_geom::shapes::rectangle(pagenor_geom::Rect::new(0.0, 0.0, 1.0, 1.0)),
+                );
+                item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+                    asset: id,
+                    size: (1.0, 1.0),
+                    xf: pagenor_geom::Affine::IDENTITY,
+                    auto_fit: Default::default(),
+                    fit_align: 0,
+                    crop: [0.0; 4],
+                    wrap: Default::default(),
+                });
+                d.insert_item(pagenor_doc::SpreadRef::Doc(0), item, None).unwrap();
             }
         }
         let saved_revision = s.doc().unwrap().saved_revision;
@@ -1310,5 +1762,90 @@ mod serialization_failure_tests {
         assert_eq!(s.doc().unwrap().uid, uid);
         assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &original));
         assert!(s.doc().unwrap().is_dirty());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_save_tests {
+    use super::*;
+
+    #[test]
+    fn readonly_save_routes_preserve_document_file_and_recovery_then_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Saved ఉదయం.pgnr");
+        let recovery = dir.path().join("recovery");
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.saveAs", &json!({"path": path})).unwrap();
+        let old = std::fs::read(&path).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Keep edits ఉదయం 😀"})).unwrap();
+        crate::recovery::save(&s, &recovery).unwrap();
+        let checkpoint = || {
+            let mut files: Vec<_> = std::fs::read_dir(&recovery)
+                .unwrap()
+                .map(|e| {
+                    let e = e.unwrap();
+                    (e.file_name(), std::fs::read(e.path()).unwrap())
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let before = checkpoint();
+        let st = s.doc().unwrap();
+        let live = st.doc.clone();
+        let saved = st.saved_doc.clone();
+        let saved_revision = st.saved_revision;
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        for command in ["file.save", "file.saveAs", "file.saveACopy"] {
+            assert!(s.execute(command, &json!({"path":path})).is_err(), "{command} must respect read-only files");
+            let st = s.doc().unwrap();
+            assert_eq!(st.path.as_deref(), path.to_str());
+            assert!(Arc::ptr_eq(&live, &st.doc));
+            assert!(Arc::ptr_eq(&saved, &st.saved_doc));
+            assert_eq!(st.saved_revision, saved_revision);
+            assert!(st.is_dirty());
+            assert_eq!(std::fs::read(&path).unwrap(), old);
+            assert_eq!(checkpoint(), before);
+        }
+        std::fs::set_permissions(&path, original_permissions).unwrap();
+        s.execute("file.save", &json!({})).unwrap();
+        assert!(!s.doc().unwrap().is_dirty());
+        assert!(crate::recovery::list(&recovery).is_empty());
+        let mut reopened = Session::new();
+        reopened.execute("file.open", &json!({"path":path})).unwrap();
+        assert_eq!(serde_json::to_value(&reopened.doc().unwrap().doc).unwrap(), serde_json::to_value(&live).unwrap());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no staging files remain");
+    }
+
+    #[test]
+    fn replacement_copy_retains_dirty_state_original_path_and_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Original.pgnr");
+        let copy = dir.path().join("Copy తెలుగు.pgnr");
+        let recovery = dir.path().join("recovery");
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.saveAs", &json!({"path":path})).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        s.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"Copy ఉదయం"})).unwrap();
+        crate::recovery::save(&s, &recovery).unwrap();
+        std::fs::write(&copy, b"old copy").unwrap();
+        let live = s.doc().unwrap().doc.clone();
+        let history = s.doc().unwrap().history.undo.len();
+        s.execute("file.saveACopy", &json!({"path":copy})).unwrap();
+        let st = s.doc().unwrap();
+        assert!(st.is_dirty());
+        assert_eq!(st.path.as_deref(), path.to_str());
+        assert!(Arc::ptr_eq(&st.doc, &live));
+        assert_eq!(st.history.undo.len(), history);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(crate::recovery::list(&recovery).len(), 1);
+        let mut reopened = Session::new();
+        reopened.execute("file.open", &json!({"path":copy})).unwrap();
+        assert_eq!(serde_json::to_value(&reopened.doc().unwrap().doc).unwrap(), serde_json::to_value(&live).unwrap());
     }
 }

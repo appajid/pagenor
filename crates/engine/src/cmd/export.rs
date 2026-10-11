@@ -44,11 +44,12 @@ fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let opts = pagenor_pdf::BookletOptions { kind, space_between: p.get("spaceBetween").and_then(Value::as_f64).unwrap_or(0.0), title: None };
     let st = s.doc()?;
-    let r = pagenor_pdf::export_booklet(&st.doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let r =
+        pagenor_pdf::export_booklet(&super::interchange::with_pdf_boxes(&st.doc), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": r.bytes.len(), "sheets": r.pages, "warnings": r.warnings}))
         }
         None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "sheets": r.pages, "warnings": r.warnings})),
@@ -96,7 +97,7 @@ fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": text.len(), "warnings": warnings}))
         }
         None => Ok(json!({"bytes": text.len(), "text": text, "warnings": warnings})),
@@ -123,7 +124,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
     // stays text: a picture of it would drop the rest of its story).
     let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
-    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, |it| {
+    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, true, |it| {
         !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && pagenor_pptx::needs_raster(&st.doc, it)))
     })?;
     let doc: &pagenor_doc::Document = raster.as_ref().unwrap_or(&st.doc);
@@ -134,7 +135,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), &r.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings}))
         }
         None => Ok(json!({"base64": super::file::base64_encode(&r.bytes), "bytes": r.bytes.len(), "slides": r.slides, "warnings": r.warnings})),
@@ -166,7 +167,7 @@ fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     match path {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": text.len()}))
         }
         None => Ok(json!({"bytes": text.len(), "text": text})),
@@ -198,7 +199,7 @@ fn page_text(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, abs: usi
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
-    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, |it| it.export_options.rasterize && !threaded(&st.doc, it))?;
+    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, false, |it| it.export_options.rasterize && !threaded(&st.doc, it))?;
     let epub_doc: &pagenor_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
@@ -236,7 +237,7 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, &bytes).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
             Ok(serde_json::json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
         }
         None => Ok(serde_json::json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len(), "warnings": warnings})),
@@ -336,6 +337,7 @@ fn flatten(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, ppi: f64) 
                 link: None,
                 data: std::sync::Arc::new(img.to_png()),
                 pixels: Some((w, h)),
+                ..Default::default()
             }),
         );
         let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
@@ -346,6 +348,7 @@ fn flatten(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, ppi: f64) 
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         it.stroke.weight = 0.0;
         it
@@ -444,15 +447,17 @@ fn raster_effects(it: &pagenor_doc::Item) -> bool {
 /// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
 fn rasterize_effects(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache) -> Result<(Option<pagenor_doc::Document>, usize)> {
-    rasterize_where(d, cache, 300.0, |it| raster_effects(it) && !threaded(d, it))
+    rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it))
 }
 
 /// A copy of `d` where the spread-level objects `pred` picks are images of their appearance at
-/// `ppi` (transparent around them).
+/// `ppi` (transparent around them). With `keep_wrap`, each object also stays behind as a
+/// nonprinting [`wrap_stand_in`], so text wraps around it as before.
 fn rasterize_where(
     d: &pagenor_doc::Document,
     cache: &pagenor_compose::Cache,
     ppi: f64,
+    keep_wrap: bool,
     pred: impl Fn(&pagenor_doc::Item) -> bool,
 ) -> Result<(Option<pagenor_doc::Document>, usize)> {
     use pagenor_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
@@ -503,13 +508,13 @@ fn rasterize_where(
         out.assets.insert(
             aid,
             std::sync::Arc::new(Asset {
-                page: 0,
                 id: aid,
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
                 link: None,
                 data: std::sync::Arc::new(png),
                 pixels: Some((w, h)),
+                ..Default::default()
             }),
         );
         let mut img_item = Item::new(ItemId(out.alloc()), it.layer, Shape::Rectangle, pagenor_geom::shapes::rectangle(reach));
@@ -520,6 +525,7 @@ fn rasterize_where(
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
@@ -528,10 +534,51 @@ fn rasterize_where(
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
             osp.items[pos] = std::sync::Arc::new(img_item);
+            if keep_wrap && has_wrap(it, 0) {
+                osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
+            }
             n += 1;
         }
     }
     Ok((Some(out), n))
+}
+
+/// Whether `it`, its placed graphic or an item in it wraps text.
+fn has_wrap(it: &pagenor_doc::Item, depth: usize) -> bool {
+    use pagenor_doc::{Content, WrapMode};
+    if depth > MAX_STAND_IN_DEPTH {
+        return false;
+    }
+    it.wrap.mode != WrapMode::None
+        || match &it.content {
+            Content::Graphic(g) => g.wrap.mode != WrapMode::None,
+            Content::Group { items } => items.iter().any(|c| has_wrap(c, depth + 1)),
+            _ => false,
+        }
+}
+
+/// Nesting depth past which groups inside a rasterised object keep no wrap stand-ins.
+const MAX_STAND_IN_DEPTH: usize = 64;
+
+/// A nonprinting copy of `it` that keeps its text wrap (and its graphic's and its items') and
+/// nothing else that reaches the PDF: no text, form field, button or media. The image of the
+/// object stands in for all of that, as it does without the copy.
+fn wrap_stand_in(it: &pagenor_doc::Item, depth: usize) -> pagenor_doc::Item {
+    use pagenor_doc::Content;
+    let mut c = it.clone();
+    c.nonprinting = true;
+    c.form_field = None;
+    c.button = None;
+    c.media = None;
+    c.content = match &it.content {
+        Content::Text(_) => Content::Unassigned,
+        Content::Group { items } if depth < MAX_STAND_IN_DEPTH => {
+            Content::Group { items: items.iter().map(|i| std::sync::Arc::new(wrap_stand_in(i, depth + 1))).collect() }
+        }
+        Content::Group { .. } => Content::Group { items: Vec::new() },
+        other => other.clone(),
+    };
+    c
 }
 
 /// A copy of `d` where placed PDFs with Object Layer Options hidden layers are 300 ppi images.
@@ -549,20 +596,23 @@ fn rasterize_layered(d: &pagenor_doc::Document) -> (Option<pagenor_doc::Document
         if !pagenor_render::is_pdf(&a.data) {
             continue;
         }
-        let side = (g.size.0.max(g.size.1) * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let Some(png) = pagenor_render::pdf_page_png(&a.data, a.page as usize, side, &hidden) else { continue };
+        // The whole page at 300 ppi (the graphic may show only a box of it).
+        let shown = pagenor_render::shown_box(&a);
+        let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
+        let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
+        let Some(png) = pagenor_render::pdf_page_png(&a.data, a.page as usize, side, &hidden, shown) else { continue };
         let px = pagenor_render::image_size(&png);
         let aid = pagenor_doc::AssetId(out.alloc());
         out.assets.insert(
             aid,
             std::sync::Arc::new(pagenor_doc::Asset {
-                page: 0,
                 id: aid,
                 name: format!("{}.png", a.name),
                 mime: "image/png".into(),
-                link: None,
                 data: std::sync::Arc::new(png),
                 pixels: px,
+                ..Default::default()
             }),
         );
         if let Some(pagenor_doc::Content::Graphic(gg)) = out.item_mut(id).map(|it| &mut it.content) {
@@ -601,6 +651,8 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let base2: &pagenor_doc::Document = layered.as_ref().unwrap_or(base);
     let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache)?;
     let doc: &pagenor_doc::Document = fx_doc.as_ref().unwrap_or(base2);
+    let boxed = super::interchange::with_pdf_boxes(doc);
+    let doc: &pagenor_doc::Document = &boxed;
     let r = pagenor_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
     // Transparency Blend Space: the page group of pages with transparency.
@@ -686,7 +738,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_file(path: &str, bytes: &[u8]) -> Result<()> {
-    std::fs::write(path, bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+    crate::write_atomic(std::path::Path::new(path), bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
 #[cfg(target_arch = "wasm32")]
 fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
@@ -794,6 +846,39 @@ mod text_tests {
         let r = s.execute("file.exportPdf", &json!({})).unwrap();
         let text = String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).to_string();
         assert_eq!(text.matches("/S/Transparency/CS/DeviceCMYK").count(), 1, "only the page with transparency");
+    }
+
+    #[test]
+    fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "Words wrap around the objects on this page. ".repeat(60);
+        let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text, "caret": false})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        // A feathered frame with a contour wrap of the frame itself.
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [a]})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [a], "mode": "contour", "contour": "sameAsClipping", "offset": 6})).unwrap();
+        // A feathered frame whose placed graphic has a bounding-box wrap.
+        let png = pagenor_render::Rendered { width: 40, height: 40, pixels: vec![90; 40 * 40 * 4] }.to_png();
+        let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": b})).unwrap();
+        s.execute("object.textWrap", &json!({"ids": [b], "content": true, "mode": "boundingBox", "offset": 6})).unwrap();
+        s.execute("object.feather", &json!({"ids": [a, b], "width": 14})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let sid = d.item(pagenor_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
+        let before = pagenor_compose::frame_specs(d, sid)[0].exclusions.clone();
+        assert_eq!(before.len(), 2);
+        let (fx, n) = super::rasterize_effects(d, &s.cache).unwrap();
+        assert_eq!(n, 2);
+        let fx = fx.unwrap();
+        assert_eq!(pagenor_compose::frame_specs(&fx, sid)[0].exclusions, before);
+        // The objects that keep the wrap don't print; their images do.
+        let sp = &fx.spreads[0];
+        assert_eq!(sp.items.iter().filter(|it| it.nonprinting).count(), 2);
+        assert_eq!(sp.items.iter().filter(|it| !it.nonprinting && it.graphic().is_some()).count(), 2);
     }
 
     #[test]

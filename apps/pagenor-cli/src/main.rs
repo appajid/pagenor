@@ -1,7 +1,7 @@
 //! Headless Pagenor.
 //!
 //! ```text
-//! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub|.pptx] [--all-pages DIR]
+//! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
 //! Export options --page, --scale and --pdf-options apply to the exports that follow them.
 //! pagenor-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
 //! pagenor-cli describe ID          # one command: label, menu, shortcut, parameters
@@ -12,6 +12,7 @@
 //! pagenor-cli mcp [--connect PORT] [--sample]  # MCP server over stdio (docs/mcp.md)
 //! pagenor-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! pagenor-cli bench FILE [--runs N]  # the same measurements on one document
+//! pagenor-cli validate-pdf FILE.pdf    # built-in PDF/X-4 checks
 //! pagenor-cli links                   # Discord, website, app page and GitHub links
 //! pagenor-cli --version               # print the version
 //! ```
@@ -35,7 +36,7 @@ use pagenor_engine::Session;
 use serde_json::{Value, json};
 
 /// Usage for explicit help and invalid commands.
-const USAGE: &str = "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli links\n       pagenor-cli --version";
+const USAGE: &str = "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli validate-pdf FILE.pdf\n       pagenor-cli links\n       pagenor-cli --version";
 
 fn usage_footer() -> String {
     format!("\nProject: {}  ·  Issues: {}", pagenor_engine::links::GITHUB, pagenor_engine::links::ISSUES)
@@ -78,6 +79,7 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(&args[1..])),
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
+        Some("validate-pdf") => report(validate_pdf(&args[1..])),
         Some("links") => {
             use pagenor_engine::links::*;
             outln!("Project   {GITHUB}\nIssues    {ISSUES}");
@@ -104,6 +106,24 @@ fn report(r: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Expose the exporter-owned PDF/X checks without treating an arbitrary PDF as certified.
+fn validate_pdf(args: &[String]) -> Result<(), String> {
+    use std::io::Read;
+    const LIMIT: u64 = 256 << 20;
+    let [path] = args else { return Err("usage: pagenor-cli validate-pdf FILE.pdf".into()) };
+    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1).read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(format!("{path}: PDF exceeds the 256 MiB validation limit"));
+    }
+    let issues = pagenor_pdf::check_pdfx4(&bytes);
+    let valid = issues.is_empty();
+    let report = json!({"path": path, "standard": "PDF/X-4", "valid": valid, "issues": issues});
+    outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+    if valid { Ok(()) } else { Err(format!("{path} failed the built-in PDF/X-4 checks")) }
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
@@ -166,11 +186,47 @@ fn option_after_last_export(args: &[String]) -> Option<&str> {
     unused
 }
 
+/// What `--export OUT` writes. The extension of `OUT` picks it, in any case.
+enum Export {
+    /// A page as PNG or JPEG.
+    Image,
+    Pdf,
+    /// The document itself.
+    Document,
+    /// What this command writes to a `path`.
+    Command(&'static str),
+}
+
+impl Export {
+    /// A name with another extension is an error: it used to get a PNG of the page. One with no
+    /// extension still does (`--export /dev/stdout`).
+    fn of(out: &str) -> Result<Self, String> {
+        let ext = std::path::Path::new(out).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+        Ok(match ext.as_deref() {
+            None | Some("png" | "jpg" | "jpeg") => Export::Image,
+            Some("pdf") => Export::Pdf,
+            Some("pgnr" | "pagenor") => Export::Document,
+            Some("idml") => Export::Command("file.exportIdml"),
+            Some("pptx") => Export::Command("file.exportPptx"),
+            Some("epub") => Export::Command("file.exportEpub"),
+            Some("html" | "htm") => Export::Command("file.exportHtml"),
+            // The story being edited or of the selected frame.
+            Some("rtf" | "txt") => Export::Command("file.exportText"),
+            Some(_) => return Err(format!("--export {out}: unknown file type (.png, .jpg, .pdf, .pgnr, .idml, .epub, .html, .rtf, .txt)")),
+        })
+    }
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
         ));
+    }
+    for pair in args.windows(2) {
+        if pair[0] == "--export" {
+            Export::of(&pair[1])?;
+        }
     }
     let mut s = Session::new();
     let mut page = 0usize;
@@ -211,22 +267,34 @@ fn run(args: &[String]) -> Result<(), String> {
             "--scale" => scale = val()?.parse().map_err(|_| "bad --scale")?,
             "--pdf-options" => {
                 pdf_opts = serde_json::from_str(&val()?).map_err(|e| format!("--pdf-options: {e}"))?;
+                if !pdf_opts.is_object() {
+                    return Err("--pdf-options: expected a JSON object".into());
+                }
             }
             "--export" => {
                 let out = val()?;
-                if out.ends_with(".epub") {
-                    let r = s.execute("file.exportEpub", &json!({"path": out})).map_err(|e| e.to_string())?;
-                    eprintln!("wrote {out} ({} bytes)", r["bytes"]);
-                } else if out.ends_with(".pdf") {
-                    let mut p = pdf_opts.clone();
-                    p["path"] = json!(out);
-                    let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
-                    eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
-                    for w in r["warnings"].as_array().into_iter().flatten() {
-                        eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                match Export::of(&out)? {
+                    Export::Image => export(&mut s, &out, page, scale)?,
+                    Export::Pdf => {
+                        let mut p = pdf_opts.clone();
+                        p["path"] = json!(out);
+                        let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
+                        eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
+                        for w in r["warnings"].as_array().into_iter().flatten() {
+                            eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                        }
                     }
-                } else {
-                    export(&mut s, &out, page, scale)?;
+                    Export::Document => {
+                        s.execute("file.saveACopy", &json!({"path": out})).map_err(|e| e.to_string())?;
+                        eprintln!("saved {out}");
+                    }
+                    Export::Command(cmd) => {
+                        let r = s.execute(cmd, &json!({"path": out})).map_err(|e| e.to_string())?;
+                        eprintln!("wrote {out} ({} bytes)", r["bytes"]);
+                        for w in r["warnings"].as_array().into_iter().flatten() {
+                            eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                        }
+                    }
                 }
             }
             "--all-pages" => {
@@ -244,32 +312,15 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), String> {
-    if out.to_ascii_lowercase().ends_with(".pptx") {
-        let r = s.execute("file.exportPptx", &json!({"path": out})).map_err(|e| e.to_string())?;
-        eprintln!("wrote {out} ({} slides, {} bytes)", r["slides"], r["bytes"]);
-        for w in r["warnings"].as_array().into_iter().flatten() {
-            eprintln!("warning: {}", w.as_str().unwrap_or_default());
-        }
-        return Ok(());
-    }
-    if out.to_ascii_lowercase().ends_with(".idml") {
-        let r = s.execute("file.exportIdml", &json!({"path": out})).map_err(|e| e.to_string())?;
-        eprintln!("wrote {out} ({} bytes)", r["bytes"]);
-        return Ok(());
-    }
-    if pagenor_doc::file_type::is_native_name(out) {
-        s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
-        eprintln!("saved {out}");
-        return Ok(());
-    }
     let st = s.doc().map_err(|e| e.to_string())?;
     let mut r = pagenor_render::Renderer::new();
     let t = std::time::Instant::now();
     let img = r
         .render_page(&st.doc, &s.cache, page, scale, true, &pagenor_render::RenderOptions { printing_only: true, ..Default::default() })
         .ok_or("no such page")?;
-    let bytes = if out.ends_with(".jpg") || out.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
-    std::fs::write(out, bytes).map_err(|e| format!("{out}: {e}"))?;
+    let lower = out.to_ascii_lowercase();
+    let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+    pagenor_engine::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
     eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
     Ok(())
 }
@@ -307,7 +358,7 @@ fn script(args: &[String]) -> Result<(), String> {
     let mut setup: Vec<(String, Value)> = Vec::new();
     let mut connect: Option<String> = None;
     let mut save: Option<String> = None;
-    let mut export: Vec<String> = Vec::new();
+    let mut export: Vec<(Export, String)> = Vec::new();
     let mut keep_going = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -321,7 +372,10 @@ fn script(args: &[String]) -> Result<(), String> {
             "--sample" => setup.push(("file.newSample".into(), json!({}))),
             "--connect" => connect = Some(val()?),
             "--save" => save = Some(val()?),
-            "--export" => export.push(val()?),
+            "--export" => {
+                let out = val()?;
+                export.push((Export::of(&out)?, out));
+            }
             "--keep-going" => keep_going = true,
             f if !f.starts_with("--") && file.is_none() => file = Some(f.to_string()),
             other => return Err(format!("unknown script option `{other}`")),
@@ -366,20 +420,21 @@ fn script(args: &[String]) -> Result<(), String> {
         if let Some(out) = &save {
             exec(b, "file.saveAs", json!({"path": out}))?;
         }
-        for out in &export {
-            let lower = out.to_lowercase();
+        for (kind, out) in &export {
             let p = json!({"path": out});
-            if lower.ends_with(".pdf") {
-                exec(b, "file.exportPdf", p)?;
-            } else if lower.ends_with(".idml") {
-                exec(b, "file.exportIdml", p)?;
-            } else if lower.ends_with(".epub") {
-                exec(b, "file.exportEpub", p)?;
-            } else if lower.ends_with(".pptx") {
-                exec(b, "file.exportPptx", p)?;
-            } else {
-                // PNG / JPEG of the first page.
-                b.call("app.export", p)?;
+            match kind {
+                Export::Image => {
+                    b.call("app.export", p)?;
+                }
+                Export::Pdf => {
+                    exec(b, "file.exportPdf", p)?;
+                }
+                Export::Document => {
+                    exec(b, "file.saveACopy", p)?;
+                }
+                Export::Command(cmd) => {
+                    exec(b, cmd, p)?;
+                }
             }
         }
     }

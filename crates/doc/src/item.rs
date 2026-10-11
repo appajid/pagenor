@@ -70,6 +70,27 @@ pub enum Join {
     Bevel,
 }
 
+/// The shortest non-zero dash or gap a command accepts, in points.
+pub const MIN_DASH: f64 = 0.1;
+/// The longest dash or gap a command accepts, in points.
+pub const MAX_DASH: f64 = 10_000.0;
+/// The most lengths a dash pattern holds.
+pub const MAX_DASH_ENTRIES: usize = 64;
+/// The most pattern repeats a renderer expands along one path; finer patterns draw solid.
+pub const MAX_DASH_PERIODS: f64 = 20_000.0;
+
+/// An upper bound of the length of `bp`: the length of its control polygon.
+pub fn path_length_bound(bp: &pagenor_geom::BezPath) -> f64 {
+    use pagenor_geom::PathSeg;
+    bp.segments()
+        .map(|s| match s {
+            PathSeg::Line(l) => l.p0.distance(l.p1),
+            PathSeg::Quad(q) => q.p0.distance(q.p1) + q.p1.distance(q.p2),
+            PathSeg::Cubic(c) => c.p0.distance(c.p1) + c.p1.distance(c.p2) + c.p2.distance(c.p3),
+        })
+        .sum()
+}
+
 /// Stroke types (Stroke panel → Type). Dash/gap arrays are in points.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -115,6 +136,28 @@ impl StrokeType {
             StrokeType::Stripes { .. } => "Stripes",
             StrokeType::Style { .. } => "Custom",
         }
+    }
+
+    /// Whether `pattern` is a dash pattern commands accept: 1 to [`MAX_DASH_ENTRIES`] lengths,
+    /// each 0 or from [`MIN_DASH`] to [`MAX_DASH`] points, not all 0.
+    pub fn valid_dash_pattern(pattern: &[f64]) -> bool {
+        !pattern.is_empty()
+            && pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| *x == 0.0 || (MIN_DASH..=MAX_DASH).contains(x))
+            && pattern.iter().any(|x| *x > 0.0)
+    }
+
+    /// Whether a renderer may expand `pattern` along a path at most `length` points long: at
+    /// most [`MAX_DASH_ENTRIES`] finite, non-negative lengths that repeat at most
+    /// [`MAX_DASH_PERIODS`] times. Otherwise the stroke draws solid, so a degenerate pattern
+    /// from a file can't stall rendering.
+    pub fn expandable_dashes(pattern: &[f64], length: f64) -> bool {
+        let period: f64 = pattern.iter().sum();
+        pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| x.is_finite() && *x >= 0.0)
+            && period > 0.0
+            && length.is_finite()
+            && length / period <= MAX_DASH_PERIODS
     }
 
     /// The bands of a striped type (start, width as fractions of the weight).
@@ -415,8 +458,28 @@ pub enum WrapSide {
     LargestArea,
 }
 
+/// Text Wrap panel › Contour Options › Type: the outline a contour wrap follows on a graphic frame.
+/// Other frames always wrap around their own path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContourType {
+    /// The placed graphic's rectangle (within the frame).
+    BoundingBox,
+    /// Edges detected in the image. Composition follows the frame path.
+    DetectEdges,
+    /// The image's alpha channel. Composition follows the frame path.
+    AlphaChannel,
+    /// A path saved in the image. Composition follows the frame path.
+    PhotoshopPath,
+    /// The frame's path.
+    GraphicFrame,
+    /// The graphic's clipping path, which is the frame's path.
+    #[default]
+    SameAsClipping,
+}
+
 /// Text Wrap panel settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextWrap {
     pub mode: WrapMode,
@@ -424,6 +487,16 @@ pub struct TextWrap {
     pub offsets: [f64; 4],
     pub invert: bool,
     pub side: WrapSide,
+    pub contour: ContourType,
+    /// Custom boundary in the item's inner space, including wrap offsets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathData>,
+}
+
+impl TextWrap {
+    pub fn is_default(&self) -> bool {
+        *self == TextWrap::default()
+    }
 }
 
 /// Frame fitting options (Object → Fitting → Frame Fitting Options).
@@ -455,6 +528,9 @@ pub struct Graphic {
     /// Frame Fitting Options › Crop Amount: top, left, bottom, right (negative adds space).
     #[serde(default)]
     pub crop: [f64; 4],
+    /// Text wrap set on the graphic itself (Direct Selection), around the part its frame shows.
+    #[serde(default, skip_serializing_if = "TextWrap::is_default")]
+    pub wrap: TextWrap,
 }
 
 fn center_ref() -> u8 {
@@ -614,6 +690,13 @@ fn is_zero_usize(v: &usize) -> bool {
 }
 
 impl Graphic {
+    /// The part of the graphic its frame shows, in the frame's inner space (bounding boxes);
+    /// None when nothing shows.
+    pub fn shown_bounds(&self, frame: Rect) -> Option<Rect> {
+        let r = self.xf.transform_rect_bbox(Rect::new(0.0, 0.0, self.size.0, self.size.1)).intersect(frame);
+        (r.width() > 0.0 && r.height() > 0.0).then_some(r)
+    }
+
     /// The graphic transform that fits it into `frame` (the frame's inner rect) with `mode`,
     /// honouring the crop amounts and the reference point.
     pub fn fitted(&self, frame: Rect, mode: Fitting) -> Option<Affine> {
@@ -1074,6 +1157,10 @@ impl Item {
             Content::Text(t) => Some(t),
             _ => None,
         }
+    }
+    /// Does this item, or the graphic it holds, wrap text?
+    pub fn has_wrap(&self) -> bool {
+        self.wrap.mode != WrapMode::None || self.graphic().is_some_and(|g| g.wrap.mode != WrapMode::None)
     }
     pub fn graphic(&self) -> Option<&Graphic> {
         match &self.content {

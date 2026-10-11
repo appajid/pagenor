@@ -10,14 +10,197 @@ use crate::theme::{Tokens, semibold};
 use crate::widgets::{caption, measure, number};
 use crate::{DesignApp, icons};
 
+/// Height of the application bar (InDesign 2026), then a 7 pt lower band and a 1 pt border. The
+/// band covers the panel's 1 pt separator line, so the frame's bottom margin is 1 pt short of it.
+const APP_BAR: f32 = 36.0;
+fn search_id() -> egui::Id {
+    egui::Id::new("app_bar_search")
+}
+
+/// Whether the application bar's search field had the keyboard last frame. Escape takes egui's
+/// focus away before any widget runs, so that press must not reach the global shortcuts.
+pub fn search_had_focus(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.had_focus_last_frame(search_id()))
+}
+
+/// The search field's state between frames: the query, the highlighted match, whether the matches
+/// are shown, and the widget that had the keyboard before the field took it.
+#[derive(Clone, Default)]
+struct SearchState {
+    query: String,
+    highlight: usize,
+    open: bool,
+    previous_focus: Option<egui::Id>,
+}
+
+/// The application bar's search field: finds menu commands by their labels in the interface
+/// language. ↑/↓ move through the matches; Return or a click runs one as its menu item would.
+/// Running one or pressing Escape clears the field and gives the keyboard back to the widget that
+/// had it. While the field has the keyboard, no key reaches the shortcuts or the document.
+fn search_field(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let id = search_id();
+    let state_id = id.with("state");
+    let mut st: SearchState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
+    let (r, _) = ui.allocate_exact_size(vec2(125.0, 18.0), Sense::hover());
+    ui.painter().rect(r, 1.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(3.0, 2.0), vec2(14.0, 14.0)), "search", t.icon);
+    let focused = ui.memory(|m| m.has_focus(id));
+    let had_focus = search_had_focus(ui.ctx());
+    if !focused && !had_focus {
+        st.previous_focus = ui.memory(|m| m.focused());
+    }
+    let none = egui::Modifiers::NONE;
+    let (down, up, enter, escape) = if focused || had_focus {
+        ui.input_mut(|i| {
+            (
+                i.consume_key(none, egui::Key::ArrowDown),
+                i.consume_key(none, egui::Key::ArrowUp),
+                i.consume_key(none, egui::Key::Enter),
+                i.consume_key(none, egui::Key::Escape),
+            )
+        })
+    } else {
+        (false, false, false, false)
+    };
+    let lang = app.ui.language.clone();
+    let hint = crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&lang, "Search")).color(t.text_dim));
+    let field = egui::Rect::from_min_max(r.min + vec2(19.0, 0.0), r.max - vec2(3.0, 0.0));
+    let resp = ui
+        .put(
+            field,
+            egui::TextEdit::singleline(&mut st.query)
+                .char_limit(256)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(egui::FontId::proportional(11.0))
+                .text_color(t.text)
+                .hint_text(hint)
+                .desired_width(field.width())
+                .vertical_align(egui::Align::Center)
+                // Return runs the highlighted match instead of leaving the field.
+                .return_key(None),
+        )
+        .on_hover_text(crate::i18n::tr(&lang, "Search commands"));
+    if resp.changed() {
+        st.highlight = 0;
+        st.open = true;
+    }
+    if resp.gained_focus() {
+        st.open = true;
+    }
+    let items = if st.open { crate::menus::command_search(app, &st.query) } else { Vec::new() };
+    let last = items.len().saturating_sub(1);
+    if down {
+        st.highlight = st.highlight.saturating_add(1);
+    }
+    if up {
+        st.highlight = st.highlight.saturating_sub(1);
+    }
+    st.highlight = st.highlight.min(last);
+    let mut run = None;
+    if enter && let Some(it) = items.get(st.highlight).filter(|it| crate::menus::menu_enabled(app, &it.id)) {
+        run = Some(it.id.clone());
+    }
+    let mut over_matches = false;
+    if st.open && !st.query.trim().is_empty() {
+        let shown = egui::Area::new(id.with("matches"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(r.right_bottom() + vec2(0.0, 2.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    let size = vec2(300.0, 22.0);
+                    ui.set_width(size.x);
+                    if items.is_empty() {
+                        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "No matching commands")).color(t.text_dim));
+                    }
+                    for (k, it) in items.iter().enumerate() {
+                        let mut b = egui::Button::new(crate::rtl::widget(ui, it.label.as_str())).frame(false).min_size(size);
+                        if let Some(sc) = &it.shortcut {
+                            b = b.shortcut_text(crate::menus::shortcut_text(sc));
+                        }
+                        if k == st.highlight {
+                            ui.painter().rect_filled(egui::Rect::from_min_size(ui.cursor().min, size), 2.0, t.hover);
+                        }
+                        let enabled = crate::menus::menu_enabled(app, &it.id);
+                        // The button aligns its label by the layout it's in: left, like the menus.
+                        let row = ui.allocate_ui_with_layout(
+                            size,
+                            egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min),
+                            |ui| ui.add_enabled(enabled, b),
+                        );
+                        if row.inner.clicked() {
+                            run = Some(it.id.clone());
+                        }
+                    }
+                });
+            });
+        over_matches = shown.response.contains_pointer();
+    }
+    if escape || run.is_some() {
+        st.query.clear();
+        st.open = false;
+        let previous = st.previous_focus.take();
+        ui.memory_mut(|m| match previous {
+            Some(p) => m.request_focus(p),
+            None => m.surrender_focus(id),
+        });
+    } else if !resp.has_focus() && !over_matches {
+        // A click elsewhere or Tab took the keyboard: the matches close, the query stays.
+        st.open = false;
+    }
+    ui.data_mut(|d| d.insert_temp(state_id, st));
+    if let Some(cmd) = run {
+        crate::menus::activate(app, &cmd, &serde_json::Value::Null);
+    }
+}
+
+const APP_BAR_BAND: f32 = 7.0;
+const SEPARATOR: f32 = 1.0;
+/// Height of the application bar on macOS, where it is the window's title bar (#333). AppKit draws
+/// the traffic lights itself, centred in the standard 28 pt title-bar band at the top of the
+/// window; moving them would take AppKit calls (`unsafe`, which the workspace forbids). So the bar
+/// is that band: the lights sit vertically centred in it, with the bar's controls beside them.
+pub const MAC_APP_BAR: f32 = 28.0;
+/// The traffic lights as AppKit lays them out: button diameter, centre-to-centre pitch and the
+/// first button's left edge (8–10 pt depending on the macOS version; the larger value keeps the
+/// gap after them from shrinking).
+const MAC_LIGHT: f32 = 12.0;
+const MAC_LIGHT_PITCH: f32 = 20.0;
+const MAC_LIGHTS_LEFT: f32 = 10.0;
+/// Where the bar's content starts to the right of the traffic lights: the end of the three lights
+/// plus the same gap the lights keep from the top of the window.
+pub const MAC_CONTENT_LEFT: f32 = MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT + (MAC_APP_BAR - MAC_LIGHT) / 2.0;
+
+// Leave one point of slack for fractional UI-scale rounding; real narrow-window
+// overflow still scrolls because the slot never shrinks below the controls.
+fn tools_slot_width(available: f32, tools_w: f32) -> f32 {
+    (available - 1.0).max(tools_w)
+}
+
 pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let left = if app.integrated_titlebar { 78 } else { 8 };
-    // 36 pt bar + 7 pt lower band (InDesign 2026), then a 1 pt border.
+    let mac = app.integrated_titlebar;
+    let left = if mac { MAC_CONTENT_LEFT as i8 } else { 8 };
+    let bar = if mac { MAC_APP_BAR } else { APP_BAR };
+    // The tallest control keeps a margin above and below it in the shorter macOS bar.
+    let home = if mac { 22.0 } else { 24.0 };
     let resp = egui::Panel::top("app_bar")
-        .exact_size(43.0)
-        .frame(egui::Frame::NONE.fill(t.app_bar).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: 7 }))
+        .exact_size(bar + APP_BAR_BAND)
+        .frame(egui::Frame::NONE.fill(t.app_bar).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: (APP_BAR_BAND - SEPARATOR) as i8 }))
         .show(ui, |ui| {
+            let full = ui.max_rect();
+            if mac {
+                // The whole title-bar band, margins included; the controls drawn below take
+                // their own clicks.
+                let band = egui::Rect::from_min_max(
+                    egui::pos2(full.min.x - f32::from(left), full.min.y),
+                    egui::pos2(full.max.x + 10.0, full.min.y + MAC_APP_BAR),
+                );
+                crate::title_bar::empty_area(ui, band);
+            }
             let bar_rect = ui.max_rect();
             let mut full = bar_rect;
             if app.custom_titlebar {
@@ -35,8 +218,10 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::widgets::overflow_scrolling(ui);
             egui::ScrollArea::horizontal().id_salt("app_bar_scroll").auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if icons::button(ui, "home", 24.0, app.session.active().is_none(), crate::i18n::tr(&app.ui.language, "Home")).clicked() {
-                        app.session_home();
+                    if icons::button(ui, "home", home, app.ui.home || app.session.active().is_none(), crate::i18n::tr(&app.ui.language, "Home"))
+                        .clicked()
+                    {
+                        let _ = app.run("app.home", json!({}));
                     }
                     ui.add_space(6.0);
                     if !app.native_menu {
@@ -47,21 +232,11 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         crate::menus::menu_bar(app, ui);
                     }
                     menus_end = ui.min_rect().max.x;
-                    let size = vec2(ui.available_width().max(tools_w), ui.available_height());
+                    let size = vec2(tools_slot_width(ui.available_width(), tools_w), ui.available_height());
                     let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
-                        // Search field.
-                        let (r, _) = ui.allocate_exact_size(vec2(125.0, 18.0), Sense::click());
-                        ui.painter().rect(r, 1.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                        icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(3.0, 2.0), vec2(14.0, 14.0)), "search", t.icon);
-                        crate::rtl::paint(
-                            ui.painter(),
-                            r.min + vec2(20.0, 9.0),
-                            egui::Align2::LEFT_CENTER,
-                            crate::i18n::tr(&app.ui.language, "Search"),
-                            egui::FontId::proportional(11.0),
-                            t.text_dim,
-                        );
+                        search_field(app, ui);
+                        crate::appearance::header_button(app, ui);
                         ui.add_space(8.0);
                         let current = app.ui.workspace.clone();
                         let shown = crate::i18n::workspace_name(&app.ui.language, &current);
@@ -162,7 +337,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 app.flush_window_commands(ui.ctx());
             }
             if cx - w / 2.0 > menus_end + 12.0 && cx + w / 2.0 < tools_start - 12.0 {
-                ui.painter().galley(egui::pos2(cx - w / 2.0, full.min.y + 18.0 - galley.size().y / 2.0), galley, t.text);
+                ui.painter().galley(egui::pos2(cx - w / 2.0, full.center().y - galley.size().y / 2.0), galley, t.text);
             }
             if app.custom_titlebar {
                 let caption_rect = egui::Rect::from_min_max(
@@ -177,7 +352,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         });
     let r = resp.response.rect;
-    ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - 7.0), r.max), 0.0, t.pasteboard);
+    ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - APP_BAR_BAND), r.max), 0.0, t.pasteboard);
     ui.painter().line_segment([egui::pos2(r.min.x, r.max.y), egui::pos2(r.max.x, r.max.y)], Stroke::new(1.0, t.border));
 }
 
@@ -256,12 +431,6 @@ pub(crate) fn resize_borders(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-impl DesignApp {
-    fn session_home(&mut self) {
-        self.ui.status = "Home".into();
-    }
-}
-
 fn vsep(ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(9.0, 46.0), Sense::hover());
@@ -324,7 +493,12 @@ fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
     vsep(ui);
     egui::Grid::new("ctl_char").num_columns(4).spacing(vec2(4.0, 3.0)).show(ui, |ui| {
         caption(ui, "𝐓");
-        if let Some(v) = number(ui, "csize", chars["size"].as_f64(), " pt", 54.0, 2) {
+        if let Some(v) = crate::widgets::NumField::number("csize", chars["size"].as_f64(), " pt", 2)
+            .width(72.0)
+            .presets(crate::widgets::FONT_SIZE_PRESETS)
+            .range(0.1, 1296.0)
+            .show(ui)
+        {
             let _ = app.run("type.char", json!({"attrs": {"size": v}}));
         }
         caption(ui, crate::i18n::tr(&app.ui.language, "VA"));
@@ -481,12 +655,12 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
 pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let resp = egui::Panel::bottom("status_bar")
-        .exact_size(17.0)
+        .exact_size(28.0)
         .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(8, 0)))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.horizontal_centered(|ui| {
-                let small = egui::FontId::proportional(10.5);
+                let small = egui::FontId::proportional(12.0);
                 if app.session.active().is_none() {
                     ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
                     return;
@@ -501,56 +675,77 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 });
                 ui.add_space(8.0);
-                let n = app.session.active().map(|d| d.doc.page_count()).unwrap_or(1);
-                let cur = crate::canvas::current_page(app).unwrap_or(0);
-                if icons::button(ui, "first", 14.0, false, crate::i18n::tr(&app.ui.language, "First Spread")).clicked() {
-                    crate::canvas::go_to_page(app, 0);
-                }
-                if icons::button(ui, "prev", 14.0, false, crate::i18n::tr(&app.ui.language, "Previous Spread")).clicked() {
-                    crate::canvas::go_to_page(app, cur.saturating_sub(1));
-                }
-                let name = app.session.page_label(cur);
-                let (fr, fresp) = ui.allocate_exact_size(vec2(80.0, 14.0), Sense::click());
-                ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                ui.painter().text(fr.left_center() + vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, &name, small.clone(), t.text);
-                ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
-                egui::Popup::menu(&fresp).show(|ui| {
-                    let names: Vec<String> = (0..n).map(|i| app.session.page_label(i)).collect();
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for (i, nm) in names.iter().enumerate() {
-                            if ui.button(nm).clicked() {
-                                crate::canvas::go_to_page(app, i);
-                                ui.close();
+                if app.session.active().is_some_and(|st| st.editing_parents) {
+                    let label = crate::canvas::current_spread(app)
+                        .and_then(|r| app.session.active()?.doc.spread(r))
+                        .and_then(|sp| sp.parent.as_ref())
+                        .map(|i| format!("{} · Master", i.label()))
+                        .unwrap_or_else(|| "Master Pages".into());
+                    ui.label(egui::RichText::new(label).font(small.clone()));
+                    if ui.small_button("Back to document").clicked() {
+                        let _ = app.run("layout.parents.edit", json!({"on":false}));
+                    }
+                } else {
+                    let n = app.session.active().map(|d| d.doc.page_count()).unwrap_or(1);
+                    let cur = crate::canvas::current_page(app).unwrap_or(0);
+                    if icons::button(ui, "first", 22.0, false, crate::i18n::tr(&app.ui.language, "First Spread")).clicked() {
+                        crate::canvas::go_to_page(app, 0);
+                    }
+                    if icons::button(ui, "prev", 22.0, false, crate::i18n::tr(&app.ui.language, "Previous Spread")).clicked() {
+                        crate::canvas::go_to_page(app, cur.saturating_sub(1));
+                    }
+                    let name = app.session.page_label(cur);
+                    let (fr, fresp) = ui.allocate_exact_size(vec2(80.0, 22.0), Sense::click());
+                    ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                    ui.painter().text(fr.left_center() + vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, &name, small.clone(), t.text);
+                    ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
+                    egui::Popup::menu(&fresp).show(|ui| {
+                        let names: Vec<String> = (0..n).map(|i| app.session.page_label(i)).collect();
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            for (i, nm) in names.iter().enumerate() {
+                                if ui.button(nm).clicked() {
+                                    crate::canvas::go_to_page(app, i);
+                                    ui.close();
+                                }
                             }
-                        }
+                        });
                     });
-                });
-                if icons::button(ui, "next", 14.0, false, crate::i18n::tr(&app.ui.language, "Next Spread")).clicked() {
-                    crate::canvas::go_to_page(app, (cur + 1).min(n - 1));
-                }
-                if icons::button(ui, "last", 14.0, false, crate::i18n::tr(&app.ui.language, "Last Spread")).clicked() {
-                    crate::canvas::go_to_page(app, n - 1);
+                    if icons::button(ui, "next", 22.0, false, crate::i18n::tr(&app.ui.language, "Next Spread")).clicked() {
+                        crate::canvas::go_to_page(app, (cur + 1).min(n - 1));
+                    }
+                    if icons::button(ui, "last", 22.0, false, crate::i18n::tr(&app.ui.language, "Last Spread")).clicked() {
+                        crate::canvas::go_to_page(app, n - 1);
+                    }
                 }
                 ui.add_space(12.0);
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
                 ui.add_space(8.0);
-                // Preflight: overset text is an error.
+                // Open the live Preflight details from either the indicator or count.
                 let errors = panels::preflight_errors(app);
-                let (r, _) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::hover());
+                let (r, indicator) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
                 ui.painter().circle_filled(
                     r.center(),
                     4.0,
                     if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
                 );
-                crate::rtl::label(
-                    ui,
-                    egui::RichText::new(if errors == 0 {
-                        format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
-                    } else {
-                        format!("{errors} {} ▾", crate::i18n::tr(&app.ui.language, if errors == 1 { "error" } else { "errors" }))
-                    })
-                    .font(small.clone()),
-                );
+                let text = if errors == 0 {
+                    format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
+                } else {
+                    format!(
+                        "{} ▾",
+                        crate::i18n::count_label(
+                            &app.ui.language,
+                            if errors == 1 && !crate::i18n::category_first(&app.ui.language) { "error" } else { "errors" },
+                            errors
+                        )
+                    )
+                };
+                let details = ui
+                    .add(egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(text).font(small.clone()))).frame(false))
+                    .on_hover_text(crate::i18n::tr(&app.ui.language, "Preflight"));
+                if details.clicked() || indicator.clicked() {
+                    let _ = app.run("window.panel.activate", json!({"panel":"preflight"}));
+                }
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
             });
@@ -564,11 +759,20 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
     let r = ui.available_rect_before_wrap();
     ui.painter().rect_filled(r, 0.0, t.panel_darker);
     let mut content_rect = r.shrink(48.0);
-    if r.width() >= 900.0 && r.height() >= 500.0 {
-        let height = (r.height() - 96.0).min(480.0);
+    content_rect.max.y = r.bottom() - 16.0;
+    let wide = r.width() >= 900.0 && r.height() >= 500.0;
+    if wide {
+        let height = (r.height() - 120.0).min(480.0);
         let size = vec2(height * 760.0 / 980.0, height);
         let rect = egui::Rect::from_min_size(egui::pos2(r.right() - size.x - 48.0, r.top() + 48.0), size);
-        crate::about::paint_splash(ui, rect);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(rect.min, vec2(size.x, size.y + 48.0)))
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                welcome_branding(app, ui, size);
+            },
+        );
         content_rect.max.x = rect.left() - 24.0;
     }
     ui.scope_builder(
@@ -629,8 +833,6 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let _ = app.run("file.newSample", json!({}));
                     }
                 });
-                ui.add_space(20.0);
-                community_card(app, ui);
                 ui.add_space(24.0);
                 ui.label(crate::rtl::widget(
                     ui,
@@ -639,7 +841,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     for p in pagenor_doc::build::PRESETS.iter().filter(|p| p.intent == pagenor_doc::Intent::Print) {
-                        let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
+                        let (cr, resp) = ui.allocate_exact_size(WELCOME_TILE_SIZE, Sense::click());
                         let hov = resp.hovered();
                         ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
                         let k = (80.0 / p.width.max(p.height)) as f32;
@@ -664,32 +866,175 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                         }
                     }
                 });
+                ui.add_space(24.0);
+                recent_documents(app, ui);
+                if !wide {
+                    ui.add_space(24.0);
+                    let height = 280.0_f32.min(content_rect.width() * 980.0 / 760.0);
+                    welcome_branding(app, ui, vec2(height * 760.0 / 980.0, height));
+                }
             });
         },
     );
     let _ = Content::Unassigned;
 }
 
-/// Start-screen branding and access to the About/credits dialog.
-fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
+const WELCOME_TILE_SIZE: egui::Vec2 = vec2(120.0, 150.0);
+
+fn recent_documents(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.fill(t.panel).corner_radius(10.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
-        ui.set_max_width(ui.available_width().min(640.0));
-        let (rect, _) = ui.allocate_exact_size(vec2(180.0, 180.0 * 192.0 / 650.0), Sense::hover());
-        crate::about::paint_logo(ui, rect);
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("PAGES POWER PROGRESS").font(semibold(12.0)).color(t.text_strong));
-        ui.label(egui::RichText::new("Pagenor branding © 2026 Appaji Ambarisha").size(11.0).color(t.text_dim));
-        if ui.button("About Pagenor").clicked() {
-            let _ = app.run("help.about", json!({}));
+    ui.label(crate::rtl::widget(
+        ui,
+        egui::RichText::new(crate::i18n::tr(&app.ui.language, "Recent Documents")).font(semibold(15.0)).color(t.text_strong),
+    ));
+    ui.add_space(8.0);
+    let rows = app.ui.recent_documents.rows(&app.session);
+    app.retain_recent_thumbnails(&rows);
+    if rows.is_empty() {
+        ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No recent documents yet.")).color(t.text_dim)));
+    }
+    ui.horizontal_wrapped(|ui| {
+        for row in rows {
+            let detail = row.path.as_deref().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "Unsaved document"));
+            let label = format!("{}\n{detail}", row.name);
+            let (rect, response) = ui.allocate_exact_size(WELCOME_TILE_SIZE, Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            ui.painter().rect_filled(rect, 6.0, if response.hovered() { t.hover } else { t.panel });
+            if let Some(texture) = app.recent_thumbnail(&row, ui.ctx()) {
+                let size = texture.size_vec2();
+                let preview = egui::Rect::from_center_size(rect.center() - vec2(0.0, 14.0), size * (80.0 / size.x.max(size.y)));
+                ui.painter().image(texture.id(), preview, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                let paper = egui::Rect::from_center_size(rect.center() - vec2(0.0, 14.0), vec2(60.0, 80.0));
+                ui.painter().rect_filled(paper, 0.0, Color32::from_gray(245));
+                for y in [0.35, 0.5, 0.65] {
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(paper.left() + 12.0, paper.top() + paper.height() * y),
+                            egui::pos2(paper.right() - 12.0, paper.top() + paper.height() * y),
+                        ],
+                        Stroke::new(1.0, t.text_dim),
+                    );
+                }
+            }
+            let label_rect = egui::Rect::from_min_max(egui::pos2(rect.left() + 6.0, rect.bottom() - 36.0), rect.max - vec2(6.0, 4.0));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(label_rect).layout(egui::Layout::top_down(egui::Align::Center)));
+            child.add(
+                egui::Label::new(crate::rtl::widget(&child, egui::RichText::new(&row.name).font(semibold(11.0)).color(t.text_strong))).truncate(),
+            );
+            if response.on_hover_text(detail).clicked() {
+                let _ = app.run("app.openRecentDocument", json!({"path": row.path, "uid": row.uid}));
+            }
         }
     });
 }
 
+/// The supplied artwork and a simple About button, without a surrounding card.
+fn welcome_branding(app: &mut DesignApp, ui: &mut egui::Ui, size: egui::Vec2) {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Pagenor artwork"));
+    crate::about::paint_splash(ui, rect);
+    ui.add_space(12.0);
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "About Pagenor"))).clicked() {
+        let _ = app.run("help.about", json!({}));
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The application bar's search field (German interface).
+    fn search_node<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Node<'h> {
+        h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Suchen"))
+    }
+
+    /// A document with two frames, the Selection tool, German menus, and the search field clicked.
+    fn searching() -> egui_kittest::Harness<'static, test_window::Window> {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.ui.language = "de".into();
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        let app = &mut h.state_mut().app;
+        app.run("frame.create", serde_json::json!({"rect": [36, 36, 200, 200]})).unwrap();
+        app.run("frame.create", serde_json::json!({"rect": [236, 36, 400, 200]})).unwrap();
+        app.run("edit.deselectAll", serde_json::json!({})).unwrap();
+        h.run_steps(4);
+        let field = search_node(&h).rect();
+        test_window::click_at(&mut h, field.center());
+        assert!(h.ctx.memory(|m| m.has_focus(super::search_id())), "a click gives the field the keyboard");
+        h
+    }
+
+    /// A match in the search's list, whose accessible label ends in its shortcut.
+    fn row<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>, label: &'static str) -> Option<egui_kittest::Node<'h>> {
+        h.query_by(move |n| n.label().is_some_and(|l| l == label || l.starts_with(&format!("{label} "))))
+    }
+
+    fn items(h: &egui_kittest::Harness<'static, test_window::Window>) -> (usize, usize) {
+        let d = h.state().app.session.active().unwrap();
+        (d.doc.spreads.iter().flat_map(|sp| &sp.items).count(), d.selection.items.len())
+    }
+
+    #[test]
+    fn the_search_field_finds_and_runs_menu_commands() {
+        let mut h = searching();
+        h.event(egui::Event::Text("gruppier".into()));
+        h.run_steps(4);
+        assert!(row(&h, "Gruppieren").is_some(), "the German label is listed");
+        assert!(row(&h, "Gruppierung aufheben").is_some());
+        // Nothing is selected, so Group is off and Return doesn't run it.
+        assert!(row(&h, "Gruppieren").is_some_and(|n| n.accesskit_node().is_disabled()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert_eq!(items(&h), (2, 0), "a disabled command doesn't run");
+        // Select both frames, then ↓ ↑ Return runs the first match, as Object › Group would.
+        h.state_mut().app.run("edit.selectAll", serde_json::json!({})).unwrap();
+        h.key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+        h.key_press(egui::Key::ArrowUp);
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert_eq!(items(&h).0, 1, "the two frames are grouped");
+        assert!(row(&h, "Gruppieren").is_none(), "the matches closed");
+        assert!(!h.ctx.memory(|m| m.has_focus(super::search_id())), "the field gave the keyboard back");
+    }
+
+    #[test]
+    fn keys_typed_in_the_search_field_stay_out_of_the_document() {
+        let mut h = searching();
+        h.state_mut().app.run("edit.selectAll", serde_json::json!({})).unwrap();
+        // Escape would switch this tool back to the Selection tool.
+        h.state_mut().app.run("tool.select", serde_json::json!({"tool": "rectangleFrame"})).unwrap();
+        h.run_steps(2);
+        // Tool keys, Delete and Backspace edit the query; the tool and the frames stay.
+        for key in [egui::Key::P, egui::Key::T, egui::Key::M, egui::Key::Delete, egui::Key::Backspace] {
+            h.key_press(key);
+            h.run_steps(2);
+        }
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(2);
+        assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
+        assert_eq!(items(&h), (2, 2), "nothing was deleted or deselected");
+        h.event(egui::Event::Text("zz-no-such-command".into()));
+        h.run_steps(4);
+        assert!(h.query_by_label("Keine passenden Befehle").is_some());
+        // Escape closes the matches and clears the field without touching the document.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(4);
+        assert!(h.query_by_label("Keine passenden Befehle").is_none());
+        assert!(!h.ctx.text_edit_focused());
+        assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
+        assert_eq!(items(&h), (2, 2));
+        let field = search_node(&h);
+        assert_eq!(field.value().unwrap_or_default(), "", "the query is cleared");
+    }
+
+    #[test]
+    fn fractional_scale_tools_slot_keeps_rounding_slack_and_true_overflow() {
+        assert!(super::tools_slot_width(500.0, 300.0) < 500.0);
+        assert_eq!(super::tools_slot_width(200.0, 300.0), 300.0);
+    }
     use egui::{pos2, vec2};
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use crate::test_window::{self, wheel};
 
@@ -701,6 +1046,165 @@ mod tests {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.ui.control_bar = true;
         app
+    }
+
+    #[test]
+    fn welcome_hides_editor_panels_and_recent_document_click_restores_them() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"title": "Welcome test"})).unwrap();
+        app.ui.ai.open = true;
+        let mut h = test_window::open(app, vec2(1440.0, 1000.0));
+        assert!(h.query_by_label(LAST_CONTROL).is_some());
+        h.state_mut().app.run("app.home", serde_json::json!({})).unwrap();
+        h.run_steps(6);
+        assert!(h.query_by_label(LAST_CONTROL).is_none());
+        assert!(h.query_by_label("Selection (V)").is_none());
+        assert!(h.query_by_label("Welcome to Pagenor").is_some());
+        let preset_heading = h.get_by_label("Start a new document").rect();
+        let recent_heading = h.get_by_label("Recent Documents").rect();
+        assert!(recent_heading.top() > preset_heading.bottom());
+        assert!(recent_heading.right() <= 1440.0);
+        let row = h.get_by_label("Welcome test\nUnsaved document");
+        row.click();
+        h.run_steps(6);
+        assert!(!h.state().app.ui.home);
+        assert_eq!(h.state().app.session.documents().len(), 1);
+        assert!(h.query_by_label(LAST_CONTROL).is_some());
+        assert!(h.state().app.ui.ai.open, "Welcome preserves the editor panel arrangement");
+    }
+
+    #[test]
+    fn closing_last_tab_renders_welcome_and_restores_editor_after_new_document() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        crate::menus::close_document(&mut h.state_mut().app, None);
+        h.run_steps(4);
+        assert!(h.get_by_label("Welcome to Pagenor").rect().width() > 0.0);
+        assert!(h.query_by_label(LAST_CONTROL).is_none());
+        assert!(h.query_by_label("No errors ▾").is_none());
+        h.state_mut().app.run("file.new", serde_json::json!({})).unwrap();
+        h.run_steps(4);
+        assert!(h.query_by_label("Welcome to Pagenor").is_none());
+        assert!(h.query_by_label(LAST_CONTROL).is_some());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_window_close_renders_welcome_without_a_blank_shutdown_frame() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        h.input_mut().viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
+        h.step();
+        h.input_mut().viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.clear();
+        h.run_steps(4);
+        assert!(h.get_by_label("Welcome to Pagenor").rect().width() > 0.0);
+        assert!(h.state().app.session.documents().is_empty());
+        assert!(!h.state().app.closing);
+        assert!(h.query_by_label(LAST_CONTROL).is_none());
+    }
+
+    #[test]
+    fn welcome_recent_rows_fit_a_narrow_window_and_are_scrollable() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"title": "नमस्ते recent"})).unwrap();
+        app.run("app.home", serde_json::json!({})).unwrap();
+        let mut h = test_window::open(app, vec2(700.0, 600.0));
+        wheel(&mut h, pos2(350.0, 400.0), vec2(0.0, -1600.0));
+        let row = h.get_by_label("नमस्ते recent\nUnsaved document").rect();
+        assert!(row.left() >= 0.0 && row.right() <= 700.0);
+        assert!(row.top() >= 0.0 && row.bottom() <= 600.0);
+        h.get_by_label("नमस्ते recent\nUnsaved document").click();
+        h.run_steps(6);
+        assert!(!h.state().app.ui.home);
+    }
+
+    #[test]
+    fn welcome_about_is_below_the_right_artwork_and_recent_tiles_match_presets() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"title": "Preview test"})).unwrap();
+        app.run("app.home", serde_json::json!({})).unwrap();
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        let artwork = h.get_by_label("Pagenor artwork").rect();
+        let about = h.get_by_label("About Pagenor").rect();
+        let tile = h.get_by_label("Preview test\nUnsaved document").rect();
+        assert!(artwork.left() > tile.right());
+        assert!(about.top() > artwork.bottom());
+        assert!(artwork.x_range().contains(about.center().x));
+        assert_eq!(tile.size(), super::WELCOME_TILE_SIZE);
+        assert!(h.query_by_label("PAGES POWER PROGRESS").is_none());
+        assert!(h.query_by_label("Pagenor branding © 2026 Appaji Ambarisha").is_none());
+        h.get_by_label("About Pagenor").click();
+        h.run_steps(4);
+        assert!(h.state().app.ui.about);
+    }
+
+    #[test]
+    fn status_preflight_count_opens_details_and_reopens_a_closed_panel() {
+        let mut h = test_window::open(app(), vec2(1440.0, 1000.0));
+        for _ in 0..2 {
+            h.get_by_label("No errors ▾").click();
+            h.run_steps(6);
+            assert!(h.state().app.ui.docking.as_ref().is_some_and(|layout| layout.contains(&"preflight".to_owned())));
+        }
+        h.state_mut().app.run("window.panel.close", serde_json::json!({"panel":"preflight"})).unwrap();
+        h.run_steps(6);
+        assert!(!h.state().app.ui.docking.as_ref().unwrap().contains(&"preflight".to_owned()));
+        h.get_by_label("No errors ▾").click();
+        h.run_steps(6);
+        assert!(h.state().app.ui.docking.as_ref().unwrap().contains(&"preflight".to_owned()));
+    }
+
+    #[test]
+    fn status_preflight_error_opens_an_issue_that_selects_its_frame_and_page() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"pages":2,"facingPages":false})).unwrap();
+        app.run("frame.create", serde_json::json!({"spread":1,"rect":[36,36,100,65],"content":"text"})).unwrap();
+        app.run("text.insert", serde_json::json!({"text":"A long paragraph that cannot fit in this small frame. ".repeat(20)})).unwrap();
+        let issues = pagenor_engine::cmd::preflight::check(&app.session, 150.0);
+        let errors = issues.iter().filter(|i| i.severity == "error").count();
+        let issue = issues.iter().find(|i| i.kind == "overset").unwrap();
+        let frame = issue.item.unwrap();
+        let page = issue.page.unwrap();
+        assert_eq!(page, 1);
+        let message = format!("⛔  {}", issue.message);
+        let label = format!("{errors} {} ▾", if errors == 1 { "error" } else { "errors" });
+        app.run("selection.set", serde_json::json!({"ids":[]})).unwrap();
+        crate::canvas::go_to_page(&mut app, 0);
+        let mut h = test_window::open(app, vec2(1440.0, 1000.0));
+        h.get_by_label(&label).click();
+        h.run_steps(6);
+        h.get_by_label(&message).click();
+        h.run_steps(6);
+        assert_eq!(h.state().app.session.active().unwrap().selection.items, [pagenor_doc::ItemId(frame)]);
+        assert_eq!(crate::canvas::current_page(&h.state().app), Some(page));
+    }
+
+    #[test]
+    fn status_preflight_output_menu_opens_the_live_panel() {
+        let tree = crate::menus::native_menu_tree();
+        let window = &tree.iter().find(|(name, _)| *name == "Window").unwrap().1;
+        let output = window
+            .iter()
+            .find_map(|item| match item {
+                crate::menus::Item::Sub(name, entries) if name == "Output" => Some(entries),
+                _ => None,
+            })
+            .unwrap();
+        let (id, params) = output
+            .iter()
+            .find_map(|item| match item {
+                crate::menus::Item::Cmd { label, id, params, .. } if label == "Preflight" => Some((id, params)),
+                _ => None,
+            })
+            .unwrap();
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        for _ in 0..2 {
+            app.run(id, params.clone()).unwrap();
+            assert!(app.ui.docking.as_ref().unwrap().contains(&"preflight".to_owned()));
+        }
     }
 
     fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
@@ -736,6 +1240,109 @@ mod tests {
         h.run_steps(4);
         let item = rect(&h, "[Black]");
         assert!(item.min.y > fill.max.y && (item.min.x - chip.x).abs() < 120.0, "popup item at {item:?}, control at {chip:?}");
+    }
+
+    #[test]
+    fn the_mac_app_bar_centres_and_clears_the_traffic_lights() {
+        use super::{MAC_APP_BAR, MAC_CONTENT_LEFT, MAC_LIGHT, MAC_LIGHT_PITCH, MAC_LIGHTS_LEFT};
+        // Content keeps the same gap after the lights as the lights keep from the top.
+        let margin = (MAC_APP_BAR - MAC_LIGHT) / 2.0;
+        assert_eq!(MAC_CONTENT_LEFT - (MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT), margin);
+        // `egui::Margin` is in `i8`.
+        assert!(MAC_CONTENT_LEFT <= f32::from(i8::MAX));
+        let mut app = app();
+        app.integrated_titlebar = true;
+        let h = test_window::open(app, vec2(1400.0, 900.0));
+        // The bar's controls share the lights' centre line and start after them (relative to the
+        // bar, which the test window insets).
+        let bar = test_window::panel_rect(&h, "app_bar").min.to_vec2();
+        let home = rect(&h, "Home").translate(-bar);
+        assert_eq!(home.center().y, MAC_APP_BAR / 2.0, "{home:?}");
+        assert!(home.min.y >= 2.0 && home.min.x >= MAC_CONTENT_LEFT, "{home:?}");
+        for label in ["File", "Help", "Share"] {
+            let r = rect(&h, label).translate(-bar);
+            assert!((r.center().y - MAC_APP_BAR / 2.0).abs() <= 0.5 && r.max.y <= MAC_APP_BAR, "{label} at {r:?}");
+        }
+    }
+
+    fn press(h: &egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2, pressed: bool) {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+    }
+
+    /// The window commands the app sends over the next `steps` frames.
+    fn window_commands(h: &mut egui_kittest::Harness<'static, test_window::Window>, steps: usize) -> Vec<egui::ViewportCommand> {
+        let mut out = Vec::new();
+        for _ in 0..steps {
+            h.step();
+            if let Some(v) = h.output().viewport_output.get(&egui::ViewportId::ROOT) {
+                out.extend(v.commands.iter().cloned());
+            }
+        }
+        out
+    }
+
+    fn double_click(h: &mut egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+        h.hover_at(pos);
+        h.step();
+        // One frame: the harness gives each queued event a frame of its own, longer apart than a
+        // double-click allows.
+        for pressed in [true, false, true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        window_commands(h, 3)
+    }
+
+    fn drag(h: &mut egui_kittest::Harness<'static, test_window::Window>, from: egui::Pos2) -> Vec<egui::ViewportCommand> {
+        h.hover_at(from);
+        h.step();
+        press(h, from, true);
+        let mut out = window_commands(h, 1);
+        for i in 1..=6 {
+            h.hover_at(from + vec2(8.0 * i as f32, 3.0));
+            out.extend(window_commands(h, 1));
+        }
+        press(h, from + vec2(48.0, 3.0), false);
+        out.extend(window_commands(h, 2));
+        out
+    }
+
+    #[test]
+    fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
+        use super::{MAC_APP_BAR, MAC_CONTENT_LEFT};
+        use egui::ViewportCommand::{Maximized, Minimized, StartDrag};
+        let mut app = app();
+        app.integrated_titlebar = true;
+        let mut h = test_window::open(app, vec2(1400.0, 900.0));
+        let bar = test_window::panel_rect(&h, "app_bar");
+        // Under the centred title, and between the traffic lights and the Home button.
+        let empty = [pos2(bar.center().x, bar.min.y + MAC_APP_BAR / 2.0), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0)];
+        for at in empty {
+            // Tests read the setting as its default, zoom.
+            let cmds = double_click(&mut h, at);
+            assert_eq!(cmds, vec![Maximized(true)], "double-click at {at:?}");
+            let cmds = drag(&mut h, at);
+            assert_eq!(cmds, vec![StartDrag], "drag from {at:?}");
+        }
+        // The bar's controls keep their clicks and drags.
+        for label in ["Home", "Share", "File"] {
+            let at = rect(&h, label).center();
+            let cmds = double_click(&mut h, at);
+            assert!(!cmds.iter().any(|c| matches!(c, Maximized(_) | Minimized(_))), "double-click on {label}: {cmds:?}");
+            if label == "Home" {
+                assert!(h.state().app.ui.home, "Home took its clicks");
+            }
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            let cmds = drag(&mut h, at);
+            assert!(!cmds.contains(&StartDrag), "drag from {label}: {cmds:?}");
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+        }
     }
 
     #[test]

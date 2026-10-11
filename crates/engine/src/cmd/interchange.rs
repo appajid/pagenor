@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
-            "{path | base64, name?} — opens an IDML package as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings}",
+            "{path | base64, name?} — opens an IDML package as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: package parts missing, font files skipped}",
             always, open_idml),
     ]
 }
@@ -25,7 +25,7 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }
         None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
@@ -34,6 +34,11 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Import IDML bytes; `dir` is the folder the package came from (for relative link lookup).
 pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
+    import_report(bytes, dir).map(|(document, _)| document)
+}
+
+/// [`import`], with the problems that did not stop it (parts missing from the package, …).
+pub fn import_report(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<(Document, Vec<String>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -49,7 +54,9 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
             None
         }
     };
-    let document = pagenor_idml::import_idml_with(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    let pagenor_idml::Imported { mut document, warnings } =
+        pagenor_idml::import_idml_report(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
     let document = {
         let mut document = document;
@@ -62,7 +69,83 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
         resolve_packaged_links(&mut document, dir);
         document
     };
-    Ok(document)
+    Ok((document, warnings))
+}
+
+/// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
+/// which the IDML reader can't (it doesn't parse PDFs). The box spans the graphic's
+/// `GraphicBounds`; a graphic without bounds takes the box's size. Bounding Box crops render the
+/// page to find the box, so they wait for drawing or export ([`pagenor_render::shown_box`],
+/// [`with_pdf_boxes`]) unless a graphic needs the box's size now.
+pub(crate) fn resolve_pdf_crops(d: &mut Document) {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use pagenor_doc::{AssetId, Content, Item, PdfCrop};
+    let mut no_bounds: HashSet<AssetId> = HashSet::new();
+    for sp in d.spreads.iter().chain(&d.parents) {
+        for it in &sp.items {
+            it.walk(&mut |i| {
+                if let Content::Graphic(g) = &i.content
+                    && !(g.size.0 > 0.0 && g.size.1 > 0.0)
+                {
+                    no_bounds.insert(g.asset);
+                }
+            });
+        }
+    }
+    let mut sizes: HashMap<AssetId, (f64, f64)> = HashMap::new();
+    for a in d.assets.values_mut() {
+        if a.pdf_crop == PdfCrop::Crop || a.pdf_box.is_some() || (a.content_box_pending() && !no_bounds.contains(&a.id)) {
+            continue;
+        }
+        let a = Arc::make_mut(a);
+        if let Some(size) = super::file::crop_pdf(a) {
+            sizes.insert(a.id, size);
+        }
+    }
+    let no_size = |i: &Item| matches!(&i.content, Content::Graphic(g) if !(g.size.0 > 0.0 && g.size.1 > 0.0) && sizes.contains_key(&g.asset));
+    fn fix(it: &mut Arc<Item>, sizes: &HashMap<AssetId, (f64, f64)>, no_size: &dyn Fn(&Item) -> bool) {
+        let mut any = false;
+        it.walk(&mut |i| any |= no_size(i));
+        if !any {
+            return;
+        }
+        let it = Arc::make_mut(it);
+        if let Content::Graphic(g) = &mut it.content
+            && let Some(size) = sizes.get(&g.asset)
+            && !(g.size.0 > 0.0 && g.size.1 > 0.0)
+        {
+            g.size = *size;
+        }
+        for k in it.children_mut().into_iter().flatten() {
+            fix(k, sizes, no_size);
+        }
+    }
+    if sizes.is_empty() {
+        return;
+    }
+    for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+        for it in &mut Arc::make_mut(sp).items {
+            fix(it, &sizes, &no_size);
+        }
+    }
+}
+
+/// `d` with the boxes of its Bounding Box crops measured ([`resolve_pdf_crops`] leaves them for
+/// later), for writers that don't render: PDF export places the page by the box.
+pub(crate) fn with_pdf_boxes(d: &Document) -> std::borrow::Cow<'_, Document> {
+    if !d.assets.values().any(|a| a.content_box_pending()) {
+        return std::borrow::Cow::Borrowed(d);
+    }
+    let mut out = d.clone();
+    for a in out.assets.values_mut() {
+        if a.content_box_pending() {
+            // No usable box: the whole page.
+            std::sync::Arc::make_mut(a).pdf_box = pagenor_render::shown_box(a);
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,7 +222,10 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
         (base64_decode(b), None, str_param(p, "name").map(|n| n.trim_end_matches(".idml").trim_end_matches(".indd").to_string()))
     } else if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
-        let b = super::file::read_asset_file(path, super::file::MAX_ASSET_FILE_BYTES)?;
+        let b = super::file::read_asset_file(
+            path,
+            p.get("maxBytes").and_then(Value::as_u64).unwrap_or(super::file::MAX_ASSET_FILE_BYTES).min(super::file::MAX_ASSET_FILE_BYTES),
+        )?;
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = Vec::new();
         let pp = std::path::Path::new(path);
@@ -155,14 +241,15 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         bytes
     };
-    let mut d = import(&bytes, dir.as_deref())?;
+    let (mut d, mut warnings) = import_report(&bytes, dir.as_deref())?;
     if let Some(n) = name {
         d.title = n;
     }
-    let (fonts, faces, warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
         Some(path) => super::file::load_document_fonts(&mut d, path),
         None => (None, 0, Vec::new()),
     };
+    warnings.extend(font_warnings);
     // Never save over the .idml with the native format: the document starts unsaved.
     let mut st = DocState::new(d, None);
     st.fonts = fonts;

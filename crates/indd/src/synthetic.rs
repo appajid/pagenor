@@ -282,6 +282,59 @@ pub fn sample() -> Synth {
     s
 }
 
+/// One wide-text story, with paragraph and character lengths in UTF-16 code units.
+pub fn unicode_sample(text: &str) -> Synth {
+    let mut s = sample();
+    // A wider text frame makes the multi-script import/export fixture fit without overset.
+    s.add(
+        40,
+        0x6201,
+        blocks(&[(0x162B, rect_path(-90.0, -40.0, 90.0, 40.0)), (0x151, f64s(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0])), (0x15B, u32s(&[20, 21, 1, 41]))]),
+    );
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut data = u32s(&[0x202, 50]);
+    put_u16(&mut data, 1);
+    put_u32(&mut data, 6 + units.len() as u32 * 2);
+    put_u32(&mut data, units.len() as u32);
+    put_u16(&mut data, 0);
+    for unit in &units {
+        put_u16(&mut data, *unit);
+    }
+    s.add(61, 0x27E, blocks(&[(0x262, data)]));
+    s.add(62, 0xCA17, blocks(&[(0x262, runs(&[(units.len() as u32, 70, attr_list(&[], false))]))]));
+    s.add(64, 0xCA18, blocks(&[(0x262, runs(&[(units.len() as u32, 71, attr_list(&[], false))]))]));
+    s
+}
+
+/// Wide family/style metadata in the same synthetic story, for import pipeline regressions.
+pub fn unicode_sample_with_font(text: &str, family: &str, font_style: &str) -> Synth {
+    let wide = |text: &str| {
+        let mut data = Vec::new();
+        put_u16(&mut data, text.encode_utf16().count() as u16);
+        put_u16(&mut data, 0);
+        for unit in text.encode_utf16() {
+            put_u16(&mut data, unit);
+        }
+        data
+    };
+    let mut s = unicode_sample(text);
+    s.add(80, 0x3E03, blocks(&[(0x3E05, [vec![0; 5], wide(family)].concat())]));
+    s.add(
+        69,
+        0x205,
+        style(
+            "[No paragraph style]",
+            0,
+            &[
+                (0x1B03, typed(0x1B28, &12.0f64.to_le_bytes())),
+                (0x1B2B, typed(0x117, &80u32.to_le_bytes())),
+                (0x1B02, typed(0x1B02, &[vec![0, 2, 0], wide(font_style)].concat())),
+            ],
+        ),
+    );
+    s
+}
+
 /// Object payload from `(implementation, data)` blocks.
 pub fn object(list: &[(u32, Vec<u8>)]) -> Vec<u8> {
     blocks(list)

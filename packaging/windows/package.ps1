@@ -87,6 +87,7 @@ $Stage = Join-Path $TargetDir "windows-package\$Arch"
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item (Join-Path $Bin 'pagenor.exe'), (Join-Path $Bin 'pagenor-cli.exe') $Stage
+Copy-Item (Join-Path $Root 'assets\app-icon\pagenor-document.ico') $Stage
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'pagenor.exe') (Join-Path $Stage 'pagenor-cli.exe')
 
@@ -106,6 +107,7 @@ $Portable = Join-Path $TargetDir "windows-package\pagenor-$Version-windows-$Arch
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
+Copy-Item (Join-Path $Stage 'pagenor-document.ico') $Portable
 foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }

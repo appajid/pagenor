@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 pagenor-ai = { workspace = true }
+craft-ui = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }

@@ -9,13 +9,13 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-type ThumbKey = (u64, u64, usize);
+type ThumbKey = (u64, u64, bool, usize, usize);
 
 static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
 
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, abs: usize, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let key = (st.uid, st.revision, abs);
+    let key = (st.uid, st.revision, false, abs, 0);
     let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
     let map = g.get_or_insert_with(HashMap::new);
     if let Some(t) = map.get(&key) {
@@ -28,7 +28,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, abs: usize, h: f32) -> Option
     let img =
         r.render_page(&st.doc, &app.session.cache, abs, scale, false, &pagenor_render::RenderOptions { printing_only: true, ..Default::default() })?;
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-    let tex = ctx.load_texture(format!("thumb{abs}"), ci, egui::TextureOptions::LINEAR);
+    let tex = crate::widgets::load_texture(ctx, format!("thumb{abs}"), ci, egui::TextureOptions::LINEAR);
     // Drop thumbnails of older revisions.
     let (uid, rev) = (st.uid, st.revision);
     map.retain(|k, _| !(k.0 == uid && k.1 != rev));
@@ -51,18 +51,51 @@ const SELECTED_TINT: Color32 = Color32::from_rgb(0x88, 0xc7, 0xfb);
 const BADGE: Color32 = Color32::from_rgb(0x2f, 0x73, 0xe0);
 /// Thumbnail height (InDesign: about 28×37 pt for Letter).
 const THUMB_H: f32 = 37.0;
-/// Parent rows.
-const ROW_H: f32 = 29.0;
+/// Live master thumbnail, cropped to its selected side.
+fn master_thumb(app: &mut DesignApp, ctx: &egui::Context, index: usize, pi: usize) -> Option<egui::TextureHandle> {
+    let st = app.session.active()?;
+    let key = (st.uid, st.revision, true, index, pi);
+    let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    if let Some(t) = map.get(&key) {
+        return Some(t.clone());
+    }
+    let page = st.doc.parents.get(index)?.pages.get(pi)?;
+    let scale = (THUMB_H as f64 * ctx.pixels_per_point() as f64) / page.height.max(1.0);
+    let mut renderer = pagenor_render::Renderer::new();
+    renderer.threads = 0;
+    let image = renderer.render(
+        &st.doc,
+        &app.session.cache,
+        &[pagenor_render::Placed { spread: pagenor_doc::SpreadRef::Parent(index), xf: pagenor_geom::Affine::IDENTITY }],
+        (page.width * scale).ceil() as u32,
+        (page.height * scale).ceil() as u32,
+        pagenor_geom::Affine::scale(scale) * pagenor_geom::Affine::translate((-page.x, 0.0)),
+        &pagenor_render::RenderOptions { printing_only: true, ..Default::default() },
+    );
+    let ci = egui::ColorImage::from_rgba_premultiplied([image.width as usize, image.height as usize], &image.pixels);
+    let tex = crate::widgets::load_texture(ctx, format!("master{index}-{pi}"), ci, egui::TextureOptions::LINEAR);
+    map.retain(|k, _| !(k.0 == st.uid && k.1 != st.revision));
+    map.insert(key, tex.clone());
+    Some(tex)
+}
 
-/// Paint a blank page icon of `n` pages (parents list), right-aligned at `right`.
-fn blank_spread(p: &egui::Painter, right: egui::Pos2, n: usize, aspect: f32, t: &Tokens) {
-    let h = 24.0;
-    let w = h * aspect;
-    let n = n.max(1);
-    for k in 0..n {
-        let r = egui::Rect::from_min_size(egui::pos2(right.x - w * (n - k) as f32, right.y - h / 2.0), vec2(w, h));
-        p.rect_filled(r, 0.0, Color32::WHITE);
-        p.rect_stroke(r, 0.0, Stroke::new(0.5, t.border), StrokeKind::Inside);
+fn master_menu(app: &mut DesignApp, ui: &mut egui::Ui, index: usize, prefix: &str, current_page: usize) {
+    if ui.button("Edit master spread").clicked() {
+        let _ = app.run("app.editMaster", json!({"index":index}));
+        ui.close();
+    }
+    if ui.button("Master Page Settings…").clicked() {
+        let _ = app.run("app.masterSettings", json!({"index":index}));
+        ui.close();
+    }
+    if ui.button("Apply to all pages (default)").clicked() {
+        let _ = app.run("layout.pages.applyParent", json!({"parent":prefix,"setDefault":true}));
+        ui.close();
+    }
+    if ui.button("Apply to current page").clicked() {
+        let _ = app.run("layout.pages.applyParent", json!({"parent":prefix,"pages":[current_page]}));
+        ui.close();
     }
 }
 
@@ -71,34 +104,84 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
     let editing_parents = st.editing_parents;
-    let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
+
     let mut drop: Option<(PageDrag, usize)> = None;
     ui.spacing_mut().item_spacing.y = 0.0;
-    // ---- Parents: [None] and each parent, 29 pt rows with a blank thumbnail at the right.
-    let mut rows: Vec<(String, Option<String>, usize)> = vec![("[None]".into(), None, 1)];
-    for p in &doc.parents {
-        let label = p.parent.as_ref().map(|i| i.label()).unwrap_or_default();
-        rows.push((label, p.parent.as_ref().map(|i| i.prefix.clone()), p.pages.len()));
+    // Masters are separate from document pages, with direct access to both book sides.
+    let current_master = match crate::canvas::current_spread(app) {
+        Some(pagenor_doc::SpreadRef::Parent(i)) => Some(i),
+        _ => None,
+    };
+    let current_page = crate::canvas::current_page(app).unwrap_or(0);
+    let current_master_page = crate::canvas::current_master_page(app);
+    ui.horizontal(|ui| {
+        ui.strong("Master Pages");
+        if ui.small_button("New…").on_hover_text("Create a master page or a left/right master pair").clicked() {
+            let _ = app.run("app.newMaster", json!({}));
+        }
+    });
+    if editing_parents {
+        if ui.button("Back to document").clicked() {
+            let _ = app.run("layout.parents.edit", json!({"on":false}));
+        }
+        ui.label(egui::RichText::new("Edit common items here; they repeat on document pages.").size(10.5).color(t.text_dim));
     }
-    for (label, prefix, n) in rows {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-        let active = editing_parents && prefix.is_some();
+    for (index, master) in doc.parents.iter().enumerate() {
+        let Some(info) = &master.parent else { continue };
+        let active = current_master == Some(index);
+        let label = format!("{}{}", info.label(), if doc.default_parent() == Some(master.id) { " · Default" } else { "" });
+        ui.horizontal(|ui| {
+            let resp = ui.add(egui::Button::selectable(active, &label).sense(Sense::click_and_drag()));
+            resp.dnd_set_drag_payload(PageDrag::Parent(Some(info.prefix.clone())));
+            if resp.double_clicked() {
+                let _ = app.run("app.editMaster", json!({"index":index}));
+            }
+            resp.context_menu(|ui| master_menu(app, ui, index, &info.prefix, current_page));
+            crate::menus::menu_button(ui, "⋯", |ui| master_menu(app, ui, index, &info.prefix, current_page));
+        });
+        ui.horizontal(|ui| {
+            // Visual left/right order stays stable for right-to-left books too.
+            let mut pages: Vec<_> = master.pages.iter().enumerate().collect();
+            pages.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+            for (pi, page) in pages {
+                let name = match page.side {
+                    pagenor_doc::PageSide::Left => "Left Master",
+                    pagenor_doc::PageSide::Right => "Right Master",
+                    _ => "Master",
+                };
+                ui.vertical(|ui| {
+                    let size = vec2(THUMB_H * (page.width / page.height.max(1.0)) as f32, THUMB_H);
+                    let resp = if let Some(tex) = master_thumb(app, ui.ctx(), index, pi) {
+                        ui.add(egui::Button::image(egui::Image::new((tex.id(), size))).selected(current_master_page == Some((index, pi))))
+                    } else {
+                        ui.add_sized(size, egui::Button::new("▯"))
+                    };
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{} {name}", info.label())));
+                    if resp.on_hover_text(format!("Edit {} {name}", info.label())).clicked() {
+                        let _ = app.run("app.editMaster", json!({"index":index,"page":pi}));
+                    }
+                    if ui.small_button(name).clicked() {
+                        let _ = app.run("app.editMaster", json!({"index":index,"page":pi}));
+                    }
+                });
+            }
+        });
         if active {
-            ui.painter().rect_filled(r, 0.0, t.row_selected);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(r, 0.0, t.hover);
+            ui.horizontal_wrapped(|ui| {
+                for (label, kind) in [("Header…", "header"), ("Footer…", "footer"), ("Page Numbers", "pageNumber")] {
+                    if ui.small_button(label).clicked() {
+                        let _ = app.run("app.masterText", json!({"index":index,"kind":kind}));
+                    }
+                }
+                if ui.small_button("Settings…").clicked() {
+                    let _ = app.run("app.masterSettings", json!({"index":index}));
+                }
+            });
         }
-        ui.painter().text(r.left_center() + vec2(3.0, 0.0), egui::Align2::LEFT_CENTER, &label, egui::FontId::proportional(11.5), t.text_strong);
-        blank_spread(ui.painter(), egui::pos2(r.max.x - 10.0, r.center().y), n, aspect, &t);
-        resp.dnd_set_drag_payload(PageDrag::Parent(prefix.clone()));
-        if resp.double_clicked() && prefix.is_some() {
-            let _ = app.run("layout.parents.edit", json!({"on": true}));
-            app.views.clear();
-        }
-        if resp.dragged() {
-            drag_ghost(ui, &label, &t);
-        }
+        ui.add_space(6.0);
     }
+    let none = ui.add(egui::Button::new(egui::RichText::new("[None] · no master").size(10.5).color(t.text_dim)).sense(Sense::click_and_drag()));
+    none.dnd_set_drag_payload(PageDrag::Parent(None));
     ui.add_space(4.0);
     let r = ui.available_rect_before_wrap();
     ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(r.min.x - 10.0, r.min.y), vec2(r.width() + 20.0, 1.5)), 0.0, t.section_divider);
@@ -161,14 +244,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             if resp.clicked() || resp.double_clicked() {
                 if editing_parents {
                     let _ = app.run("layout.parents.edit", json!({"on": false}));
-                    app.views.clear();
                 }
                 crate::canvas::go_to_page(app, abs);
             }
             resp.context_menu(|ui| page_menu(app, ui, &doc, abs, si));
             // Page number under the page: white on a blue badge when selected.
             let name = app.session.page_label(abs);
-            let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), Color32::WHITE);
+            let color = if selected { Color32::WHITE } else { t.text };
+            let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), color);
             let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
             if selected {
                 let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
@@ -241,16 +324,16 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &pagenor_doc::Document
     }
     ui.separator();
     for (id, label) in [
-        ("layout.overrideParentItems", "Override All Parent Page Items"),
+        ("layout.overrideParentItems", "Override All Master Page Items"),
         ("layout.removeOverrides", "Remove All Local Overrides"),
-        ("layout.detachAll", "Detach All Objects from Parent"),
+        ("layout.detachAll", "Detach All Objects from Master"),
     ] {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
             let _ = app.run(id, json!({"page": abs}));
             ui.close();
         }
     }
-    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Parent")), |ui| {
+    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply Master")), |ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "[None]"))).clicked() {
             let _ = app.run("layout.pages.applyParent", json!({"pages": [abs], "parent": null}));
             ui.close();
@@ -266,7 +349,7 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &pagenor_doc::Document
 }
 
 /// A small label following the pointer while dragging.
-fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
+pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
     let Some(p) = ui.ctx().pointer_interact_pos() else { return };
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("page_drag")));
     let g = painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), t.text_strong);

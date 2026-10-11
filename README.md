@@ -52,7 +52,8 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 ## Downloads and build formats
 
 Pagenor's [release page](https://github.com/appajid/pagenor/releases) is the source
-for Pagenor builds and their notes. Version **0.3.0 is a development preview**:
+for Pagenor builds and their notes. Local source is now **0.4.0**, an unpublished
+development checkpoint. The published **0.3.0 is a development preview**:
 its Apple-silicon macOS development bundle is ad-hoc signed and not notarized.
 Windows/Linux/FreeBSD installers remain pending native package validation; the
 release notes identify the available artifacts and completed checks. Build from
@@ -67,6 +68,7 @@ The release pipeline prepares these formats when run at a completed milestone.
 | Windows | x64, ARM64, x86 | `pagenor-<ver>-windows-<arch>.msi`, portable ZIP |
 | macOS | Apple silicon + Intel universal | `pagenor-<ver>-macos-universal.dmg`, universal CLI ZIP |
 | Linux | x86_64, aarch64 | `pagenor-<ver>-linux-<arch>.AppImage`, `.AppImage.zsync`, `.flatpak`, `.deb`, `.rpm`, `.tar.gz` |
+| Linux RISC-V | riscv64 | `pagenor-<ver>-linux-riscv64.tar.gz` (cross-build definition; native validation pending) |
 | FreeBSD | x86_64 release job | `pagenor-<ver>-freebsd-x86_64.tar.gz` |
 | Web | WebAssembly | `pagenor-web-<ver>.zip` for static hosting |
 
@@ -197,3 +199,17 @@ Pagenor branding belongs to Appaji Ambarisha. Branding rights are reserved under
 [assets/brand/LICENSE.txt](assets/brand/LICENSE.txt); the software remains open source.
 
 <sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. Pagenor is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
+
+## Graphics backend and processor
+
+Pagenor renders document content on the CPU and uses the GPU to display the canvas
+and interface. Startup prefers an adapter that can present to the window, with
+display-connected GPUs preferred where the operating system exposes that information.
+Windows starts with DirectX 12; macOS starts with Metal. Startup failures can retry
+other available adapters and backends, with software rendering considered last.
+
+For troubleshooting, `WGPU_ADAPTER_NAME` selects an adapter by part of its name.
+`WGPU_POWER_PREF` uses wgpu's power preference override. `WGPU_BACKEND` explicitly
+selects a backend such as `metal`, `dx12`, `vulkan` or `gl` and disables automatic
+backend fallback. Use an override only when needed; the chosen adapter and startup
+failures are recorded in Pagenor's local rotating log.

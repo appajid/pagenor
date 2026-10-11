@@ -112,7 +112,8 @@ PYARCHIVE
 [ -x "$WORK/stage/bin/pagenor" ] || { echo "error: $TARBALL has no bin/pagenor" >&2; exit 1; }
 for required in "share/applications/$APP_ID.desktop" "share/mime/packages/$APP_ID.xml" \
   "share/metainfo/$APP_ID.metainfo.xml" "share/icons/hicolor/256x256/apps/$APP_ID.png" \
-  "share/icons/hicolor/scalable/apps/$APP_ID.svg" "share/doc/pagenor/LICENSE-MIT" "share/doc/pagenor/LICENSE-APACHE"; do
+  "share/icons/hicolor/scalable/apps/$APP_ID.svg" "share/icons/hicolor/256x256/mimetypes/$APP_ID.document.png" \
+  "share/icons/hicolor/scalable/mimetypes/$APP_ID.document.svg" "share/doc/pagenor/LICENSE-MIT" "share/doc/pagenor/LICENSE-APACHE"; do
   [ -f "$WORK/stage/$required" ] || { echo "error: release resource missing: $required" >&2; exit 1; }
 done
 cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$APP_ID.yml"

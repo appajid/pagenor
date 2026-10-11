@@ -365,9 +365,13 @@ impl Ctx {
                         // Word puts the reference mark in the note text: we generate the number.
                         self.budget.add_text(pagenor_doc::FOOTNOTE_REF.len_utf8())?;
                         let len = st.len();
-                        let id = st.insert_note(len, "", ParaFormat::default());
-                        if let Some(n) = st.note_mut(id) {
-                            n.text = ns;
+                        match st.insert_note(len, "", ParaFormat::default()) {
+                            Some(id) => {
+                                if let Some(n) = st.note_mut(id) {
+                                    n.text = ns;
+                                }
+                            }
+                            None => self.warnings.push("A footnote in the Word file could not be imported.".into()),
                         }
                     }
                     continue;

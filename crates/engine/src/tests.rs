@@ -1,6 +1,40 @@
 use serde_json::json;
 
 use super::*;
+#[test]
+fn custom_wrap_path_follows_resize_and_yields_to_offsets() {
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap();
+    let id = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox"})).unwrap();
+    let inner = s.doc().unwrap().doc.item(id).unwrap().path.clone();
+    let custom = pagenor_geom::PathData::single(pagenor_geom::SubPath::polyline(
+        &[pagenor_geom::Point::new(0.0, 0.0), pagenor_geom::Point::new(40.0, 0.0), pagenor_geom::Point::new(0.0, 100.0)],
+        true,
+    ));
+    s.edit(|d, _| {
+        if let Some(it) = d.item_mut(id) {
+            it.wrap.path = Some(custom.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+    let wrap_path = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().wrap.path.clone();
+    // Side and mode keep the boundary.
+    s.execute("object.textWrap", &json!({"side": "rightSide"})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    assert_eq!(wrap_path(&s), Some(custom.clone()));
+    // Resizing scales it with the frame's path.
+    let b = inner.bounds().unwrap();
+    let to = [b.x0, b.y0, b.x0 + 2.0 * b.width(), b.y1];
+    s.execute("transform.resize", &json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": to})).unwrap();
+    let w = wrap_path(&s).unwrap().bounds().unwrap();
+    assert!((w.width() - 80.0).abs() < 1e-6 && (w.height() - 100.0).abs() < 1e-6, "{w:?}");
+    // An offset rebuilds the wrap from the frame.
+    s.execute("object.textWrap", &json!({"offset": 6})).unwrap();
+    assert_eq!(wrap_path(&s), None);
+}
 
 fn session() -> Session {
     let mut s = Session::new();
@@ -73,6 +107,111 @@ fn tool_gesture_creates_one_undo_step() {
     // The visible edge lands on the 36 pt margin.
     let it = &s.doc().unwrap().doc.spreads[0].items[0];
     assert!((it.visible_bounds().x0 - 36.0).abs() < 1e-6, "visible {:?} path {:?}", it.visible_bounds(), it.bounds());
+}
+
+/// A command that runs another one (Cut runs Clear) recorded an undo step for each, so the
+/// second Undo did nothing. One command is one step, whatever it runs inside.
+#[test]
+fn a_command_that_runs_another_is_one_undo_step() {
+    let mut s = session();
+    let one_step = |s: &mut Session, id: &str, p: Value, label: &str| {
+        let (before, steps) = {
+            let st = s.doc().unwrap();
+            (st.doc.clone(), st.history.undo.len())
+        };
+        s.execute(id, &p).unwrap();
+        let st = s.doc().unwrap();
+        assert_ne!(st.doc, before, "{id} changes the document");
+        assert_eq!(st.history.undo.len(), steps + 1, "{id}");
+        assert_eq!(st.history.undo.last().unwrap().label, label);
+        let after = st.doc.clone();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before, "one Undo takes {id} back");
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, after, "one Redo brings {id} back");
+        s.execute("edit.undo", &json!({})).unwrap();
+    };
+    // Pasting text runs Type.
+    let story = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+    s.execute("text.select", &json!({"story": story, "anchor": 2})).unwrap();
+    one_step(&mut s, "edit.paste", json!({"text": "c"}), "Paste");
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].clone();
+    s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap();
+    for (id, label) in
+        [("edit.duplicate", "Duplicate"), ("object.bringToFront", "Bring to Front"), ("edit.cut", "Cut"), ("edit.pasteInPlace", "Paste in Place")]
+    {
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        one_step(&mut s, id, json!({}), label);
+    }
+    // A script that runs Cut is three commands deep and still one step.
+    let script = format!("selection.set {{\"ids\": [{a}]}}\nedit.cut {{}}");
+    one_step(&mut s, "script.run", json!({"text": script}), "Run Script");
+}
+
+/// What a command did before it failed is an undo step too: a script that stopped at a bad
+/// step left its earlier steps in the document with nothing to undo.
+#[test]
+fn a_command_that_fails_partway_can_be_undone() {
+    let mut s = session();
+    let before = s.doc().unwrap().doc.clone();
+    let script = "frame.create {\"rect\": [36, 36, 136, 136]}\nnope.command";
+    assert!(s.execute("script.run", &json!({"text": script})).is_err());
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 1, "the first step ran");
+    assert_eq!(st.history.undo.len(), 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+    // The next command records its step as usual.
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    assert_eq!(s.doc().unwrap().history.undo.len(), 1);
+}
+
+/// The same for a command that fails after a command it ran changed the document: that one
+/// leaves the step to it, so it has to record one.
+#[test]
+fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
+    let mut s = session();
+    let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
+    let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
+    s.execute("selection.set", &json!({"ids": [text]})).unwrap();
+    let (before, steps) = {
+        let st = s.doc().unwrap();
+        (st.doc.clone(), st.history.undo.len())
+    };
+    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
+    assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
+    let st = s.doc().unwrap();
+    assert_ne!(st.doc, before, "the frame was converted");
+    assert_eq!(st.history.undo.len(), steps + 1);
+    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc, before);
+}
+
+/// A script's steps still record as it runs: an Undo step takes back the step before it, not
+/// what was done before the script. The script stays one step.
+#[test]
+fn a_script_that_undoes_its_own_step_is_one_undo_step() {
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
+    let script = "frame.create {\"rect\": [200, 36, 300, 136]}\nframe.create {\"rect\": [400, 36, 500, 136]}\nedit.undo {}";
+    s.execute("script.run", &json!({"text": script})).unwrap();
+    let st = s.doc().unwrap();
+    assert_eq!(st.doc.spreads[0].items.len(), 2, "the frame from before the script and the script's first");
+    assert_eq!(st.history.undo.len(), 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.spreads[0].items.len(), 1);
+}
+
+/// A command that is no undo step itself (placing the caret) leaves the steps of the commands
+/// it runs alone: turning the empty frame into a text frame can be undone.
+#[test]
+fn a_command_without_an_undo_step_keeps_the_steps_of_those_it_runs() {
+    let mut s = session();
+    let id = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "unassigned"})).unwrap()["id"].clone();
+    s.execute("text.placeCaret", &json!({"frame": id, "point": [50, 50]})).unwrap();
+    let labels: Vec<&str> = s.doc().unwrap().history.undo.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["Create Frame", "Content"]);
 }
 
 #[test]
@@ -429,7 +568,7 @@ fn object_styles_create_and_apply() {
 }
 
 /// Unicode text per page, through hayro's interpreter (ToUnicode / ActualText).
-fn pdf_text(bytes: &[u8]) -> Vec<String> {
+pub(super) fn pdf_text(bytes: &[u8]) -> Vec<String> {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
@@ -509,6 +648,37 @@ fn object_set_flags_and_wrap_invert() {
     s.execute("selection.set", &json!({"ids": [id]})).unwrap();
     s.execute("object.textWrap", &json!({"mode": "boundingBox", "invert": true})).unwrap();
     assert!(item(&s).wrap.invert);
+    // Side and contour type keep the mode; contour types that need the image aren't accepted.
+    s.execute("object.textWrap", &json!({"mode": "contour"})).unwrap();
+    s.execute("object.textWrap", &json!({"side": "largestArea", "contour": "graphicFrame"})).unwrap();
+    let w = &item(&s).wrap;
+    assert_eq!(
+        (w.mode, w.side, w.contour),
+        (pagenor_doc::WrapMode::Contour, pagenor_doc::WrapSide::LargestArea, pagenor_doc::ContourType::GraphicFrame)
+    );
+    assert!(s.execute("object.textWrap", &json!({"contour": "detectEdges"})).is_err());
+    assert!(s.execute("object.textWrap", &json!({"side": "middle"})).is_err());
+}
+
+#[test]
+fn text_wrap_on_selected_content_sets_the_graphic_wrap() {
+    let mut s = session();
+    let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [300, 300, 400, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).cloned().unwrap();
+    s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "boundingBox", "offset": 4})).unwrap();
+    let it = item(&s);
+    assert_eq!(it.wrap.mode, pagenor_doc::WrapMode::None, "the frame keeps no wrap");
+    let g = it.graphic().unwrap();
+    assert_eq!((g.wrap.mode, g.wrap.offsets), (pagenor_doc::WrapMode::BoundingBox, [4.0; 4]));
+    // The frame selected: the frame's own wrap.
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    s.execute("object.textWrap", &json!({"mode": "jumpObject"})).unwrap();
+    let it = item(&s);
+    assert_eq!((it.wrap.mode, it.graphic().unwrap().wrap.mode), (pagenor_doc::WrapMode::JumpObject, pagenor_doc::WrapMode::BoundingBox));
 }
 
 #[test]
@@ -874,4 +1044,78 @@ fn preflight_mojikumi_uses_the_same_supported_rules_as_composition() {
         let warnings: Vec<_> = result["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "unsupportedTypography").collect();
         assert_eq!(!warnings.is_empty(), unsupported, "{name}: {warnings:?}");
     }
+}
+
+#[test]
+fn direct_selection_drag_and_arrow_keys_move_placed_content() {
+    use pagenor_tools::{Mods, PointerEvent, PointerKind, SnapView, ToolKey};
+    let mut s = session();
+    let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    let xfs = |s: &Session| {
+        let it = s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).unwrap().clone();
+        (it.xf, it.graphic().unwrap().xf.translation())
+    };
+    let (frame0, g0) = xfs(&s);
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let at = s.layout().to_canvas(pagenor_doc::SpreadRef::Doc(0), pagenor_geom::Point::new(150.0, 150.0));
+    s.set_tool("directSelection");
+    s.pointer(&PointerEvent::new(PointerKind::Down, at.x, at.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 20.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, at.x + 30.0, at.y + 10.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at.x + 30.0, at.y + 10.0), v).unwrap();
+    assert!(s.doc().unwrap().selection.content);
+    let (frame1, g1) = xfs(&s);
+    assert_eq!(frame1, frame0, "the frame stays");
+    assert_eq!(g1 - g0, pagenor_geom::Vec2::new(30.0, 10.0));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(xfs(&s).1, g0, "one undo step");
+    // Arrow keys nudge the selected content; Shift nudges ten times as far.
+    s.set_tool("selection");
+    s.tool_key(ToolKey::Right, Mods::default(), v).unwrap();
+    s.tool_key(ToolKey::Down, Mods { shift: true, ..Default::default() }, v).unwrap();
+    let (frame2, g2) = xfs(&s);
+    assert_eq!(frame2, frame0);
+    assert_eq!(g2 - g0, pagenor_geom::Vec2::new(1.0, 10.0));
+}
+
+#[test]
+fn live_corner_gestures_are_one_undo_step_each() {
+    use pagenor_geom::corners::CornerShape;
+    use pagenor_tools::{Mods, PointerEvent, PointerKind};
+    let mut s = session();
+    s.execute("frame.create", &json!({"rect": [100, 100, 300, 250], "content": "graphic"})).unwrap();
+    let id = s.doc().unwrap().doc.spreads[0].items[0].id;
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+    let corners = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().corners.corners;
+    let before = undo(&s);
+    // Click the widget, then drag the top-left diamond 20 pt toward the centre.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 300.0, 111.5), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 300.0, 111.5), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, 112.0, 100.0), v).unwrap();
+    for x in [116.0, 124.0, 132.0] {
+        s.pointer(&PointerEvent::new(PointerKind::Drag, x, 100.0), v).unwrap();
+    }
+    s.pointer(&PointerEvent::new(PointerKind::Up, 132.0, 100.0), v).unwrap();
+    assert_eq!(undo(&s), before + 1);
+    assert!(corners(&s).iter().all(|c| c.shape == CornerShape::Rounded && (c.size - 20.0).abs() < 1e-9), "{:?}", corners(&s));
+    // Alt-click the top-left diamond, now 20 pt along the edge.
+    let alt = Mods { alt: true, ..Default::default() };
+    s.pointer(&PointerEvent::new(PointerKind::Down, 120.0, 100.0).with_mods(alt), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 120.0, 100.0).with_mods(alt), v).unwrap();
+    assert_eq!(undo(&s), before + 2);
+    assert_eq!(corners(&s)[0].shape, CornerShape::InverseRounded);
+    assert_eq!(corners(&s)[1].shape, CornerShape::Rounded);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(corners(&s)[0].shape, CornerShape::Rounded);
+    // Malformed per-corner parameters are errors, not silent defaults.
+    let c = json!({"shape": "rounded", "size": 5});
+    assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c]})).is_err());
+    assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c, {"shape": "rounded", "size": -1}]})).is_err());
+    assert!(s.execute("object.cornerOptions", &json!({"corners": "rounded"})).is_err());
 }

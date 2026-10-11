@@ -25,8 +25,8 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
     let (px, py) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64));
     let mime = mime.to_string();
     s.edit(|d, sel| {
-        let aid = AssetId(d.alloc());
-        d.assets.insert(aid, Arc::new(Asset { page: 0, id: aid, name, mime, link, data: Arc::new(bytes), pixels: None }));
+        let fresh = AssetId(d.alloc());
+        let aid = d.add_asset(Asset { page: 0, id: fresh, name, mime, link, data: Arc::new(bytes), pixels: None, ..Default::default() });
         let id = match target {
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
@@ -38,6 +38,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                     auto_fit: Default::default(),
                     fit_align: 4,
                     crop: [0.0; 4],
+                    wrap: Default::default(),
                 });
                 it.media = Some(MediaOptions { controls: true, ..Default::default() });
                 fid
@@ -54,6 +55,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                     auto_fit: Default::default(),
                     fit_align: 4,
                     crop: [0.0; 4],
+                    wrap: Default::default(),
                 });
                 it.media = Some(MediaOptions { controls: true, ..Default::default() });
                 d.insert_item(spread, it, None)?;
@@ -90,10 +92,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.edit(|d, _| {
                     let poster_id = match poster {
                         Some(Some((bytes, name, link, px))) => {
-                            let aid = AssetId(d.alloc());
+                            let fresh = AssetId(d.alloc());
                             let mime = pagenor_render::image_mime(&bytes).to_string();
-                            d.assets.insert(aid, Arc::new(Asset { page: 0, id: aid, name, mime, link, data: Arc::new(bytes), pixels: Some(px) }));
-                            Some(Some(aid))
+                            Some(Some(d.add_asset(Asset {
+                                page: 0,
+                                id: fresh,
+                                name,
+                                mime,
+                                link,
+                                data: Arc::new(bytes),
+                                pixels: Some(px),
+                                ..Default::default()
+                            })))
                         }
                         Some(None) => Some(None),
                         None => None,
