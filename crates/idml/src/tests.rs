@@ -1056,6 +1056,14 @@ fn uri_and_base64_helpers() {
     assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");
     assert_eq!(import::uri_to_path("file:///C:/x/y.jpg"), "C:/x/y.jpg");
     assert_eq!(export::path_to_uri("/a b/c.png"), "file:/a%20b/c.png");
+    assert_eq!(import::uri_to_path("file://server/share/a%20b.png"), "//server/share/a b.png");
+    assert_eq!(export::path_to_uri(r"C:\Links\a b.png"), "file:C:/Links/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\?\C:\Links\a b.png"), "file:C:/Links/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\server\share\a b.png"), "file://server/share/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\?\UNC\server\share\a b.png"), "file://server/share/a%20b.png");
+    assert_eq!(export::path_to_uri("/a%#?/b.png"), "file:/a%25%23%3F/b.png");
+    assert_eq!(export::path_to_uri("https://example.com/a%20b.png"), "https://example.com/a%20b.png");
+    assert_eq!(export::path_to_uri("file:///C:/a%20b.png"), "file:///C:/a%20b.png");
     let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
     assert_eq!(base64_decode(&base64_encode(&data)), data);
 }

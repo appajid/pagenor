@@ -2997,7 +2997,10 @@ fn pdf_page_in(g: &El) -> u32 {
 
 /// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).
 pub(crate) fn uri_to_path(uri: &str) -> String {
-    let rest = uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri);
+    let rest = uri.strip_prefix("file:").unwrap_or(uri);
+    // A URI with an authority denotes a UNC share. Keep its leading double slash.
+    // Three slashes denote an absolute local path instead.
+    let rest = if rest.starts_with("///") { rest.strip_prefix("//").unwrap_or(rest) } else { rest };
     // `file:///C:/…` → `/C:/…` → `C:/…`
     let rest = match rest.as_bytes() {
         [b'/', _, b':', _, ..] => rest.get(1..).unwrap_or(rest),

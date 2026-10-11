@@ -556,13 +556,15 @@ mod tests {
             }
         }
         let linked = dir.join("Links").join("my photo.png");
-        let uri = format!("file:{}", linked.to_string_lossy().replace(' ', "%20"));
+        let path = linked.to_string_lossy().replace('\\', "/");
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        let uri = format!("file:{}", path.replace(' ', "%20"));
         assert!(spreads.contains(&format!(r#"LinkResourceURI="{uri}""#)), "{spreads}");
         assert!(!spreads.contains("<Contents") && !spreads.contains(r#"StoredState="Embedded""#), "no image is embedded");
         let back = pagenor_idml::import_idml_with(&idml, &|_| None).unwrap();
         let asset = back.assets.values().next().unwrap();
         assert!(asset.data.is_empty(), "no image is embedded");
-        assert_eq!(asset.link.as_deref(), linked.to_str());
+        assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()).canonicalize().unwrap(), linked.canonicalize().unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

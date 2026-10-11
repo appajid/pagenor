@@ -26,11 +26,21 @@ each desktop, printer and proprietary font configuration.
 - The HTTPS data-merge fixture explicitly supplies its trust root to curl in
   unit-test binaries, supporting OpenSSL, GnuTLS and Schannel. An additional
   untrusted-certificate check preserves production certificate validation.
+  Windows test binaries allow missing revocation-list distribution points only
+  for the explicitly supplied localhost fixture certificate; the production
+  trust store and revocation policy remain unchanged.
 - The EPS relink fixture constructs nested paths portably on Windows.
 - Windows MSI and portable packages include matching software, provenance,
   owner-branding and bundled/optional font notices.
 - Recovery-directory setup compiles without Unix-only mutable bindings on Windows;
   Unix recovery directories retain their private permission mode.
+- IDML links normalize Windows drive, extended-length and UNC file paths into
+  escaped URI paths. UNC import retains the server/share authority. The package
+  round-trip test compares canonical file identities on each host.
+- Synthetic Mac packaging tests mock `xattr` alongside signing/plist tools so
+  Linux can check staging without macOS utilities.
+- Once a version is published, further source checks preserve its existing
+  artifacts and skip rebuilding/replacing that release.
 - Existing full-platform signing and release workflows remain available; the
   desktop milestone workflow uses pinned actions and requests no signing secrets.
 

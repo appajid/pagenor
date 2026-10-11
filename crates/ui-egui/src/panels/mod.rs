@@ -630,7 +630,7 @@ mod font_menu_ui_tests {
             let at = combo(&h, shown);
             click_at(&mut h, at);
             assert!(h.ctx.text_edit_focused(), "{what}: the menu opens with its search focused");
-            h.event(egui::Event::Text("source sans".into()));
+            h.event(egui::Event::Text("source sans 3".into()));
             h.run_steps(4);
             h.key_press(egui::Key::ArrowDown);
             h.run_steps(2);
@@ -655,9 +655,9 @@ mod font_menu_ui_tests {
         let at = field(&h, pagenor_fonts::DEFAULT_FAMILY);
         click_at(&mut h, at.center());
         assert!(h.ctx.text_edit_focused(), "the search field takes the keyboard when the menu opens");
-        h.event(egui::Event::Text("source sans".into()));
+        h.event(egui::Event::Text("source sans 3".into()));
         h.run_steps(4);
-        assert_eq!(search(&h), "source sans");
+        assert_eq!(search(&h), "source sans 3");
         assert_eq!(story_text(&mut h, story), before, "the typing went to the search, not the story");
         assert!(h.query_by_label("Source Sans 3").is_some(), "a match is listed");
         assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_none(), "families that don't match aren't");
@@ -712,9 +712,11 @@ mod font_menu_ui_tests {
         let field = field.unwrap_or_else(|| panic!("{what}: the menu opens with the search field focused"));
         click_at(h, field.center());
         assert!(h.ctx.text_edit_focused(), "{what}: a click on the search field keeps the menu open");
-        h.event(egui::Event::Text("SOURCE SA".into()));
+        // Other Source Sans families can be installed on the host. Select the bundled
+        // family explicitly while still checking case-insensitive keyboard search.
+        h.event(egui::Event::Text("SOURCE SANS 3".into()));
         h.run_steps(4);
-        assert_eq!(search(h), "SOURCE SA", "{what}: the typing went to the search");
+        assert_eq!(search(h), "SOURCE SANS 3", "{what}: the typing went to the search");
         assert!(h.query_by_label("Source Sans 3").is_some(), "{what}: a match is listed");
         assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_none(), "{what}: families that don't match aren't");
         h.key_press(egui::Key::ArrowDown);

@@ -2240,8 +2240,8 @@ fn phase3_fetches_http_images() {
     server.join().unwrap();
 }
 
-/// `curl` trusts `SSL_CERT_FILE` from its own environment. This crate forbids the unsafe call
-/// that would set that variable in-process, so the merge runs in a child of this test binary.
+/// The fixture supplies its CA only to a child test binary. This crate forbids unsafe
+/// in-process environment mutation; production keeps the system curl trust store.
 struct StopChild(Option<std::process::Child>);
 
 impl Drop for StopChild {
@@ -2337,6 +2337,20 @@ fn phase3_fetches_https_images() {
     if !https_server_ready(port) {
         let log = std::fs::read_to_string(&err_path).unwrap_or_default();
         panic!("https server did not listen on {port}: {log}");
+    }
+
+    #[cfg(windows)]
+    {
+        // Record the native backend's result before the test-only missing-CRL allowance.
+        let probe = std::process::Command::new("curl")
+            .args(["--fail", "--silent", "--show-error", "--max-time", "10", "--cacert"])
+            .arg(&cert)
+            .arg(format!("https://127.0.0.1:{port}/ok.png"))
+            .output()
+            .expect("probe Windows fixture trust");
+        if !probe.status.success() {
+            eprintln!("Windows localhost fixture with default revocation policy: {}\n{}", probe.status, String::from_utf8_lossy(&probe.stderr));
+        }
     }
 
     let exe = std::env::current_exe().expect("test binary");

@@ -74,8 +74,15 @@ fn fetch_curl(url: &str) -> Result<Vec<u8>, String> {
     // This override exists only in unit-test binaries; production uses curl's normal trust store.
     #[cfg(test)]
     if let Some(cert) = std::env::var_os("PAGENOR_TEST_HTTPS_CERT") {
-        command.arg("--cacert").arg(cert);
+        command.arg("--cacert").arg(cert).arg("--show-error");
+        // The synthetic certificate has no CRL distribution point. Schannel must still
+        // verify its CA and hostname, but cannot retrieve a revocation list for it.
+        #[cfg(windows)]
+        command.arg("--ssl-revoke-best-effort");
     }
+    let stderr = Stdio::null();
+    #[cfg(test)]
+    let stderr = if std::env::var_os("PAGENOR_TEST_HTTPS_CERT").is_some() { Stdio::inherit() } else { stderr };
     let mut child = command
         .args([
             "--proto",
@@ -98,7 +105,7 @@ fn fetch_curl(url: &str) -> Result<Vec<u8>, String> {
             url,
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .map_err(|err| format!("https fetch failed: {err}"))?;
     let Some(stdout) = child.stdout.take() else {

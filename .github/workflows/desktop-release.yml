@@ -26,10 +26,13 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       date: ${{ steps.v.outputs.date }}
       prerelease: ${{ steps.v.outputs.prerelease }}
+      build: ${{ steps.v.outputs.build }}
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
       - id: v
         name: Resolve version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . packaging/env.sh
           v="${INPUT_VERSION#v}"
@@ -39,15 +42,22 @@ jobs:
             exit 1
           fi
           case "$v" in *-*) pre=true ;; *) pre=false ;; esac
+          build=true
+          if gh release view "v$v" >/dev/null 2>&1; then
+            build=false
+            echo "Pagenor v$v already has a release; keeping its artifacts unchanged."
+          fi
           {
             echo "version=$v"
             echo "date=$(date -u +%Y-%m-%d)"
             echo "prerelease=$pre"
+            echo "build=$build"
           } >>"$GITHUB_OUTPUT"
           echo "### Pagenor v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
     timeout-minutes: 90
   windows:
     name: Windows ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
     needs: version
     runs-on: windows-latest
     strategy:
@@ -95,6 +105,7 @@ jobs:
     timeout-minutes: 120
   linux:
     name: Linux ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
     needs: version
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -165,6 +176,7 @@ jobs:
     timeout-minutes: 120
   flatpak:
     name: Flatpak ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
     needs:
       - version
       - linux
@@ -229,10 +241,14 @@ jobs:
         with:
           key: quality-${{ matrix.os }}-no-debug
           cache-on-failure: 'true'
+      - name: Windows localhost HTTPS regression
+        if: runner.os == 'Windows'
+        run: cargo test --locked --package pagenor-engine cmd::datamerge::tests::phase3_fetches_https_images -- --exact --nocapture
       - name: Workspace quality gate (native and WASM)
         run: cargo run --locked --package xtask -- ci
   install:
     name: Install Windows ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
     needs:
       - version
       - windows
@@ -300,6 +316,7 @@ jobs:
       PAGENOR_VERSION: ${{ needs.version.outputs.version }}
   publish:
     name: Publish development release
+    if: needs.version.outputs.build == 'true'
     needs:
       - version
       - quality

@@ -2774,16 +2774,26 @@ fn format_name(mime: &str) -> &'static str {
 
 /// File path → IDML link URI (`file:/abs/path` with spaces percent-encoded).
 pub(crate) fn path_to_uri(path: &str) -> String {
-    if path.contains(':') && !path.starts_with('/') && path.chars().nth(1) != Some(':') {
+    if path.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() > 1
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    }) {
         return path.to_string(); // already a URI
     }
     let mut out = String::from("file:");
-    let p = path.replace('\\', "/");
+    let normalized = path.replace('\\', "/");
+    let p = if let Some(unc) = normalized.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else {
+        normalized.strip_prefix("//?/").unwrap_or(&normalized).to_string()
+    };
     for c in p.chars() {
         match c {
             ' ' => out.push_str("%20"),
             '%' => out.push_str("%25"),
             '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
             c => out.push(c),
         }
     }

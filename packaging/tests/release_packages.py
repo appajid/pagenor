@@ -18,6 +18,24 @@ APP_ID = 'org.pagenor.app'
 
 
 class ReleasePackages(unittest.TestCase):
+    def test_desktop_release_preserves_existing_version_and_runs_source_quality(self):
+        import yaml
+        jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']
+        self.tool('gh', '#!/bin/sh\nexit "${PAGENOR_TEST_RELEASE_LOOKUP_EXIT:-1}"\n')
+        step = next(s for s in jobs['version']['steps'] if s.get('id') == 'v')
+        for exists in [True, False]:
+            output = self.path / f'version-{exists}.txt'
+            env = dict(self.env, INPUT_VERSION='', GITHUB_SHA='a' * 40,
+                       GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(self.path / 'summary'),
+                       PAGENOR_TEST_RELEASE_LOOKUP_EXIT='0' if exists else '1')
+            result = subprocess.run(['bash', '-c', step['run']], cwd=ROOT, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(f'build={str(not exists).lower()}', output.read_text())
+        for name in ['windows', 'linux', 'flatpak', 'install', 'publish']:
+            self.assertEqual(jobs[name]['if'], "needs.version.outputs.build == 'true'")
+        self.assertNotIn('if', jobs['quality'])
+
     def test_windows_extensions_share_a_single_open_verb_and_document_icon(self):
         ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
         wix = ET.parse(ROOT / 'packaging/windows/pagenor.wxs')
@@ -254,7 +272,7 @@ for source in args[:-1]:
 import shutil, sys
 if sys.argv[1]=='-create': shutil.copy2(sys.argv[-1], sys.argv[sys.argv.index('-output')+1])
 """)
-        for name in ['codesign', 'plutil']:
+        for name in ['codesign', 'plutil', 'xattr']:
             self.tool(name, '#!/bin/sh\nexit 0\n')
         self.tool('ditto', """#!/usr/bin/env python3
 from pathlib import Path
