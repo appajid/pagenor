@@ -26,9 +26,9 @@ each desktop, printer and proprietary font configuration.
 - The HTTPS data-merge fixture explicitly supplies its trust root to curl in
   unit-test binaries, supporting OpenSSL, GnuTLS and Schannel. An additional
   untrusted-certificate check preserves production certificate validation.
-  Windows test binaries allow missing revocation-list distribution points only
-  for the explicitly supplied localhost fixture certificate; the production
-  trust store and revocation policy remain unchanged.
+  OpenSSL's synthetic HTTP server uses binary file reads to preserve the PNG's
+  bytes on Windows, including its DOS EOF marker. This is a fixture correction,
+  not an application transfer-policy change.
 - The EPS relink fixture constructs nested paths portably on Windows.
 - Windows MSI and portable packages include matching software, provenance,
   owner-branding and bundled/optional font notices.

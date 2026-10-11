@@ -2272,6 +2272,11 @@ fn phase3_fetches_https_images_in_process() {
         return;
     }
     let png = crate::cmd::base64_decode(PNG_B64);
+    assert_eq!(
+        super::fetch::fetch_url(&format!("https://127.0.0.1:{port}/ok.png")).expect("fetch localhost fixture PNG"),
+        png,
+        "the HTTPS test server must serve binary PNG bytes unchanged"
+    );
     let mut s = Session::new();
     new_doc(&mut s, 1);
     select_csv(&mut s, &format!("@Photo\nhttps://127.0.0.1:{port}/ok.png\n"));
@@ -2326,7 +2331,8 @@ fn phase3_fetches_https_images() {
     let err_path = dir.join("server.err");
     let err_file = std::fs::File::create(&err_path).expect("server log");
     let server = std::process::Command::new("openssl")
-        .args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW"])
+        // Text mode treats the PNG signature's 0x1a as EOF on Windows.
+        .args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW", "-http_server_binmode"])
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -2337,20 +2343,6 @@ fn phase3_fetches_https_images() {
     if !https_server_ready(port) {
         let log = std::fs::read_to_string(&err_path).unwrap_or_default();
         panic!("https server did not listen on {port}: {log}");
-    }
-
-    #[cfg(windows)]
-    {
-        // Record the native backend's result before the test-only missing-CRL allowance.
-        let probe = std::process::Command::new("curl")
-            .args(["--fail", "--silent", "--show-error", "--max-time", "10", "--cacert"])
-            .arg(&cert)
-            .arg(format!("https://127.0.0.1:{port}/ok.png"))
-            .output()
-            .expect("probe Windows fixture trust");
-        if !probe.status.success() {
-            eprintln!("Windows localhost fixture with default revocation policy: {}\n{}", probe.status, String::from_utf8_lossy(&probe.stderr));
-        }
     }
 
     let exe = std::env::current_exe().expect("test binary");

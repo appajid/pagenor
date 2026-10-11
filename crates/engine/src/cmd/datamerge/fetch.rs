@@ -75,10 +75,6 @@ fn fetch_curl(url: &str) -> Result<Vec<u8>, String> {
     #[cfg(test)]
     if let Some(cert) = std::env::var_os("PAGENOR_TEST_HTTPS_CERT") {
         command.arg("--cacert").arg(cert).arg("--show-error");
-        // The synthetic certificate has no CRL distribution point. Schannel must still
-        // verify its CA and hostname, but cannot retrieve a revocation list for it.
-        #[cfg(windows)]
-        command.arg("--ssl-revoke-best-effort");
     }
     let stderr = Stdio::null();
     #[cfg(test)]
