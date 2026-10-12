@@ -1,4 +1,4 @@
-# Pagenor 0.6.0 — Windows and Linux preview
+# Pagenor 0.6.0 — desktop development preview
 
 This milestone carries the shared 0.6.0 editor, publishing and import improvements
 to Windows and Linux. See [implementation notes](UPSTREAM_ADOPTION_20261012.md)
@@ -7,10 +7,11 @@ for the reviewed upstream proposals, Pagenor adaptations and remaining limits.
 Windows packages: x64, x86 and ARM64 MSI installers and portable ZIPs.
 Linux packages: x86_64 and ARM64 AppImage, Debian, RPM, tar and Flatpak bundles.
 Linux binaries target glibc 2.35 or newer. Flatpak includes its runtime reference.
+macOS: universal Intel/Apple-silicon DMG and CLI ZIP, ad-hoc signed and not notarized.
 
 These are development preview builds. Windows installers are unsigned; Windows
 may show a publisher warning. Proprietary PageMaker recovery requires the optional
-helper described in the PageMaker import notes. INDD recovery remains experimental.
+helper described in the [PageMaker import notes](https://github.com/appajid/pagenor/blob/v0.6.0/docs/pagenor/PAGEMAKER_IMPORT.md). INDD recovery remains experimental.
 
 The desktop workflow builds every package from one source commit, checks native
 Windows/Linux quality gates, verifies Windows binary architecture and MSI install,
@@ -26,9 +27,8 @@ each desktop, printer and proprietary font configuration.
 - The HTTPS data-merge fixture explicitly supplies its trust root to curl in
   unit-test binaries, supporting OpenSSL, GnuTLS and Schannel. An additional
   untrusted-certificate check preserves production certificate validation.
-  OpenSSL's synthetic HTTP server uses binary file reads to preserve the PNG's
-  bytes on Windows, including its DOS EOF marker. This is a fixture correction,
-  not an application transfer-policy change.
+  The synthetic OpenSSL server uses binary file reads to serve PNG bytes
+  unchanged on Windows. Production trust and revocation policies remain unchanged.
 - The EPS relink fixture constructs nested paths portably on Windows.
 - Windows MSI and portable packages include matching software, provenance,
   owner-branding and bundled/optional font notices.
@@ -47,42 +47,22 @@ each desktop, printer and proprietary font configuration.
 Pagenor branding rights belong to Appaji Ambarisha. Application code retains its
 MIT OR Apache-2.0 licence; package notices preserve upstream and font provenance.
 
-## Candidate status — 2026-10-12
+## Build and validation
 
-Final source: `0ed0c53af1ae748443082e5d94fedd9fe9abacc4`.
-[Native run](https://github.com/appajid/pagenor/actions/runs/38180716355) builds
-and verifies Linux x86_64 AppImage/Debian/RPM/tar/zsync candidates and passes
-all seven Linux gates (2,302 tests, no failures, seven ignored). All seven local
-Mac gates pass (2,306 tests, no failures, seven ignored); Rust 1.95 checks pass.
-The matching universal Mac DMG/CLI passes strict signatures in the finished
-image and install-copy, architecture/icon/notice checks and native ARM PDF export.
-It is ad-hoc signed and not notarized; native Intel GUI validation remains open.
+Source: `0ed0c53af1ae748443082e5d94fedd9fe9abacc4`.
 
-GitHub refused final Windows x64/x86/ARM64 and Linux ARM64 jobs before startup,
-reporting failed account payments or insufficient spending limit. Hosted Mac
-quality was blocked too. Dependent Flatpak/publication jobs were skipped.
-No v0.6.0 GitHub release has been published. Resolve account billing and rerun
-failed jobs in the prepared native run before publishing.
+Windows/Linux native build and install evidence: [desktop release run](https://github.com/appajid/pagenor/actions/runs/38180716355).
+Windows/Linux quality and Rust 1.95 checks: [CI run](https://github.com/appajid/pagenor/actions/runs/38180720096).
 
-Earlier Windows packages at `444f875` passed all three native installer,
-association/icon, CLI export and uninstall checks but retain the subsequently
-corrected IDML path issue. Linux ARM64/Flatpak packages at `c8c0d1b` passed native
-package/CLI checks. These are intermediate snapshots, separate from the final
-candidates. Source integration is in [PR #3](https://github.com/appajid/pagenor/pull/3).
+Windows/Linux downloads are covered by `SHA256SUMS.txt`; the matching Mac files are covered by `SHA256SUMS-macos.txt`.
 
-The resume attempt again refused the Windows job before startup with the same
-GitHub account billing message. The separate FreeBSD job's two font-discovery
-failures exposed a fontless VM: Fontconfig was present but had no system faces.
-The VM preparation now installs the FreeBSD DejaVu package, refreshes Fontconfig
-and fails early if no host fonts are available. This CI-only change preserves
-the lazy font catalogue and requires a fresh VM run before claiming BSD success.
+Native checks cover compilation, automated tests, package contents, CLI execution and installer operations. Interactive Windows/Linux editor and printer testing, Windows publisher signing and Mac notarization remain separate work. The owner’s current Mac session was left open.
 
-The owner made the repository public on 2026-10-12; native desktop jobs now run.
-The hosted Mac gate exposed an older OpenSSL rejecting the Windows-only
-`-http_server_binmode` option. The test fixture now requests that option only on
-Windows, retaining byte equality and untrusted-certificate checks on every host.
-All seven local gates pass (2,306 tests, seven ignored; twenty WASM packages).
-This test-only follow-up changes no production binaries; hosted revalidation
-will follow the release run. The separate system LibreSSL was also checked and
-does not support the fixture's loopback address syntax; this fixture requires
-OpenSSL, as used by CI and the local build host.
+The hosted Mac fixture initially rejected a Windows-only OpenSSL binary-file flag.
+A [test-only follow-up in PR #3](https://github.com/appajid/pagenor/pull/3) restricts that flag to Windows; Unix file reads are already
+binary. This changes no production code or packaged executable. The released
+source already passes all seven local Mac gates with the build host's OpenSSL.
+The separate FreeBSD workflow now provisions DejaVu before host-font tests;
+FreeBSD VM validation is outside this desktop preview's release checks.
+
+Repository visibility is public at the owner’s choice; standard native jobs executed successfully after that change. Default-branch integration is tracked separately in PR #3.

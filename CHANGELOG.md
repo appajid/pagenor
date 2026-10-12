@@ -1,9 +1,10 @@
 # Pagenor changelog
 
-The current 0.6.0 source is a local development milestone, not a completed cross-platform
-release milestone. GitHub release notes record the available artifacts and checks.
+Version 0.6.0 is a desktop development preview with native Windows/Linux packages
+and a universal Mac build. GitHub release notes record the available artifacts,
+completed checks and remaining interactive/signing validation.
 
-## 0.6.0 — local upstream adaptation milestone, 2026-10-12
+## 0.6.0 — desktop development preview, 2026-10-12
 
 - Add installed Indic and other interface font fallbacks, refreshing with activated fonts.
 - Repair malformed copied note references and isolate live app recovery checkpoints.
@@ -20,6 +21,11 @@ release milestone. GitHub release notes record the available artifacts and check
 - Add native Windows/Linux milestone release builds, MSI installation and file
   association checks, Linux/Flatpak smoke tests and portable HTTPS/path fixtures.
   Fix WiX duplicate legacy-extension registry entries while retaining document icons.
+- Correct extended Windows/UNC IDML links and isolate HTTPS fixture trust from
+  production. Verify Windows install, file associations/icons, PDF export and
+  uninstall on all three architectures, plus native Linux/Flatpak execution.
+- Ship matching universal Mac packages; retain signing/interactive validation
+  limits. [Distribution evidence](docs/pagenor/DESKTOP_RELEASE_060.md).
 
 ## 0.5.2 — local development, 2026-10-11
 

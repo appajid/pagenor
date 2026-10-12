@@ -1,19 +1,17 @@
 # Pagenor roadmap
 
-- P11.12: native Windows and Linux 0.6.0 milestone packaging, installer/CLI
-  validation and GitHub preview release. Build status is recorded in the release
-  workflow; [distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md).
-  Resume check: Windows remains blocked by GitHub billing. The separate FreeBSD
-  VM now installs DejaVu and checks Fontconfig before compilation, correcting
-  its missing host-font test prerequisite; the changed VM still needs a native run.
-  Public-repository desktop jobs now run. A test-only follow-up restricts the
-  HTTPS server's binary-file flag to Windows for older Mac OpenSSL compatibility;
-  all seven local gates pass, with hosted revalidation pending.
+- P11.12: published native Windows and Linux **0.6.0 desktop development
+  preview**, with matching universal Mac packages. All three Windows installer/
+  association/icon/export/uninstall checks and both Linux/Flatpak CLI checks pass.
+  Native Mac/Windows/Linux quality and Rust 1.95 gates pass. Signing and interactive
+  desktop/printer validation remain open; [distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md).
+  The separate FreeBSD VM now installs DejaVu and checks Fontconfig before
+  compilation; its changed VM still needs a native run.
 
 - P11.11: complete the twenty UI-first October proposals through #491 and compatible
   reliability/publishing adaptations. **0.6.0**, local milestone. Preserve Pagenor
   fonts, recovery, inline IME, master workflow and branding; broader import/titlebar
-  proposals and native cross-platform distribution gates remain open.
+  proposals remain open; native desktop distribution is recorded in P11.12.
   [Implementation notes](docs/pagenor/UPSTREAM_ADOPTION_20261012.md).
 
 - P11.10: Add an experimental optional-helper PageMaker 6.5/7 text-recovery

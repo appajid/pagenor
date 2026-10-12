@@ -52,14 +52,14 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 ## Downloads and build formats
 
 Pagenor's [release page](https://github.com/appajid/pagenor/releases) is the source
-for Pagenor builds and their notes. Current source is the **0.6.0 desktop
-development milestone**. Native builds provide Windows x64/x86/ARM64 MSI and
-portable ZIP packages, Linux x86_64/ARM64 AppImage/Debian/RPM/tar/Flatpak packages,
-and universal Intel/Apple-silicon Mac DMG and CLI ZIP packages. Release notes
-identify the available artifacts and completed native checks. Windows installers
-are unsigned; Mac packages are ad-hoc signed and not notarized. Published v0.3.0
-remains intact. Source integration is tracked in
-[PR #3](https://github.com/appajid/pagenor/pull/3).
+for Pagenor builds and their notes. **0.6.0 is a development preview** with
+Windows x64/x86/ARM64 MSI and portable ZIP packages, Linux x86_64/ARM64
+AppImage/Debian/RPM/tar/Flatpak packages, and a universal Intel/Apple-silicon
+macOS DMG and CLI ZIP. Windows installers are unsigned; Mac packages are ad-hoc
+signed and not notarized. See the release notes for completed native checks and
+remaining interactive desktop/printer validation.
+For matching source, check out tag v0.6.0; integration into the default branch is
+tracked in [PR #3](https://github.com/appajid/pagenor/pull/3).
 Do not substitute another project's downloads for Pagenor.
 
 The release pipeline prepares these formats when run at a completed milestone.

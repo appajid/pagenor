@@ -1,10 +1,11 @@
 # Building Pagenor release packages
 
 The source version is the workspace Cargo.toml value; see
-[pagenor/VERSIONING.md](pagenor/VERSIONING.md). Version 0.3.0 is a development preview, published to GitHub at the owner’s
-2026-10-10 request. Its release notes distinguish the verified Apple-silicon Mac
-development bundle from pending Windows/Linux/FreeBSD packages. Keep routine
-development local and run the native matrix at the completed milestone.
+[pagenor/VERSIONING.md](pagenor/VERSIONING.md). The owner authorized native
+Windows/Linux milestone builds and releases on 2026-10-12. Version 0.6.0 is a
+desktop development preview; [distribution notes](pagenor/DESKTOP_RELEASE_060.md)
+record the native evidence and signing/interactive limits. Keep routine work
+local and publish versioned artifacts at milestones.
 
 ## Local prerequisites and commands
 
@@ -88,16 +89,22 @@ manifest permissions. They do not create genuine Linux AppImages/Flatpaks or run
 FreeBSD/Windows applications on macOS. Test the real artifacts on their native
 hosts before describing them as working installers or publishing them.
 
-At the milestone, the release workflow builds macOS, Windows, Linux, Flatpak,
-FreeBSD and web artifacts, then creates a draft with SHA256SUMS.txt. Unsigned jobs
-(version, Linux, RISC-V, Flatpak, FreeBSD and web) need no release secrets/environment;
-macOS, Windows and draft publishing keep the restricted release environment.
-A published version is never overwritten. The owner authorized the v0.3.0 development prerelease and current source upload
-on 2026-10-10. Its known validation scope is recorded in the release notes; it
-does not complete the native installer/signing/font/GUI phase exit gates. Do not
-push the release branch again for an already published version: that pipeline
-refuses to replace published artifacts. The owner lifted the version hold on 2026-10-11; local source is now 0.4.0.
-This version has not been published and does not overwrite v0.3.0.
+The focused desktop-release.yml runs on build/pagenor-*-desktop branches.
+It builds unsigned Windows x64/x86/ARM64 and native Linux x86_64/ARM64 packages,
+runs the full Windows/Linux quality gates, verifies MSI install/associations/
+icons/export/uninstall and Linux/Flatpak execution, then publishes a development
+prerelease only after all checks pass. Actions and the optional font input are
+pinned. Publishing alone has contents-write permission; signing secrets and
+paid Mac runners are not required. A duplicate version skips artifact rebuilding
+and keeps source quality checks active. Published artifacts are never replaced.
+Matching universal Mac packages can be appended under unique filenames with
+their own checksum manifest after verification.
+
+The broader release.yml retains Mac/Windows signing, FreeBSD, RISC-V and web
+jobs and its restricted release environment. Those platforms and stable signed
+distribution are not implied by the focused desktop preview. Source review is
+[PR #3](https://github.com/appajid/pagenor/pull/3), separate from release
+publication. Published v0.3.0 remains unchanged.
 
 ## Branded macOS installer
 

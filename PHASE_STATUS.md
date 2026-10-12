@@ -1,34 +1,26 @@
 # Pagenor development phases
 
-Current local version: **0.6.0** (P11.11); relevant minor increases authorised by
-the owner on 2026-10-11. Published v0.3.0 remains the prior development preview.
-No new publication or completed cross-platform milestone is implied.
+Current version: **0.6.0** (P11.12), published as a desktop development preview
+at the owner's request. Published v0.3.0 remains intact.
 
-P11.12 prepares native Windows x64/x86/ARM64 and Linux x86_64/ARM64 release
-packages from the same 0.6.0 source. Publication requires native quality gates,
-MSI installation/association checks, Linux packaging and Flatpak CLI smoke tests.
-[Distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md). Final run evidence will
-be added after the hosted build completes.
-
-P11.12 build evidence (2026-10-12): final candidate source
-`0ed0c53af1ae748443082e5d94fedd9fe9abacc4` passes all seven local gates
-(2,306 tests; seven ignored) and native Linux gates (2,302 tests; seven ignored).
-Rust 1.95 checks pass. Universal Mac DMG/CLI and Linux x86_64
-AppImage/Debian/RPM/tar/zsync candidates are built and verified. GitHub refused
-the final Windows and Linux ARM64 jobs before startup due to account
-payments/spending limits; dependent Flatpak/publication jobs were skipped.
-Earlier Windows installers and Linux ARM64/Flatpak builds passed their native
-package smoke checks but are intermediate source snapshots. No v0.6.0 release
-is published. [Final run](https://github.com/appajid/pagenor/actions/runs/38180716355).
-Source is reviewable in [PR #3](https://github.com/appajid/pagenor/pull/3);
-default-branch integration awaits approval after automatic review rejected the
-broad direct push. The owner's Mac session was left open.
+P11.12 completes native Windows x64/x86/ARM64 MSI/portable and Linux x86_64/ARM64
+AppImage/Debian/RPM/tar/Flatpak builds. Windows installation, architecture,
+document associations/icons, installed CLI export and uninstall passed for all
+three architectures. Linux/Flatpak native CLI execution passed on both.
+All seven local Mac and native Windows/Linux quality gates passed; Rust 1.95
+checks passed. A test-only Mac OpenSSL compatibility follow-up changes no
+production binaries; its hosted validation is tracked separately.
+Matching universal Mac DMG/CLI packages passed signature and ARM CLI checks.
+Windows signing, Mac notarization, native Intel Mac GUI and interactive
+Windows/Linux editor/printer validation remain open. Default-branch integration
+is in PR #3; release binaries use the verified tagged build-branch commit.
+[Distribution notes and run evidence](docs/pagenor/DESKTOP_RELEASE_060.md).
 
 P11.11 completes the twenty UI-first proposals through #491, with compatible later
 reliability/publishing fixes. The implementation batch passes all seven gates
 (2,306 tests passed, seven ignored; twenty WASM packages), native Mac UI inspection
 and Windows/Linux font/composition/tool compile checks. Broader Affinity/master-panel/
-titlebar work and native cross-platform distribution validation remain open.
+titlebar work remains open; native desktop distribution is recorded in P11.12.
 [Implementation and provenance](docs/pagenor/UPSTREAM_ADOPTION_20261012.md).
 
 P11.10 adds experimental PageMaker 6.5/7 opening through the optional installed

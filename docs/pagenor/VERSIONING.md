@@ -46,3 +46,11 @@ different artifacts.
 The next maintenance checkpoint is **0.5.1**, for canvas/table/panel usability and
 a larger status bar. This continues the 0.5 editor group; the native document
 format remains 3. Local verification is recorded in EDITOR_USABILITY.md.
+
+The 2026-10-12 selected UI/publishing group advances to **0.6.0**. At the
+owner's request, the native Windows/Linux package matrix and quality gates were
+completed and a matching universal Mac build was published as a GitHub
+development prerelease. This does not add a Cargo prerelease suffix or claim a
+stable signed release. See [distribution evidence](DESKTOP_RELEASE_060.md).
+Further source checks preserve that release's artifacts; a later binary update
+requires a new version.
