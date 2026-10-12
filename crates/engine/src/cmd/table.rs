@@ -29,7 +29,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "New Cell Style…",
             [],
             None,
-            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, stroke?: {weight, color, tint?}, paragraphStyle?} → {name}",
+            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, stroke?: {weight?, color?, tint?, type?, gapColor?, gapTint?} (all four edges; values as table.setCell's stroke), paragraphStyle?} → {name}",
             has_doc,
             |s, p| cell_style_create(s, p)
         ),
@@ -56,7 +56,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "New Table Style…",
             [],
             None,
-            "{name, header?, body?, footer?, leftColumn?, rightColumn?: cell style names, border?: {weight, color}, altRows?: {first, firstColor, next, nextColor}, spaceBefore?, spaceAfter?} → {name}",
+            "{name, header?, body?, footer?, leftColumn?, rightColumn?: cell style names, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, altRows?: {first, firstColor, next, nextColor}, spaceBefore?, spaceAfter?} → {name}",
             has_doc,
             table_style_create
         ),
@@ -196,9 +196,18 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?, insets?: n | [t,l,b,r], vj?: top|center|bottom|justify, text?, stroke?: {weight?, color?, tint?, type?: solid|dashed|dotted, edges?: all|outer|inner|top|left|bottom|right}}",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj?: top|center|bottom|justify, text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
+        ),
+        cmd!(
+            query "table.getCellStroke",
+            "Get Cell Stroke",
+            [],
+            None,
+            "{story?, table?, rows?, cols?, edges?} → {weight, color, tint, type, gapColor, gapTint, fill, fillTint, edges: count} of the chosen edges of the target cells; a value that differs between them is null",
+            in_table_or_ids,
+            get_cell_stroke
         ),
         cmd!("table.setRowHeight", "Row Height", [], None, "{height, mode?: atLeast|exactly}", in_table, set_row_height),
         cmd!("table.setColumnWidth", "Column Width", [], None, "{width}", in_table, set_col_width),
@@ -217,11 +226,11 @@ fn table_specs() -> Vec<CommandSpec> {
             "Table Options",
             [],
             None,
-            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null}",
+            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null}",
             in_table,
             options
         ),
-        cmd!(noundo "table.select", "Select Cells", [], None, "{story?, table?, rows?: [a,b], cols?: [a,b], what?: cell|row|column|table}", in_table_or_ids, select),
+        cmd!(noundo "table.select", "Select Cells", [], None, "{story?, table?, frame?, rows?: [a,b], cols?: [a,b], what?: cell|row|column|table}", in_table_or_ids, select),
         cmd!(noundo "table.selectTable", "Select Table", ["Table", "Select"], None, "{}", in_table, |s, p| {
             select(s, &super::with_param(p, "what", json!("table")))
         }),
@@ -381,6 +390,24 @@ fn column_width(s: &Session, t: &TextSel) -> f64 {
     spec.and_then(|f| f.columns().first().map(|c| c.width())).unwrap_or(300.0)
 }
 
+// Capture only an existing blank EOF, before deleting a selection can expose a new one.
+fn insert_table_at_range(st: &mut pagenor_doc::Story, range: std::ops::Range<usize>, table: Table) -> usize {
+    let eof = if range.start == st.len() && st.text.ends_with('\n') { st.paras.last().cloned() } else { None };
+    let fmt = super::text::prepare_eof_marker(st, range.start, pagenor_doc::TABLE_ANCHOR);
+    st.delete(range.clone());
+    let anchor = st.insert_table(range.start, table);
+    if let Some(fmt) = fmt {
+        // The populated anchor paragraph keeps its baseline; its inserted bytes own the stage.
+        let end = st.len();
+        st.format_chars(anchor..end, |f| *f = fmt.clone());
+    }
+    if let (Some(eof), Some(pf)) = (eof, st.paras.last_mut()) {
+        // The generated final LF leaves a true blank EOF with its exact original paragraph format.
+        *pf = eof;
+    }
+    anchor
+}
+
 /// The direction of the paragraph at `offset` in `story`, as composition resolves it (its style
 /// chain, then local overrides). A table created there takes it.
 fn para_direction(d: &Document, story: StoryId, offset: usize) -> pagenor_doc::TextDirection {
@@ -405,15 +432,17 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         table.options.direction = para_direction(d, t.story, t.range().start);
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
-        let pf = st.paras[st.para_at(t.range().start)].clone();
+        let mut pf = st.paras[st.para_at(t.range().start)].clone();
+        if t.range().start == st.len() && st.text.ends_with('\n') {
+            // A blank outer EOF carries typing attrs, not new cell defaults.
+            pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+        }
         let cf = st.char_format_at(t.range().start).clone();
         for c in &mut table.cells {
             c.text.paras[0] = pagenor_doc::ParaFormat { table: None, ..pf.clone() };
             c.text.chars[0].format = cf.clone();
         }
-        let r = t.range();
-        st.delete(r.clone());
-        st.insert_table(r.start, table);
+        insert_table_at_range(st, t.range(), table);
         *sel = Selection::text(TextSel { story: t.story, anchor: 0, focus: 0, frame: t.frame, cell: Some(CellAddr { table: id, row: 0, col: 0 }) });
         Ok(json!({"story": t.story.0, "table": id}))
     })
@@ -437,12 +466,15 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let (a, b) = (ranges[pa].start, ranges[pb].end);
         let data: Vec<Vec<String>> = st.text[a..b].split('\n').map(|line| line.split(sep).map(|c| c.trim().to_string()).collect()).collect();
-        let pf = st.paras[pa].clone();
+        let mut pf = st.paras[pa].clone();
+        if a == st.len() && st.text.ends_with('\n') {
+            // Converting a blank outer EOF must use the same baseline as Create Table.
+            pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+        }
         let cf = st.format_after(a).clone();
         let mut table = Table::from_strings(id, &data, width, &pf, &cf);
         table.options.direction = direction;
-        st.delete(a..b);
-        let anchor = st.insert_table(a, table);
+        let anchor = insert_table_at_range(st, a..b, table);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
         Ok(json!({"table": id, "rows": data.len()}))
     })
@@ -454,7 +486,7 @@ fn convert_to_text(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(g.story).ok_or_else(|| bad("table.convertToText", "no story"))?;
         let text = st.tables.get(&g.table).map(|t| t.plain_text()).unwrap_or_default();
         let a = st.table_anchor(g.table).ok_or_else(|| bad("table.convertToText", "no anchor"))?;
-        st.replace(a..a + pagenor_doc::TABLE_ANCHOR.len_utf8(), &text);
+        super::text::replace_preserving_eof(st, a..a + pagenor_doc::TABLE_ANCHOR.len_utf8(), &text, true, false);
         *sel = Selection::text(TextSel::caret(g.story, a + text.len()));
         ok()
     })
@@ -477,7 +509,7 @@ fn delete_table(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             a..end
         };
-        st.delete(r.clone());
+        super::text::delete_preserving_eof(st, r.clone(), true);
         *sel = Selection::text(TextSel::caret(g.story, r.start.min(st.len())));
         ok()
     })
@@ -606,29 +638,164 @@ fn unmerge(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-fn parse_stroke(v: &Value, mut base: CellStroke) -> CellStroke {
-    if let Some(w) = v.get("weight").and_then(Value::as_f64) {
-        base.weight = w.max(0.0);
+/// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
+/// right) and the lines between its rows and columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EdgeSel {
+    top: bool,
+    left: bool,
+    bottom: bool,
+    right: bool,
+    inner_h: bool,
+    inner_v: bool,
+}
+
+impl EdgeSel {
+    const ALL: EdgeSel = EdgeSel { top: true, left: true, bottom: true, right: true, inner_h: true, inner_v: true };
+
+    fn parse(v: Option<&Value>, cmd: &str) -> Result<EdgeSel> {
+        let names: Vec<&Value> = match v {
+            None | Some(Value::Null) => return Ok(EdgeSel::ALL),
+            Some(Value::Array(a)) => a.iter().collect(),
+            Some(v) => vec![v],
+        };
+        let mut e = EdgeSel::default();
+        for n in names {
+            match n.as_str() {
+                Some("all") => e = EdgeSel::ALL,
+                Some("outer") => (e.top, e.left, e.bottom, e.right) = (true, true, true, true),
+                Some("inner") => (e.inner_h, e.inner_v) = (true, true),
+                Some("top") => e.top = true,
+                Some("left") => e.left = true,
+                Some("bottom") => e.bottom = true,
+                Some("right") => e.right = true,
+                Some("innerHorizontal") => e.inner_h = true,
+                Some("innerVertical") => e.inner_v = true,
+                _ => return Err(bad(cmd, format!("unknown edge {n}; use all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical"))),
+            }
+        }
+        if e == EdgeSel::default() {
+            return Err(bad(cmd, "no edges chosen"));
+        }
+        Ok(e)
     }
-    if let Some(c) = color_param(v, "color") {
-        base.color = c;
+
+    /// Which sides (top, left, bottom, right) of the cell at `(r, c)` with `spans` are chosen
+    /// within `rg`. Left and right are physical sides, also in RTL tables.
+    fn sides(&self, rg: CellRange, (r, c): (usize, usize), spans: (u32, u32), rtl: bool) -> [bool; 4] {
+        let last_row = r.saturating_add((spans.0.max(1) - 1) as usize);
+        let last_col = c.saturating_add((spans.1.max(1) - 1) as usize);
+        let (start, end) = (c <= rg.c0, last_col >= rg.c1);
+        let (left_outer, right_outer) = if rtl { (end, start) } else { (start, end) };
+        [
+            if r <= rg.r0 { self.top } else { self.inner_h },
+            if left_outer { self.left } else { self.inner_v },
+            if last_row >= rg.r1 { self.bottom } else { self.inner_h },
+            if right_outer { self.right } else { self.inner_v },
+        ]
     }
-    if let Some(t) = v.get("tint").and_then(Value::as_f64) {
-        base.tint = t.clamp(0.0, 1.0) as f32;
+}
+
+/// A finite number in `lo..=hi`, or an error naming `key`.
+fn num_in(v: &Value, key: &str, lo: f64, hi: f64, cmd: &str) -> Result<Option<f64>> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => match x.as_f64() {
+            Some(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(Some(n)),
+            _ => Err(bad(cmd, format!("{key} must be a number from {lo} to {hi}"))),
+        },
     }
-    match str_param(v, "type") {
-        Some("dashed") => base.kind = StrokeType::Dashed { pattern: vec![base.weight.max(1.0) * 3.0, base.weight.max(1.0) * 2.0] },
-        Some("dotted") => base.kind = StrokeType::Dotted,
-        Some("solid") => base.kind = StrokeType::Solid,
-        _ => {}
+}
+
+/// A swatch of the document (or [None]), or an error naming `key`.
+fn swatch_in(doc: &Document, v: &Value, keys: &[&str], cmd: &str) -> Result<Option<String>> {
+    let Some((key, x)) = keys.iter().find_map(|k| v.get(*k).filter(|x| !x.is_null()).map(|x| (*k, x))) else { return Ok(None) };
+    let name = x.as_str().ok_or_else(|| bad(cmd, format!("{key} must be a swatch name")))?;
+    if name != pagenor_color::swatch::NONE && doc.swatch(name).is_none() {
+        return Err(bad(cmd, format!("no swatch `{name}`")));
     }
-    base
+    Ok(Some(name.to_string()))
+}
+
+/// The cell stroke type names of `type`.
+const CELL_STROKE_TYPES: &[&str] =
+    &["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+
+/// The attributes a stroke edit sets. A plain `"dashed"` gets a pattern scaled to the
+/// resulting weight of each edge.
+struct StrokeEdit {
+    attrs: pagenor_doc::CellStrokeAttrs,
+    scaled_dashes: bool,
+}
+
+impl StrokeEdit {
+    fn parse(doc: &Document, v: &Value, cmd: &str) -> Result<StrokeEdit> {
+        if !v.is_object() {
+            return Err(bad(cmd, "stroke must be an object"));
+        }
+        let mut attrs = pagenor_doc::CellStrokeAttrs {
+            weight: num_in(v, "weight", 0.0, 1000.0, cmd)?,
+            color: swatch_in(doc, v, &["color"], cmd)?,
+            tint: num_in(v, "tint", 0.0, 1.0, cmd)?.map(|t| t as f32),
+            gap_color: swatch_in(doc, v, &["gapColor", "gapSwatch"], cmd)?,
+            gap_tint: num_in(v, "gapTint", 0.0, 1.0, cmd)?.map(|t| t as f32),
+            kind: None,
+        };
+        let mut scaled_dashes = false;
+        match v.get("type") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(name)) if name == "dashed" => {
+                scaled_dashes = true;
+                attrs.kind = Some(StrokeType::Dashed { pattern: Vec::new() });
+            }
+            Some(Value::String(name)) if CELL_STROKE_TYPES.contains(&name.as_str()) => {
+                attrs.kind = Some(serde_json::from_value(json!({"kind": name})).map_err(|e| bad(cmd, e.to_string()))?);
+            }
+            Some(t @ Value::Object(_)) => {
+                let kind: StrokeType = serde_json::from_value(t.clone()).map_err(|e| bad(cmd, format!("bad stroke type: {e}")))?;
+                let finite = |v: &[f64]| v.len() <= 64 && v.iter().all(|x| x.is_finite() && *x >= 0.0);
+                match &kind {
+                    StrokeType::Dashed { pattern } if !StrokeType::valid_dash_pattern(pattern) => {
+                        return Err(bad(cmd, "a dash pattern needs 1 to 64 lengths, each 0 or 0.1 to 10000 pt, not all 0"));
+                    }
+                    StrokeType::Stripes { bands } if bands.len() > 64 || !bands.iter().all(|(a, b)| finite(&[*a, *b])) => {
+                        return Err(bad(cmd, "stripes need up to 64 bands of non-negative numbers"));
+                    }
+                    StrokeType::Style { name } if !doc.stroke_styles.iter().any(|s| s.name == *name) => {
+                        return Err(bad(cmd, format!("no stroke style `{name}`")));
+                    }
+                    _ => {}
+                }
+                attrs.kind = Some(kind);
+            }
+            Some(other) => return Err(bad(cmd, format!("unknown stroke type {other}"))),
+        }
+        Ok(StrokeEdit { attrs, scaled_dashes })
+    }
+
+    fn apply(&self, mut base: CellStroke) -> CellStroke {
+        self.attrs.apply_to(&mut base);
+        if self.scaled_dashes {
+            let w = base.weight.max(1.0);
+            base.kind = StrokeType::Dashed { pattern: vec![w * 3.0, w * 2.0] };
+        }
+        base
+    }
+}
+
+/// The stroke drawn on side `side` of the owner cell at `(r, c)` (where that side meets its
+/// first neighbour), as rendering resolves it; the cell's own copy if the side has no stretch.
+fn drawn_side(t: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Option<CellStroke> {
+    let drawn = compose::table::cell_side_strokes(t, owners, (r, c), side).first().map(|s| s.stroke.clone());
+    drawn.or_else(|| t.cell(r, c).and_then(|cell| cell.strokes.get(side).cloned()))
 }
 
 fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
-    let g = target(s, p, "table.setCell")?;
-    let fill = color_param(p, "fill");
-    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
+    const ID: &str = "table.setCell";
+    let g = target(s, p, ID)?;
+    let doc = &s.doc()?.doc;
+    let fill = swatch_in(doc, p, &["fill"], ID)?;
+    let tint = num_in(p, "tint", 0.0, 1.0, ID)?.map(|t| t as f32);
     let insets: Option<[f64; 4]> = match p.get("insets") {
         Some(Value::Number(n)) => n.as_f64().map(|v| [v.max(0.0); 4]),
         Some(Value::Array(a)) if a.len() == 4 => {
@@ -642,18 +809,43 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some("center") => Some(VerticalJustification::Center),
         Some("bottom") => Some(VerticalJustification::Bottom),
         Some("justify") => Some(VerticalJustification::Justify),
-        Some(o) => return Err(bad("table.setCell", format!("unknown vj `{o}`"))),
+        Some(o) => return Err(bad(ID, format!("unknown vj `{o}`"))),
         None => None,
     };
-    let text = str_param(p, "text").map(str::to_string);
-    let stroke = p.get("stroke").cloned();
-    edit_table(s, &g, "table.setCell", |t| {
+    let text = str_param(p, "text").map(|_| super::text_param(p, "text"));
+    let stroke = match p.get("stroke").filter(|v| !v.is_null()) {
+        Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
+        None => None,
+    };
+    edit_table(s, &g, ID, |t| {
         let owners = t.owners();
         let nc = t.ncols();
+        let nr = t.nrows();
+        let rtl = t.options.direction == pagenor_doc::TextDirection::RightToLeft;
+        // Local edits outrank previously imported edges, including explicit zero/None.
+        let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
+        // Each chosen edge starts from the stroke drawn there, which both copies of a shared
+        // edge then take, so the edit changes only the attributes it names.
+        let mut bases = std::collections::HashMap::new();
+        if let Some((_, edges)) = &stroke {
+            for r in rg.r0..=rg.r1 {
+                for c in rg.c0..=rg.c1 {
+                    if owners.get(r * nc + c) != Some(&(r, c)) {
+                        continue;
+                    }
+                    let Some(cell) = t.cell(r, c) else { continue };
+                    for (i, on) in edges.sides(rg, (r, c), (cell.row_span, cell.col_span), rtl).into_iter().enumerate() {
+                        if let Some(base) = drawn_side(t, &owners, (r, c), i).filter(|_| on) {
+                            bases.insert((r, c, i), base);
+                        }
+                    }
+                }
+            }
+        }
         for r in rg.r0..=rg.r1 {
             for c in rg.c0..=rg.c1 {
-                if owners[r * nc + c] != (r, c) {
+                if owners.get(r * nc + c) != Some(&(r, c)) {
                     continue;
                 }
                 let Some(cell) = t.cell_mut(r, c) else { continue };
@@ -673,47 +865,155 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                     let len = cell.text.len();
                     cell.text.replace(0..len, tx);
                 }
-                if let Some(sv) = &stroke {
-                    let edges = str_param(sv, "edges").unwrap_or("all");
-                    for (i, on) in [
-                        ("top", r == rg.r0),
-                        ("left", c == rg.c0),
-                        ("bottom", r + cell.row_span as usize - 1 == rg.r1),
-                        ("right", c + cell.col_span as usize - 1 == rg.c1),
-                    ]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, outer))| (i, edges == "all" || edges == *name || (edges == "outer" && *outer) || (edges == "inner" && !*outer)))
-                    {
-                        if on {
-                            cell.strokes[i] = parse_stroke(sv, cell.strokes[i].clone());
+                if let Some((edit, _)) = &stroke {
+                    for i in 0..4 {
+                        if let Some(base) = bases.remove(&(r, c, i)) {
+                            cell.strokes[i] = edit.apply(base);
+                            cell.stroke_defined[i] = true;
+                            cell.stroke_priorities[i] = priority;
+                            cell.border_overrides[i] = true;
                         }
                     }
                 }
             }
         }
-        // Neighbouring cells share edges: mirror the edges along the range boundary.
-        if let Some(sv) = &stroke {
-            let edges = str_param(sv, "edges").unwrap_or("all");
-            if matches!(edges, "all" | "outer" | "bottom") && rg.r1 + 1 < t.nrows() {
+        // Keep both copies of unmerged shared boundaries consistent. Left/right name
+        // physical sides, also in RTL tables.
+        if let Some((_, edges)) = &stroke {
+            if edges.top
+                && let Some(row) = rg.r0.checked_sub(1)
+            {
                 for c in rg.c0..=rg.c1 {
-                    let s0 = t.cell(rg.r1, c).map(|x| x.strokes[2].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(rg.r1 + 1, c)) {
-                        n.strokes[0] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (rg.r0, c), 0, (row, c), 2);
                 }
             }
-            if matches!(edges, "all" | "outer" | "right") && rg.c1 + 1 < t.ncols() {
+            if edges.bottom && rg.r1.saturating_add(1) < nr {
+                for c in rg.c0..=rg.c1 {
+                    mirror_cell_edge(t, &owners, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
+                }
+            }
+            if (if rtl { edges.right } else { edges.left })
+                && let Some(col) = rg.c0.checked_sub(1)
+            {
                 for r in rg.r0..=rg.r1 {
-                    let s0 = t.cell(r, rg.c1).map(|x| x.strokes[3].clone());
-                    if let (Some(s0), Some(n)) = (s0, t.cell_mut(r, rg.c1 + 1)) {
-                        n.strokes[1] = s0;
-                    }
+                    mirror_cell_edge(t, &owners, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
+                }
+            }
+            if (if rtl { edges.left } else { edges.right }) && rg.c1.saturating_add(1) < nc {
+                for r in rg.r0..=rg.r1 {
+                    mirror_cell_edge(t, &owners, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
                 }
             }
         }
         ok()
     })
+}
+
+/// The shown stroke attributes of the chosen edges of the target cells, and their fill; values
+/// that differ are null.
+fn get_cell_stroke(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.getCellStroke";
+    let g = target(s, p, ID)?;
+    let edges = EdgeSel::parse(p.get("edges"), ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let owners = t.owners();
+    let nc = t.ncols();
+    let rtl = t.options.direction == pagenor_doc::TextDirection::RightToLeft;
+    // One value per key, or null once two edges (cells) disagree.
+    fn merge(slot: &mut Option<Value>, v: Value) {
+        match slot {
+            None => *slot = Some(v),
+            Some(cur) if *cur != v => *cur = Value::Null,
+            _ => {}
+        }
+    }
+    let keys = ["weight", "color", "tint", "type", "gapColor", "gapTint"];
+    let mut stroke: [Option<Value>; 6] = Default::default();
+    let (mut fill, mut fill_tint) = (None, None);
+    // Each drawn edge once: a shared edge is a side of both its cells.
+    let mut seen = std::collections::HashSet::new();
+    for r in g.range.r0..=g.range.r1 {
+        for c in g.range.c0..=g.range.c1 {
+            if owners.get(r * nc + c) != Some(&(r, c)) {
+                continue;
+            }
+            let Some(cell) = t.cell(r, c) else { continue };
+            merge(&mut fill, json!(cell.fill));
+            merge(&mut fill_tint, json!(cell.fill_tint));
+            for (i, on) in edges.sides(g.range, (r, c), (cell.row_span, cell.col_span), rtl).into_iter().enumerate() {
+                if !on {
+                    continue;
+                }
+                for side in compose::table::cell_side_strokes(t, &owners, (r, c), i) {
+                    let (x, y) = (Some((r, c)), side.neighbor);
+                    if !seen.insert((i % 2, side.boundary, x.min(y), x.max(y))) {
+                        continue;
+                    }
+                    let e = side.stroke;
+                    let values = [json!(e.weight), json!(e.color), json!(e.tint), json!(e.kind), json!(e.gap_color), json!(e.gap_tint)];
+                    for (slot, v) in stroke.iter_mut().zip(values) {
+                        merge(slot, v);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (k, v) in keys.iter().zip(stroke) {
+        out.insert((*k).into(), v.unwrap_or(Value::Null));
+    }
+    out.insert("fill".into(), fill.unwrap_or(Value::Null));
+    out.insert("fillTint".into(), fill_tint.unwrap_or(Value::Null));
+    out.insert("edges".into(), json!(seen.len()));
+    Ok(Value::Object(out))
+}
+
+/// Only saturation needs rebasing. Preserve every distinct priority's order and keep
+/// zero/negative priorities untouched; the work is bounded by the table's edges.
+fn next_cell_stroke_priority(t: &mut Table) -> i32 {
+    let highest = t.cells.iter().flat_map(|cell| cell.stroke_priorities).max().unwrap_or(0).max(0);
+    if highest < i32::MAX {
+        return highest + 1;
+    }
+    let values: std::collections::BTreeSet<_> = t.cells.iter().flat_map(|cell| cell.stroke_priorities).filter(|p| *p > 0).collect();
+    let mut ranks = std::collections::BTreeMap::new();
+    let mut highest = 0i32;
+    for value in values {
+        highest = highest.saturating_add(1);
+        ranks.insert(value, highest);
+    }
+    for cell in &mut t.cells {
+        for priority in &mut cell.stroke_priorities {
+            if let Some(rank) = ranks.get(priority) {
+                *priority = *rank;
+            }
+        }
+    }
+    highest.saturating_add(1)
+}
+
+fn mirror_cell_edge(t: &mut Table, owners: &[(usize, usize)], from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize) {
+    let owner = |pos: (usize, usize)| owners.get(pos.0.checked_mul(t.ncols())?.checked_add(pos.1)?).copied();
+    if owner(from) != Some(from) || owner(to) != Some(to) {
+        return;
+    }
+    // A merged cell's edge may border several separately editable cells. Mirroring
+    // a segment onto that whole edge would change unselected neighbors; priorities
+    // instead resolve each segment without altering the merged cell's formatting.
+    let merged = |cell: &pagenor_doc::Cell| cell.row_span > 1 || cell.col_span > 1;
+    if t.cell(from.0, from.1).is_some_and(merged) || t.cell(to.0, to.1).is_some_and(merged) {
+        return;
+    }
+    let source = t
+        .cell(from.0, from.1)
+        .map(|cell| (cell.strokes[edge].clone(), cell.stroke_defined[edge], cell.stroke_priorities[edge], cell.border_overrides[edge]));
+    if let (Some((stroke, defined, priority, border_override)), Some(neighbor)) = (source, t.cell_mut(to.0, to.1)) {
+        neighbor.strokes[opposite] = stroke;
+        neighbor.stroke_defined[opposite] = defined;
+        neighbor.stroke_priorities[opposite] = priority;
+        neighbor.border_overrides[opposite] = border_override;
+    }
 }
 
 fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
@@ -765,7 +1065,7 @@ fn distribute_rows(s: &mut Session, p: &Value) -> Result<Value> {
     }
     for key in ["row", "story", "table"] {
         if let Some(v) = p.get(key)
-            && !v.as_u64().is_some_and(|n| usize::try_from(n).is_ok())
+            && v.as_u64().is_none_or(|n| usize::try_from(n).is_err())
         {
             return Err(bad(ID, format!("{key} must be a non-negative integer")));
         }
@@ -836,14 +1136,19 @@ fn parse_alt(v: &Value) -> Option<AltFills> {
 
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.options")?;
+    let border = match p.get("border").filter(|v| !v.is_null()) {
+        Some(b) => Some(StrokeEdit::parse(&s.doc()?.doc, b, "table.options")?),
+        None => None,
+    };
     let p = p.clone();
     edit_table(s, &g, "table.options", |t| {
         let o = &mut t.options;
         if let Some(v) = p.get("direction") {
             o.direction = serde_json::from_value(v.clone()).map_err(|e| bad("table.options", e.to_string()))?;
         }
-        if let Some(b) = p.get("border") {
-            o.border = parse_stroke(b, o.border.clone());
+        if let Some(b) = &border {
+            o.border = b.apply(o.border.clone());
+            o.borders = Default::default();
         }
         o.space_before = f64_or(&p, "spaceBefore", o.space_before);
         o.space_after = f64_or(&p, "spaceAfter", o.space_after);
@@ -879,6 +1184,16 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.select")?;
+    let explicit_frame = match p.get("frame") {
+        None => None,
+        Some(value) => {
+            let id = value.as_u64().map(pagenor_doc::ItemId).ok_or_else(|| bad("table.select", "frame must be an item id"))?;
+            if !s.doc()?.doc.item(id).and_then(|it| it.text_frame()).is_some_and(|t| t.story == g.story) {
+                return Err(bad("table.select", "frame must contain the table's story"));
+            }
+            Some(id)
+        }
+    };
     let (nr, nc) = {
         let st = s.doc()?;
         let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad("table.select", "no table"))?;
@@ -898,7 +1213,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         _ => {}
     }
     let st = s.doc_mut()?;
-    let frame = st.selection.text.and_then(|t| t.frame);
+    let frame = explicit_frame.or_else(|| st.selection.text.filter(|t| t.story == g.story).and_then(|t| t.frame));
     st.selection = Selection {
         cells: Some(TableSel { story: g.story, table: g.table, range: r }),
         text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row: r.r0, col: r.c0 }) }),
@@ -963,23 +1278,20 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- cell and table styles ----------
 
-fn stroke_param(v: Option<&Value>) -> Option<pagenor_doc::CellStroke> {
-    let o = v?.as_object()?;
-    let mut st = pagenor_doc::CellStroke::default();
-    if let Some(w) = o.get("weight").and_then(Value::as_f64) {
-        st.weight = w.max(0.0);
+/// A style's uniform edge stroke from `stroke`/`border`: the given values over the default
+/// edge, validated like `table.setCell`'s stroke.
+fn stroke_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<Option<CellStroke>> {
+    match v.filter(|v| !v.is_null()) {
+        Some(v) => Ok(Some(StrokeEdit::parse(&s.doc()?.doc, v, cmd)?.apply(CellStroke::default()))),
+        None => Ok(None),
     }
-    if let Some(c) = o.get("color").and_then(Value::as_str) {
-        st.color = c.to_string();
-    }
-    if let Some(t) = o.get("tint").and_then(Value::as_f64) {
-        st.tint = t.clamp(0.0, 1.0) as f32;
-    }
-    Some(st)
 }
 
 /// Fill in the cell style fields given in `p`.
-fn cell_style_fields(cs: &mut pagenor_doc::CellStyle, p: &Value, cmd: &str) -> Result<()> {
+fn cell_style_fields(cs: &mut pagenor_doc::CellStyle, p: &Value, stroke: Option<CellStroke>, cmd: &str) -> Result<()> {
+    if let Some(v) = p.get("basedOn") {
+        cs.based_on = v.as_str().map(str::to_string);
+    }
     if let Some(f) = color_param(p, "fill") {
         cs.fill = Some(f);
     }
@@ -987,18 +1299,23 @@ fn cell_style_fields(cs: &mut pagenor_doc::CellStyle, p: &Value, cmd: &str) -> R
         cs.fill_tint = Some(t.clamp(0.0, 1.0) as f32);
     }
     match p.get("insets") {
-        Some(Value::Number(n)) => cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]),
+        Some(Value::Number(n)) => {
+            cs.insets = n.as_f64().map(|v| [v.max(0.0); 4]);
+            cs.inset_overrides = Default::default();
+        }
         Some(Value::Array(a)) if a.len() == 4 => {
             let v: Vec<f64> = a.iter().map(|x| x.as_f64().unwrap_or(0.0).max(0.0)).collect();
             cs.insets = Some([v[0], v[1], v[2], v[3]]);
+            cs.inset_overrides = Default::default();
         }
         _ => {}
     }
     if let Some(v) = p.get("vj") {
         cs.vj = Some(serde_json::from_value(v.clone()).map_err(|e| bad(cmd, format!("vj: {e}")))?);
     }
-    if let Some(st) = stroke_param(p.get("stroke")) {
+    if let Some(st) = stroke {
         cs.stroke = Some(st);
+        cs.strokes = Default::default();
     }
     if let Some(ps) = str_param(p, "paragraphStyle") {
         cs.paragraph_style = Some(ps.to_string());
@@ -1024,7 +1341,8 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
         cs.stroke = Some(cell.strokes[0].clone());
         cs.paragraph_style = cell.text.paras.first().map(|p| p.style.clone());
     }
-    cell_style_fields(&mut cs, p, "style.cell.create")?;
+    let stroke = stroke_param(s, p.get("stroke"), "style.cell.create")?;
+    cell_style_fields(&mut cs, p, stroke, "style.cell.create")?;
     s.edit(|d, _| {
         let name = pagenor_doc::Styles::unique_name(|n| d.styles.cell.iter().any(|c| c.name == n), &base);
         cs.name = name.clone();
@@ -1035,15 +1353,11 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.apply", "missing name"))?.to_string();
-    let cs = s
-        .doc()?
-        .doc
-        .styles
-        .cell
-        .iter()
-        .find(|c| c.name == name)
-        .cloned()
-        .ok_or_else(|| bad("style.cell.apply", format!("no cell style `{name}`")))?;
+    let styles = &s.doc()?.doc.styles.cell;
+    if !styles.iter().any(|c| c.name == name) {
+        return Err(bad("style.cell.apply", format!("no cell style `{name}`")));
+    }
+    let cs = pagenor_doc::resolve_cell_style(styles, &name);
     let g = target(s, p, "style.cell.apply")?;
     edit_table(s, &g, "style.cell.apply", |t| {
         let owners = t.owners();
@@ -1065,7 +1379,7 @@ fn cell_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Re-apply cell styles named in `names` to every cell using them (after a style edit).
 fn reapply_cell_styles(d: &mut Document, names: &[String]) {
-    let styles = d.styles.cell.clone();
+    let styles: Vec<_> = names.iter().map(|name| pagenor_doc::resolve_cell_style(&d.styles.cell, name)).collect();
     for sid in d.stories.keys().copied().collect::<Vec<_>>() {
         let Some(st) = d.story_mut(sid) else { continue };
         for t in st.tables.values_mut() {
@@ -1080,22 +1394,47 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
                 }
             }
         }
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
     }
+}
+
+/// Include descendants when editing an inherited style, with the resolver's depth limit.
+fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
+    let styles: Vec<_> = styles.collect();
+    styles
+        .iter()
+        .filter(|(candidate, _)| {
+            let mut current = Some(*candidate);
+            for _ in 0..32 {
+                let Some(current_name) = current else { return false };
+                if current_name == name {
+                    return true;
+                }
+                current = styles.iter().find(|(n, _)| *n == current_name).and_then(|(_, base)| *base);
+            }
+            false
+        })
+        .map(|(name, _)| (*name).to_string())
+        .collect()
 }
 
 fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.edit", "missing name"))?.to_string();
+    let stroke = stroke_param(s, p.get("stroke"), "style.cell.edit")?;
     let p = p.clone();
     s.edit(|d, _| {
         let cs = d.styles_mut().cell.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.cell.edit", format!("no cell style `{name}`")))?;
-        cell_style_fields(cs, &p, "style.cell.edit")?;
-        reapply_cell_styles(d, std::slice::from_ref(&name));
+        cell_style_fields(cs, &p, stroke, "style.cell.edit")?;
+        let names = dependent_styles(&name, d.styles.cell.iter().map(|cs| (cs.name.as_str(), cs.based_on.as_deref())));
+        reapply_cell_styles(d, &names);
         ok()
     })
 }
 
-fn table_style_fields(ts: &mut pagenor_doc::TableStyle, p: &Value) {
+fn table_style_fields(ts: &mut pagenor_doc::TableStyle, p: &Value, border: Option<CellStroke>) {
+    if let Some(v) = p.get("basedOn") {
+        ts.based_on = v.as_str().map(str::to_string);
+    }
     for (k, f) in [
         ("header", &mut ts.header),
         ("body", &mut ts.body),
@@ -1107,8 +1446,9 @@ fn table_style_fields(ts: &mut pagenor_doc::TableStyle, p: &Value) {
             *f = v.as_str().map(str::to_string);
         }
     }
-    if let Some(b) = stroke_param(p.get("border")) {
+    if let Some(b) = border {
         ts.border = Some(b);
+        ts.borders = Default::default();
     }
     if let Some(a) = p.get("altRows").and_then(Value::as_object) {
         let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| v as u32);
@@ -1136,7 +1476,8 @@ fn table_style_fields(ts: &mut pagenor_doc::TableStyle, p: &Value) {
 fn table_style_create(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Table Style 1").to_string();
     let mut ts = pagenor_doc::TableStyle::default();
-    table_style_fields(&mut ts, p);
+    let border = stroke_param(s, p.get("border"), "style.table.create")?;
+    table_style_fields(&mut ts, p, border);
     s.edit(|d, _| {
         let name = pagenor_doc::Styles::unique_name(|n| d.styles.table.iter().any(|c| c.name == n), &base);
         ts.name = name.clone();
@@ -1148,7 +1489,10 @@ fn table_style_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.table.apply", "missing name"))?.to_string();
     let doc = &s.doc()?.doc;
-    let ts = doc.styles.table.iter().find(|c| c.name == name).cloned().ok_or_else(|| bad("style.table.apply", format!("no table style `{name}`")))?;
+    if !doc.styles.table.iter().any(|c| c.name == name) {
+        return Err(bad("style.table.apply", format!("no table style `{name}`")));
+    }
+    let ts = doc.styles.resolve_table_style(&name);
     let cells = doc.styles.cell.clone();
     let g = target(s, p, "style.table.apply")?;
     edit_table(s, &g, "style.table.apply", |t| {
@@ -1159,20 +1503,23 @@ fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.table.edit", "missing name"))?.to_string();
+    let border = stroke_param(s, p.get("border"), "style.table.edit")?;
     let p = p.clone();
     s.edit(|d, _| {
         let ts =
             d.styles_mut().table.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.table.edit", format!("no table style `{name}`")))?;
-        table_style_fields(ts, &p);
-        let (ts, cells) = (ts.clone(), d.styles.cell.clone());
+        table_style_fields(ts, &p, border);
+        let names = dependent_styles(&name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
+        let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
+        let cells = d.styles.cell.clone();
         for sid in d.stories.keys().copied().collect::<Vec<_>>() {
             let Some(st) = d.story_mut(sid) else { continue };
             for t in st.tables.values_mut() {
-                if t.style == name {
+                if let Some(ts) = styles.iter().find(|ts| ts.name == t.style) {
                     ts.apply_to(std::sync::Arc::make_mut(t), &cells);
                 }
             }
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
         ok()
     })
@@ -1193,9 +1540,9 @@ mod style_tests {
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
         s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
         s.execute("style.paragraph.create", &json!({"name": "Cell Head"})).unwrap();
-        s.execute("style.cell.create", &json!({"name": "Head", "fill": "Black", "paragraphStyle": "Cell Head", "insets": 6})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Head", "fill": "[Black]", "paragraphStyle": "Cell Head", "insets": 6})).unwrap();
         s.execute("style.cell.create", &json!({"name": "Body", "fill": "[Paper]"})).unwrap();
-        s.execute("style.table.create", &json!({"name": "Data", "header": "Head", "body": "Body", "border": {"weight": 2, "color": "Black"}}))
+        s.execute("style.table.create", &json!({"name": "Data", "header": "Head", "body": "Body", "border": {"weight": 2, "color": "[Black]"}}))
             .unwrap();
         s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
         let t = |s: &Session| -> pagenor_doc::Table {
@@ -1206,7 +1553,7 @@ mod style_tests {
         assert_eq!(tb.style, "Data");
         assert_eq!(tb.options.border.weight, 2.0);
         let head = tb.cell(0, 0).unwrap();
-        assert_eq!((head.fill.as_str(), head.style.as_str(), head.insets), ("Black", "Head", [6.0; 4]));
+        assert_eq!((head.fill.as_str(), head.style.as_str(), head.insets), ("[Black]", "Head", [6.0; 4]));
         assert_eq!(head.text.paras[0].style, "Cell Head");
         assert_eq!(tb.cell(1, 1).unwrap().style, "Body");
         // Editing the cell style updates its cells.
@@ -1309,12 +1656,18 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
     let xf = pagenor_geom::Affine::translate(((bw - nw * k) / 2.0, (bh - nh * k) / 2.0)) * pagenor_geom::Affine::scale(k);
     super::file::validate_placement((nw, nh), pagenor_geom::Rect::new(0.0, 0.0, bw, bh), xf, ID)?;
     s.edit(|d, sel| {
-        let aid = pagenor_doc::AssetId(d.alloc());
+        let fresh = pagenor_doc::AssetId(d.alloc());
         let mime = pagenor_render::image_mime(&bytes).to_string();
-        d.assets.insert(
-            aid,
-            std::sync::Arc::new(pagenor_doc::Asset { page: 0, id: aid, name, mime, link, data: std::sync::Arc::new(bytes), pixels: Some((pw, ph)) }),
-        );
+        let aid = d.add_asset(pagenor_doc::Asset {
+            page: 0,
+            id: fresh,
+            name,
+            mime,
+            link,
+            data: std::sync::Arc::new(bytes),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        });
         let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
         let t = st.table_mut(g.table).ok_or_else(|| bad(ID, "no table"))?;
         let cell = t.cell_mut(r, c).ok_or_else(|| bad(ID, format!("no cell {r},{c}")))?;
@@ -1322,9 +1675,11 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
             asset: aid,
             size: (nw, nh),
             xf,
+            clip: None,
             auto_fit: if fill { pagenor_doc::Fitting::FillProportionally } else { pagenor_doc::Fitting::FitProportionally },
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         clamp_selection(d, sel);
         Ok(json!({"asset": aid.0, "row": r, "col": c}))
@@ -1671,3 +2026,7 @@ mod arabic_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "table_interchange_tests.rs"]
+mod interchange_tests;

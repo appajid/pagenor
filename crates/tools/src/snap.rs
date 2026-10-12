@@ -52,6 +52,12 @@ fn rect_finite(r: Rect) -> bool {
 /// pixels, converted with [`ToolContext::tol`]. A zone of 0 or less is no hit.
 /// Rotate does not run the position passes, so a locked axis still leaves room for [`Snap::angle`].
 pub fn snap(cx: &ToolContext, req: SnapRequest<'_>) -> Snap {
+    snap_with_min_lengths(cx, req, [0.0; 2])
+}
+
+/// Resize's fixed stroke outset sets the minimum reachable visible dimension.
+/// The bounds affect only dimension candidates, before choosing the closest match.
+pub(crate) fn snap_with_min_lengths(cx: &ToolContext, req: SnapRequest<'_>, min_lengths: [f64; 2]) -> Snap {
     if !rect_finite(req.rect) || !cx.snap.any() {
         return Snap::default();
     }
@@ -66,8 +72,8 @@ pub fn snap(cx: &ToolContext, req: SnapRequest<'_>) -> Snap {
     // Three false flags lock the axis: do not move it and do not draw a guide for it.
     let x_free = req.x_edges != [false; 3];
     let y_free = req.y_edges != [false; 3];
-    let x_hit = x_free.then(|| first_on_axis(cx, &req, Axis::X, tol)).flatten();
-    let y_hit = y_free.then(|| first_on_axis(cx, &req, Axis::Y, tol)).flatten();
+    let x_hit = x_free.then(|| first_on_axis(cx, &req, Axis::X, tol, min_lengths[0])).flatten();
+    let y_hit = y_free.then(|| first_on_axis(cx, &req, Axis::Y, tol, min_lengths[1])).flatten();
     let mut out = Snap::default();
     if let Some(hit) = &x_hit {
         out.delta.x = hit.delta;
@@ -257,7 +263,7 @@ fn push_parent_rotation_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side) {
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side) {
         for item in &parent.items {
             if overridden.contains(&item.id) {
                 continue;
@@ -374,12 +380,12 @@ fn format_angle(deg: f64) -> String {
     if nearest.is_finite() && (deg - nearest).abs() < 1e-6 { format!("{nearest:.0}") } else { format!("{deg:.1}") }
 }
 
-fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
+fn first_on_axis(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64, min_length: f64) -> Option<AxisHit> {
     pass_grid(cx, req, axis, tol)
         .or_else(|| nearer(pass_baseline(cx, req, axis, tol), pass_guides(cx, req, axis, tol)))
         .or_else(|| pass_align(cx, req, axis, tol))
         .or_else(|| pass_spacing(cx, req, axis, tol))
-        .or_else(|| pass_dimensions(cx, req, axis, tol))
+        .or_else(|| pass_dimensions(cx, req, axis, tol, min_length))
 }
 
 /// The baseline grid and the guides (ruler guides, margins, columns) compete by distance, so a
@@ -765,7 +771,7 @@ fn gap_ends(axis: Axis, left: f64, right: f64, perp_lo: f64, perp_hi: f64) -> Op
 /// sides. Rotation is dropped. Width and height are both candidates for whichever length is set.
 /// The closest length inside the zone wins. Delta is the length difference applied from the moving
 /// edge. A rotated rectangle contributes its side lengths, not the axis-aligned box.
-fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> Option<AxisHit> {
+fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64, min_length: f64) -> Option<AxisHit> {
     if !matches!(req.gesture, Gesture::Resize | Gesture::Create) || !cx.snap.smart_guides || !cx.snap.smart_dimensions {
         return None;
     }
@@ -778,7 +784,7 @@ fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64
     }
     let mut best: Option<(f64, f64)> = None;
     for len in dimension_lengths(cx, req) {
-        if !len.is_finite() || len < 0.0 {
+        if !len.is_finite() || len < 0.0 || len < min_length {
             continue;
         }
         let dist = (len - proposed).abs();
@@ -787,6 +793,10 @@ fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64
         }
     }
     let (_, length) = best?;
+    dimension_hit(cx, req, axis, proposed, length)
+}
+
+fn dimension_hit(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, proposed: f64, length: f64) -> Option<AxisHit> {
     let diff = length - proposed;
     if !diff.is_finite() {
         return None;
@@ -800,6 +810,261 @@ fn pass_dimensions(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64
         length_delta: Some(diff),
         dimension: Some(dimension_mark(req, axis, diff, text)),
         gaps: Vec::new(),
+    })
+}
+
+/// Exact interval search can be complete geometrically while finite-precision
+/// finishing remains unresolved. Never label a spent validation budget NoMatch.
+pub(crate) enum CoupledSearch<T> {
+    Matched(T),
+    NoMatch,
+    Unresolved,
+}
+
+pub(crate) enum CoupledRange {
+    Bounds([f64; 2]),
+    Empty,
+    Unresolved,
+}
+
+#[derive(Clone, Copy)]
+struct DimensionCandidate {
+    length: f64,
+    correction: f64,
+    ordinal: usize,
+}
+
+// Range-minimum index for stable ordinal ties, including rounded score plateaus.
+struct CandidateOrdinals {
+    base: usize,
+    tree: Vec<usize>,
+}
+
+fn earlier_candidate(xs: &[DimensionCandidate], a: usize, b: usize) -> usize {
+    if a == usize::MAX {
+        b
+    } else if b == usize::MAX || xs[a].ordinal < xs[b].ordinal {
+        a
+    } else {
+        b
+    }
+}
+
+impl CandidateOrdinals {
+    fn new(xs: &[DimensionCandidate]) -> Option<Self> {
+        let base = xs.len().checked_next_power_of_two()?;
+        let capacity = base.checked_mul(2)?;
+        let mut tree = Vec::new();
+        tree.try_reserve_exact(capacity).ok()?;
+        tree.resize(capacity, usize::MAX);
+        for (index, leaf) in tree[base..base + xs.len()].iter_mut().enumerate() {
+            *leaf = index;
+        }
+        for index in (1..base).rev() {
+            tree[index] = earlier_candidate(xs, tree[index * 2], tree[index * 2 + 1]);
+        }
+        Some(Self { base, tree })
+    }
+
+    fn first(&self, xs: &[DimensionCandidate], mut lo: usize, mut hi: usize) -> Option<usize> {
+        let mut best = usize::MAX;
+        lo += self.base;
+        hi += self.base;
+        while lo < hi {
+            if lo & 1 == 1 {
+                best = earlier_candidate(xs, best, self.tree[lo]);
+                lo += 1;
+            }
+            if hi & 1 == 1 {
+                hi -= 1;
+                best = earlier_candidate(xs, best, self.tree[hi]);
+            }
+            lo /= 2;
+            hi /= 2;
+        }
+        (best != usize::MAX).then_some(best)
+    }
+}
+
+struct CoupledChoice {
+    score: f64,
+    x_ordinal: usize,
+    y_ordinal: usize,
+    x: usize,
+    y: usize,
+    lo: usize,
+    hi: usize,
+}
+
+impl PartialEq for CoupledChoice {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for CoupledChoice {}
+
+impl PartialOrd for CoupledChoice {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CoupledChoice {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // BinaryHeap is a max heap; reverse the requested minimum-score order.
+        other.score.total_cmp(&self.score).then(other.x_ordinal.cmp(&self.x_ordinal)).then(other.y_ordinal.cmp(&self.y_ordinal))
+    }
+}
+
+fn best_coupled_range(
+    xs: &[DimensionCandidate],
+    ys: &[DimensionCandidate],
+    ordinals: &CandidateOrdinals,
+    proposed_x: f64,
+    y: usize,
+    lo: usize,
+    hi: usize,
+) -> Option<CoupledChoice> {
+    if lo >= hi {
+        return None;
+    }
+    let score = |x: &DimensionCandidate| x.correction + ys[y].correction;
+    let pivot = lo + xs[lo..hi].partition_point(|x| x.length < proposed_x);
+    let mut best = f64::INFINITY;
+    if pivot > lo {
+        best = best.min(score(&xs[pivot - 1]));
+    }
+    if pivot < hi {
+        best = best.min(score(&xs[pivot]));
+    }
+    // Addition/subtraction can round distinct corrections to the same score.
+    // Search the entire equal-score plateau, rather than just its two neighbors.
+    let first = lo + xs[lo..pivot].partition_point(|x| score(x) > best);
+    let end = pivot + xs[pivot..hi].partition_point(|x| score(x) <= best);
+    let x = ordinals.first(xs, first, end)?;
+    Some(CoupledChoice { score: best, x_ordinal: xs[x].ordinal, y_ordinal: ys[y].ordinal, x, y, lo, hi })
+}
+
+fn search_coupled_pairs<T>(
+    lengths: &[f64],
+    proposed: [f64; 2],
+    minimum: [f64; 2],
+    tol: f64,
+    interval: impl Fn(f64) -> CoupledRange,
+    mut accept: impl FnMut([f64; 2]) -> Option<T>,
+) -> CoupledSearch<T> {
+    use std::collections::BinaryHeap;
+
+    if !tol.is_finite()
+        || tol <= 0.0
+        || !(tol * 2.0).is_finite()
+        || proposed.iter().any(|v| !v.is_finite())
+        || minimum.iter().any(|v| !v.is_finite() || *v < 0.0)
+    {
+        return CoupledSearch::Unresolved;
+    }
+    let mut axes = [Vec::new(), Vec::new()];
+    for axis in &mut axes {
+        if axis.try_reserve(lengths.len()).is_err() {
+            return CoupledSearch::Unresolved;
+        }
+    }
+    // One filter pass; ordinals are captured before sorting or exact-value deduplication.
+    for (ordinal, &length) in lengths.iter().enumerate() {
+        if !length.is_finite() || length < 0.0 {
+            continue;
+        }
+        for axis in 0..2 {
+            let correction = (length - proposed[axis]).abs();
+            if length >= minimum[axis] && correction.is_finite() && correction <= tol {
+                axes[axis].push(DimensionCandidate { length, correction, ordinal });
+            }
+        }
+    }
+    for axis in &mut axes {
+        axis.sort_by(|a, b| a.length.total_cmp(&b.length).then(a.ordinal.cmp(&b.ordinal)));
+        // Equal targets have identical geometry; the first original ordinal always wins.
+        axis.dedup_by(|a, b| a.length == b.length);
+    }
+    let [xs, ys] = axes;
+    if xs.is_empty() || ys.is_empty() {
+        return CoupledSearch::NoMatch;
+    }
+    let Some(ordinals) = CandidateOrdinals::new(&xs) else { return CoupledSearch::Unresolved };
+    let Some(budget) = xs.len().checked_add(ys.len()).and_then(|n| n.checked_mul(2)) else { return CoupledSearch::Unresolved };
+    let mut queue = BinaryHeap::new();
+    if queue.try_reserve(ys.len()).is_err() {
+        return CoupledSearch::Unresolved;
+    }
+    for (y, candidate) in ys.iter().enumerate() {
+        let [lower, upper] = match interval(candidate.length) {
+            CoupledRange::Bounds(bounds) => bounds,
+            CoupledRange::Empty => continue,
+            CoupledRange::Unresolved => return CoupledSearch::Unresolved,
+        };
+        if !lower.is_finite() || upper.is_nan() || lower > upper {
+            return CoupledSearch::Unresolved;
+        }
+        let lo = xs.partition_point(|x| x.length < lower);
+        let hi = xs.partition_point(|x| x.length <= upper);
+        if let Some(choice) = best_coupled_range(&xs, &ys, &ordinals, proposed[0], y, lo, hi) {
+            queue.push(choice);
+        }
+    }
+    let mut attempts = 0;
+    while let Some(choice) = queue.pop() {
+        if attempts == budget {
+            return CoupledSearch::Unresolved;
+        }
+        attempts += 1;
+        if let Some(result) = accept([xs[choice.x].length, ys[choice.y].length]) {
+            return CoupledSearch::Matched(result);
+        }
+        // A rejected endpoint/nearest candidate must not discard the rest of its Y row.
+        // Remove just this pair; each disjoint remainder supplies its own best candidate.
+        if queue.try_reserve(2).is_err() {
+            return CoupledSearch::Unresolved;
+        }
+        for (lo, hi) in [(choice.lo, choice.x), (choice.x + 1, choice.hi)] {
+            if let Some(next) = best_coupled_range(&xs, &ys, &ordinals, proposed[0], choice.y, lo, hi) {
+                queue.push(next);
+            }
+        }
+    }
+    CoupledSearch::NoMatch
+}
+
+/// Called only after an eligible two-hit corner fails its initial final solve.
+pub(crate) fn retry_complete_dimensions(
+    cx: &ToolContext,
+    req: &SnapRequest<'_>,
+    minimum: [f64; 2],
+    interval: impl Fn(f64) -> CoupledRange,
+    mut finish: impl FnMut(&Snap) -> Option<Rect>,
+) -> CoupledSearch<(Snap, Rect)> {
+    let [Some(px), Some(py)] = req.lengths else { return CoupledSearch::NoMatch };
+    if !matches!(req.gesture, Gesture::Resize)
+        || !rect_finite(req.rect)
+        || !cx.snap.smart_guides
+        || !cx.snap.smart_dimensions
+        || req.x_edges == [false; 3]
+        || req.y_edges == [false; 3]
+    {
+        return CoupledSearch::NoMatch;
+    }
+    let Some(tol) = zone_tol(cx) else { return CoupledSearch::NoMatch };
+    let lengths = dimension_lengths(cx, req);
+    search_coupled_pairs(&lengths, [px, py], minimum, tol, interval, |[w, h]| {
+        let x_hit = dimension_hit(cx, req, Axis::X, px, w)?;
+        let y_hit = dimension_hit(cx, req, Axis::Y, py, h)?;
+        let mut hit = Snap { delta: Vec2::new(x_hit.delta, y_hit.delta), length_delta: [x_hit.length_delta, y_hit.length_delta], ..Snap::default() };
+        let to = finish(&hit)?;
+        // Construct feedback only for the authoritative accepted final geometry.
+        let placed = Rect::new(req.rect.x0 + hit.delta.x, req.rect.y0 + hit.delta.y, req.rect.x1 + hit.delta.x, req.rect.y1 + hit.delta.y);
+        push_hit_guides(&mut hit.guides, cx, req, Axis::X, &x_hit, placed);
+        push_hit_guides(&mut hit.guides, cx, req, Axis::Y, &y_hit, placed);
+        Some((hit, to))
     })
 }
 
@@ -1064,7 +1329,7 @@ fn push_parent_length_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side) {
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side) {
         for item in &parent.items {
             if overridden.contains(&item.id) {
                 continue;
@@ -1094,9 +1359,10 @@ fn pass_guides(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) ->
     let flags = axis_flags(req, axis);
     let (moving_lo, moving_hi) = perp_ends(req.rect, axis);
     let mut best: Option<Best> = None;
-    for page in &sp.pages {
+    for (pi, page) in sp.pages.iter().enumerate() {
         let page_bounds = page.bounds();
-        for guide in &page.guides {
+        let inherited = cx.doc.inherited_guides(req.spread, pi);
+        for guide in page.guides.iter().chain(&inherited) {
             if !guide.visible_in(cx.doc) || !guide.position.is_finite() || guide.orientation != axis_orientation(axis) {
                 continue;
             }
@@ -1278,7 +1544,7 @@ fn offer_parent_chain(
         return;
     }
     let next = parent.parent.as_ref().and_then(|info| info.based_on);
-    if let Some(page_idx) = shown_parent_page_index(parent.pages.len(), doc_side)
+    if let Some(page_idx) = parent.parent_page_for_side(doc_side)
         && let Some(parent_page) = parent.pages.get(page_idx)
     {
         let dx = doc_x - parent_page.x;
@@ -1300,11 +1566,6 @@ fn offer_parent_chain(
     let Some(next_id) = next else { return };
     let Some(next_index) = cx.doc.parent_index(next_id) else { return };
     offer_parent_chain(best, cx, req, flags, axis, tol, doc_x, doc_side, overridden, next_index, seen);
-}
-
-/// Left page of a facing parent, otherwise the last page. Same choice as `Document::parent_page_for`.
-fn shown_parent_page_index(page_count: usize, side: PageSide) -> Option<usize> {
-    if page_count >= 2 && side == PageSide::Left { Some(0) } else { page_count.checked_sub(1) }
 }
 
 fn shift_x(r: Rect, dx: f64) -> Rect {
@@ -1484,7 +1745,17 @@ mod tests {
     }
 
     fn ctx_on<'a>(doc: &'a Document, sel: &'a Selection, cache: &'a Cache, layout: &'a CanvasLayout) -> ToolContext<'a> {
-        ToolContext { doc, selection: sel, cache, layout, zoom: 1.0, layer: doc.default_layer(), snap: SnapView::FACTORY, unit: Unit::Points }
+        ToolContext {
+            doc,
+            selection: sel,
+            cache,
+            layout,
+            zoom: 1.0,
+            layer: doc.default_layer(),
+            snap: SnapView::FACTORY,
+            unit: Unit::Points,
+            scale_strokes: true,
+        }
     }
 
     fn y_req(rect: Rect) -> SnapRequest<'static> {
@@ -1501,6 +1772,27 @@ mod tests {
             radius: 0.0,
             pointer: Point::new(0.0, 0.0),
         }
+    }
+
+    #[test]
+    fn objects_snap_to_inherited_master_guides_and_respect_layer_visibility() {
+        let mut doc = Document::new(&NewDocument::default());
+        let layer = doc.default_layer();
+        Arc::make_mut(&mut doc.parents[0]).pages[1].guides.push(Guide {
+            orientation: Orientation::Horizontal,
+            position: 141.0,
+            spread: false,
+            locked: false,
+            layer: Some(layer),
+            liquid: false,
+        });
+        let (cache, sel) = (Cache::new(), Selection::default());
+        let layout = CanvasLayout::new(&doc, false);
+        let request = y_req(Rect::new(150.0, 140.0, 200.0, 200.0));
+        let hit = pass_guides(&ctx_on(&doc, &sel, &cache, &layout), &request, Axis::Y, 4.0).unwrap();
+        assert_eq!(hit.delta, 1.0);
+        doc.layers[0].show_guides = false;
+        assert!(pass_guides(&ctx_on(&doc, &sel, &cache, &layout), &request, Axis::Y, 4.0).is_none());
     }
 
     fn move_req<'a>(rect: Rect, exclude: &'a [ItemId]) -> SnapRequest<'a> {
@@ -2074,5 +2366,94 @@ mod tests {
         let near_group = ask(28.0);
         let angle = near_group.angle.expect("absolute 30");
         assert!((angle - 30.0).abs() < 1e-6, "angle {angle}");
+    }
+}
+
+#[cfg(test)]
+mod complete_coupled_tests {
+    use super::{CoupledRange, CoupledSearch, search_coupled_pairs};
+
+    #[test]
+    fn complete_pair_score_uses_stable_original_ordinals() {
+        let result = search_coupled_pairs(&[5.0, 3.0, 5.0], [4.0; 2], [0.0; 2], 6.0, |_| CoupledRange::Bounds([0.0, 10.0]), Some);
+        assert!(matches!(result, CoupledSearch::Matched(pair) if pair == [5.0, 5.0]));
+    }
+
+    #[test]
+    fn complete_pair_score_ties_include_the_entire_rounded_plateau() {
+        let result = search_coupled_pairs(
+            &[1.0, 0.5, 1e16],
+            [0.0, 1e16],
+            [0.0; 2],
+            2e16,
+            |height| if height == 0.5 { CoupledRange::Bounds([0.5, 1.0]) } else { CoupledRange::Empty },
+            Some,
+        );
+        // .5 and 1 both give total correction 1e16 after rounding. Ordinal 0 wins.
+        assert!(matches!(result, CoupledSearch::Matched(pair) if pair == [1.0, 0.5]));
+    }
+
+    #[test]
+    fn rejected_nearest_pair_advances_within_the_same_y_interval() {
+        let mut visited = Vec::new();
+        let result = search_coupled_pairs(
+            &[1.0, 2.0, 3.0],
+            [1.0; 2],
+            [0.0; 2],
+            6.0,
+            |height| if height == 1.0 { CoupledRange::Bounds([1.0, 3.0]) } else { CoupledRange::Empty },
+            |pair| {
+                visited.push(pair);
+                (pair == [2.0, 1.0]).then_some(pair)
+            },
+        );
+        assert!(matches!(result, CoupledSearch::Matched(pair) if pair == [2.0, 1.0]));
+        assert_eq!(visited, [[1.0, 1.0], [2.0, 1.0]]);
+    }
+
+    #[test]
+    fn complete_pair_validation_budget_is_linear_and_not_reported_as_no_match() {
+        let lengths: Vec<_> = (1..=32).map(f64::from).collect();
+        let mut attempts = 0;
+        let result: CoupledSearch<()> = search_coupled_pairs(
+            &lengths,
+            [16.0; 2],
+            [0.0; 2],
+            100.0,
+            |_| CoupledRange::Bounds([1.0, 32.0]),
+            |_| {
+                attempts += 1;
+                None
+            },
+        );
+        assert!(matches!(result, CoupledSearch::Unresolved));
+        assert_eq!(attempts, 128);
+    }
+
+    #[test]
+    fn complete_pair_search_matches_small_cartesian_oracle() {
+        let lengths = [5.0_f64, 1.0, 4.0, 2.0, 3.0, 2.0];
+        for proposed in [[1.5, 4.5], [3.0, 3.0], [4.0, 2.0]] {
+            // A different feasible interval for each Y, plus one final-solver rejection.
+            let allowed = |w: f64, h: f64| w >= h / 2.0 && w <= h + 1.0 && [w, h] != [3.0, 3.0];
+            let mut oracle = Vec::new();
+            for (x, &w) in lengths.iter().enumerate() {
+                for (y, &h) in lengths.iter().enumerate() {
+                    if allowed(w, h) {
+                        oracle.push(((w - proposed[0]).abs() + (h - proposed[1]).abs(), x, y, [w, h]));
+                    }
+                }
+            }
+            oracle.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+            let result = search_coupled_pairs(
+                &lengths,
+                proposed,
+                [0.0; 2],
+                6.0,
+                |h| CoupledRange::Bounds([h / 2.0, h + 1.0]),
+                |[w, h]| allowed(w, h).then_some([w, h]),
+            );
+            assert!(matches!(result, CoupledSearch::Matched(pair) if pair == oracle[0].3));
+        }
     }
 }

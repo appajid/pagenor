@@ -121,6 +121,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
     divider(ui);
+    if i.count > 1 {
+        section(ui, crate::i18n::tr(&app.ui.language, "Pathfinder"), true);
+        pathfinder_row(app, ui);
+        divider(ui);
+    }
+
     if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Text Frame"), true);
         text_frame_section(app, ui);
@@ -164,6 +170,7 @@ const PAGE_PRESETS: &[(&str, f64, f64)] = &[
     ("A3", 841.89, 1190.55),
     ("A4", 595.276, 841.89),
     ("A5", 419.528, 595.276),
+    ("A6", 297.638, 419.528),
     ("B5", 498.898, 708.661),
 ];
 
@@ -344,7 +351,9 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if bl != app.ui.baseline_grid {
         let _ = app.run("view.baselineGrid", json!({}));
     }
-    app.ui.document_grid = dg;
+    if dg != app.ui.document_grid {
+        let _ = app.run("view.documentGrid", json!({}));
+    }
     rule(ui);
     let (mut guides, mut locked, mut smart) = (app.ui.guides, app.ui.guides_locked, app.ui.smart_guides);
     section_row(ui, crate::i18n::tr(&app.ui.language, "Guides"), |ui| {
@@ -380,7 +389,7 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
 // ---------------------------------------------------------------- Objects
 
 /// The 9-point reference-point proxy; returns a newly picked point (0..8, row-major).
-fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
+pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
     let t = Tokens::get(ui.ctx());
     let mut out = None;
     let pitch = r.width() / 3.0;
@@ -459,13 +468,65 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
+    transform_angles(app, ui, rp);
     if more_options(ui, &app.ui.language).clicked() {
         app.ui.open_panel = Some("info".into());
     }
 }
 
+/// Properties › Transform, below X/Y/W/H as in InDesign: rotation and shear angles beside the
+/// X and Y scales (totals, as Transformations are Totals), then rotate a quarter turn and flip.
+fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tv = app.session.execute("transform.info", &json!({})).ok();
+    let content = app.session.active().is_some_and(|st| st.selection.content);
+    let tv_get = |k: &str| tv.as_ref().and_then(|v| if content { v["content"][k].as_f64() } else { v[k].as_f64() });
+    ui.add_space(4.0);
+    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    let mut set = serde_json::Map::new();
+    let rows = [
+        [("tool-rotate", "Rotation Angle", "rotation", "°", "p_rot"), ("tool-scale", "Scale X Percentage", "scaleX", "%", "p_sx")],
+        [("tool-shear", "Shear X Angle", "shear", "°", "p_shear"), ("tool-scale", "Scale Y Percentage", "scaleY", "%", "p_sy")],
+    ];
+    for (row, cells) in rows.into_iter().enumerate() {
+        let yy = row as f32 * 25.0;
+        for (col, (icon, tip, key, suffix, id)) in cells.into_iter().enumerate() {
+            let x = if col == 0 { 40.0 } else { 120.0 };
+            let ir = sub(b, x, yy + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, t.icon);
+            ui.interact(ir, ui.id().with(id), Sense::hover()).on_hover_text(crate::i18n::tr(&lang, tip));
+            if let Some(v) = place(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H), |ui| widgets::number(ui, id, tv_get(key), suffix, 54.0, 1)) {
+                set.insert(key.into(), json!(v));
+            }
+        }
+    }
+    if !set.is_empty() {
+        set.insert("ref".into(), json!(rp));
+        let _ = app.run("transform.set", Value::Object(set));
+    }
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(36.0);
+        ui.spacing_mut().item_spacing.x = 10.0;
+        for (icon, tip, cmd, params) in [
+            ("rotate-cw", "Rotate 90° Clockwise", "transform.rotate", json!({"angle": -90})),
+            ("rotate-ccw", "Rotate 90° Counterclockwise", "transform.rotate", json!({"angle": 90})),
+            ("flip-h", "Flip Horizontal", "transform.flip", json!({"axis": "horizontal"})),
+            ("flip-v", "Flip Vertical", "transform.flip", json!({"axis": "vertical"})),
+        ] {
+            let label = crate::i18n::tr(&lang, tip);
+            let resp = icon_toggle(ui, icon, false, label);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+            if resp.clicked() {
+                let _ = app.run(cmd, params);
+            }
+        }
+    });
+}
+
 /// A stroke-type preview dropdown (light box with the line style).
-fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
+pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
     const TYPES: &[(&str, &str)] = &[
         ("Solid", "solid"),
         ("Dashed", "dashed"),
@@ -562,6 +623,19 @@ fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape) {
     p.add(egui::Shape::line(pts, s));
 }
 
+pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
+    let resp = preview_dropdown(ui, width, |p, r| paint_corner_shape(p, r, shape));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(140.0);
+        for s in CornerShape::ALL {
+            if ui.selectable_label(s == shape, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, s.label()))).clicked() {
+                let _ = app.run("object.cornerOptions", json!({"shape": s, "size": if size > 0.0 { size } else { 12.0 }}));
+                ui.close();
+            }
+        }
+    });
+}
+
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -575,12 +649,9 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     if chip_double_clicked(ui, &resp) {
         egui::Popup::close_all(ui.ctx());
-        let hex = doc.resolve_color(&i.fill, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"fill","hex":hex})));
+        appearance_picker(app, ui, &doc, &i.fill, false, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
-            let _ = app.run("object.fill", json!({"swatch": n}));
-        });
+        swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
     }
     crate::rtl::paint(
         ui.painter(),
@@ -602,12 +673,9 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     if chip_double_clicked(ui, &resp) {
         egui::Popup::close_all(ui.ctx());
-        let hex = doc.resolve_color(&i.stroke, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"stroke","hex":hex})));
+        appearance_picker(app, ui, &doc, &i.stroke, true, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
-            let _ = app.run("object.stroke", json!({"swatch": n}));
-        });
+        swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
     }
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         app.ui.open_panel = Some("stroke".into());
@@ -635,16 +703,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let _ = app.run("object.cornerOptions", json!({"shape": sh, "size": v}));
     }
     place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| {
-        let resp = preview_dropdown(ui, 54.0, |p, r| paint_corner_shape(p, r, shape));
-        egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(140.0);
-            for s in CornerShape::ALL {
-                if ui.selectable_label(s == shape, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, s.label()))).clicked() {
-                    let _ = app.run("object.cornerOptions", json!({"shape": s, "size": if size > 0.0 { size } else { 12.0 }}));
-                    ui.close();
-                }
-            }
-        });
+        corner_type_dropdown(app, ui, shape, size, 54.0);
     });
     ui.add_space(4.0);
     // Opacity.
@@ -691,23 +750,89 @@ fn chip_double_clicked(ui: &Ui, resp: &egui::Response) -> bool {
             }))
 }
 
-/// Swatch list popup attached to `resp`.
-fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
+/// Keep the picker on the explicit text target chosen in this popup.
+fn appearance_picker(app: &mut DesignApp, ui: &Ui, doc: &pagenor_doc::Document, swatch: &str, stroke: bool, text_frame: bool) {
+    let text = text_frame && ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new(("swatch_apply_to_text", stroke)))).unwrap_or(false);
+    let key = if stroke { "stroke" } else { "fill" };
+    let swatch = if text {
+        text_attrs(app).and_then(|a| a["chars"][key].as_str().map(str::to_string)).unwrap_or_else(|| swatch.into())
+    } else {
+        swatch.into()
+    };
+    let hex = doc.resolve_color(&swatch, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
+    app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":key, "hex":hex, "text":text})));
+}
+
+/// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's
+/// frame or its text), the tint, then the swatches. `cur` is the frame's swatch. With `text_only`
+/// (text selected) it colours the selected text.
+fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, stroke: bool, text_frame: bool, text_only: bool) {
+    let lang = app.ui.language.clone();
+    let tr = |s: &'static str| crate::i18n::tr(&lang, s);
+    let to_text_id = egui::Id::new(("swatch_apply_to_text", stroke));
+    let to_text = text_only || text_frame && resp.ctx.data(|d| d.get_temp::<bool>(to_text_id)).unwrap_or(false);
+    // What the popup shows and changes: the frame's fill or stroke, or its text's.
+    let (key, tint_key) = if stroke { ("stroke", "strokeTint") } else { ("fill", "fillTint") };
+    let (cur, tint) = if to_text {
+        let chars = super::text_attrs(app).map(|a| a["chars"].clone()).unwrap_or_default();
+        (chars[key].as_str().unwrap_or("").to_string(), chars[tint_key].as_f64().unwrap_or(1.0))
+    } else {
+        (cur.to_string(), f64::from(super::sel_tint(app, stroke)))
+    };
     let mut picked = None;
-    egui::Popup::menu(resp).show(|ui| {
-        ui.set_min_width(200.0);
+    let mut new_tint = None;
+    let mut switch = None;
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(220.0);
         ui.set_max_width(280.0);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for sw in &doc.swatches {
-                if super::swatch_menu_row(ui, doc, &sw.name, cur) {
-                    picked = Some(sw.name.clone());
-                    ui.close();
+        if text_frame {
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, tr("Apply To:"));
+                for (label, text) in [("Frame", false), ("Text", true)] {
+                    if ui.selectable_label(to_text == text, crate::rtl::widget(ui, tr(label))).clicked() {
+                        switch = Some(text);
+                    }
                 }
+            });
+        }
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, tr("Tint:"));
+            if let Some(v) = NumField::number(if stroke { "stroke_tint" } else { "fill_tint" }, Some((tint * 100.0).round()), "%", 0)
+                .width(60.0)
+                .range(0.0, 100.0)
+                .show(ui)
+            {
+                new_tint = Some(v / 100.0);
             }
         });
+        ui.separator();
+        picked = super::swatch_list(ui, doc, &cur);
+        if picked.is_some() {
+            ui.close();
+        }
     });
-    if let Some(p) = picked {
-        on_pick(app, p);
+    if let Some(t) = switch {
+        resp.ctx.data_mut(|d| d.insert_temp(to_text_id, t));
+    }
+    let cmd = |app: &mut DesignApp, attrs: Value| {
+        if to_text {
+            let _ = app.run("type.char", json!({ "attrs": attrs }));
+        } else {
+            let mut p = attrs.as_object().cloned().unwrap_or_default();
+            // object.fill / object.stroke name the swatch `swatch` and the tint `tint`.
+            if let Some(v) = p.remove(key) {
+                p.insert("swatch".into(), v);
+            }
+            if let Some(v) = p.remove(tint_key) {
+                p.insert("tint".into(), v);
+            }
+            let _ = app.run(if stroke { "object.stroke" } else { "object.fill" }, Value::Object(p));
+        }
+    };
+    if let Some(n) = picked {
+        cmd(app, json!({ key: n }));
+    } else if let Some(t) = new_tint {
+        cmd(app, json!({ tint_key: t }));
     }
 }
 
@@ -974,9 +1099,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, "T", crate::theme::semibold(12.0), tc);
         }
         let resp = ui.interact(chip, ui.id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
-        swatch_menu(app, &resp, &doc, &sw, |app, n| {
-            let _ = app.run("type.char", json!({"attrs": {key: n}}));
-        });
+        swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
         if k == 0 {
             crate::rtl::paint(
                 ui.painter(),
@@ -1024,7 +1147,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         t.text,
     );
     if let Some(f) = super::font_popup(app, &resp, &menu, &fam) {
-        super::apply_font_family(app, &f);
+        super::apply_font(app, &f);
     }
     ui.add_space(1.0);
     let styles = fonts.styles(&fam);
@@ -1033,7 +1156,6 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": styles[k]}}));
     }
     ui.add_space(1.0);
-    const SIZES: &[f64] = &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 21.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
     let half = (fw - 10.0) / 2.0;
     let b = block(ui, 2.0 * FIELD_H + 5.0);
     let size = c["size"].as_f64();
@@ -1041,7 +1163,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
     if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(widgets::FONT_SIZE_PRESETS).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
@@ -1051,7 +1173,7 @@ fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(widgets::FONT_SIZE_PRESETS).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }
@@ -1196,8 +1318,11 @@ fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
         let _ = app.run("object.textFrameOptions", json!({"gutter": v}));
     }
     let ow = (b.max.x - 8.0) - (b.min.x + 164.0);
-    if place(ui, sub(b, 164.0, 0.5, ow, 20.0), |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), ow)).clicked() {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+    let options = place(ui, sub(b, 164.0, 0.5, ow, 20.0), |ui| outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), ow));
+    #[cfg(test)]
+    ui.data_mut(|data| data.insert_temp(egui::Id::new("r6_tfo_properties_button"), options.rect));
+    if options.clicked() {
+        crate::dialogs::open_text_frame_options(app);
     }
 }
 
@@ -1289,7 +1414,9 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     egui::Grid::new("chargrid").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-        if let Some(v) = number(ui, "pcs", c["size"].as_f64(), " pt", 60.0, 2) {
+        if let Some(v) =
+            NumField::number("pcs", c["size"].as_f64(), " pt", 2).width(72.0).presets(widgets::FONT_SIZE_PRESETS).range(0.1, 1296.0).show(ui)
+        {
             let _ = app.run("type.char", json!({"attrs": {"size": v}}));
         }
         caption(ui, crate::i18n::tr(&app.ui.language, "Leading"));
@@ -1387,7 +1514,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         let features: Vec<String> =
             c["otfFeatures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        ui.menu_button("OpenType", |ui| open_type_menu(app, ui, &features));
+        crate::menus::menu_button(ui, "OpenType", |ui| open_type_menu(app, ui, &features));
     });
     // Underline / Strikethrough Options.
     for (key, title) in [("underline", "Underline Options"), ("strikethrough", "Strikethrough Options")] {
@@ -1442,13 +1569,14 @@ pub fn open_type_menu(app: &mut DesignApp, ui: &mut egui::Ui, features: &[String
         }
     }
     ui.separator();
-    ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
+    crate::menus::menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stylistic Sets")), |ui| {
         let mask = otf::stylistic_sets(features);
         for n in 1..=20u32 {
             let mut on = mask & (1 << (n - 1)) != 0;
             if ui.checkbox(&mut on, crate::rtl::widget(ui, format!("{} {n}", crate::i18n::tr(&app.ui.language, "Set")))).clicked() {
                 let sets: Vec<u32> = (1..=20).filter(|k| if *k == n { on } else { mask & (1 << (k - 1)) != 0 }).collect();
                 let _ = app.run("type.openType", json!({"stylisticSets": sets}));
+                ui.close();
             }
         }
     });
@@ -1461,7 +1589,25 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     let u = units(app);
     let p = a["para"].clone();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Paragraph")).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::menus::menu_button(ui, "☰", |ui| {
+                for (label, id) in [
+                    ("Paragraph Rules…", "app.paragraphRulesDialog"),
+                    ("Justification…", "app.justificationDialog"),
+                    ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
+                    ("Span Columns…", "app.spanColumnsDialog"),
+                    ("Bullets and Numbering…", "app.bulletsNumberingDialog"),
+                ] {
+                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                        let _ = app.run(id, json!({}));
+                        ui.close();
+                    }
+                }
+            });
+        });
+    });
     let cur: Align = serde_json::from_value(p["align"].clone()).unwrap_or_default();
     ui.horizontal(|ui| {
         for (al, icon) in [
@@ -1532,6 +1678,10 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "allLines" } else { "none" }}}));
         }
     });
+    let mut optical = p["opticalMargin"].as_bool().unwrap_or(false);
+    if ui.checkbox(&mut optical, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Optical Margin Alignment"))).changed() {
+        let _ = app.run("type.para", json!({"attrs": {"opticalMargin": optical}}));
+    }
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Composer"));
         let single = p["composer"].as_str() == Some("singleLine");
@@ -1591,6 +1741,10 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
 pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    if super::cell_stroke::in_cells(app) {
+        super::cell_stroke::panel(app, ui);
+        return;
+    }
     let Some(i) = sel_info(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
@@ -1776,6 +1930,72 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.textWrap", json!({"mode": info.as_ref().map(|i| i.wrap).unwrap_or("boundingBox"), "offset": v}));
         }
     });
+    let Some(i) = info.as_ref().filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
+    let sides = [
+        ("bothSides", "Both Right & Left Sides"),
+        ("rightSide", "Right Side"),
+        ("leftSide", "Left Side"),
+        ("towardsSpine", "Side Towards Spine"),
+        ("awayFromSpine", "Side Away from Spine"),
+        ("largestArea", "Largest Area"),
+    ];
+    wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
+    if i.wrap == "contour" && i.is_graphic {
+        // Detected edges, alpha channels and image paths aren't offered: composition doesn't read
+        // the image. An imported one shows by name and wraps around the frame.
+        let types = [("boundingBox", "Bounding Box"), ("graphicFrame", "Graphic Frame"), ("sameAsClipping", "Same as Clipping")];
+        let shown_only = [("detectEdges", "Detect Edges"), ("alphaChannel", "Alpha Channel"), ("photoshopPath", "Photoshop Path")];
+        wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+    }
+}
+
+/// A Text Wrap panel choice: `opts` are offered, `shown_only` only name the current value.
+#[allow(clippy::too_many_arguments)]
+fn wrap_combo(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    salt: &str,
+    caption_text: &str,
+    opts: &[(&str, &str)],
+    shown_only: &[(&str, &str)],
+    cur: &str,
+    key: &str,
+) {
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
+        let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
+        egui::ComboBox::from_id_salt(salt).selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown))).width(170.0).show_ui(
+            ui,
+            |ui| {
+                for (k, l) in opts {
+                    if ui.selectable_label(*k == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                        let _ = app.run("object.textWrap", json!({ key: k }));
+                    }
+                }
+            },
+        );
+    });
+}
+
+/// Boolean path operations, shared by the Properties controls.
+const PATHFINDER: [(&str, &str, &str); 5] = [
+    ("pf-add", "add", "Add"),
+    ("pf-subtract", "subtract", "Subtract"),
+    ("pf-intersect", "intersect", "Intersect"),
+    ("pf-exclude", "exclude", "Exclude Overlap"),
+    ("pf-minus-back", "minusBack", "Minus Back"),
+];
+
+/// Properties › Pathfinder (several objects selected): combine them into one shape.
+fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (icon, op, tip) in PATHFINDER {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.pathfinder", json!({"op": op}));
+            }
+        }
+    });
 }
 
 /// Pathfinder panel: combine the selected shapes; make or release compound paths.
@@ -1804,37 +2024,24 @@ pub fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        for (edge, tip) in [
-            ("left", "Align left edges"),
-            ("hcenter", "Align horizontal centers"),
-            ("right", "Align right edges"),
-            ("top", "Align top edges"),
-            ("vcenter", "Align vertical centers"),
-            ("bottom", "Align bottom edges"),
+        for (edge, icon, tip) in [
+            ("left", "object-align-left", "Align left edges"),
+            ("hcenter", "object-align-hcenter", "Align horizontal centers"),
+            ("right", "object-align-right", "Align right edges"),
+            ("top", "object-align-top", "Align top edges"),
+            ("vcenter", "object-align-vcenter", "Align vertical centers"),
+            ("bottom", "object-align-bottom", "Align bottom edges"),
         ] {
-            if ui
-                .small_button(match edge {
-                    "left" => "⇤",
-                    "hcenter" => "↔",
-                    "right" => "⇥",
-                    "top" => "⤒",
-                    "vcenter" => "↕",
-                    _ => "⤓",
-                })
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, tip));
-                })
-                .clicked()
-            {
+            if widgets::icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
                 let _ = app.run("object.align", json!({"edge": edge}));
             }
         }
     });
     ui.horizontal(|ui| {
-        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Distribute ↔"))).clicked() {
+        if widgets::icon_toggle(ui, "object-distribute-h", false, crate::i18n::tr(&app.ui.language, "Distribute ↔")).clicked() {
             let _ = app.run("object.distribute", json!({"axis": "horizontal"}));
         }
-        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Distribute ↕"))).clicked() {
+        if widgets::icon_toggle(ui, "object-distribute-v", false, crate::i18n::tr(&app.ui.language, "Distribute ↕")).clicked() {
             let _ = app.run("object.distribute", json!({"axis": "vertical"}));
         }
     });
@@ -1888,15 +2095,17 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let sel_key = egui::Id::new("links_panel_sel");
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
-    egui::Grid::new("links_grid").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
+    let name_width = (ui.available_width() - 200.0).clamp(60.0, 160.0);
+    egui::Grid::new("links_grid").num_columns(4).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Name")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Color Mode")).color(t.text_dim).size(11.0));
         ui.end_row();
         for r in &rows {
             let aid = r["asset"].as_u64().unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
-            if ui.selectable_label(chosen == Some(aid), name).clicked() {
+            if ui.add_sized([name_width, 18.0], egui::Button::selectable(chosen == Some(aid), name).truncate()).on_hover_text(name).clicked() {
                 chosen = Some(aid);
             }
             let (txt, col) = match r["status"].as_str().unwrap_or("") {
@@ -1922,11 +2131,39 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui,
                 egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
             );
+            crate::rtl::label(ui, egui::RichText::new(r["colorMode"].as_str().unwrap_or("Unknown")).size(11.0).color(t.text_dim));
             ui.end_row();
         }
     });
     if let Some(c) = chosen {
         ui.data_mut(|d| d.insert_temp(sel_key, c));
+        // Read profile metadata only for the selected asset, once per document revision.
+        let key = egui::Id::new("links_color_info");
+        let identity = (rev, c);
+        let cached: Option<(((u64, u64), u64), Value)> = ui.data(|d| d.get_temp(key));
+        let info = match cached {
+            Some((id, value)) if id == identity => Some(value),
+            _ => app.session.execute("links.info", &json!({"asset":c})).ok().inspect(|value| {
+                ui.data_mut(|d| d.insert_temp(key, (identity, value.clone())));
+            }),
+        };
+        if let Some(info) = info {
+            ui.add_space(6.0);
+            crate::rtl::label(
+                ui,
+                format!("{}: {}", crate::i18n::tr(&app.ui.language, "Color Mode"), info["colorMode"].as_str().unwrap_or("Unknown")),
+            );
+            crate::rtl::label(
+                ui,
+                format!("{}: {}", crate::i18n::tr(&app.ui.language, "ICC Profile"), info["iccProfile"].as_str().unwrap_or("Unknown")),
+            );
+            crate::rtl::label(
+                ui,
+                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Stored image metadata; imported previews may differ from the original."))
+                    .size(11.0)
+                    .color(t.text_dim),
+            );
+        }
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -2195,6 +2432,33 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn optical_margin_checkbox_changes_paragraphs_and_undo_restores_them() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[72,72,300,200], "content":"text", "text":"Margin test", "caret":true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("paragraph_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    ui.ctx().set_fonts(crate::theme::font_definitions(pagenor_fonts::CRAFT_FONTS, ""));
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                paragraph_panel(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["opticalMargin"], false);
+        h.get_by_label("Optical Margin Alignment").click();
+        h.run_steps(2);
+        assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["opticalMargin"], true);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["opticalMargin"], false);
+    }
+
     fn language(app: &mut DesignApp) -> Value {
         text_attrs(app).unwrap()["chars"]["language"].clone()
     }
@@ -2321,5 +2585,186 @@ mod color_picker_tests {
             h.state_mut().run("edit.undo", json!({})).unwrap();
             assert_eq!(h.state().session.active().unwrap().doc, before);
         }
+    }
+    fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h
+    }
+
+    #[test]
+    fn properties_transform_values_follow_a_selected_graphic() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].clone();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![255; 200 * 100 * 4] }.to_png();
+        app.run("file.place", json!({"base64": pagenor_engine::cmd::base64_encode(&png), "name": "synthetic.png", "frame": f})).unwrap();
+        app.run("transform.rotate", json!({"ids": [f], "angle": -45})).unwrap();
+        app.run("selection.set", json!({"ids": [f], "content": true})).unwrap();
+        app.run("transform.set", json!({"rotation": 0})).unwrap();
+        let info = super::sel_info(&app).unwrap();
+        assert!((info.page_rect.width() - 400.0).abs() < 1e-6 && (info.page_rect.height() - 200.0).abs() < 1e-6);
+        let h = panel(app);
+        assert!(
+            h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("-45°")).is_none(),
+            "the graphic's angle is shown rather than its frame's angle"
+        );
+    }
+
+    #[test]
+    fn transform_flips_and_rotates_from_properties() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        let xf = |h: &Harness<'_, DesignApp>| h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().xf;
+        // Flip Horizontal mirrors the frame (a negative determinant); Flip Vertical as well brings it
+        // back to a half turn, as in the tutorial's petal.
+        h.get_by_label("Flip Horizontal").click();
+        h.run_steps(3);
+        assert!(xf(&h).determinant() < 0.0, "{:?}", xf(&h));
+        h.get_by_label("Flip Vertical").click();
+        h.run_steps(3);
+        let c = xf(&h).as_coeffs();
+        assert!((c[0] + 1.0).abs() < 1e-9 && (c[3] + 1.0).abs() < 1e-9, "a half turn: {c:?}");
+        let info = h.state_mut().session.execute("transform.info", &json!({})).unwrap();
+        assert!((info["rotation"].as_f64().unwrap().abs() - 180.0).abs() < 1e-6, "{info}");
+        // A quarter turn clockwise from there.
+        h.get_by_label("Rotate 90° Clockwise").click();
+        h.run_steps(3);
+        let info = h.state_mut().session.execute("transform.info", &json!({})).unwrap();
+        assert!((info["rotation"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
+        // The angle and scale fields are there.
+        assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("90°")).is_some());
+    }
+    #[test]
+    fn several_shapes_show_pathfinder_and_intersect_combines_them() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [100, 100, 300, 300], "shape": "ellipse"})).unwrap()["id"].clone();
+        let b = app.run("frame.create", json!({"rect": [200, 100, 300, 200]})).unwrap()["id"].clone();
+        // One shape: no Pathfinder section.
+        app.run("selection.set", json!({"ids": [a]})).unwrap();
+        let mut h = panel(app);
+        assert!(h.query_by_label("Pathfinder").is_none());
+        // Two: the section and its five buttons; Intersect leaves one shape, the ellipse's quarter.
+        h.state_mut().run("selection.set", json!({"ids": [a, b]})).unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("Pathfinder").is_some());
+        for op in ["Add", "Subtract", "Intersect", "Exclude Overlap", "Minus Back"] {
+            assert!(h.query_by_label(op).is_some(), "{op}");
+        }
+        h.get_by_label("Intersect").click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        let items = &doc.spreads[0].items;
+        assert_eq!(items.len(), 1, "one shape left");
+        let r = items[0].bounds();
+        assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+    const CYAN: &str = "C=100 M=0 Y=0 K=0";
+
+    #[test]
+    fn the_fill_menu_sets_a_tint() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.fill", json!({"swatch": CYAN, "ids": [id]})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // A frame that isn't a text frame: no Apply To.
+        assert!(h.query_by_label("Apply To:").is_none());
+        // The field on the Tint row (Opacity also reads 100%).
+        let row = h.get_by_label("Tint:").rect();
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
+            .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
+            .expect("the Tint field")
+            .click();
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("25".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let fill = h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.clone();
+        assert_eq!((fill.swatch.as_str(), fill.tint), (CYAN, 0.25), "the tint, on the same swatch");
+    }
+
+    #[test]
+    fn a_tint_on_several_objects_keeps_each_ones_swatch() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [220, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.fill", json!({"swatch": CYAN, "ids": [a]})).unwrap();
+        app.run("object.fill", json!({"swatch": "[Black]", "ids": [b]})).unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        let row = h.get_by_label("Tint:").rect();
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
+            .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
+            .expect("the Tint field")
+            .click();
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("25".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        let fill = |id: u64| doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.clone();
+        assert_eq!((fill(a).swatch.as_str(), fill(a).tint), (CYAN, 0.25));
+        assert_eq!((fill(b).swatch.as_str(), fill(b).tint), ("[Black]", 0.25), "the second keeps its own swatch");
+    }
+
+    #[test]
+    fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Heading"})).unwrap();
+        let (id, story) = (r["id"].as_u64().unwrap(), pagenor_doc::StoryId(r["story"].as_u64().unwrap()));
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        h.get_by_label("Text").click();
+        h.run_steps(3);
+        h.get_by_label(CYAN).click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "the text is cyan");
+        assert_eq!(doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
+        // The existing double-click picker follows the chosen text target too.
+        assert!(!egui::Popup::is_any_open(&h.ctx), "choosing a swatch closes its popup");
+        let pos = h.get_by_label("Fill swatch").rect().center();
+        h.run_steps(30);
+        for _ in 0..2 {
+            h.hover_at(pos);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            }
+            h.run_steps(1);
+        }
+        let dialog = h.state_mut().ui.dialog.as_mut().expect("colour picker");
+        assert!(dialog.b("text"));
+        dialog.fields.insert("hex".into(), json!("#123456"));
+        let result = crate::dialogs::confirm(h.state_mut()).unwrap();
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), result["swatch"].as_str());
+        assert_eq!(doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]");
     }
 }

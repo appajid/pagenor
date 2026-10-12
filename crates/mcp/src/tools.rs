@@ -274,7 +274,7 @@ pub fn tool_definitions() -> Vec<Value> {
                         "type": "array",
                         "minItems": 1,
                         "items": obj(json!({
-                            "kind": {"type": "string", "enum": ["down", "drag", "up", "move", "doubleclick"]},
+                            "kind": {"type": "string", "enum": ["down", "drag", "up", "move", "doubleclick", "tripleclick"]},
                             "x": num("x (pt)"),
                             "y": num("y (pt)"),
                             "space": {"type": "string", "enum": ["doc", "screen"], "description": "Coordinate space (default doc)"},
@@ -480,7 +480,7 @@ fn render_page(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
     let path = a.get("path").and_then(Value::as_str);
     if let Some(path) = path {
         let png = pagenor_engine::cmd::base64_decode(&b64);
-        std::fs::write(path, png).map_err(|e| format!("write {path}: {e}"))?;
+        pagenor_engine::write_atomic(std::path::Path::new(path), &png).map_err(|e| format!("write {path}: {e}"))?;
     }
     Ok(ToolResult::image(b64, &json!({"width": r.get("width"), "height": r.get("height"), "path": path})))
 }
@@ -509,7 +509,7 @@ fn pointer(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
     for (i, e) in events.iter().enumerate() {
         let kind = e.get("kind").and_then(Value::as_str).unwrap_or("");
         if crate::headless::pointer_kind(kind).is_none() {
-            return Err(format!("event {i}: unknown kind `{kind}` (down, drag, up, move, doubleclick)"));
+            return Err(format!("event {i}: unknown kind `{kind}` (down, drag, up, move, doubleclick, tripleclick)"));
         }
         if !e.get("x").is_some_and(Value::is_number) || !e.get("y").is_some_and(Value::is_number) {
             return Err(format!("event {i}: numeric `x` and `y` required"));

@@ -35,10 +35,12 @@ pub fn install_panic_hook() {
 impl Session {
     /// Run command `id` (`f`) inside the guard.
     pub(crate) fn guarded(&mut self, id: &str, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
+        let undo_step = self.in_undo_step;
         let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone(), d.revision));
         match catch_unwind(AssertUnwindSafe(|| f(self))) {
             Ok(r) => r,
             Err(payload) => {
+                self.in_undo_step = undo_step;
                 let msg = panic_message(payload.as_ref());
                 // Keep the document as it was before the command.
                 if let (Some((uid, doc, selection, revision)), Some(st)) = (before, self.active_mut())
@@ -54,6 +56,8 @@ impl Session {
                 {
                     log::error!("crash recovery save after `{id}` failed: {e}");
                 }
+                // A continuing outer command still owns subsequent edits.
+                self.in_undo_step = undo_step;
                 log::error!("command `{id}` panicked: {msg}");
                 Err(EngineError::Internal(id.to_string(), msg))
             }
@@ -83,7 +87,48 @@ mod tests {
         assert!(err.to_string().contains("test.panic") && err.to_string().contains("boom"), "{err}");
         let st = s.active().unwrap();
         assert!(std::sync::Arc::ptr_eq(&st.doc, &before), "the document is the one from before the command");
+        // A panic during a nested edit must restore undo dispatch too.
+        s.in_undo_step = false;
+        let _ = s.guarded("test.nested", |s| {
+            s.in_undo_step = true;
+            panic!("nested edit");
+        });
+        assert!(!s.in_undo_step);
         // The session keeps working.
         s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
+    }
+
+    /// An undoable command that panics is no longer running: the next command records its own
+    /// undo step.
+    #[test]
+    fn a_panicking_command_does_not_swallow_later_undo_steps() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let panicked = s.guarded("test.panic", |s| {
+            s.in_undo_step = true;
+            panic!("boom");
+        });
+        assert!(panicked.is_err());
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        assert_eq!(s.active().unwrap().history.undo.len(), 1);
+    }
+
+    #[test]
+    fn a_caught_nested_panic_keeps_the_outer_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.guarded("test.outer", |s| {
+            s.in_undo_step = true;
+            assert!(s.guarded("test.inner", |_| panic!("synthetic nested failure")).is_err());
+            let made = s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]}));
+            s.in_undo_step = false;
+            made
+        })
+        .unwrap();
+        let st = s.active().unwrap();
+        assert_eq!(st.doc.spreads[0].items.len(), 1);
+        assert!(st.history.undo.is_empty(), "the continuing edit belongs to the outer command's undo step");
+        s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
+        assert_eq!(s.active().unwrap().history.undo.len(), 1, "later independent commands still record undo");
     }
 }

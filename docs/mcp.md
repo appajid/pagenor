@@ -57,6 +57,27 @@ and `text.move` return, a story's `length` in `get_story` and `inspect_document`
 `get_story`. A character outside ASCII takes 2 to 4 bytes (é 2, — and は 3), so the story `はただ商店` has length 15
 and its second character starts at 3. An offset inside a character snaps back to the start of that character.
 
+## Text and image fitting
+
+Hyphenation is on by default for new text (`hyphenate: true`). To turn it off, select the text or a text frame,
+then call `execute`:
+
+```text
+execute          {"command": "type.para", "params": {"attrs": {"hyphenate": false}}}
+```
+
+With a text selection, this formats the selected paragraphs; with selected text frames, it formats their whole stories.
+
+Use `execute` with `object.fit` to fit a selected graphic frame (or pass `ids`):
+
+| `mode` | What it does |
+|---|---|
+| `fillProportionally` | Preserves aspect ratio, covers the frame and clips overflow. |
+| `fitProportionally` | Preserves aspect ratio, shows the whole image and may leave empty space. |
+| `fitContentToFrame` | Stretches the content to the frame's width and height. |
+| `centerContent` | Keeps the current size and positions content at the fitting alignment (center by default). |
+| `fitFrameToContent` | Resizes the frame to the content's bounds. |
+
 ## Tools
 
 | Tool | What it does |
@@ -108,3 +129,21 @@ key        {"key": "Escape"}
 ## Community links
 
 `app.links` returns Pagenor's repository (https://github.com/appajid/pagenor) and issue tracker. The project-page aliases `website` and `appPage` use that repository until a separate website is configured. `discord` is null because no Pagenor community destination has been supplied. `help.github`, `help.issues`, `help.appPage`, `help.website` and `help.app {app: "pagenor"}` open configured destinations; `help.discord` returns an unavailable error. `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The MCP server's `serverInfo.websiteUrl` is the project page.
+
+## Installed Pagenor CLI
+
+The released CLI also starts the MCP server without a Rust checkout. Put `pagenor-cli`
+(`pagenor-cli.exe` on Windows) from Pagenor's CLI archive on your PATH, or use its
+absolute executable path in your MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "pagenor": { "command": "pagenor-cli", "args": ["mcp"] }
+  }
+}
+```
+
+Use `"args": ["mcp", "--connect", "7979"]` to connect to Pagenor launched with
+`--control 7979`. Local automation is disabled until explicitly enabled; match the
+port to your running app. Without `--connect`, the CLI uses its own headless engine.

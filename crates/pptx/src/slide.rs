@@ -216,7 +216,7 @@ pub struct Exporter<'a> {
     pub to_slide: Affine,
     /// The page's bleed area in spread space (items outside it are left out).
     clip: Rect,
-    pub page_name: Option<String>,
+    pub page: Option<usize>,
 }
 
 impl<'a> Exporter<'a> {
@@ -235,7 +235,7 @@ impl<'a> Exporter<'a> {
             rel_of: HashMap::new(),
             to_slide: Affine::IDENTITY,
             clip: Rect::ZERO,
-            page_name: None,
+            page: None,
         }
     }
 
@@ -284,9 +284,9 @@ impl<'a> Exporter<'a> {
                         continue;
                     }
                     // Parent items compose per page (page numbers, running heads).
-                    self.page_name = Some(page_name.clone());
+                    self.page = Some(abs);
                     self.item(it, Affine::translate((dx, 0.0)), 1.0);
-                    self.page_name = None;
+                    self.page = None;
                 }
             }
             for it in &sp.items {

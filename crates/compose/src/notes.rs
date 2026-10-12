@@ -102,6 +102,7 @@ impl Notes {
             vertical: false,
             exclusions: vec![],
             page_name: f.page_name.clone(),
+            section_marker: f.section_marker.clone(),
             page: f.page,
             grid: None,
             left_page: f.left_page,
@@ -109,12 +110,13 @@ impl Notes {
         };
         let nopts = ComposeOptions {
             page_name: opts.page_name.clone(),
+            section_marker: opts.section_marker.clone(),
             page: opts.page,
             running: opts.running.clone(),
             label: Some(label),
             xrefs: opts.xrefs.clone(),
         };
-        let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
+        let cs = crate::compose_child(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let h = cs.frames.first().and_then(|ft| ft.lines.last()).map_or(0.0, |l| l.baseline + l.descent);
         let v = (Arc::new(cs), h);
         self.cache.insert(key, v.clone());
@@ -169,6 +171,7 @@ impl Notes {
                     rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
+                    ..Deco::default()
                 });
             }
             let mut y = top;

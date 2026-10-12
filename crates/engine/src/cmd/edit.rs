@@ -39,14 +39,20 @@ fn plain(st: &pagenor_doc::Story) -> String {
     st.text.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).map(|c| if c == '\u{2028}' { '\n' } else { c }).collect()
 }
 
+fn normalized_clipboard_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// Copy the selected text with its formatting. Returns its plain text (for the system clipboard).
 fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let st = s.doc()?;
     let Some(t) = st.selection.text.filter(|t| !t.is_caret()) else { return Ok(None) };
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
-    let slice = story.extract(t.range());
+    let mut slice = story.extract(t.range());
+    slice.slice_has_eof_stage = t.cell.is_none() && t.range().end == story.len() && story.text.ends_with('\n');
     let text = plain(&slice);
     s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    s.object_clipboard_marker = None;
     Ok(Some(text))
 }
 
@@ -55,32 +61,50 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
 fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| super::bad("edit.paste", "no insertion point"))?;
     let clip = s.text_clipboard.clone();
-    // Items copied last (no text copied since) paste into the text as anchored objects.
+    // The shared UI writes this exact marker on object Copy/Cut. A different supplied
+    // string is external text; no-payload commands retain the internal object clipboard.
+    let object_marker = text.as_ref().is_some_and(|text| Some(text) == s.object_clipboard_marker.as_ref());
+    let object_payload = text.is_none() || object_marker;
     if formatted
         && clip.is_none()
+        && object_payload
         && t.cell.is_none()
         && let Some(items) = s.clipboard.clone()
     {
         let list: Vec<pagenor_doc::Item> = items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
         if !list.is_empty() && list.iter().all(|i| !i.is_text_frame()) {
             return s.edit(|d, sel| {
-                let st = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
-                let end = super::anchored::anchor_items(d, t.story, r.start, list.clone(), &Default::default())?;
+                let mut copies = list.clone();
+                let mut stories = std::collections::HashMap::new();
+                for item in &mut copies {
+                    super::object::renumber(d, &items, item, &mut stories);
+                }
+                let end = super::anchored::anchor_items(d, t.story, r, copies, &Default::default())?;
                 sel.text = Some(pagenor_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
             });
         }
     }
+    // A protocol marker has no plain-text representation. Ineligible objects, plain
+    // paste and child targets must reject it before deleting a selection or inserting text.
+    if object_marker {
+        return Err(super::bad("edit.paste", "object clipboard cannot be pasted as text here"));
+    }
     let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, cross-references and tables only paste into story text, not cells or footnotes.
     if use_clip && let Some((slice, _)) = clip {
-        let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        if t.cell.is_none() {
+            super::text::prepare_outer_formatted_slice(&mut slice);
+        }
         return s.edit(|d, sel| {
             let st = d.text_story_mut(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
+            if t.cell.is_none() {
+                super::text::prepare_formatted_insert(st, r.start, &slice.text);
+            }
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
             sel.text = Some(pagenor_doc::TextSel { anchor: end, focus: end, ..t });
@@ -88,18 +112,101 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         });
     }
     let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
-    // The outer Paste command owns undo and journaling; reuse insertion without recording Type.
-    super::text::insert(s, &json!({"text": text.replace("\r\n", "\n").replace('\r', "\n"), "raw": true}))
+    // Reuse the text command's insertion policy without dispatching a second user edit.
+    // Paste owns the history/journal entry and its one post-edit reflow/caption refresh.
+    let insert = super::find_command("text.insert").ok_or_else(|| super::bad("edit.paste", "text insertion command is unavailable"))?;
+    (insert.run)(s, &json!({"text": normalized_clipboard_text(&text), "raw": true}))
+}
+
+/// Publish object ownership only after Copy/Cut succeeds. Keep Cut's existing result fields.
+fn copy_objects(s: &mut Session, cut: Option<&Value>) -> Result<Value> {
+    copy_objects_with_entropy(s, cut, getrandom::fill)
+}
+
+fn copy_objects_with_entropy(
+    s: &mut Session,
+    cut: Option<&Value>,
+    fill: impl FnOnce(&mut [u8]) -> std::result::Result<(), getrandom::Error>,
+) -> Result<Value> {
+    let clipboard = Arc::new(clip_doc(s)?);
+    let origin = s
+        .doc()?
+        .selection
+        .items
+        .iter()
+        .find_map(|id| s.doc().ok()?.doc.find(*id))
+        .and_then(|loc| s.doc().ok()?.doc.spread(loc.spread))
+        .map_or(0.0, paste_origin);
+    // Acquire fallible instance identity before Cut can remove any document content.
+    let nonce = if let Some(nonce) = s.object_clipboard_nonce {
+        nonce
+    } else {
+        let mut nonce = [0; 16];
+        let command = if cut.is_some() { "edit.cut" } else { "edit.copy" };
+        fill(&mut nonce).map_err(|error| super::bad(command, format!("clipboard identity unavailable: {error}")))?;
+        nonce
+    };
+    let id = crate::NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let marker = format!("Pagenor object clipboard {:032x}:{id}", u128::from_be_bytes(nonce));
+    let mut result = if let Some(params) = cut { clear(s, params)? } else { Value::Null };
+    if result.is_null() {
+        result = json!({});
+    }
+    let fields = result.as_object_mut().ok_or_else(|| super::bad("edit.copy", "invalid clipboard result"))?;
+    fields.insert("clipboardText".to_string(), json!(marker));
+    s.clipboard = Some(clipboard);
+    s.clipboard_origin = origin;
+    s.object_clipboard_nonce = Some(nonce);
+    s.object_clipboard_marker = Some(marker);
+    s.text_clipboard = None;
+    Ok(result)
+}
+
+const CHILD_PASTE_STRIPPED_MARKS: [char; 3] = [pagenor_doc::FOOTNOTE_REF, pagenor_doc::XREF_MARK, pagenor_doc::TABLE_ANCHOR];
+
+impl Session {
+    /// Whether an empty system string can insert retained formatted text at the current target.
+    /// Native hosts query this immediately before delivery; explicit empty Paste is unchanged.
+    pub fn has_usable_empty_text_clipboard(&self) -> bool {
+        let Some(state) = self.active() else { return false };
+        let Some(target) = state.selection.text else { return false };
+        if state.doc.text_story(target.story, target.cell).is_none() {
+            return false;
+        }
+        let Some((slice, plain)) = self.text_clipboard.as_ref() else { return false };
+        plain.is_empty()
+            && if target.cell.is_some() { slice.text.chars().any(|ch| !CHILD_PASTE_STRIPPED_MARKS.contains(&ch)) } else { !slice.text.is_empty() }
+    }
 }
 
 fn strip_objects(st: &pagenor_doc::Story) -> pagenor_doc::Story {
     let mut out = st.clone();
-    let marks = [pagenor_doc::FOOTNOTE_REF, pagenor_doc::XREF_MARK, pagenor_doc::TABLE_ANCHOR];
-    while let Some(i) = out.text.find(marks) {
+    if out.slice_has_eof_stage && out.text.ends_with('\n') {
+        if let Some(pf) = out.paras.last_mut() {
+            pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+        }
+        out.slice_has_eof_stage = false;
+    }
+    while let Some(i) = out.text.find(CHILD_PASTE_STRIPPED_MARKS) {
         let n = out.text[i..].chars().next().map_or(1, char::len_utf8);
         out.delete(i..i + n);
     }
     out
+}
+
+/// Apply removal inside the owning command, so Cut and Clear each record one history entry.
+fn clear(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.doc()?.selection.text.is_some() && p.get("ids").is_none() {
+        return super::text::delete_selection(s);
+    }
+    let ids = super::targets(s, p)?;
+    s.edit(|d, sel| {
+        for id in &ids {
+            let _ = d.remove_item(*id);
+        }
+        *sel = Selection::default();
+        Ok(json!({"deleted": ids.len()}))
+    })
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -195,35 +302,28 @@ pub fn specs() -> Vec<CommandSpec> {
             st.revision += 1;
             ok()
         }),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{ids?} — delete selected items (or the selected text)", has_doc, |s, p| {
-            if s.doc()?.selection.text.is_some() && p.get("ids").is_none() {
-                return super::text::delete_selection(s);
+        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{ids?} — delete selected items (or the selected text)", has_doc, clear),
+        cmd!(noundo "edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{} → {text} for selected text (with formatting), {clipboardText} for copied objects", has_selection_or_text, |s, _| {
+            if let Some(text) = copy_text(s)? {
+                return Ok(json!({"text": text}));
             }
-            let ids = super::targets(s, p)?;
-            s.edit(|d, sel| {
-                for id in &ids {
-                    let _ = d.remove_item(*id);
+            copy_objects(s, None)
+        }),
+        cmd!(
+            "edit.cut",
+            "Cut",
+            ["Edit"],
+            Some("Cmd+X"),
+            "{} → {text} for selected text, {deleted, clipboardText} for cut objects",
+            has_selection_or_text,
+            |s, p| {
+                if let Some(text) = copy_text(s)? {
+                    super::text::delete_selection(s)?;
+                    return Ok(json!({"text": text}));
                 }
-                *sel = Selection::default();
-                Ok(json!({"deleted": ids.len()}))
-            })
-        }),
-        cmd!(noundo "edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{} → {text} when text is selected (with formatting, footnotes, markers)", has_selection_or_text, |s, _| {
-            if let Some(text) = copy_text(s)? {
-                return Ok(json!({"text": text}));
+                copy_objects(s, Some(p))
             }
-            s.clipboard = Some(Arc::new(clip_doc(s)?));
-            s.text_clipboard = None;
-            ok()
-        }),
-        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection_or_text, |s, p| {
-            if let Some(text) = copy_text(s)? {
-                super::text::delete_selection(s)?;
-                return Ok(json!({"text": text}));
-            }
-            s.clipboard = Some(Arc::new(clip_doc(s)?));
-            s.execute("edit.clear", p)
-        }),
+        ),
         cmd!(
             "edit.pasteWithoutFormatting",
             "Paste without Formatting",
@@ -238,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste",
             ["Edit"],
             Some("Cmd+V"),
-            "{inPlace?: bool, text?: the system clipboard's text (pastes it unless it is what was copied here)}",
+            "{inPlace?: bool, spread?: index (0), text?: the system clipboard's text (pastes it unless it is what was copied here)}",
             has_clip_or_text,
             |s, p| {
                 if s.doc()?.selection.text.is_some() {
@@ -248,9 +348,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
                 };
                 let off = if bool_or(p, "inPlace", false) { 0.0 } else { 12.0 };
+                let to = super::spread_param(p, "spread");
+                let from = s.clipboard_origin;
                 let ids: Vec<ItemId> = clip.spreads.first().map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
                 s.edit(|d, sel| {
-                    let new = super::object::duplicate_from(d, &clip, &ids, SpreadRef::Doc(0), pagenor_geom::Vec2::new(off, off))?;
+                    // The same place on another spread is the same distance from its spine or left edge.
+                    let dx = d.spread(to).map_or(0.0, |sp| paste_origin(sp) - from);
+                    let new = super::object::duplicate_from(d, &clip, &ids, to, pagenor_geom::Vec2::new(dx + off, off))?;
                     *sel = Selection::items(new.clone());
                     Ok(json!({"ids": new.iter().map(|i| i.0).collect::<Vec<_>>()}))
                 })
@@ -265,11 +369,17 @@ pub fn specs() -> Vec<CommandSpec> {
             has_clip,
             paste_into
         ),
-        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{}", has_clip, |s, _| s
-            .execute("edit.paste", &json!({"inPlace": true}))),
+        cmd!("edit.pasteInPlace", "Paste in Place", ["Edit"], Some("Cmd+Alt+Shift+V"), "{spread?: index (0)}", has_clip, |s, p| s
+            .execute("edit.paste", &json!({"inPlace": true, "spread": p.get("spread")}))),
         cmd!("edit.duplicate", "Duplicate", ["Edit"], Some("Cmd+Alt+Shift+D"), "{}", has_selection, |s, _| s
             .execute("transform.move", &json!({"dx": 12.0, "dy": 12.0, "copy": true}))),
     ]
+}
+
+/// The x a pasted object keeps its distance from: the spine, or the left edge of single-sided
+/// pages, which have none.
+fn paste_origin(sp: &pagenor_doc::Spread) -> f64 {
+    if sp.pages.iter().all(|p| p.side == pagenor_doc::PageSide::Single) { sp.bounds().x0 } else { sp.spine_x() }
 }
 
 /// A document holding copies of the selected items (and their stories) on spread 0.
@@ -481,6 +591,84 @@ mod text_clipboard_tests {
     }
 
     #[test]
+    fn native_empty_rich_query_matches_child_stripping_and_retained_page_marker() {
+        use pagenor_doc::{FOOTNOTE_REF, PAGE_NUMBER, Story, TABLE_ANCHOR, XREF_MARK};
+
+        for note in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let sid = frame(&mut s, "OLD");
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 3, "focus": 3})).unwrap();
+            if note {
+                s.execute("footnote.insert", &json!({"text": "CHILD"})).unwrap();
+            } else {
+                s.execute("table.insert", &json!({"rows": 1, "cols": 1, "width": 160})).unwrap();
+                s.execute("text.insert", &json!({"text": "CHILD", "raw": true})).unwrap();
+            }
+            s.execute("text.move", &json!({"dir": "storyStart"})).unwrap();
+            s.execute("text.move", &json!({"dir": "storyEnd", "extend": true})).unwrap();
+            let child = s.doc().unwrap().selection.text.unwrap();
+            assert!(child.cell.is_some());
+            let before = s.doc().unwrap().clone();
+            let journal = s.journal.clone();
+            // Synthetic slices isolate the exact character-removal policy; the native
+            // delivery tests below exercise a real copied footnote and its payload.
+            for text in [
+                String::new(),
+                FOOTNOTE_REF.to_string(),
+                XREF_MARK.to_string(),
+                TABLE_ANCHOR.to_string(),
+                format!("{FOOTNOTE_REF}{XREF_MARK}{TABLE_ANCHOR}"),
+                PAGE_NUMBER.to_string(),
+                format!("{FOOTNOTE_REF}{PAGE_NUMBER}{TABLE_ANCHOR}"),
+            ] {
+                let slice = Story::with_text(sid, &text, Default::default());
+                let expected = text.contains(PAGE_NUMBER);
+                assert_eq!(!strip_objects(&slice).text.is_empty(), expected);
+                s.text_clipboard = Some((Arc::new(slice), String::new()));
+                assert_eq!(s.has_usable_empty_text_clipboard(), expected, "{note} {text:?}");
+                assert!(Arc::ptr_eq(&before.doc, &s.doc().unwrap().doc));
+                assert_eq!(s.doc().unwrap().selection, before.selection);
+                assert_eq!(s.journal, journal);
+            }
+            // A retained marker is a real eligible child payload, not a blanket child rejection.
+            s.text_clipboard = Some((Arc::new(Story::with_text(sid, &PAGE_NUMBER.to_string(), Default::default())), String::new()));
+            let pasted = s.execute("edit.paste", &json!({"text": ""})).unwrap();
+            assert_eq!(pasted["formatted"], true);
+            assert_eq!(s.doc().unwrap().doc.text_story(sid, child.cell).unwrap().text, PAGE_NUMBER.to_string());
+            s.doc().unwrap().doc.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(*s.doc().unwrap().doc, *before.doc);
+        }
+    }
+
+    #[test]
+    fn native_empty_rich_query_requires_matching_payload_and_real_target() {
+        let mut s = Session::new();
+        assert!(!s.has_usable_empty_text_clipboard());
+        s.execute("file.new", &json!({})).unwrap();
+        let sid = frame(&mut s, "OLD");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 1, "focus": 2})).unwrap();
+        assert!(!s.has_usable_empty_text_clipboard());
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert!(!s.has_usable_empty_text_clipboard(), "ordinary copied text does not match an empty system string");
+        let before = s.doc().unwrap().doc.clone();
+        s.execute("edit.paste", &json!({"text": ""})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "OD", "the explicit engine empty contract is unchanged");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().doc, *before);
+        s.text_clipboard = Some((Arc::new(pagenor_doc::Story::new(sid)), String::new()));
+        assert!(!s.has_usable_empty_text_clipboard(), "an empty rich slice cannot authorize native deletion");
+        let slice = pagenor_doc::Story::with_text(sid, &pagenor_doc::PAGE_NUMBER.to_string(), Default::default());
+        s.text_clipboard = Some((Arc::new(slice), String::new()));
+        assert!(s.has_usable_empty_text_clipboard());
+        s.doc_mut().unwrap().selection.text.as_mut().unwrap().story = pagenor_doc::StoryId(u64::MAX);
+        assert!(!s.has_usable_empty_text_clipboard(), "a missing target is not eligible");
+        s.doc_mut().unwrap().selection.text = None;
+        assert!(!s.has_usable_empty_text_clipboard());
+    }
+
+    #[test]
     fn change_case_keeps_runs() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -578,5 +766,105 @@ mod paste_into_tests {
         assert!(img.pixel(200, 200)[0] < 90, "{:?}", img.pixel(200, 200));
         assert!(img.pixel(120, 120)[0] > 200, "{:?}", img.pixel(120, 120));
         s.doc().unwrap().doc.check().unwrap();
+    }
+}
+
+#[cfg(test)]
+#[path = "edit_review15_tests.rs"]
+mod review15_external_paste_tests;
+
+#[cfg(test)]
+#[path = "edit_review16_tests.rs"]
+mod review16_clipboard_tests;
+
+#[cfg(test)]
+#[path = "edit_clipboard_identity_tests.rs"]
+mod clipboard_identity_tests;
+
+#[cfg(test)]
+#[path = "edit_clipboard_entropy_tests.rs"]
+mod clipboard_entropy_tests;
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use pagenor_geom::Rect;
+
+    fn pasted(s: &mut Session, id: &str, p: Value) -> (SpreadRef, Rect) {
+        let new = ItemId(s.execute(id, &p).unwrap()["ids"][0].as_u64().unwrap());
+        let d = &s.doc().unwrap().doc;
+        (d.find(new).unwrap().spread, d.item(new).unwrap().bounds())
+    }
+
+    /// Paste and Paste in Place put the objects on the spread they are given (the first without one).
+    #[test]
+    fn paste_puts_the_objects_on_the_given_spread() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 2})), (SpreadRef::Doc(2), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        assert_eq!(pasted(&mut s, "edit.paste", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(48.0, 48.0, 148.0, 148.0)));
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({})).0, SpreadRef::Doc(0));
+        // A spread the document doesn't have: an error, and nothing is pasted.
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("edit.paste", &json!({"spread": 9})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+        before.check().unwrap();
+    }
+
+    /// With facing pages the first page sits alone, right of the spine. An object keeps its side
+    /// of the spine when it is pasted in place on another spread.
+    #[test]
+    fn paste_in_place_keeps_the_side_of_the_spine() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 4, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        // On page 3, the right-hand page of the second spread.
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36, w + 136.0, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 0})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        // And back from page 1.
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+        // Page 4 sits alone left of the spine: the object stays right of it, off the page.
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 2})), (SpreadRef::Doc(2), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+    }
+
+    /// A single-sided page has no spine: an object keeps its distance from the page's left edge,
+    /// whatever the page widths, and pastes as right-hand content into a facing-pages document.
+    #[test]
+    fn paste_in_place_from_a_single_sided_page_measures_from_its_left_edge() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.pageSize", &json!({"pages": [2], "width": 400, "height": 792})).unwrap();
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 0})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+    }
+
+    /// Undo leaves the id of the copy it removed in the selection. Copy measures from the spread
+    /// of the first selected object that is still there.
+    #[test]
+    fn copy_measures_from_the_first_selected_object_that_exists() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let a = s.execute("frame.create", &json!({"spread": 1, "rect": [w + 36.0, 36, w + 136.0, 136]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let gone = s.execute("edit.paste", &json!({"spread": 1})).unwrap()["ids"][0].as_u64().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.doc_mut().unwrap().selection.items = vec![ItemId(gone), ItemId(a)];
+        assert_eq!(s.doc().unwrap().selection.items, [ItemId(gone), ItemId(a)]);
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
     }
 }

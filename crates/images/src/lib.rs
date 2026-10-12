@@ -1,16 +1,20 @@
 //! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
 //! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
-//! composite); SVG is parsed with usvg (text set in the bundled fonts) and rasterised with resvg
+//! composite); SVG is parsed with usvg (text set in document, bundled and installed fonts) and rasterised with resvg
 //! for the screen — PDF export draws the same tree as vectors.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+
+use pagenor_fonts::{FontDb, FontFace, ScopedFonts};
 
 pub use resvg::usvg;
 
 mod eps;
+mod metadata;
 mod psd;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
+pub use metadata::{ColorInfo, color_info, color_mode};
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
@@ -56,27 +60,102 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
 }
 
-fn svg_options() -> &'static usvg::Options<'static> {
-    static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
-    OPTS.get_or_init(|| {
-        let mut db = usvg::fontdb::Database::new();
-        for f in pagenor_fonts::bundled() {
-            db.load_font_data(f.to_vec());
-        }
-        // Japanese text in SVGs: the craft-fonts faces (none without CRAFT_FONTS_DIR).
-        for f in pagenor_fonts::japanese_document_fonts() {
-            db.load_font_data(f.bytes.to_vec());
-        }
-        db.set_serif_family("Source Serif 4");
-        db.set_sans_serif_family("Source Sans 3");
-        db.set_monospace_family("JetBrains Mono");
-        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), ..Default::default() }
-    })
+/// Share only the font data needed by this SVG. Start with the document's default faces,
+/// so a document replacement takes precedence even over a bundled family of the same name.
+fn svg_options(fonts: ScopedFonts<'_>) -> usvg::Options<'_> {
+    let mut db = Arc::new(usvg::fontdb::Database::new());
+    for family in ["Source Serif 4", "Source Sans 3", "JetBrains Mono"] {
+        load_family(&mut db, &fonts, family);
+    }
+    let fallback_fonts = fonts.clone();
+    let loaded_fallback = usvg::FontResolver::default_fallback_selector();
+    let font_resolver = usvg::FontResolver {
+        select_font: Box::new(move |font, db| {
+            // Respect family-list order; a PostScript name already selects a face's style.
+            for family in font.families() {
+                let name = match family {
+                    usvg::FontFamily::Named(name) => name.as_str(),
+                    usvg::FontFamily::Monospace => "JetBrains Mono",
+                    usvg::FontFamily::SansSerif => "Source Sans 3",
+                    _ => "Source Serif 4",
+                };
+                if let Some(canonical) = fonts.canonical_family(name) {
+                    load_family(db, &fonts, &canonical);
+                    if let Some(id) = db.query(&usvg::fontdb::Query {
+                        families: &[usvg::fontdb::Family::Name(&canonical)],
+                        weight: usvg::fontdb::Weight(font.weight()),
+                        stretch: font.stretch().into(),
+                        style: font.style().into(),
+                    }) {
+                        return Some(id);
+                    }
+                } else if let Some((family, style)) = fonts.postscript_face(name)
+                    && let Some(id) = add_face(db, fonts.face(&family, &style))
+                {
+                    return Some(id);
+                }
+            }
+            load_family(db, &fonts, "Source Serif 4");
+            db.query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::Name("Source Serif 4")],
+                weight: usvg::fontdb::Weight(font.weight()),
+                stretch: font.stretch().into(),
+                style: font.style().into(),
+            })
+        }),
+        select_fallback: Box::new(move |c, exclude, db| {
+            loaded_fallback(c, exclude, db).or_else(|| {
+                let id = add_face(db, fallback_fonts.fallback_for(c, 0, None)?)?;
+                (!exclude.contains(&id)).then_some(id)
+            })
+        }),
+    };
+    usvg::Options { fontdb: db, font_family: "Source Sans 3".into(), font_resolver, ..Default::default() }
 }
 
-/// The parsed SVG.
+fn load_family(db: &mut Arc<usvg::fontdb::Database>, fonts: &ScopedFonts<'_>, family: &str) {
+    if !db.faces().any(|face| face.families.iter().any(|(name, _)| name == family)) && fonts.has_family(family) {
+        for style in fonts.styles(family) {
+            add_face(db, fonts.face(family, &style));
+        }
+    }
+}
+
+/// Own the Pagenor face rather than copying a file or native-service font's bytes.
+struct FaceBytes(Arc<FontFace>);
+impl AsRef<[u8]> for FaceBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.data()
+    }
+}
+
+fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<FontFace>) -> Option<usvg::fontdb::ID> {
+    let same = |f: &usvg::fontdb::FaceInfo| {
+        f.index == face.index()
+            && matches!(&f.source, usvg::fontdb::Source::Binary(b)
+            if std::ptr::eq(b.as_ref().as_ref().as_ptr(), face.data().as_ptr()))
+    };
+    if let Some(f) = db.faces().find(|f| same(f)) {
+        return Some(f.id);
+    }
+    let index = face.index();
+    // Parse collections privately: unrelated faces must not defeat a document replacement.
+    // The SVG database only receives the face selected by Pagenor; mutation stays additive.
+    let mut parsed = usvg::fontdb::Database::new();
+    let ids = parsed.load_font_source(usvg::fontdb::Source::Binary(Arc::new(FaceBytes(face))));
+    let info = ids.into_iter().find_map(|id| parsed.face(id).filter(|f| f.index == index).cloned())?;
+    Some(Arc::make_mut(db).push_face_info(info))
+}
+
+/// Parse with the shared font database. Other open documents' fonts are excluded.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    usvg::Tree::from_data(bytes, svg_options()).ok()
+    svg_tree_with_fonts(bytes, FontDb::global().scoped(0))
+}
+
+/// Parse with one document's font scope. usvg applies SVG variation settings to the original
+/// variable font; Pagenor's named-instance coordinates are not substituted for SVG CSS.
+pub fn svg_tree_with_fonts(bytes: &[u8], fonts: ScopedFonts<'_>) -> Option<usvg::Tree> {
+    usvg::Tree::from_data(bytes, &svg_options(fonts)).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -181,7 +260,12 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.
 pub fn render_svg(bytes: &[u8], max_side: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let tree = svg_tree(bytes)?;
+    render_svg_with_fonts(bytes, max_side, FontDb::global().scoped(0))
+}
+
+/// Rasterise with the font scope used by document composition and PDF export.
+pub fn render_svg_with_fonts(bytes: &[u8], max_side: u32, fonts: ScopedFonts<'_>) -> Option<(Vec<u8>, u32, u32)> {
+    let tree = svg_tree_with_fonts(bytes, fonts)?;
     let s = tree.size();
     let k = max_side as f32 / s.width().max(s.height()).max(1e-3);
     let (w, h) = ((s.width() * k).round().max(1.0) as u32, (s.height() * k).round().max(1.0) as u32);
@@ -212,6 +296,166 @@ mod tests {
         assert_eq!(&px[(100 * 400 + 100) * 4..][..4], &[255, 0, 0, 255]);
         assert!(px.chunks(4).skip(220).step_by(7).any(|p| p[3] > 128 && p[0] < 100), "text pixels");
         assert!(!is_svg(b"\x89PNG"));
+    }
+
+    fn text_svg(family: &str, body: &str) -> Vec<u8> {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="{family}">{body}</text></svg>"#).into_bytes()
+    }
+
+    fn glyph_families(tree: &usvg::Tree) -> Vec<(String, u16)> {
+        fn walk(group: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+            for node in group.children() {
+                match node {
+                    usvg::Node::Group(group) => walk(group, tree, out),
+                    usvg::Node::Text(text) => {
+                        for glyph in text.layouted().iter().flat_map(|span| &span.positioned_glyphs) {
+                            let face = tree.fontdb().face(glyph.font).unwrap();
+                            out.push((face.families[0].0.clone(), glyph.id.0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(tree.root(), tree, &mut out);
+        out
+    }
+
+    #[test]
+    fn svg_named_and_fallback_text_share_memory_font_bytes_without_duplicates() {
+        let fonts = FontDb::with_font_dirs(Vec::new());
+        assert_eq!(fonts.add_font(pagenor_fonts::testing::font_with("Pagenor SVG Hangul", &['한', '글']).unwrap()), 1);
+        let svg = text_svg("pAgEnOr SvG hAnGuL", "한글");
+        let tree = svg_tree_with_fonts(&svg, fonts.scoped(0)).unwrap();
+        let glyphs = glyph_families(&tree);
+        assert_eq!(glyphs.len(), 2);
+        assert!(glyphs.iter().all(|(name, gid)| name == "Pagenor SVG Hangul" && *gid != 0));
+        let face = fonts.face("Pagenor SVG Hangul", "Regular");
+        let mut db = Arc::new(usvg::fontdb::Database::new());
+        let id = add_face(&mut db, face.clone()).unwrap();
+        assert_eq!(add_face(&mut db, face.clone()), Some(id));
+        assert_eq!(db.faces().count(), 1);
+        db.with_face_data(id, |data, index| {
+            assert!(std::ptr::eq(data.as_ptr(), face.data().as_ptr()));
+            assert_eq!(index, face.index());
+        })
+        .unwrap();
+        let fallback = svg_tree_with_fonts(&text_svg("Source Sans 3", "한글"), fonts.scoped(0)).unwrap();
+        assert!(glyph_families(&fallback).iter().all(|(_, gid)| *gid != 0));
+        // The SVG retains the bytes even after the originating database is dropped.
+        drop(fonts);
+        assert_eq!(glyph_families(&tree), glyphs);
+    }
+
+    #[test]
+    fn svg_uses_installed_fonts_and_keeps_two_document_replacements_isolated() {
+        let folder = std::env::temp_dir().join(format!("pagenor-svg-scopes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("installed")).unwrap();
+        for (name, glyph) in [("one", 'X'), ("two", 'W')] {
+            std::fs::create_dir_all(folder.join(name)).unwrap();
+            std::fs::write(folder.join(name).join("font.otf"), pagenor_fonts::testing::font_with_glyph("Source Sans 3", &['A'], glyph).unwrap())
+                .unwrap();
+        }
+        std::fs::write(folder.join("installed/font.ttf"), pagenor_fonts::testing::font_with("Pagenor SVG Installed", &['A']).unwrap()).unwrap();
+        let fonts = FontDb::with_font_dirs(vec![folder.join("installed")]);
+        let installed = svg_tree_with_fonts(&text_svg("Pagenor SVG Installed", "A"), fonts.scoped(0)).unwrap();
+        assert_eq!(glyph_families(&installed)[0].0, "Pagenor SVG Installed");
+        let one = fonts.load_document_fonts(&folder.join("one"));
+        let two = fonts.load_document_fonts(&folder.join("two"));
+        let svg = text_svg("Source Sans 3", "A");
+        let first = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap());
+        let second = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(two.scope)).unwrap());
+        let global = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(0)).unwrap());
+        assert_ne!(first[0].1, second[0].1);
+        assert_ne!(first[0].1, global[0].1);
+        assert_ne!(second[0].1, global[0].1);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), first);
+        let ps = text_svg("SourceSans3-Regular", "A");
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), first);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(two.scope)).unwrap()), second);
+        fonts.close_scope(one.scope);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), global);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), global);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn svg_collection_selects_the_requested_face_index_once() {
+        let faces = [
+            pagenor_fonts::testing::font_with("Pagenor SVG Collection One", &['A']).unwrap(),
+            pagenor_fonts::testing::font_with("Pagenor SVG Collection Two", &['A']).unwrap(),
+        ];
+        let mut bytes = b"ttcf".to_vec();
+        bytes.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
+        bytes.extend_from_slice(&2_u32.to_be_bytes());
+        let mut base = 20;
+        for face in &faces {
+            bytes.extend_from_slice(&(base as u32).to_be_bytes());
+            base += face.len();
+        }
+        for face in faces {
+            let start = bytes.len() as u32;
+            let mut face = face;
+            let tables = u16::from_be_bytes([face[4], face[5]]) as usize;
+            for table in 0..tables {
+                let at = 12 + table * 16 + 8;
+                let offset = u32::from_be_bytes(face[at..at + 4].try_into().unwrap()) + start;
+                face[at..at + 4].copy_from_slice(&offset.to_be_bytes());
+            }
+            bytes.extend_from_slice(&face);
+        }
+        let fonts = FontDb::with_font_dirs(Vec::new());
+        assert_eq!(fonts.add_font(bytes), 2);
+        let face = fonts.face("Pagenor SVG Collection Two", "Regular");
+        assert_eq!(face.index(), 1);
+        let mut db = Arc::new(usvg::fontdb::Database::new());
+        let id = add_face(&mut db, face.clone()).unwrap();
+        assert_eq!(db.face(id).unwrap().index, 1);
+        assert_eq!(add_face(&mut db, face), Some(id));
+        assert_eq!(db.faces().count(), 1);
+        let tree = svg_tree_with_fonts(&text_svg("Pagenor SVG Collection Two", "A"), fonts.scoped(0)).unwrap();
+        assert_eq!(glyph_families(&tree)[0].0, "Pagenor SVG Collection Two");
+    }
+
+    /// The PostScript name of the face that sets the text of `svg` (one face for all of it).
+    fn text_face(svg_attrs: &str) -> String {
+        let svg =
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{svg_attrs}>ab</text></svg>"#);
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        let mut faces = Vec::new();
+        for n in tree.root().children() {
+            if let usvg::Node::Text(t) = n {
+                for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
+                    faces.extend(tree.fontdb().face(g.font).map(|f| f.post_script_name.clone()));
+                }
+            }
+        }
+        faces.dedup();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        faces.remove(0)
+    }
+
+    #[test]
+    fn svg_text_finds_fonts_by_postscript_name() {
+        // Bundled, as Illustrator's SVG export names it; any case.
+        assert_eq!(text_face(r#" font-family="'SourceSerif4-Semibold'""#), "SourceSerif4-Semibold");
+        assert_eq!(text_face(r#" font-family="sourceserif4-semibold""#), "SourceSerif4-Semibold");
+        // A shared font (as an installed one would be).
+        let font = pagenor_fonts::testing::font_with("Pagenor Test SVG PostScript", &['a', 'b']).unwrap();
+        pagenor_fonts::FontDb::global().add_font(font);
+        assert_eq!(text_face(r#" font-family="PagenorTestSVGPostScript-Regular""#), "PagenorTestSVGPostScript-Regular");
+        // The name picks that face: font-weight and font-style don't change it.
+        assert_eq!(text_face(r#" font-family="SourceSerif4-Semibold" font-weight="bold" font-style="italic""#), "SourceSerif4-Semibold");
+        // A family listed before it still comes first; one after it is a fallback.
+        assert_eq!(text_face(r#" font-family="'Source Sans 3', SourceSerif4-Bold""#), "SourceSans3-Regular");
+        assert_eq!(text_face(r#" font-family="NoSuch-Font, SourceSerif4-Bold, 'Source Sans 3'""#), "SourceSerif4-Bold");
+        // Family names work as before.
+        assert_eq!(text_face(r#" font-family="'Source Serif 4'" font-weight="bold""#), "SourceSerif4-Bold");
+        // An unknown name falls back as before (the serif default).
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), text_face(r#" font-family="No Such Font""#));
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), "SourceSerif4-Regular");
     }
 
     /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.

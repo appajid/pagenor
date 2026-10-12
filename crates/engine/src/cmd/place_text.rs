@@ -52,17 +52,18 @@ fn map_styles(d: &Document, imp: &mut pagenor_textimport::Imported, map: &std::c
             s.based_on = Some(b.clone());
         }
     }
-    let n = imp.story.len();
-    imp.story.format_paras(0..n, |p| {
+    // Rename in place: Markdown's explicit/inherited emphasis flags follow source runs.
+    // Normalizing here could merge differently sourced runs mapped to the same style.
+    for p in &mut imp.story.paras {
         if let Some(m) = rename.get(&p.style) {
             p.style = m.clone();
         }
-    });
-    imp.story.format_chars(0..n, |f| {
-        if let Some(m) = rename.get(&f.style) {
-            f.style = m.clone();
+    }
+    for run in &mut imp.story.chars {
+        if let Some(m) = rename.get(&run.format.style) {
+            run.format.style = m.clone();
         }
-    });
+    }
 }
 
 fn add_styles(d: &mut Document, imp: &pagenor_textimport::Imported, conflict: Conflict) {
@@ -98,6 +99,53 @@ fn add_styles(d: &mut Document, imp: &pagenor_textimport::Imported, conflict: Co
     }
 }
 
+/// Combine additive Markdown italics with the paragraph style actually selected by placement.
+/// Explicit strong runs and explicitly mapped character styles retain their own definitions.
+fn resolve_markdown_emphasis(
+    imp: &mut pagenor_textimport::Imported,
+    emphasis: &[bool],
+    styles: &pagenor_doc::Styles,
+    first_paragraph: Option<&ParaFormat>,
+) -> Result<()> {
+    if emphasis.is_empty() {
+        return Ok(());
+    }
+    if emphasis.len() != imp.story.chars.len() {
+        return Err(bad("file.place", "Markdown emphasis runs changed during style mapping"));
+    }
+    if !emphasis.iter().any(|&inherit| inherit) {
+        return Ok(());
+    }
+    // Resolve paragraph bases once and walk runs/boundaries once, rather than rescanning
+    // the growing story for every emphasized run.
+    let bases: Vec<_> = imp
+        .story
+        .para_ranges()
+        .into_iter()
+        .zip(&imp.story.paras)
+        .enumerate()
+        .map(|(index, (range, p))| {
+            let p = if index == 0 { first_paragraph.unwrap_or(p) } else { p };
+            (range, styles.resolve_para(p).1)
+        })
+        .collect();
+    let mut paragraph = 0usize;
+    let mut at = 0usize;
+    for (run, inherit) in imp.story.chars.iter_mut().zip(emphasis) {
+        while bases.get(paragraph).is_some_and(|(range, _)| at > range.end) {
+            paragraph += 1;
+        }
+        if *inherit {
+            let (_, base) = bases.get(paragraph).ok_or_else(|| bad("file.place", "Markdown emphasis paragraph boundary"))?;
+            if matches!(base.font_style.as_str(), "Bold" | "Bold Italic") && styles.resolve_char(base, &run.format).font_style == "Italic" {
+                run.format.over.font_style = Some("Bold Italic".into());
+            }
+        }
+        at = at.checked_add(run.len).ok_or_else(|| bad("file.place", "Markdown emphasis character boundary"))?;
+    }
+    Ok(())
+}
+
 /// "Remove styles and formatting": every paragraph [Basic Paragraph], no local formatting.
 fn strip(story: &mut Story) {
     let n = story.len();
@@ -105,27 +153,37 @@ fn strip(story: &mut Story) {
     story.format_chars(0..n, |f| *f = Default::default());
 }
 
-/// Is the story overset in its frames, and how much of it do its frames show?
-fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize) {
+/// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?
+/// A frame a column, frame or page break ends early is left out: it says nothing about how much
+/// a frame holds.
+fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize) {
     let cs = pagenor_compose::compose_story(d, sid, &Default::default());
-    let shown = cs.frames.iter().map(|f| f.range.end).max().unwrap_or(0);
-    (cs.overset_at, shown)
+    let text = d.story(sid).map_or("", |s| s.text.as_str());
+    let is_break = pagenor_doc::story::is_break_char;
+    let (mut held, mut full) = (0, 0);
+    for f in &cs.frames {
+        let Some(shown) = text.get(f.range.clone()) else { continue };
+        if !shown.is_empty() && !shown.chars().any(is_break) {
+            held += shown.len();
+            full += 1;
+        }
+    }
+    (cs.overset_at, held, full)
 }
 
 /// Thread new frames on new pages (margin rectangles) until the story fits. Returns pages added.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
     let mut added = 0;
     loop {
-        let (overset, shown) = fit(d, sid);
+        let (overset, held, full) = fit(d, sid);
         let Some(at) = overset else { return Ok(added) };
         if added >= max_pages {
             return Err(bad("file.place", format!("autoflow stopped after {max_pages} pages")));
         }
         let len = d.story(sid).map_or(0, |s| s.len());
-        let frames = d.story(sid).map_or(1, |s| s.frames.len()).max(1);
-        // Frames still needed at the rate the existing ones are filled (at least one).
-        let per_frame = (shown.max(at) / frames).max(1);
-        let want = (len - at).div_ceil(per_frame).clamp(1, max_pages - added);
+        // Frames still needed at the rate the full ones are filled (at least one); with no full
+        // frame to go by yet, one more page.
+        let want = held.checked_div(full).map_or(1, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1))).clamp(1, max_pages - added);
         let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad("file.place", "the story has no frame"))?;
         let mut page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
@@ -152,6 +210,7 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
         imp.para_styles.clear();
         imp.char_styles.clear();
     }
+    let mut emphasis = if remove { Vec::new() } else { imp.prepare_markdown_emphasis(name, bytes) };
     let conflict = match p.get("styleConflicts").and_then(Value::as_str).unwrap_or("useExisting") {
         "useExisting" => Conflict::UseExisting,
         "redefine" => Conflict::Redefine,
@@ -163,6 +222,9 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
         .and_then(Value::as_object)
         .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
         .unwrap_or_default();
+    for (inherit, run) in emphasis.iter_mut().zip(&imp.story.chars) {
+        *inherit &= !map.contains_key(&run.format.style);
+    }
     map_styles(&s.doc()?.doc, &mut imp, &map, conflict);
     let autoflow_on = p.get("autoflow").and_then(Value::as_bool).unwrap_or(false);
     let st = s.doc()?;
@@ -176,14 +238,21 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
     s.edit(|d, sel| {
         add_styles(d, &imp, conflict);
         let sid = if let Some(t) = caret {
-            // Into the text at the insertion point (replacing the selection).
-            let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
+            // The first inserted paragraph inherits the surviving destination paragraph.
             let r = t.range();
-            story.delete(r.clone());
+            let first = {
+                let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
+                super::text::prepare_formatted_insert(story, r.start, &imp.story.text);
+                super::text::delete_preserving_eof(story, r.clone(), imp.story.text.is_empty());
+                story.paras.get(story.para_at(r.start)).cloned().ok_or_else(|| bad("file.place", "text insertion paragraph"))?
+            };
+            resolve_markdown_emphasis(&mut imp, &emphasis, &d.styles, Some(&first))?;
+            let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
             let end = story.insert_story(r.start, &imp.story);
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             t.story
         } else {
+            resolve_markdown_emphasis(&mut imp, &emphasis, &d.styles, None)?;
             let fid = match frame {
                 Some(f) => f,
                 None => {
@@ -256,6 +325,29 @@ mod tests {
         let st = s.doc().unwrap().doc.story(StoryId(sid2)).unwrap().clone();
         assert_eq!(st.text, "Start middle end");
         assert_eq!(st.format_after(6).over.font_style.as_deref(), Some("Bold"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autoflow_adds_only_the_pages_breaks_ask_for() {
+        // Regression (#262): a frame a break ends early made autoflow take it for a frame that
+        // holds a few characters, and add a page per few characters left (33 for this text).
+        let dir = std::env::temp_dir().join(format!("pagenor-place-breaks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, rtf, pages) in [
+            ("lead.rtf", r"{\rtf1 \page\par A Short Heading\par First short paragraph.\par Second short paragraph.\par}", 2),
+            ("each.rtf", r"{\rtf1 One\par\page\par Two\par\page\par Three\par\page\par Four\par}", 4),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, rtf).unwrap();
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 1})).unwrap();
+            let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "autoflow": true})).unwrap();
+            assert_eq!(r["overset"], false, "{name}: {r}");
+            let d = &s.doc().unwrap().doc;
+            assert_eq!(d.page_count(), pages, "{name}: {r}");
+            assert_eq!(d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames.len(), pages, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -368,6 +460,253 @@ mod reflow_tests {
         s.execute("text.insert", &json!({"text": long})).unwrap();
         assert_eq!(s.doc().unwrap().doc.page_count(), 1);
     }
+
+    const LINE: &str = "Words keep coming and the page fills up quickly with them. ";
+
+    fn primary_doc() -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "primaryTextFrame": true})).unwrap();
+        let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story").0;
+        (s, sid)
+    }
+
+    fn type_text(s: &mut Session, sid: u64, text: &str) {
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": text})).unwrap();
+    }
+
+    fn pages(s: &Session) -> usize {
+        s.doc().unwrap().doc.page_count()
+    }
+
+    fn frames(s: &Session, sid: u64) -> Vec<pagenor_doc::ItemId> {
+        s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().frames.clone()
+    }
+
+    fn overset(s: &Session, sid: u64) -> bool {
+        pagenor_compose::compose_story(&s.doc().unwrap().doc, pagenor_doc::StoryId(sid), &Default::default()).overset_at.is_some()
+    }
+
+    #[test]
+    fn shrinking_the_primary_frame_until_it_oversets_adds_pages() {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(20));
+        assert_eq!(pages(&s), 1, "the text fits on the first page");
+        let frame = frames(&s, sid)[0].0;
+        s.execute("transform.set", &json!({"height": 60, "ids": [frame]})).unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn shrinking_the_primary_frame_by_drag_adds_pages_when_the_drag_ends() {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(20));
+        let frame = frames(&s, sid)[0].0;
+        s.begin_interaction("Resize").unwrap();
+        s.preview("transform.set", json!({"height": 300, "ids": [frame]})).unwrap();
+        s.preview("transform.set", json!({"height": 60, "ids": [frame]})).unwrap();
+        assert_eq!(pages(&s), 1, "nothing reflows during the drag");
+        s.commit_interaction().unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+        // The drag and its pages are one undo step.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), 1);
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn making_an_overset_story_the_primary_one_adds_pages() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": LINE.repeat(30), "caret": false})).unwrap();
+        let (frame, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        assert!(overset(&s, sid));
+        assert_eq!(pages(&s), 1);
+        s.execute("object.primaryTextFrame", &json!({"ids": [frame]})).unwrap();
+        assert!(pages(&s) > 1, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn showing_a_hidden_condition_adds_the_pages_its_text_needs() {
+        let (mut s, sid) = primary_doc();
+        let text = LINE.repeat(250);
+        type_text(&mut s, sid, &text);
+        let n = pages(&s);
+        assert!(n >= 3, "pages added: {n}");
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        assert_eq!(pages(&s), 1, "hidden text needs no pages");
+        // An edit elsewhere, so the layout cache holds the story as it is now.
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), 1);
+        s.execute("condition.options", &json!({"name": "Draft", "visible": true})).unwrap();
+        assert!(pages(&s) >= n, "the pages are back: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    fn reflowed() -> (Session, u64, usize) {
+        let (mut s, sid) = primary_doc();
+        type_text(&mut s, sid, &LINE.repeat(250));
+        let n = pages(&s);
+        assert!(n >= 3, "pages added: {n}");
+        assert_eq!(frames(&s, sid).len(), n);
+        let layout = s.cache.get(&s.doc().unwrap().doc, pagenor_doc::StoryId(sid), None);
+        assert!(layout.frames.iter().all(|f| !f.range.is_empty()), "autoflow must discard predicted empty trailing pages in the typing undo step");
+        (s, sid, n)
+    }
+
+    #[test]
+    fn a_deleted_page_of_the_primary_story_stays_deleted() {
+        let (mut s, sid, n) = reflowed();
+        let len = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().len();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "the page stays deleted");
+        assert_eq!(frames(&s, sid).len(), n - 1);
+        assert!(overset(&s, sid), "its text is overset");
+        assert_eq!(s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().len(), len, "no text is lost");
+        s.doc().unwrap().doc.check().unwrap();
+        // One undo brings the page back; redo deletes it again.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n);
+        assert!(!overset(&s, sid));
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+    }
+
+    #[test]
+    fn a_deleted_frame_of_the_primary_story_brings_no_new_page() {
+        let (mut s, sid, n) = reflowed();
+        let last = frames(&s, sid)[n - 1].0;
+        s.execute("edit.clear", &json!({"ids": [last]})).unwrap();
+        assert_eq!(pages(&s), n, "no page is added for the deleted frame");
+        assert_eq!(frames(&s, sid).len(), n - 1);
+        assert!(overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn an_edit_elsewhere_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(pages(&s), n - 1, "drawing a frame adds no pages");
+        s.execute("transform.move", &json!({"dx": 5, "dy": 5, "ids": [other]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "moving it adds no pages");
+        s.begin_interaction("Move").unwrap();
+        s.preview("transform.move", json!({"dx": 20, "dy": 20, "ids": [other]})).unwrap();
+        s.commit_interaction().unwrap();
+        assert_eq!(pages(&s), n - 1, "dragging it adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn renaming_a_style_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, _) = reflowed();
+        // The story uses the style and has a footnote: a rename rewrites the story and bumps the
+        // revision of every text in it.
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Body"})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+        let n = pages(&s);
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("style.paragraph.edit", &json!({"name": "Body", "rename": "Body Text"})).unwrap();
+        assert_eq!(pages(&s), n - 1, "renaming a style the story uses adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn formatting_the_text_reflows_again_after_a_deletion() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": LINE.len() * 250})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 14}})).unwrap();
+        assert!(pages(&s) > n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn typing_in_a_footnote_reflows_again_after_a_deletion() {
+        let (mut s, sid, _) = reflowed();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+        let n = pages(&s);
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        // The caret is in the footnote: the story's own text stays as it is.
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert!(pages(&s) >= n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn undoing_another_change_does_not_bring_deleted_pages_back() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": LINE.len() * 250})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        // Hiding the text and undoing that leaves the layout of the hidden text in the cache.
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), n - 1, "an edit elsewhere after the undo adds no pages");
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn shrinking_the_primary_frame_adds_pages_after_an_undo_too() {
+        let (mut s, sid, n) = reflowed();
+        // The last half of the text is conditional and hidden: it fits on fewer pages.
+        let len = LINE.len() * 250;
+        s.execute("condition.new", &json!({"name": "Draft"})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": len / 2, "focus": len})).unwrap();
+        s.execute("condition.apply", &json!({"name": "Draft"})).unwrap();
+        s.execute("condition.options", &json!({"name": "Draft", "visible": false})).unwrap();
+        let hidden = pages(&s);
+        assert!(hidden < n && !overset(&s, sid), "pages with the text hidden: {hidden}");
+        // Showing it and undoing that leaves the layout of the shown text in the cache.
+        s.execute("condition.options", &json!({"name": "Draft", "visible": true})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(pages(&s), hidden);
+        let frame = frames(&s, sid)[0].0;
+        s.execute("transform.set", &json!({"height": 60, "ids": [frame]})).unwrap();
+        assert!(pages(&s) > hidden, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+    }
+
+    #[test]
+    fn an_edit_elsewhere_adds_no_pages_when_the_layout_cache_is_cold() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        // As after reopening the document: nothing remembers that the story was overset.
+        s.cache.clear();
+        s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        assert!(overset(&s, sid));
+    }
+
+    #[test]
+    fn editing_the_text_reflows_again_after_a_deletion() {
+        let (mut s, sid, n) = reflowed();
+        s.execute("layout.pages.delete", &json!({"pages": [1]})).unwrap();
+        assert_eq!(pages(&s), n - 1);
+        type_text(&mut s, sid, "More. ");
+        assert!(pages(&s) >= n, "pages added: {}", pages(&s));
+        assert!(!overset(&s, sid));
+        s.doc().unwrap().doc.check().unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +742,36 @@ mod pdf_page_tests {
         let pdf = pagenor_pdf::export_pdf(&d, &s.cache, &Default::default()).unwrap();
         assert!(String::from_utf8_lossy(&pdf).contains("/Subtype /Form") || String::from_utf8_lossy(&pdf).contains("/Subtype/Form"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_place_maps_styles_and_roundtrips_with_undo() {
+        let b64 = crate::cmd::base64_encode(b"# Head\n\n**Strong** and plain\n\n- Item");
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline", "chars": {"size": 30}})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Emphatic", "chars": {"size": 17}})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let info = s.execute("place.styles", &json!({"base64": b64, "name": "a.markdown"})).unwrap();
+        assert!(info["paragraph"].as_array().unwrap().contains(&json!("Heading 1")));
+        assert!(info["character"].as_array().unwrap().contains(&json!("Strong")));
+        let result = s
+            .execute("file.place", &json!({"base64": b64, "name": "a.markdown", "styleMap": {"Heading 1": "Headline", "Strong": "Emphatic"}}))
+            .unwrap();
+        let placed = s.doc().unwrap().doc.clone();
+        let story = placed.story(pagenor_doc::StoryId(result["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(story.text, "Head\nStrong and plain\nItem");
+        assert_eq!(story.paras[0].style, "Headline");
+        assert_eq!(placed.styles.resolve_char(&placed.styles.resolve_para(&story.paras[1]).1, story.format_after(5)).size, 17.0);
+        assert!(placed.styles.para("Heading 1").is_none());
+        assert!(placed.styles.char_style("Strong").is_none());
+        story.check().unwrap();
+        let bytes = pagenor_format::save(&placed).unwrap();
+        assert_eq!(crate::cmd::from_bytes(&bytes).unwrap(), *placed);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().doc, *before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().doc, *placed);
     }
 
     fn word_file() -> Vec<u8> {
@@ -449,3 +818,246 @@ mod pdf_page_tests {
         assert_eq!(s.doc().unwrap().doc.styles.para("Body").unwrap().chars.size, Some(10.0));
     }
 }
+
+#[cfg(test)]
+mod markdown_emphasis_tests {
+    use super::*;
+
+    const SOURCE: &str = "# plain *em* *`code`* **strong** ***both*** *~~struck~~* tail";
+
+    fn assert_heading(s: &Session, result: &Value, style: &str, weight: &str, size: f64) {
+        let d = &s.doc().unwrap().doc;
+        let story = d.story(StoryId(result["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(story.text, "plain em code strong both struck tail");
+        assert_eq!(story.paras[0].style, style);
+        let (_, base) = d.styles.resolve_para(&story.paras[0]);
+        assert_eq!(base.font_style, weight);
+        let italic = if weight == "Bold" { "Bold Italic" } else { "Italic" };
+        for (word, expected) in
+            [("plain", weight), ("em", italic), ("code", italic), ("strong", "Bold"), ("both", "Bold Italic"), ("struck", italic), ("tail", weight)]
+        {
+            let format = story.format_after(story.text.find(word).unwrap());
+            let actual = d.styles.resolve_char(&base, format);
+            assert_eq!(actual.font_style, expected, "{style}: {word}");
+            assert_eq!(actual.size, size, "{style}: {word}");
+        }
+        let em = story.format_after(story.text.find("em").unwrap());
+        assert_eq!(em.style, "Emphasis", "italic markup must remain distinct from explicit strong");
+        assert_eq!(em.over.font_style.as_deref(), (weight == "Bold").then_some("Bold Italic"));
+        let strong = story.format_after(story.text.find("strong").unwrap());
+        assert_eq!(strong.style, "Strong");
+        assert!(strong.over.is_empty());
+        let code = story.format_after(story.text.find("code").unwrap());
+        assert_eq!(d.styles.resolve_char(&base, code).font_family, "JetBrains Mono");
+        let struck = story.format_after(story.text.find("struck").unwrap());
+        assert!(d.styles.resolve_char(&base, struck).strikethrough);
+        story.check().unwrap();
+    }
+
+    #[test]
+    fn mapped_regular_heading_keeps_emphasis_and_explicit_strong_through_roundtrip_and_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // Read the destination's inherited weight rather than its name or sparse attrs.
+        s.execute("style.paragraph.create", &json!({"name": "Regular Base", "chars": {"font_style": "Regular"}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline", "basedOn": "Regular Base", "chars": {"size": 30}})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let result = s
+            .execute(
+                "file.place",
+                &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(SOURCE.as_bytes()), "styleMap": {"Heading 1": "Headline"}}),
+            )
+            .unwrap();
+        assert_heading(&s, &result, "Headline", "Regular", 30.0);
+        let placed = s.doc().unwrap().doc.clone();
+        assert!(placed.styles.para("Heading 1").is_none());
+        let bytes = pagenor_format::save(&placed).unwrap();
+        assert_eq!(crate::cmd::from_bytes(&bytes).unwrap(), *placed);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().doc, *before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(*s.doc().unwrap().doc, *placed);
+        assert_heading(&s, &result, "Headline", "Regular", 30.0);
+    }
+
+    #[test]
+    fn existing_regular_heading_keeps_emphasis_and_explicit_strong() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Heading 1", "chars": {"font_style": "Regular", "size": 30}})).unwrap();
+        let result = s.execute("file.place", &json!({"name": "heading.MARKDOWN", "base64": crate::cmd::base64_encode(SOURCE.as_bytes())})).unwrap();
+        assert_heading(&s, &result, "Heading 1", "Regular", 30.0);
+    }
+
+    #[test]
+    fn bold_destination_defaults_and_conflict_policies_keep_bold_italic_emphasis() {
+        for conflict in ["useExisting", "redefine", "autoRename"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute(
+                "style.paragraph.create",
+                &json!({"name": "Heading 1", "chars": {"font_style": if conflict == "useExisting" { "Bold" } else { "Regular" }, "size": 30}}),
+            )
+            .unwrap();
+            let result = s
+                .execute(
+                    "file.place",
+                    &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(SOURCE.as_bytes()), "styleConflicts": conflict}),
+                )
+                .unwrap();
+            let name = if conflict == "autoRename" { "Heading 1_wrd_1" } else { "Heading 1" };
+            assert_heading(&s, &result, name, "Bold", if conflict == "useExisting" { 30.0 } else { 24.0 });
+        }
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline", "chars": {"font_style": "Bold", "size": 30}})).unwrap();
+        let result = s
+            .execute(
+                "file.place",
+                &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(SOURCE.as_bytes()), "styleMap": {"Heading 1": "Headline"}}),
+            )
+            .unwrap();
+        assert_heading(&s, &result, "Headline", "Bold", 30.0);
+    }
+
+    #[test]
+    fn caret_insertion_uses_the_surviving_destination_paragraph_weight() {
+        for weight in ["Regular", "Bold"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("style.paragraph.create", &json!({"name": "Target", "chars": {"font_style": weight, "size": 30}})).unwrap();
+            let frame = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "before  after"})).unwrap();
+            let sid = frame["story"].as_u64().unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 7, "focus": 7})).unwrap();
+            s.execute("style.paragraph.apply", &json!({"name": "Target"})).unwrap();
+            s.execute("file.place", &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(b"# *em* **strong**")})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let story = d.story(StoryId(sid)).unwrap();
+            assert_eq!(story.text, "before em strong after");
+            assert_eq!(story.paras[0].style, "Target");
+            let (_, base) = d.styles.resolve_para(&story.paras[0]);
+            let em = d.styles.resolve_char(&base, story.format_after(7));
+            assert_eq!(em.font_style, if weight == "Bold" { "Bold Italic" } else { "Italic" });
+            assert_eq!(em.size, 30.0);
+            let strong = d.styles.resolve_char(&base, story.format_after(10));
+            assert_eq!(strong.font_style, "Bold");
+            assert_eq!(strong.size, 30.0);
+            story.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn bold_mapped_body_style_adds_its_actual_weight_to_emphasis() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Bold Body", "chars": {"font_style": "Bold"}})).unwrap();
+        let result = s
+            .execute(
+                "file.place",
+                &json!({"name": "body.md", "base64": crate::cmd::base64_encode(b"*em* **strong**"), "styleMap": {"Body Text": "Bold Body"}}),
+            )
+            .unwrap();
+        let d = &s.doc().unwrap().doc;
+        let story = d.story(StoryId(result["story"].as_u64().unwrap())).unwrap();
+        let (_, base) = d.styles.resolve_para(&story.paras[0]);
+        assert_eq!(story.paras[0].style, "Bold Body");
+        assert_eq!(d.styles.resolve_char(&base, story.format_after(0)).font_style, "Bold Italic");
+        assert_eq!(d.styles.resolve_char(&base, story.format_after(3)).font_style, "Bold");
+    }
+
+    #[test]
+    fn rtf_sniffed_from_markdown_filename_retains_its_local_font_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let result = s.execute("file.place", &json!({"name": "sniffed.md", "base64": crate::cmd::base64_encode(br"{\rtf1 {\b\i em}}")})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let story = d.story(StoryId(result["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(story.text, "em");
+        assert_eq!(story.format_after(0).over.font_style.as_deref(), Some("Bold Italic"));
+    }
+
+    #[test]
+    fn explicit_character_mapping_and_remove_styles_override_inherited_weight() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Custom Emphasis", "chars": {"font_style": "Regular", "size": 18}})).unwrap();
+        let result = s
+            .execute(
+                "file.place",
+                &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(b"# *em* **strong**"), "styleMap": {"Emphasis": "Custom Emphasis"}}),
+            )
+            .unwrap();
+        let d = &s.doc().unwrap().doc;
+        let story = d.story(StoryId(result["story"].as_u64().unwrap())).unwrap();
+        let (_, base) = d.styles.resolve_para(&story.paras[0]);
+        assert_eq!(base.font_style, "Bold");
+        let em = story.format_after(0);
+        assert_eq!(em.style, "Custom Emphasis");
+        assert!(em.over.is_empty());
+        let chars = d.styles.resolve_char(&base, em);
+        assert_eq!(chars.font_style, "Regular");
+        assert_eq!(chars.size, 18.0);
+        assert_eq!(d.styles.resolve_char(&base, story.format_after(3)).font_style, "Bold");
+        let result = s
+            .execute("file.place", &json!({"name": "heading.md", "base64": crate::cmd::base64_encode(SOURCE.as_bytes()), "removeStyles": true}))
+            .unwrap();
+        let story = s.doc().unwrap().doc.story(StoryId(result["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(story.paras[0].style, pagenor_doc::BASIC_PARAGRAPH);
+        assert!(story.chars.iter().all(|run| run.format.style == pagenor_doc::NO_CHAR_STYLE && run.format.over.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod r8_unmatched_table_session_tests {
+    use pagenor_doc::{CharFormat, StoryId};
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn r8_unmatched_header_public_session_full_doc_undo_redo_and_native_zip() {
+        let source = "**A**|`B\n---|---\n*C*|*D*";
+        for map_body in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("style.paragraph.create", &json!({"name": "Existing Body", "chars": {"size": 18, "font_style": "Bold"}})).unwrap();
+            let before = s.doc().unwrap().doc.clone();
+            let mut params = json!({"name": "unmatched-header.md", "base64": "KipBKip8YEIKLS0tfC0tLQoqQyp8KkQq"});
+            if map_body {
+                params["styleMap"] = json!({"Body Text": "Existing Body"});
+            }
+            let r = s.execute("file.place", &params).unwrap();
+            let sid = StoryId(r["story"].as_u64().unwrap());
+            let placed = s.doc().unwrap().doc.clone();
+            let story = placed.story(sid).unwrap();
+            assert_eq!(story.text, source);
+            assert_eq!(story.paras.len(), 3);
+            let style = if map_body { "Existing Body" } else { "Body Text" };
+            assert!(story.paras.iter().all(|p| p.style == style && p.table.is_none()));
+            for (at, _) in source.char_indices() {
+                assert_eq!(story.format_after(at), &CharFormat::default());
+            }
+            assert_eq!(placed.styles.character, before.styles.character);
+            assert_eq!(r["warnings"], json!(["Markdown quotes, tables, HTML, references and thematic breaks were kept as source text."]));
+            placed.check().unwrap();
+
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(*s.doc().unwrap().doc, *before, "undo must restore the entire pre-placement document");
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert_eq!(*s.doc().unwrap().doc, *placed, "redo must restore the entire literal import");
+
+            let serialized = s.execute("file.serialize", &json!({})).unwrap();
+            let bytes = crate::cmd::file::base64_decode(serialized["base64"].as_str().unwrap());
+            assert!(bytes.starts_with(b"PK"), "exercise native ZIP bytes rather than a legacy JSON document");
+            let mut reopened = Session::new();
+            reopened.execute("file.openBytes", &json!({"base64": serialized["base64"]})).unwrap();
+            assert_eq!(*reopened.doc().unwrap().doc, *placed, "public native reopen must retain the complete document");
+            assert_eq!(reopened.doc().unwrap().doc.story(sid).unwrap().text, source);
+            reopened.doc().unwrap().doc.check().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "place_text_review9_tests.rs"]
+mod place_text_review9_tests;

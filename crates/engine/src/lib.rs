@@ -12,16 +12,23 @@ pub mod dtd;
 pub mod guard;
 pub mod links;
 pub mod math;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_save;
 pub mod recovery;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery_runs;
 pub mod sample;
 pub mod script;
 mod tooling;
 
 use std::sync::Arc;
 
-use pagenor_compose::Cache;
-use pagenor_doc::{Document, LayerId, Selection};
+use pagenor_compose::{Cache, ComposedStory};
+use pagenor_doc::{Document, LayerId, Selection, Story, StoryId};
 use serde_json::Value;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_save::{replace_with as write_atomic_with, write as write_atomic};
 
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use pagenor_compose as compose;
@@ -180,11 +187,14 @@ pub struct Prefs {
     pub rich_black_output: bool,
     /// Font menu favourites (family names).
     pub favorite_fonts: Vec<String>,
+    /// Fonts picked in the font menus, most recent first (shown at the menus' top).
+    pub recent_fonts: Vec<String>,
     /// Preferences › Type › Show Font Names in English: the font menus show CJK families by their
     /// English names instead of their native ones. Documents store the English name either way.
     pub show_font_names_in_english: bool,
     /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
-    /// (added while it oversets, empty ones at the end removed).
+    /// (added when an edit makes it overset, empty ones at the end removed; deleted pages and
+    /// frames are not put back).
     pub smart_text_reflow: bool,
     /// Preferences › Autocorrect: typing a space or punctuation after a listed word replaces it.
     pub autocorrect: bool,
@@ -196,6 +206,8 @@ pub struct Prefs {
     pub show_note_anchors: bool,
     /// Preferences › File Handling: minutes between document recovery saves.
     pub recovery_minutes: f64,
+    /// File › New › Document › Save Document Preset: saved document presets, by name (`title`).
+    pub document_presets: Vec<pagenor_doc::build::NewDocument>,
 }
 
 /// A starter autocorrect list (common English typing slips).
@@ -222,6 +234,7 @@ pub fn default_autocorrect() -> Vec<(String, String)> {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
+            document_presets: Vec::new(),
             show_hidden_characters: false,
             typographers_quotes: true,
             polygon_sides: 6,
@@ -236,6 +249,7 @@ impl Default for Prefs {
             highlight_substituted_fonts: true,
             rich_black_output: false,
             favorite_fonts: Vec::new(),
+            recent_fonts: Vec::new(),
             show_font_names_in_english: false,
             smart_text_reflow: true,
             autocorrect: false,
@@ -250,15 +264,24 @@ impl Default for Prefs {
 pub struct Session {
     docs: Vec<DocState>,
     active: Option<usize>,
+    /// An undoable command is running: the commands it runs are part of its undo step.
+    in_undo_step: bool,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn pagenor_tools::Tool>,
     pub journal: Vec<(String, Value)>,
     pub clipboard: Option<Arc<Document>>,
+    /// The x the clipboard's objects are measured from on their spread: its spine, or the left edge of
+    /// single-sided pages. Paste keeps their distance from it.
+    pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
     /// Copied text with its formatting (a frameless story slice) and its plain text.
     pub text_clipboard: Option<(Arc<pagenor_doc::Story>, String)>,
+    /// Exact system text emitted for the current object clipboard; never document state.
+    pub(crate) object_clipboard_marker: Option<String>,
+    /// Random namespace for object ownership, initialized before the first successful Copy/Cut.
+    pub(crate) object_clipboard_nonce: Option<[u8; 16]>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor: (asset, natural size in points).
@@ -287,18 +310,27 @@ impl Default for Session {
 }
 
 impl Session {
+    /// The name `file.new` gives the next document without a title (New Document shows it).
+    pub fn next_untitled_title(&self) -> String {
+        format!("Untitled-{}", self.untitled.saturating_add(1))
+    }
+
     pub fn new() -> Self {
         guard::install_panic_hook();
         Session {
             docs: vec![],
             active: None,
+            in_undo_step: false,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: pagenor_tools::create("selection"),
             journal: vec![],
             clipboard: None,
+            clipboard_origin: 0.0,
             recovery_dir: None,
             text_clipboard: None,
+            object_clipboard_marker: None,
+            object_clipboard_nonce: None,
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),
@@ -345,6 +377,25 @@ impl Session {
 
     pub fn active(&self) -> Option<&DocState> {
         self.active.and_then(|i| self.docs.get(i))
+    }
+
+    /// Apply unfinished OS text to an isolated copy for inline composition display.
+    /// The live document, selection, typing format, history and recovery are untouched.
+    pub fn transient_text_insertion(&self, text: &str) -> Result<(Arc<Document>, Selection)> {
+        let source = self.doc()?;
+        let mut state = DocState::new((*source.doc).clone(), None);
+        state.uid = source.uid; // The pending typing format is addressed by document UID.
+        state.selection = source.selection.clone();
+        state.fonts = source.fonts.clone();
+        let mut transient = Self::new();
+        transient.add_document(state);
+        transient.typing_format = self.typing_format.clone();
+        transient.prefs = self.prefs.clone();
+        // Preedit does not add/delete pages or apply substitutions before OS commit.
+        transient.prefs.smart_text_reflow = false;
+        transient.execute("text.insert", &serde_json::json!({"text": text, "raw": true}))?;
+        let result = transient.doc()?;
+        Ok((result.doc.clone(), result.selection.clone()))
     }
     pub fn active_mut(&mut self) -> Option<&mut DocState> {
         self.active.and_then(|i| self.docs.get_mut(i))
@@ -393,15 +444,18 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        self.guarded(id, |s| s.execute_unguarded(id, params))
+        let result = self.guarded(id, |s| s.execute_unguarded(id, params));
+        cmd::text::retain_pending_typing_format(self);
+        result
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         if let Err(e) = (spec.enabled)(self) {
-            // A command that takes `ids` acts on the objects the call names, so it needs no
-            // selection: with a text caret or nothing selected, `{"ids": [5]}` still runs.
-            let named = if e == cmd::NOTHING_SELECTED { cmd::named_targets(spec, params) } else { None };
+            // A command that takes `ids` acts on the objects the call names, so the selection
+            // doesn't matter: with a text caret, nothing selected, or a selection the command
+            // can't act on, `{"ids": [5]}` still runs.
+            let named = if cmd::selection_reason(&e) { cmd::named_targets(spec, params) } else { None };
             let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
             let st = self.doc()?;
             if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
@@ -415,7 +469,19 @@ impl Session {
             self.stop_data_preview();
         }
         let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
-        let r = (spec.run)(self, params)?;
+        // What an undoable command runs is part of its undo step.
+        let nested = self.in_undo_step;
+        self.in_undo_step = nested || spec.undoable;
+        let ran = (spec.run)(self, params);
+        self.in_undo_step = nested;
+        let r = match ran {
+            Ok(r) => r,
+            Err(e) => {
+                // What it did before it failed can be undone too.
+                self.record_undo_step(spec, before, nested);
+                return Err(e);
+            }
+        };
         // Undo, redo or deleting layers can take the active layer away: new objects would land on
         // a layer that isn't there (invisible, not exported). Fall back to the top layer.
         if let Some(st) = self.active_mut()
@@ -425,7 +491,7 @@ impl Session {
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+            self.smart_reflow(before.as_ref().map(|(uid, doc, _)| (*uid, doc)));
         }
         // Live captions follow their sources.
         if spec.undoable
@@ -438,59 +504,82 @@ impl Session {
                 st.doc = Arc::new(d);
             }
         }
-        // Record undo if the document changed (and we're not previewing an interaction).
-        if let (Some((uid, old, selection)), Some(st)) = (before, self.active_mut())
-            && st.uid == uid
-            && !Arc::ptr_eq(&old, &st.doc)
-            && st.interaction.is_none()
-            && spec.undoable
-        {
-            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection };
-            push_undo(st, entry);
-        }
+        self.record_undo_step(spec, before, nested);
         if spec.journal {
             self.journal.push((id.to_string(), params.clone()));
         }
         Ok(r)
     }
 
-    /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
+    /// Record undo if the document changed (and we're not previewing an interaction). A command
+    /// run by an undoable one leaves the step to it: one command is one undo step.
+    fn record_undo_step(&mut self, spec: &CommandSpec, before: Option<(u64, Arc<Document>, Selection)>, nested: bool) {
+        if let (Some((uid, old, selection)), Some(st)) = (before, self.active_mut())
+            && st.uid == uid
+            && !Arc::ptr_eq(&old, &st.doc)
+            && st.interaction.is_none()
+            && spec.undoable
+            && !nested
+        {
+            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection };
+            push_undo(st, entry);
+        }
+    }
+
+    /// Smart Text Reflow for the primary story after a command (`before`: the document's uid and
+    /// the document as it was): add threaded pages when [`reflow_adds_pages`] says so; remove
     /// trailing pages whose only object is an empty frame of it.
-    fn smart_reflow(&mut self) {
+    fn smart_reflow(&mut self, before: Option<(u64, &Arc<Document>)>) {
         let Some(st) = self.active() else { return };
         if st.interaction.is_some() {
             return;
         }
         let Some(sid) = st.doc.settings.primary_story else { return };
         let Some(story) = st.doc.story(sid) else { return };
+        // The same document before the command (none: the command made or opened it) and the
+        // story's layout in it, composed first so that the cache ends up with the layout as it is.
+        let before = before.filter(|(uid, _)| *uid == st.uid).map(|(_, doc)| (doc, self.cache.get(doc, sid, None)));
+        if let Some((old, _)) = &before
+            && old.settings.primary_story == Some(sid)
+            && (st.doc.page_count() < old.page_count()
+                || old.story(sid).is_some_and(|previous| previous.frames.iter().any(|id| !story.frames.contains(id))))
+        {
+            return;
+        }
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
         if !overset && !empty_tail {
             return;
         }
+        if overset
+            && let Some((old, was)) = &before
+            && !reflow_adds_pages(old, &st.doc, sid, was, &cs)
+        {
+            return;
+        }
         let mut d = (*st.doc).clone();
         if overset {
             let _ = cmd::place_text_autoflow(&mut d, sid, 500);
-        } else {
-            // Drop empty trailing frames on the last pages (one frame, nothing else there).
-            while let Some(story) = d.story(sid) {
-                if story.frames.len() < 2 {
-                    break;
-                }
-                let Some(&last) = story.frames.last() else { break };
-                let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
-                if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
-                    break;
-                }
-                let Some(page) = d.page_of_item(last) else { break };
-                let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|i| d.page_of_item(i.id) == Some(page)).count() == 1;
-                if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
-                    break;
-                }
-                if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
-                    break;
-                }
+        }
+        // Drop empty trailing frames on the last pages (one frame, nothing else there).
+        while let Some(story) = d.story(sid) {
+            if story.frames.len() < 2 {
+                break;
+            }
+            let Some(&last) = story.frames.last() else { break };
+            let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
+            if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
+                break;
+            }
+            let Some(page) = d.page_of_item(last) else { break };
+            let alone =
+                d.spreads.iter().flat_map(|sp| &sp.items).filter(|i| d.page_of_item(i.id) == Some(page)).map(|i| i.id).eq(std::iter::once(last));
+            if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
+                break;
+            }
+            if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
+                break;
             }
         }
         if let Some(st) = self.active_mut() {
@@ -542,6 +631,173 @@ impl Session {
     }
 }
 
+/// Does Smart Text Reflow add pages for the command that turned `old` into `new` and left the
+/// primary story `sid` overset (`was`, `now`: its layout in each)? Not when the command removed
+/// pages or frames of the story (they would only come back), and not when the story was overset
+/// already and the command didn't edit it.
+fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, was: &ComposedStory, now: &ComposedStory) -> bool {
+    let (Some(a), Some(b)) = (old.story(sid), new.story(sid)) else { return true };
+    // A story that just became the primary one is reflowed.
+    if old.settings.primary_story != Some(sid) {
+        return true;
+    }
+    let kept: std::collections::HashSet<_> = b.frames.iter().copied().collect();
+    if new.page_count() < old.page_count() || a.frames.iter().any(|f| !kept.contains(f)) {
+        return false;
+    }
+    // It fitted: the command made it overset.
+    was.overset_at.is_none()
+        || story_edited(a, b, was.overset_at != now.overset_at)
+        || !reflow_formats_same(old, new, a, b, &old.footnote_options.ref_char_style, 0)
+        || b.frames.iter().any(|id| match (old.item(*id), new.item(*id)) {
+            (Some(before), Some(after)) => {
+                before.path != after.path
+                    || before.xf != after.xf
+                    || before.text_frame().map(|f| &f.options) != after.text_frame().map(|f| &f.options)
+            }
+            _ => false,
+        })
+}
+
+/// Did the command edit the story: change its text (in cells and footnotes too), or anything
+/// else in it so that more or less of it fits (`refit`)? The frames it flows through don't count,
+/// nor do rewrites that change nothing: a style rename touches every story that uses the style
+/// and bumps the revision of every text.
+fn story_edited(was: &Story, now: &Story, refit: bool) -> bool {
+    if std::ptr::eq(was, now) {
+        return false;
+    }
+    if was.text != now.text {
+        return true;
+    }
+    let (mut a, mut b) = (was.clone(), now.clone());
+    let mut texts = [Vec::new(), Vec::new()];
+    for (st, texts) in [&mut a, &mut b].into_iter().zip(&mut texts) {
+        st.frames.clear();
+        st.for_each_text_mut(&mut |t| {
+            t.rev = 0;
+            texts.push(t.text.clone());
+        });
+    }
+    a != b && (refit || texts[0] != texts[1])
+}
+
+fn reflow_composite_same(a: &pagenor_doc::Styles, b: &pagenor_doc::Styles, chars: &pagenor_doc::CharProps) -> bool {
+    a.composite_font(&chars.font_family) == b.composite_font(&chars.font_family)
+}
+
+// Resolve formatting used or referenced by the primary story, including its invisible tail.
+// Walk paragraph/run boundaries together; an unused definition must not resume page generation.
+// Story comparison has already checked matching text, run lengths and child structure.
+fn reflow_formats_same(
+    before: &Document,
+    after: &Document,
+    story: &pagenor_doc::Story,
+    current: &pagenor_doc::Story,
+    note_style: &str,
+    depth: usize,
+) -> bool {
+    let (a, b) = (&before.styles, &after.styles);
+    if Arc::ptr_eq(a, b) && std::ptr::eq(story, current) && before.conditions == after.conditions {
+        return true;
+    }
+    if depth >= 64 {
+        return false;
+    }
+    // A condition-bank edit can change visibility while style/story Arcs stay shared.
+    // Compare effective consumers only after the conservative format/dependency checks.
+    let condition_bank_changed = before.conditions != after.conditions;
+    let conditions_same = |chars: &pagenor_doc::CharProps| before.conditions_hide(&chars.conditions) == after.conditions_hide(&chars.conditions);
+    let mut runs = story.runs().zip(current.runs()).peekable();
+    for ((range, para), current_para) in story.para_ranges().into_iter().zip(&story.paras).zip(&current.paras) {
+        let old = a.resolve_para(para);
+        let new = b.resolve_para(current_para);
+        if old != new || !reflow_composite_same(a, b, &old.1) {
+            return false;
+        }
+        // These rules inject character styles without recording them in the story's runs.
+        // Compare their resolved dependencies even in paragraphs not reached by composition.
+        let mut may_change_visibility = !conditions_same(&old.1);
+        if range.is_empty() && may_change_visibility {
+            return false;
+        }
+        let mut condition_runs = Vec::new();
+        for name in old
+            .0
+            .nested_styles
+            .iter()
+            .map(|rule| rule.style.as_str())
+            .chain(old.0.grep_styles.iter().map(|rule| rule.style.as_str()))
+            .chain(old.0.nested_line_styles.iter().map(|rule| rule.style.as_str()))
+            .chain((old.0.drop_cap_lines > 1).then_some(old.0.drop_cap_style.as_str()))
+            .chain((!story.notes.is_empty()).then_some(note_style))
+            .filter(|name| !name.is_empty() && *name != pagenor_doc::NO_CHAR_STYLE)
+        {
+            // Referenced definitions can change without being renamed. Their override
+            // masks must remain equal even when plain-base defaults hide a layered change.
+            if a.char_style_attrs(name) != b.char_style_attrs(name) {
+                return false;
+            }
+            let format = pagenor_doc::CharFormat { style: name.into(), ..Default::default() };
+            let chars = a.resolve_char(&old.1, &format);
+            if chars != b.resolve_char(&old.1, &format) || !reflow_composite_same(a, b, &chars) {
+                return false;
+            }
+            if !conditions_same(&chars) {
+                // Line ranges depend on layout; note markers also inject their style separately.
+                if old.0.nested_line_styles.iter().any(|rule| rule.style == name)
+                    || (old.0.drop_cap_lines > 1 && old.0.drop_cap_style == name)
+                    || (!story.notes.is_empty() && name == note_style)
+                {
+                    return false;
+                }
+                may_change_visibility = true;
+            }
+        }
+        while let Some(((run, format), (_, current_format))) = runs.peek() {
+            if run.start > range.end {
+                break;
+            }
+            // Equal plain-base properties do not prove equal behavior over overlays or
+            // at a staged blank EOF, where the run's direct overrides are not consumed.
+            if a.char_style_attrs(&format.style) != b.char_style_attrs(&current_format.style) {
+                return false;
+            }
+            let chars = a.resolve_char(&old.1, format);
+            if chars != b.resolve_char(&new.1, current_format) || !reflow_composite_same(a, b, &chars) {
+                return false;
+            }
+            let visibility_changed = !conditions_same(&chars);
+            if range.is_empty() && visibility_changed {
+                return false;
+            }
+            may_change_visibility |= visibility_changed;
+            if condition_bank_changed && run.end > range.start && run.start < range.end {
+                condition_runs.push((run.start.max(range.start) - range.start..run.end.min(range.end) - range.start, *format));
+            }
+            if run.end > range.end {
+                break;
+            }
+            runs.next();
+        }
+        if may_change_visibility && !range.is_empty() {
+            let Some(paragraph) = story.text.get(range.clone()) else { return false };
+            // Whole-paragraph consumers use shaping's winner plus the run's own style/overrides.
+            if !compose::paragraph_conditions_same(before, after, paragraph, &old.0, &old.1, condition_runs.into_iter()) {
+                return false;
+            }
+        }
+    }
+    story.tables.values().zip(current.tables.values()).all(|(old, new)| {
+        old.cells.iter().zip(&new.cells).all(|(old, new)| reflow_formats_same(before, after, &old.text, &new.text, note_style, depth + 1))
+    }) && story
+        .notes
+        .iter()
+        .chain(&story.endnotes)
+        .zip(current.notes.iter().chain(&current.endnotes))
+        .all(|(old, new)| reflow_formats_same(before, after, &old.text, &new.text, note_style, depth + 1))
+}
+
 fn push_undo(st: &mut DocState, e: HistoryEntry) {
     st.history.undo.push(e);
     st.history.redo.clear();
@@ -553,8 +809,16 @@ fn push_undo(st: &mut DocState, e: HistoryEntry) {
 pub(crate) use push_undo as record_undo;
 
 #[cfg(test)]
+mod reflow_review8_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_idml;
 #[cfg(test)]
 mod tests_table;
+
+#[cfg(test)]
+mod resize_pointer_tests;
+
+#[cfg(test)]
+mod reflow_removal_tests;

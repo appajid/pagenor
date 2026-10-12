@@ -73,8 +73,10 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
             }
             seen_spreads.push(si);
             let first = doc.first_page_of_spread(si);
-            let (l, _) = sp.pages.first().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
-            let (_, r) = sp.pages.last().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            // The outer edges by position: a right-to-left spread lists its right page first.
+            let outer = sp.outer_page_indices();
+            let (l, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let (_, r) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
             (sp.bounds(), l, r, names.join("–"))
         } else {
@@ -415,7 +417,7 @@ pub(crate) struct Exporter<'a> {
     drawing_items: Vec<pagenor_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
     /// Placed PDFs (embedded as vector pages).
-    pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
+    pdfs: HashMap<AssetId, Option<(krilla::pdf::PdfDocument, usize)>>,
     /// The PDF version written; placed PDFs must not be newer.
     version: PdfVersion,
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
@@ -596,7 +598,6 @@ impl Exporter<'_> {
                 let Some((ppi, ppage)) = doc.parent_page_for(first + pi) else { continue };
                 let parent = &doc.parents[ppi];
                 let dx = page.x - parent.pages[ppage].x;
-                let page_name = doc.page_name(first + pi);
                 for it in &parent.items {
                     if it.layer != layer.id || page.overridden.contains(&it.id) {
                         continue;
@@ -605,7 +606,7 @@ impl Exporter<'_> {
                     if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
                         continue;
                     }
-                    self.top_item(s, it, Affine::translate((dx, 0.0)), Some(&page_name), true);
+                    self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
                 }
             }
             for it in &sp.items {
@@ -645,9 +646,9 @@ impl Exporter<'_> {
     }
 
     /// A spread or parent item, inside its structure tag when tagging.
-    fn top_item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>, on_parent: bool) {
+    fn top_item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>, on_parent: bool) {
         if !self.opts.tagged || it.hidden || it.nonprinting {
-            return self.item(s, it, parent, page_name);
+            return self.item(s, it, parent, page);
         }
         let story = it.text_frame().map(|t| t.story);
         let figure = !it.alt_text.is_empty() || matches!(it.content, Content::Graphic(_)) || it.has_nested_items();
@@ -655,7 +656,7 @@ impl Exporter<'_> {
             // Page furniture and decoration.
             let kind = if on_parent { ArtifactType::Page } else { ArtifactType::Other };
             s.start_tagged(ContentTag::Artifact(Artifact::new(kind, None)));
-            self.item(s, it, parent, page_name);
+            self.item(s, it, parent, page);
             s.end_tagged();
             return;
         }
@@ -666,12 +667,12 @@ impl Exporter<'_> {
                 self.tags.push(TagEntry::Story(sid));
             }
             self.tag_story = Some(sid);
-            self.item(s, it, parent, page_name);
+            self.item(s, it, parent, page);
             self.tag_story = None;
             return;
         }
         let id = s.start_tagged(ContentTag::Other);
-        self.item(s, it, parent, page_name);
+        self.item(s, it, parent, page);
         s.end_tagged();
         let alt = (!it.alt_text.is_empty()).then(|| it.alt_text.clone());
         let mut g = TagGroup::new(Tag::Figure(alt));
@@ -717,20 +718,20 @@ impl Exporter<'_> {
         tree
     }
 
-    fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
+    fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
         if self.drawing_items.len() >= 64 || self.drawing_items.contains(&it.id) {
             self.warnings.push(format!("Cyclic or excessively nested item {} was not rendered", it.id));
             return;
         }
         self.drawing_items.push(it.id);
-        self.item_guarded(s, it, parent, page_name);
+        self.item_guarded(s, it, parent, page);
         self.drawing_items.pop();
     }
 
-    fn item_guarded(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
+    fn item_guarded(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
         let gf = &it.effects.gradient_feather;
         if !gf.on || it.hidden || it.nonprinting {
-            return self.item_inner(s, it, parent, page_name);
+            return self.item_inner(s, it, parent, page);
         }
         // Gradient feather: a luminosity mask (white = opaque) over the object.
         let xf = parent * it.xf;
@@ -780,11 +781,11 @@ impl Exporter<'_> {
         ms.finish();
         let stream = sb.finish();
         s.push_mask(krilla::mask::Mask::new(stream, krilla::mask::MaskType::Luminosity));
-        self.item_inner(s, it, parent, page_name);
+        self.item_inner(s, it, parent, page);
         s.pop();
     }
 
-    fn item_inner(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
+    fn item_inner(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
         if it.hidden || it.nonprinting {
             return;
         }
@@ -819,7 +820,7 @@ impl Exporter<'_> {
                 s.push_clip_path(c, &FillRule::NonZero);
             }
             for c in it.children() {
-                self.item(s, c, xf, page_name);
+                self.item(s, c, xf, page);
             }
             if clip.is_some() {
                 s.pop();
@@ -840,7 +841,7 @@ impl Exporter<'_> {
             let into = parent * it.child_space();
             let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
             for c in it.shown_children() {
-                self.item(s, c, into, page_name);
+                self.item(s, c, into, page);
             }
             for _ in 0..pushes {
                 s.pop();
@@ -897,7 +898,7 @@ impl Exporter<'_> {
                 }
             }
             Content::Text(tfr) => {
-                let cs = self.cache.get(doc, tfr.story, page_name);
+                let cs = self.cache.get(doc, tfr.story, page);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in pagenor_compose::path_glyphs(&cs, ft, &bp, pt) {
@@ -939,20 +940,20 @@ impl Exporter<'_> {
             s.pop();
         }
         if let Content::Text(tfr) = &it.content {
-            let cs = self.cache.get(doc, tfr.story, page_name);
+            let cs = self.cache.get(doc, tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
-                self.frame_objects(s, ft, xf * doc.text_local(it), page_name);
+                self.frame_objects(s, ft, xf * doc.text_local(it), page);
             }
         }
     }
 
     /// Draw embedded page items after restoring the surface, retaining spread-space
     /// transforms for page culling (also for anonymous note and cell stories).
-    fn frame_objects(&mut self, s: &mut Surface, ft: &pagenor_compose::FrameText, xf: Affine, page_name: Option<&str>) {
+    fn frame_objects(&mut self, s: &mut Surface, ft: &pagenor_compose::FrameText, xf: Affine, page: Option<usize>) {
         let mut pending = vec![(ft, xf)];
         while let Some((frame, transform)) = pending.pop() {
             for object in &frame.objects {
-                self.item(s, &object.object.item, transform * Affine::translate(object.origin.to_vec2()), page_name);
+                self.item(s, &object.object.item, transform * Affine::translate(object.origin.to_vec2()), page);
             }
             for note in &frame.notes {
                 if let Some(frame) = note.text.frames.first() {
@@ -968,22 +969,43 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&self, fill: &pagenor_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+    fn fill_paint(&mut self, fill: &pagenor_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
         if let Some(g) = pagenor_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
+            let kind = g.kind;
+            let expanded = g.expanded_stops();
+            // A PDF shading needs one colour space. Midpoint expansion can introduce RGB even
+            // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
+            let components = |c: &Color| match c {
+                Color::Cmyk { .. } if !self.rgb_only => 4,
+                Color::Gray { .. } => 1,
+                _ => 3,
+            };
+            let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
+            if mixed {
+                self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (colour appearance and separations may change)"));
+            }
             let mut stops: Vec<Stop> = Vec::new();
             let mut last = 0.0f32;
-            for (o, c, a) in g.expanded_stops() {
+            for (o, c, a) in expanded {
                 let o = o.clamp(last, 1.0);
                 last = o;
-                stops.push(Stop { offset: norm(o), color: device(&c, self.rgb_only), opacity: norm(a) });
+                let color = if mixed && !matches!(c, Color::Rgb { .. }) {
+                    let [r, g, b] = c.to_rgb();
+                    rgb::Color::new(q(r), q(g), q(b)).into()
+                } else {
+                    // Preserve RGB values, including already-interpolated display RGB, and
+                    // leave every homogeneous gradient on its existing device-space path.
+                    device(&c, self.rgb_only)
+                };
+                stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
             }
             if stops.is_empty() {
                 return None;
             }
             let c = bounds.center();
             let v = fill.gradient_vector;
-            return Some(match g.kind {
+            return Some(match kind {
                 GradientKind::Radial => {
                     let (c, r) = match v {
                         Some([x0, y0, x1, y1]) => (pagenor_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
@@ -1058,15 +1080,17 @@ impl Exporter<'_> {
             s.set_fill(None);
             return;
         }
+        // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
+        let length = pagenor_doc::path_length_bound(bp);
         let dash = match &kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
+            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
                 let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                 if pat.len() % 2 == 1 {
                     pat.extend(pat.clone());
                 }
                 Some(StrokeDash { array: pat, offset: 0.0 })
             }
-            StrokeType::Dotted => {
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
                 cap = krilla::paint::LineCap::Round;
                 Some(StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 })
             }
@@ -1144,7 +1168,8 @@ impl Exporter<'_> {
     /// VectorCraft and most tools write 1.7. PDF 1.7 changed nothing in how a page draws, so a 1.7
     /// file goes in as 1.6 (its header relabelled, as `qpdf --force-version=1.6` does). A newer
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
-    fn placed_pdf(&mut self, asset: &pagenor_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
+    /// Returns the document with its page count.
+    fn placed_pdf(&mut self, asset: &pagenor_doc::Asset) -> Option<(krilla::pdf::PdfDocument, usize)> {
         use hayro_syntax::PdfVersion as V;
         let Ok(pdf) = krilla::pdf::Pdf::new(asset.data.clone()) else {
             self.warn(format!("{}: can't read the placed PDF", asset.name));
@@ -1159,7 +1184,8 @@ impl Exporter<'_> {
         };
         let have = pdf.version();
         if have <= max {
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         if have == V::Pdf17
             && max == V::Pdf16
@@ -1168,7 +1194,8 @@ impl Exporter<'_> {
             && pdf.version() <= max
         {
             self.warn(format!("{}: a PDF 1.7 placed in a PDF 1.6 file, embedded as PDF 1.6", asset.name));
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         let v = match have {
             V::Pdf17 => "PDF 1.7",
@@ -1226,13 +1253,36 @@ impl Exporter<'_> {
             _ => lossless(&data, fmt, self.interpolate),
         };
         if img.is_none() {
-            self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            if data.is_empty() {
+                let at = asset.link.as_deref().map(|link| format!(" ({link})")).unwrap_or_default();
+                self.warn(format!("image `{}` is missing{at} and was skipped", asset.name));
+            } else {
+                self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            }
         }
         self.images.insert(id, img.clone());
         img
     }
 
+    /// Draw a placed graphic, inside its clipping path when it has one.
     pub(crate) fn graphic(&mut self, s: &mut Surface, g: &pagenor_doc::Graphic) {
+        match g.clip_region().map(|(region, even_odd)| (to_path(&region), even_odd)) {
+            Some((Some(clip), even_odd)) => {
+                s.push_clip_path(&clip, if even_odd { &FillRule::EvenOdd } else { &FillRule::NonZero });
+                self.graphic_unclipped(s, g);
+                s.pop();
+            }
+            // A degenerate outline shows nothing, or everything when inverted.
+            Some((None, even_odd)) => {
+                if even_odd {
+                    self.graphic_unclipped(s, g);
+                }
+            }
+            None => self.graphic_unclipped(s, g),
+        }
+    }
+
+    fn graphic_unclipped(&mut self, s: &mut Surface, g: &pagenor_doc::Graphic) {
         // Video / sound without a poster: a dark frame with a play mark.
         if let Some(asset) = self.doc.assets.get(&g.asset)
             && pagenor_doc::media_kind(&asset.mime).is_some()
@@ -1261,7 +1311,11 @@ impl Exporter<'_> {
         if let Some(asset) = doc.assets.get(&g.asset)
             && asset.data.starts_with(b"%PDF")
         {
-            let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
+            // Cropped to a box: the whole page, placed so that the box spans graphic space.
+            let shown = asset.shown_box();
+            let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+            let Some(size) = Size::from_wh(page_w.max(1e-3) as f32, page_h.max(1e-3) as f32) else { return };
             let placed = match self.pdfs.get(&g.asset) {
                 Some(p) => p.clone(),
                 None => {
@@ -1270,10 +1324,26 @@ impl Exporter<'_> {
                     p
                 }
             };
-            if let Some(placed) = placed {
-                s.push_transform(&tf(g.xf));
-                s.draw_pdf_page(&placed, size, asset.page as usize);
-                s.pop();
+            match placed {
+                // krilla would fail the whole export at the end on a page the PDF doesn't have.
+                Some((_, pages)) if asset.page as usize >= pages => {
+                    self.warn(format!("{}: the placed PDF has no page {}", asset.name, u64::from(asset.page) + 1));
+                }
+                Some((placed, _)) => {
+                    s.push_transform(&tf(g.xf));
+                    let clip = shown.and_then(|_| to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1)));
+                    if let Some(clip) = &clip {
+                        s.push_clip_path(clip, &FillRule::NonZero);
+                    }
+                    s.push_transform(&tf(Affine::translate((-l * page_w, -t * page_h))));
+                    s.draw_pdf_page(&placed, size, asset.page as usize);
+                    s.pop();
+                    if clip.is_some() {
+                        s.pop();
+                    }
+                    s.pop();
+                }
+                None => {}
             }
             return;
         }
@@ -1282,7 +1352,13 @@ impl Exporter<'_> {
             && pagenor_images::is_svg(&asset.data)
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-            let tree = self.svgs.entry(g.asset).or_insert_with(|| pagenor_images::svg_tree(&asset.data).map(Arc::new)).clone();
+            let tree = self
+                .svgs
+                .entry(g.asset)
+                .or_insert_with(|| {
+                    pagenor_images::svg_tree_with_fonts(&asset.data, pagenor_fonts::FontDb::global().scoped(self.doc.font_scope)).map(Arc::new)
+                })
+                .clone();
             match tree {
                 Some(tree) => {
                     use krilla_svg::SurfaceExt;
@@ -1421,6 +1497,7 @@ mod eps_tests {
                 data: Arc::new(eps),
                 pixels: Some((2, 1)),
                 page: 0,
+                ..Default::default()
             }),
         );
         let mut item = Item::new(
@@ -1430,12 +1507,14 @@ mod eps_tests {
             pagenor_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)),
         );
         item.content = Content::Graphic(pagenor_doc::Graphic {
+            clip: None,
             asset: aid,
             size: (2.0, 1.0),
             xf: Affine::translate((72.0, 72.0)) * Affine::scale(100.0),
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         doc.insert_item(pagenor_doc::SpreadRef::Doc(0), item, None).unwrap();
         for standard in [Standard::None, Standard::PdfX4] {

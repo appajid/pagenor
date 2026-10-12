@@ -1,0 +1,350 @@
+# Native desktop milestone builds; unsigned installers, no signing secrets.
+name: Desktop release
+'on':
+  push:
+    branches:
+      - build/pagenor-*-desktop
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  RUST_BACKTRACE: '1'
+  PAGENOR_BUILD_SHA: ${{ github.sha }}
+  INPUT_VERSION: ''
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      date: ${{ steps.v.outputs.date }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - id: v
+        name: Resolve version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . packaging/env.sh
+          v="${INPUT_VERSION#v}"
+          v="${v:-$VERSION}"
+          if ! printf '%s' "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+            echo "::error::'$v' is not a version like 1.2.3 or 1.2.3-rc.1"
+            exit 1
+          fi
+          case "$v" in *-*) pre=true ;; *) pre=false ;; esac
+          build=true
+          if gh release view "v$v" >/dev/null 2>&1; then
+            build=false
+            echo "Pagenor v$v already has a release; keeping its artifacts unchanged."
+          fi
+          {
+            echo "version=$v"
+            echo "date=$(date -u +%Y-%m-%d)"
+            echo "prerelease=$pre"
+            echo "build=$build"
+          } >>"$GITHUB_OUTPUT"
+          echo "### Pagenor v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
+    timeout-minutes: 90
+  windows:
+    name: Windows ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
+    needs: version
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: x86
+            target: i686-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Check out craft-fonts
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          targets: ${{ matrix.target }}
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: release-windows-${{ matrix.arch }}
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build, sign, package
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+    timeout-minutes: 120
+  linux:
+    name: Linux ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            deb: amd64
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            deb: arm64
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NFPM_VERSION: 2.47.0
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Check out craft-fonts
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - name: Install build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            desktop-file-utils appstream python3-yaml zsync
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: release-linux-${{ matrix.arch }}
+      - name: Build and package (AppImage, deb, rpm, tar.gz)
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: packaging/linux/package.sh
+      - name: Check the packages
+        run: |
+          dpkg-deb --info dist/release/*.deb
+          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/pagenor$|metainfo|applications'
+          ldd target/release/pagenor
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/org.pagenor.app.yml')); assert m['id'] == 'org.pagenor.app'"
+          for appimage in dist/release/*.AppImage; do
+            chmod +x "$appimage"
+            APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
+            # Update information is embedded, and the .zsync for delta updates sits beside it.
+            "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
+            test -s "$appimage.zsync"
+          done
+      - name: Native CLI PDF export
+        run: |
+          target/release/pagenor-cli run --sample --export "$RUNNER_TEMP/pagenor-smoke.pdf"
+          test -s "$RUNNER_TEMP/pagenor-smoke.pdf"
+          file target/release/pagenor target/release/pagenor-cli
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+    timeout-minutes: 120
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
+    needs:
+      - version
+      - linux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          # librsvg2-common: the SVG pixbuf loader. flatpak-builder runs the host's
+          # `appstreamcli compose`, which renders the scalable icon and fails without it.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
+          # Ubuntu 24.04's AppArmor blocks the unprivileged user namespaces bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build the Flatpak bundle
+        run: packaging/linux/flatpak-bundle.sh "dist/linux/pagenor-$PAGENOR_VERSION-linux-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-flatpak-${{ matrix.arch }}
+          path: dist/release/*.flatpak
+          if-no-files-found: error
+    timeout-minutes: 120
+  quality:
+    name: Quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-22.04
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev fontconfig fonts-dejavu-core
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: quality-${{ matrix.os }}-no-debug
+          cache-on-failure: 'true'
+      - name: Windows localhost HTTPS regression
+        if: runner.os == 'Windows'
+        run: cargo test --locked --package pagenor-engine cmd::datamerge::tests::phase3_fetches_https_images -- --exact --nocapture
+      - name: Workspace quality gate (native and WASM)
+        run: cargo run --locked --package xtask -- ci
+  install:
+    name: Install Windows ${{ matrix.arch }}
+    if: needs.version.outputs.build == 'true'
+    needs:
+      - version
+      - windows
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: dist
+      - name: Install, verify associations and icons, export PDF, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
+          $dir = Join-Path ([Environment]::GetEnvironmentVariable('${{ matrix.program_files }}')) 'Pagenor'
+          foreach ($exe in 'pagenor.exe', 'pagenor-cli.exe') {
+            $path = Join-Path $dir $exe
+            if (-not (Test-Path $path)) { throw "$exe not installed in $dir" }
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+            if ($machine -ne ${{ matrix.machine }}) { throw "$exe is for machine 0x$('{0:X}' -f $machine), incorrect architecture" }
+            Write-Output "ok $path (${{ matrix.arch }})"
+          }
+          # The installed CLI runs natively on ARM64.
+          $cli = Join-Path $dir 'pagenor-cli.exe'
+          $out = & $cli --version 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { Write-Output $out; throw "pagenor-cli --version exited $LASTEXITCODE" }
+          if ($out -notmatch [regex]::Escape($env:PAGENOR_VERSION)) { throw "wrong version: $out" }
+          Write-Output "ok pagenor-cli --version: $($out.Trim())"
+          & $cli run --sample --export smoke.pdf
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path smoke.pdf)) { throw "installed CLI export failed" }
+          foreach ($extension in ".pgnr", ".pagenor") {
+            $association = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\$extension"
+            if ($association."(default)" -ne "Pagenor.Document") { throw "missing $extension association" }
+          }
+          $icon = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\Pagenor.Document\DefaultIcon"
+          if ($icon."(default)" -notmatch "pagenor-document.ico") { throw "document icon association is incorrect" }
+          foreach ($notice in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'LICENSE-Pagenor-brand.txt', 'LICENSE-Pagenor-app-icon.txt', 'OFL-Inter.txt') {
+            if (-not (Test-Path (Join-Path $dir "licenses\$notice"))) { throw "missing installed notice: $notice" }
+          }
+          $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          if (Test-Path (Join-Path $dir 'pagenor.exe')) { throw 'uninstall left pagenor.exe behind' }
+          Write-Output 'ok uninstalled'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            machine: '0x8664'
+            program_files: ProgramFiles
+          - arch: x86
+            runner: windows-latest
+            machine: '0x14C'
+            program_files: ProgramFiles(x86)
+          - arch: arm64
+            runner: windows-11-arm
+            machine: '0xAA64'
+            program_files: ProgramFiles
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+  publish:
+    name: Publish development release
+    if: needs.version.outputs.build == 'true'
+    needs:
+      - version
+      - quality
+      - windows
+      - linux
+      - flatpak
+      - install
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist/release
+          sha256sum ./* > SHA256SUMS.txt
+          cd ../..
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Release v$VERSION already exists; refusing to replace it"
+            exit 1
+          fi
+          gh release create "v$VERSION" dist/release/* --target "$GITHUB_SHA" --title "Pagenor $VERSION — Windows and Linux preview" --prerelease --notes-file docs/pagenor/DESKTOP_RELEASE_070.md

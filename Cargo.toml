@@ -4,13 +4,14 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/pagenor", "apps/pagenor-cli", "xtask"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 repository = "https://github.com/appajid/pagenor"
 
 [workspace.dependencies]
+craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
 # internal
 pagenor-archive = { path = "crates/archive" }
 pagenor-ai = { path = "crates/ai" }
@@ -46,6 +47,7 @@ unicode-bidi = "0.3"
 unicode-script = "0.5"
 unicode-bidi-mirroring = "0.4"
 unicode-segmentation = "1"
+unicode-general-category = "1"
 caseless = "0.2"
 tempfile = "3"
 regex = { version = "1", default-features = false, features = ["std", "unicode", "perf"] }
@@ -71,6 +73,8 @@ quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 
 # ui
+# Shared frontend components; keep this dependency above the engine boundary.
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }

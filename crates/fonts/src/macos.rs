@@ -59,7 +59,7 @@ pub(crate) fn font_data(name: &str, metadata: bool) -> Result<Vec<u8>, String> {
 
 /// No file or persistent cache is created. Metadata reads exclude glyph/outline tables.
 pub(crate) fn copy_font_data(font: &core_text::font::CTFont, metadata: bool) -> Result<Vec<u8>, String> {
-    const META_TAGS: &[[u8; 4]] = &[*b"name", *b"OS/2", *b"meta", *b"fvar", *b"cmap"];
+    const META_TAGS: &[[u8; 4]] = &[*b"name", *b"OS/2", *b"meta", *b"fvar", *b"cmap", *b"post"];
     let tags = font.get_available_font_tables().ok_or("Core Text exposes no font tables")?;
     if tags.len() > 256 {
         return Err("Native font has more than 256 tables".into());
@@ -68,6 +68,11 @@ pub(crate) fn copy_font_data(font: &core_text::font::CTFont, metadata: bool) -> 
     let mut tables = Vec::new();
     for tag in tags.iter() {
         let tag_bytes = tag.to_be_bytes();
+        if metadata && [*b"COLR", *b"SVG ", *b"CBDT", *b"sbix", *b"CFF ", *b"CFF2"].contains(&tag_bytes) {
+            // Presence is enough for a format badge; never copy these glyph/outline tables for the catalogue.
+            tables.push((tag_bytes, Vec::new()));
+            continue;
+        }
         if tag_bytes == *b"DSIG" || (metadata && !META_TAGS.contains(&tag_bytes)) {
             continue;
         }

@@ -386,3 +386,468 @@ Synthetic package checks and static workflow/script checks do not establish
 native installation/execution. All 34 release-note items are accounted for in
 [the audit](docs/pagenor/UPSTREAM_040_AUDIT.md); actual native package/signing
 validation remains a milestone task. No GitHub push or publication is performed.
+
+
+## Reviewed upstream adaptations — P09.7 (2026-10-10)
+
+The new-PR pass adapts 23 selected proposals: eight editor UI changes followed by
+six compatibility fixes and nine multipage/composition changes. Pagenor stays
+0.3.0. The existing architecture, lazy scoped fonts, native extension, owner
+branding, clipboard and recovery paths are retained. See the per-PR author/head
+provenance, combined-branch adjustments and verification limits in
+[editor and publishing updates](docs/pagenor/UPSTREAM_EDITOR_PUBLISHING.md).
+
+
+## New Document dialog adaptation — P09.12 (2026-10-11)
+
+Adapted open [upstream #325](https://github.com/storytold/designcraft/pull/325),
+by @moppeeer, at pinned head `e78407027e08e1c80613e83533fbe916f508a42e`.
+The seven reused Rust source-file Git blob identities match the fetched API
+snapshot. Original MIT OR Apache-2.0 licences and copyright remain applicable.
+Contributor registries/profiles are unchanged. This is a selected adaptation,
+not a merge of the upstream branch.
+
+New Document has Recent/Saved/Print/Web/Mobile tabs, proportioned preset cards,
+page settings, linked margins/bleed/slug, and command-backed saved presets.
+The latest upstream popup Enter/Escape correction is included. Pagenor retains
+its Welcome recent-file thumbnails, Home tool visibility, native menus, PDF/PPTX
+export and font-replacement dialog footers, save/recovery/input paths and separate
+owner-supplied app/document icons. Italian translation changes are deferred per
+the owner. There are no new dependencies, platform adapters, unsafe blocks,
+format or version changes. Pagenor stays **0.3.0**, with local changes only.
+
+Additional input bounds cover loaded preset counts/edges, 32-bit page-count casts,
+finite geometry, preset-capacity failure atomicity and the untitled counter.
+Failed page-size confirmation retains the typed settings for correction. The save
+popup is explicitly layered above its modal parent after a native UI observation.
+Implementation and local validation are recorded in
+[New Document](docs/pagenor/NEW_DOCUMENT_PRESETS.md).
+
+## Chapter numbering adaptation — P07.2 (2026-10-11)
+
+Adapted open [upstream #341](https://github.com/storytold/designcraft/pull/341),
+by @moppeeer, at pinned head `498e3d401c8214d3f617c59af0893a2eaf62dfd1`.
+Six reused Rust source-file Git blob identities match the fetched API snapshot.
+Original MIT OR Apache-2.0 licences and copyright remain applicable. This is a
+selected port, not an upstream branch merge; contributor registries are unchanged.
+
+Document chapter style/source, command, book chapter resolution, variable and
+cross-reference labels, and section prefix/style validation are adapted. Pagenor
+also retains partial section settings, supplies the missing three/four-digit
+styles, checks loaded labels and numeric conversions, preflights book inputs,
+protects dirty open documents, synchronizes successful open-document numbering
+and reuses the safe metadata-preserving native writer. IDML chapter numbering is
+not mapped. No dependencies, platform adapters, unsafe blocks, branding artwork
+or application/native format versions change. Version remains **0.3.0**.
+[Behavior and validation](docs/pagenor/CHAPTER_NUMBERING.md).
+
+## Numbering window adaptation — P09.13 (2026-10-11)
+
+Adapted open [upstream #342](https://github.com/storytold/designcraft/pull/342),
+by @moppeeer, at `9c683f3ef864cb705db3ae92f480d10684acfce7`. Six reused Rust
+source blobs were verified against the pinned API snapshot. The branch's #341
+foundation was already adapted as P07.2; it is not reapplied. MIT OR Apache-2.0
+licences/copyright remain applicable; contributor registries are unchanged.
+
+The dedicated section/chapter window, menu routing, side actions and shared
+translations are adapted. Italian is deferred. Pagenor supplies a command-backed
+atomic combined apply operation and retains prior popup guards, New Document,
+export/font dialog footers, IME, save and branding work. No dependencies, unsafe
+blocks or version changes. Version stays **0.3.0**; work is local.
+[Behavior and validation](docs/pagenor/NUMBERING_SECTION_OPTIONS.md).
+
+## Tabs editing adaptation — P07.3 (2026-10-11)
+
+Adapted open [upstream #343](https://github.com/storytold/designcraft/pull/343),
+by @aiongg, at `989373114be324319ff57d14596df0649a996cd0`. Nineteen pinned
+Rust source-file blobs were verified. Italian is deferred; the Ukrainian-file
+update is skipped because that locale is not configured in this fork. MIT OR
+Apache-2.0 licences/copyright and contributor registries remain unchanged.
+
+Tabs commands, the floating panel and Paragraph Style Options ruler, shared
+controls/icons, validation through paragraph/style writers and native/IDML load
+repair are adapted. Pagenor additionally rejects explicit malformed target,
+string and width fields. Existing font-size presets, section window, Welcome,
+IME, safe saves and lazy font scopes are retained. No dependencies, unsafe blocks,
+native format or application version changes. **0.3.0**, local only.
+All seven gates pass: 1,524 tests, 3 ignored; 20 WASM packages. Panel/style renders
+were inspected. [Behavior and limits](docs/pagenor/TAB_STOPS.md).
+
+## Swatch and Glyphs panel adaptation — P09.14 (2026-10-11)
+
+Adapted open [upstream #344](https://github.com/storytold/designcraft/pull/344),
+by @moppeeer, at `d361d84e3812922bb9651a9f51a2110efa97fa80`. Four reused Rust
+source-file blobs were verified against the pinned API snapshot. MIT OR Apache-2.0
+licences/copyright remain applicable; contributor registries are unchanged.
+
+Four swatch-list copies now share the same width-aware renderer: hovered rows
+use white-on-blue, selection shading remains, and names/grid columns avoid floating
+scroll bars. Existing font-size preset and document font-scope controls are retained.
+Two rendered-geometry regressions and all seven gates pass: 1,526 tests, 3 ignored;
+20 WASM packages. Actual egui swatch-hover/Glyphs renders were inspected. No new
+dependencies, assets, unsafe blocks or version changes. **0.3.0**, local only.
+## Ruler zero point adaptation — P09.15 (2026-10-11)
+
+Adapted open [upstream #345](https://github.com/storytold/designcraft/pull/345),
+by @zydvc26s67-web, at `2cba55f623f28ffd53e553fd546d74f6553ace62`. Two pinned
+Rust source blobs verified. MIT OR Apache-2.0 licences/copyright remain applicable;
+contributor registries unchanged. Drag the ruler corner to set a view-local origin;
+double-click resets it. Pagenor scopes drag state per pane and preserves the origin
+on a plain click. Document contents/history are unchanged. Two UI regressions,
+inspected actual egui renders and all seven gates pass: 1,528 tests, 3 ignored;
+20 WASM packages. No dependencies, unsafe blocks or version changes. **0.3.0**, local only.
+
+## Page-number bounds adaptation — P07.4 (2026-10-11)
+
+Adapted open [upstream #346](https://github.com/storytold/designcraft/pull/346),
+by @aiongg, at `1ec2136c841ebb0ba2bc2f52481ae9aee7e894cf`. Five pinned Rust
+source blobs verified. MIT OR Apache-2.0 licences/copyright remain applicable;
+contributor registries unchanged. Document Setup and section start numbers share
+whole-number bounds of 1–99,999. Continuing sections use iterative, saturating
+page numbering. Book list accumulation saturates; Pagenor retains its existing
+checked, preflighted book pagination. Rejected setup requests leave document and
+history unchanged. Loaded extreme page numbers and wide host indices are covered;
+page labels additionally avoid footnote-only Symbols allocations. Initial all-seven
+gate run: 1,530 tests, 3 ignored, 20 WASM packages; final integration checks cover
+the additional label safeguard. Version remains **0.3.0**, local only.
+
+## Multiple-click selection adaptation — P07.5 (2026-10-11)
+
+Adapted open [upstream #347](https://github.com/storytold/designcraft/pull/347),
+by @zydvc26s67-web, at `67f33cf279381d41f4c09099215d8ecff0ef6442`. Ten pinned
+source blobs verified. MIT OR Apache-2.0 licences/copyright remain applicable;
+contributor registries unchanged. Explicit TripleClick tool/control/MCP events
+and text.selectLine use Pagenor's existing table/footnote-aware selection command.
+The branch's older canvas rewrite is superseded by the already-working press
+counter, preserving four/five clicks and quick native drawing/threading input.
+Batched ruler-corner input receives the same press-origin recovery. Release-time
+click upgrades recover complete double/triple clicks within one paint, without
+repeating port unthread or downgrading four/five-click selection. Six added
+regressions cover engine/control/MCP, rapid native-shaped egui input and ruler reset;
+tool tests extend explicit double/triple coverage. Actual word/line renders inspected.
+
+All seven final gates pass: **1,536 tests, 3 ignored; 20 WASM packages**, including
+P07.4's additional hostile-file page-label safeguards. No dependencies, assets,
+unsafe code, native-format or application-version changes. **0.3.0**, local only.
+[Behavior and adaptation](docs/pagenor/MULTICLICK_SELECTION.md).
+
+Native follow-up: the final 0.3.0 `uncommitted-P07.5` bundle is installed locally in
+Applications; signature and independent app/document icon hashes pass. Temporary-file
+reopen, numbering/chapter restore, Tabs, ruler drag/reset, word selection and the
+corrected triple-click request pass. App is left on Welcome with no open documents.
+A separate native test under Documents/Codex stalled at the existing synchronous
+sibling document-font-folder probe (`read_dir`/kernel open). The OS/filesystem cause
+is unresolved; it is retained as a validation limitation, with the sample in the
+local #341–347 evidence report. Native Windows/Linux execution remains pending.
+
+## macOS installer adaptation and version checkpoint — P10.3 (2026-10-11)
+
+Reviewed the complete v0.4.0 → v0.5.0 comparison at release revision
+`4e0e3949f1eb91c874f2a47d58c2187031f4c97e`. Its only feature contribution is
+[#131](https://github.com/storytold/designcraft/pull/131), by @XusBadia, inspected
+at head `ec42e542e909ba0ff75a4efb9a95012be11124ee` (merged as
+`66c7ce7e96ec286a091878cc2541ee8369aa79d6`). The other release commit bumps the
+upstream version and refreshes generated contributor statistics; those are not
+ported. This release does not incorporate the separately adapted open #341–347.
+
+The generator’s Git blob `6bad87a0c5485ce34416311151d2d08c026a550a` was verified
+against the pinned source. Its MIT OR Apache-2.0 generator/layout approach and
+package staging are adapted. Pagenor uses its existing workspace resvg renderer,
+256-colour HiDPI TIFF and Pagenor volume/application names. Installer artwork is
+newly composed from Appaji Ambarisha’s supplied logo/icon with bundled Inter
+caption outlines; upstream artwork and trademarks are not imported. All terms
+are recorded in ASSETS.md and packaging/macos/dmg/LICENSE.txt and staged beside
+the background. App/document icons and signing/notarization flow are preserved.
+
+On 2026-10-11 the owner authorised relevant version increases, including minor
+updates. The local workspace advances 0.3.0 → **0.4.0** for accumulated editor,
+Welcome, keyboard, chapter/section/tab-stop and distribution changes. The Cargo
+version helper updates only workspace lock entries, with no external dependency
+upgrade. This is not a new GitHub publication and does not replace v0.3.0 assets.
+See CHANGELOG.md and docs/pagenor/VERSIONING.md.
+
+P10.3 validation: all seven gates pass (1,536 tests, 3 ignored; 20 WASM packages),
+nine packaging contracts and ShellCheck pass. Generated TIFF/layout reproduce
+byte for byte; alias/HiDPI/outlined vectors/icon clearance pass. The Apple-silicon
+0.4.0 development app is installed locally; native Welcome and About version,
+actual DMG Finder artwork/layout, separate icon metadata and strict ad-hoc
+signature checks pass. Finder’s persistent tab/path/status bars required a 100 pt
+window allowance to keep the captions visible, without preference changes.
+Native Windows/Linux/Intel execution and signed/notarized releases remain separate.
+The existing document-font folder scan stall is not addressed by this update.
+
+
+## P00.9 — upstream v0.6.0 audit and local adaptations (2026-10-11)
+
+Inspected all 71 distinct release changes at upstream release head
+`a9124a0517594ce9872f73637e7b841a4967bcf9`, comparing each individual merge patch
+against this fork. [Per-item decisions](docs/pagenor/UPSTREAM_060_AUDIT.md): 45
+already covered, 7 adapted here, 16 pending, 3 deferred/outside scope. Adoption is
+not complete; Italian remains owner-deferred, upstream sibling branding and
+readiness claims do not become Pagenor product content.
+
+- #116, @IHAGI-c, inspected head `ac4c7e6b8ebd08b948c3c468cf8dcfe46a38bdba`:
+  shared SVG font bytes/resolvers, adapted to document scopes, canonical aliases,
+  selected collection faces and scope/generation-aware screen caches. Synthetic
+  fonts now include PostScript names. SVG CSS variation settings remain usvg's;
+  existing Pagenor text-frame named instances remain unchanged.
+- #229, @skylartaylor, merge `cfac46a8d9971b28d00faa3e48755b3581b0f8c0`: mixed gradient output colour spaces and
+  PDF/archival/booklet regression matrix.
+- #200, @vbasky, merge `3de58750cd0aa0d766470a4b6c46d4afa15b4a1e`: CLI access to existing PDF/X checks, with
+  strict argument count, bounded reads and fork-specific help/tests.
+- #299, @aiongg, merge `0b69d6856ca0bca10cfe712d9f8ef724af74c8f4`: distinguish missing linked images from decode
+  errors; preserve decode behavior for corrupted nonempty data.
+- #258, @kubuntugamer, merge `a50d279cba5647e0e5db1f58539c97f2d8a5c618`: facing-page merge regressions adapted to
+  Pagenor's explicit per-page defaults and unsupported tiling refusal.
+- #269, @sawizzle, merge `a42fa206774a704cd9420aaa6218fcd21c66f3fc`: installed Pagenor CLI MCP guidance, with
+  existing opt-in authenticated control.
+- #398, @echelon, head `bb19cccd7e48326ae94e2004621144abd6afffd1`: tar-only Linux
+  riscv64 cross distribution. Explicit C/ring/pkg-config routing, validated
+  target/architecture and QEMU smoke hook; no upstream version/branding copied.
+- #349, @ironinthesoul, head `f05e8f5d9876bb85dfbfe5c084331beefae75707`: behavior
+  already covered by the existing host Unicode/object clipboard bridge. Native
+  Copy/Cut joins the existing once-only/reversible regression; no second bridge.
+
+Source blobs verified against Git's blob hash:
+- #116 `crates/images/src/lib.rs`: `1e81115c4c33b48d3a9ec11b6e159e30e8212ebd`.
+- #116 `crates/fonts/src/testing.rs`: `830f3d3584dbe9fb589a093d16b5aac394cd2c6a`.
+- #398 `.github/workflows/release.yml`: `856bdbe6ec03f2724f2437629430e8f56668bb6a`.
+- #398 `packaging/linux/package.sh`: `fd7fc4ef89c38ae699cf09bd7dbefebed0d8645c`.
+- #229 `crates/pdf/src/export.rs`: `72b378a97e841a8269b5ceb7ab8272d9b44500d4`.
+- #229 `crates/pdf/tests/gradient_color_spaces.rs`: `c523a418792cac09e598d2ae1e8e6777382a5be0`.
+- #200 `apps/designcraft-cli/src/main.rs`: `b1819c3573304db1e4fc1fee3ef3ed421507cd23`.
+- #299 `crates/pdf/src/export.rs`: `d92fc242bd011a565c8f1e53631aa22b866abdce`.
+- #299 `crates/pdf/src/tests.rs`: `9ac53d057a783d42d9d98dff9e8c535e4b8ab626`.
+- #258 `crates/engine/src/cmd/datamerge/tests.rs`: `e4636d109911081a623f0a85aed1407cc65f1d32`.
+- #269 `docs/mcp.md`: `772f8a91f7a6ae09bfcf454def24fd97edec22d8`.
+
+Original MIT/Apache notices remain. No contributor registry or owner artwork
+changes. All seven local gates pass: 1,548 tests, 3 ignored, all 20 WASM packages.
+Twelve packaging contracts, ShellCheck and actionlint pass; inspected canvas scope proofs and PDF extraction/raster regressions and local macOS 0.4.0 bundle verification are separate evidence.
+Windows/Linux/RISC-V native execution remains pending at a release milestone.
+No GitHub publication or push. Current local build: `uncommitted-P00.9`.
+
+## P11 — editor and publishing adoption (2026-10-11, local checkpoint complete)
+
+Owner authorized the non-CJK queue in docs/pagenor/UPSTREAM_EDITOR_ADOPTION.md.
+CJK/Italian and unsafe-policy exceptions are excluded. The complete selected group is verified as local **0.5.0**. No publication.
+
+| PR | Contributor | Inspected head | Local adaptation |
+|---|---|---|---|
+| [#447](https://github.com/storytold/designcraft/pull/447) | @aiongg | `c537f1ae46761f57db132f75d825a66edafd19b5` | Consume font-menu keys; accessible family fields; Pagenor fallback fixture retained. |
+| [#399](https://github.com/storytold/designcraft/pull/399) | @kubuntugamer | `bfafcd5a580cb68200a5e904ff1192c7497c6de8` | Buffered hex input commits/reverts on focus loss or Return, addressing upstream review; RGB rounding. |
+| [#388](https://github.com/storytold/designcraft/pull/388) | @moppeeer | `f6e96d21063bb105a17a60e97ac213b093b2b530` | Live Pencil path in layer colour and tool/UI regressions. |
+| [#408](https://github.com/storytold/designcraft/pull/408) | @vxkj1211 | `b834b92c0245bc50ec656a603c6f00471a58f0a6` | Vector-drawn align/distribute icons using the existing icon system. |
+
+First four changes: 256 UI tests pass, 1 existing ignore, and focused Pencil
+tool regression passes. Upstream MIT/Apache notices and owner asset rights remain.
+
+P11 editor additions verified:
+
+| PR | Pinned upstream head | Contributor |
+|---|---|---|
+| [#446](https://github.com/storytold/designcraft/pull/446) | `eab0ac7f4bb1221db4d1099585e645d21e30f1d6` | @aiongg |
+| [#373](https://github.com/storytold/designcraft/pull/373) | `1fe1ec9cc6fbc04d80532583c5c014ddb8fae2cd` | @aiongg |
+| [#416](https://github.com/storytold/designcraft/pull/416) | `bf8c3486f1680e307e3f4baff478f2be9e7daa5a` | @aiongg |
+| [#378](https://github.com/storytold/designcraft/pull/378) | `b84a58391fb4cf4fafab563872b2bc58527ce998` | @aiongg |
+| [#415](https://github.com/storytold/designcraft/pull/415) | `971cad3c0f0332bf6ca936a81ba189493461b1e5` | @aiongg |
+| [#444](https://github.com/storytold/designcraft/pull/444) | `3bda745a520e6e2ed99da8e8675f9272a8d2c30d` | @aiongg |
+| [#409](https://github.com/storytold/designcraft/pull/409) | `2bdb0ea01d86cacfa3875968a36c2d4357727305` | @skylartaylor |
+| [#445](https://github.com/storytold/designcraft/pull/445) | `60f2c597a573afd169f2602f868da83d1b6a869c` | @aiongg |
+| [#442](https://github.com/storytold/designcraft/pull/442) | `94fa7dc2ada7344270139ed8df14c90ebafc902e` | @aiongg |
+| [#448](https://github.com/storytold/designcraft/pull/448) | `f5867f26220587422c8ab993fc3360bfbe170428` | @coygeek |
+
+P11 remaining pinned adaptations (all applied; local gates pass):
+
+| PR | Contributor | Inspected head |
+|---|---|---|
+| [#393](https://github.com/storytold/designcraft/pull/393) | @con3code | `cc836fe4dffc427b7377d00c4212c94904f75e1c` |
+| [#434](https://github.com/storytold/designcraft/pull/434) | @aiongg | `c0148325726139627aaff23a168dc6862ce24101` |
+| [#411](https://github.com/storytold/designcraft/pull/411) | @noah1400 | `ad173006f7c0b444a19ab1e38414d0dbb6cc963d` |
+| [#420](https://github.com/storytold/designcraft/pull/420) | @aiongg | `daf1a0ccb3875a6435a1d56cd4cc18c199847738` |
+| [#458](https://github.com/storytold/designcraft/pull/458) | @sanyamsingh001 | `eae9ca097ca4462a80b03cfc3f6557635df4fa10` |
+| [#305](https://github.com/storytold/designcraft/pull/305) | @sanyamsingh001 | `21fa11780cbea6801f3e6ad1e0a0f158595119bd` |
+| [#456](https://github.com/storytold/designcraft/pull/456) | @sanyamsingh001 | `f58c21228921632d0d106c297a47dab2209ea839` |
+| [#457](https://github.com/storytold/designcraft/pull/457) | @sanyamsingh001 | `9cb8d05a3843fc1075f36529e49619ade5df740d` |
+| [#402](https://github.com/storytold/designcraft/pull/402) | @KnottyDyes | `00569f42cc696ca2c5878fd625d33f79998b0a74` |
+| [#403](https://github.com/storytold/designcraft/pull/403) | @KnottyDyes | `58e57bfba2b70761844e560890d10f74af5b5a8e` |
+| [#369](https://github.com/storytold/designcraft/pull/369) | @noah1400 | `dfdc650318fbd48d6ce75b4e4ec3f1b233ac0f51` |
+| [#379](https://github.com/storytold/designcraft/pull/379) | @aiongg | `ac4b83fa3930f56c49fa6f817700b8cf692377f3` |
+| [#359](https://github.com/storytold/designcraft/pull/359) | @aiongg | `7ed9f37d4383f5f180033d79a2d28f6744a685f0` |
+| [#360](https://github.com/storytold/designcraft/pull/360) | @aiongg | `91a01a6774e560511f289628ef45abfc7b1dd06f` |
+| [#381](https://github.com/storytold/designcraft/pull/381) | @aiongg | `70a04944a5c42d62efc403a083728618b694a6de` |
+| [#384](https://github.com/storytold/designcraft/pull/384) | @aiongg | `fbda023d7f46fdf3bb576af53f222815edf75cd0` |
+| [#433](https://github.com/storytold/designcraft/pull/433) | @aiongg | `814102ed351c3d10ac503e79d5c5726a26ebde39` |
+| [#422](https://github.com/storytold/designcraft/pull/422) | @aiongg | `279309ad120352c48ca56ae01787e991da18378b` |
+| [#421](https://github.com/storytold/designcraft/pull/421) | @aiongg | `2b96dffda145f8ae46c64ac6784632782be6624d` |
+| [#427](https://github.com/storytold/designcraft/pull/427) | @MaridWSH | `62faa8eee2d7c8bbee7bff00c4e10da752b71a41` |
+| [#372](https://github.com/storytold/designcraft/pull/372) | @aiongg | `0474a8b5eca1634ea73b31a95465cf1ce57eb260` |
+| [#357](https://github.com/storytold/designcraft/pull/357) | @aiongg | `d03dd226c5bb2f2ff862dc6bede50310d008df98` |
+| [#418](https://github.com/storytold/designcraft/pull/418) | @aiongg | `5d872fbf1eadd18bc1312b2354c74712a49b446e` |
+| [#419](https://github.com/storytold/designcraft/pull/419) | @aiongg | `505e748aacddfdbeeb83f857334535bf88670cf5` |
+| [#356](https://github.com/storytold/designcraft/pull/356) | @aiongg | `a80d21161f5002f4760b26125548d81f5a6e4835` |
+| [#362](https://github.com/storytold/designcraft/pull/362) | @aiongg | `0f3f4e0634b4254ae8294aae1e9c527a735c1da7` |
+| [#382](https://github.com/storytold/designcraft/pull/382) | @aiongg | `cdd32a5066a82156a248ee4712b0e7059fce9b1e` |
+| [#397](https://github.com/storytold/designcraft/pull/397) | @con3code | `cc12ea576ff80d59c3bbfb4355be3fb66f4179fe` |
+| [#297](https://github.com/storytold/designcraft/pull/297) | @JeremyYao | `b5bca7ef64fc3844b06281bbcda09c396b582a9b` |
+| [#380](https://github.com/storytold/designcraft/pull/380) | @aiongg | `158f366af8df9c42d94295cf180787b37bacec55` |
+| [#452](https://github.com/storytold/designcraft/pull/452) | @skylartaylor | `9f7da3f6abcce29186af9a8660158e60419d069d` |
+| [#455](https://github.com/storytold/designcraft/pull/455) | @echelon | `04600f4cbd2ae1f6cb681196235cee4e9261b057` |
+| [#374](https://github.com/storytold/designcraft/pull/374) | @wondarkus | `f5da9d2b58bf171c84023b79d9ee4825b3824536` |
+| [#295](https://github.com/storytold/designcraft/pull/295) | @aiongg | `8b81f31b770df570bc04a7a84459dd762e3e3a9b` |
+| [#298](https://github.com/storytold/designcraft/pull/298) | @aiongg | `6a674b951b7231c0475bdb5ad57e42b7ddf6994b` |
+
+Shared dependencies remain pinned: craft-ui `5c874d51eeb3de70e735c8ce87a59a7dedd47675`, craft-print `c22bb1b0ce6316f84973cb69675fe7331c5886cc`, safe native wrappers retain the workspace unsafe-code prohibition. Full local adaptation and validation notes: docs/pagenor/UPSTREAM_EDITOR_ADOPTION.md.
+
+Linux System appearance portal prerequisite: [#271](https://github.com/storytold/designcraft/pull/271), @luniiya, pinned head `4620d2747edb7d87b5427b945d845489fce5393b`. Numeric/nested variant decoding and subscribe-before-Read ordering are adapted in `apps/pagenor/src/appearance.rs`; watcher cancellation and Pagenor preferences remain local adaptations.
+
+P11 final local evidence: All seven `cargo xtask ci` gates pass: 1,856 tests passed, 6 ignored, no failures; 20 WASM packages. The 12 packaging contracts, ShellCheck and actionlint pass. The local macOS app is built and inspected separately. Windows/Linux native GUI and printing execution, signed/notarized distribution and GitHub publication remain milestone work.
+
+The final local 0.5.0 app is installed at `/Applications/Pagenor.app`; its executable matches the packaged build byte-for-byte. Strict/deep signature checks, 0.5.0 executable/plist versions and separate supplied app/document icon resources pass. The previous 0.4.0 app is retained in a recoverable local backup. No GitHub publication.
+
+## P11.1 — local editor usability, 2026-10-11
+
+Pagenor 0.5.1 improves the imported canvas/docking/table foundations in response
+to owner feedback: visible scrollbar tracks, Arrow cell selection, the Table
+panel border/fill controls, functional groups, close/toggle actions and vertical
+stacking with scrolling, plus a taller bottom bar. These are Pagenor adaptations
+using the same pinned safe craft-ui implementation and existing table formatting
+engine, not additional upstream PR adoption. See docs/pagenor/EDITOR_USABILITY.md.
+No publication or native Windows/Linux runtime validation is implied.
+
+P11.2 (2026-10-11) is a local 0.5.1 maintenance correction: document-window Close
+keeps the workspace alive and returns to Welcome; explicit Quit retains save-all
+and native input teardown. The right icon bar is widened to 44 pixels. No new
+upstream adoption or dependency change. See docs/pagenor/WELCOME_RECENT_DOCUMENTS.md.
+
+## Local master-page workflow — P11.3 (2026-10-11)
+
+Owner-requested Pagenor work reuses the existing parent spread model, composition
+and override architecture. Adds left/right editing, master settings, repeating
+header/footer/number frames, inherited guides and default-master persistence. No
+new upstream patch is imported in this pass. Shared Rust and the unsafe-code ban
+remain. See [Master-page notes](docs/pagenor/MASTER_PAGES.md).
+
+
+## Right toolbar columns — P11.4 (2026-10-11)
+
+Owner-requested local 0.5.2 work extends Pagenor's grouped panel rail with an
+independent one/two-column toggle and saved workspace preference. Reuses the
+existing icons and shared docking implementation; no new upstream patch or
+dependency. See [Right toolbar notes](docs/pagenor/RIGHT_TOOLBAR_COLUMNS.md).
+
+## Selected October recheck adaptations — P11.11 (2026-10-12, local 0.6.0)
+
+The following MIT OR Apache-2.0 source changes have been adapted locally, retaining applicable
+original licences and copyright. These are inspected source pins, not whole-branch merges.
+Validation and outstanding work are tracked in
+[the implementation notes](docs/pagenor/UPSTREAM_ADOPTION_20261012.md).
+
+| PR | Author | Pinned source head | Local adaptation |
+|---|---|---|---|
+| [#504](https://github.com/storytold/designcraft/pull/504) | @aiongg | `2077d9f088dc41bde6b201b098a596ded61fafd7` | Installed interface fallbacks for Indic and other scripts, with marks checked, shared face data, background work and refresh generations; retain existing CJK policy. |
+| [#498](https://github.com/storytold/designcraft/pull/498) | @aiongg | `fe8a724da44ecd9cc997118340c55390f2e20825` | Malformed note/marker payload extraction repair, checked footnote/endnote/editorial insertion, wholesale text replacement cleanup; retain rich clipboard IDs. |
+| [#506](https://github.com/storytold/designcraft/pull/506) | @noah1400 | `257fb08dbdc1140223e8db1f897845bff6913d9c` | Locked per-process recovery namespaces and coordinated takeover of released runs. Preserve legacy flat entries for explicit recovery; refuse shared-folder fallback and removed/replaced locks. |
+| [#485](https://github.com/storytold/designcraft/pull/485) | @aiongg | `1a8df25fddb6e555bbbc11578a262585fcc0f1b2` | Use the stronger existing native writer for export, snippet, book, library, ASE, XML, MCP and CLI output. Preserve file metadata; add directory-flush diagnostics and bounded Windows replacement retries. |
+| [#509](https://github.com/storytold/designcraft/pull/509) | @mjohnson7cd | `a02fc011bf5af1300a7e59ecb146487138fe38d1` | Paragraph panel optical margin alignment checkbox through type.para with undo. |
+| [#510](https://github.com/storytold/designcraft/pull/510) | @japbcoelho | `5a1e9de92ed789abc176ab668fee68378a224ee3` | One RGB/CMYK component scale per colour, preserving Gray and finite/range checks. |
+| [#511](https://github.com/storytold/designcraft/pull/511) | @japbcoelho | `72bdc0a9197985b000105b6291daf89d6cc9fd06` | Fractional PDF/SVG natural dimensions through direct Place, place cursor, fitting, tables and data merge; retain EPS validation. |
+| [#473](https://github.com/storytold/designcraft/pull/473) | @MarekSpodBiedry | `30cbd67e3de32bf5d810c6569880b54a2bfffdc1` | SameParaStyleSpacing import, composition, IDML export and explicit-null inheritance/serialization. |
+| [#474](https://github.com/storytold/designcraft/pull/474) | @MarekSpodBiedry | `5ab84500fed60deb67a3ef451d20fb765ad86a18` | Single-sided pages use the first listed master; preserve geometric left/right selection for RTL binding and shared snapping. |
+| [#497](https://github.com/storytold/designcraft/pull/497) | @aiongg | `cde814c0dff8aaa5321b5fe4cccf9fd9f53d9d3d` | Alt shrinking/flipping, centered Alt+Shift aspect resize and Shift side-handle centering. |
+| [#488](https://github.com/storytold/designcraft/pull/488) | @MarekSpodBiedry | `233aef8986b1113b16a50841a5dc7b519489e94b` | Fractional-scale app-bar width slack, retaining genuine narrow-window overflow. |
+| [#486](https://github.com/storytold/designcraft/pull/486) | @aiongg | `63375bc84d3ce976ca7b1321f09ab142f85d25f0` | Filled Selection and hollow Direct Selection vector arrow icons. |
+| [#503](https://github.com/storytold/designcraft/pull/503) | @aiongg | `7b903cf6b16b5baf5e43699b61875961900dcc11` | Shift+W Presentation toggle, remembered return mode and consumed Escape preserving tool/selection. |
+| [#491](https://github.com/storytold/designcraft/pull/491) | @noah1400 | `0a9bfa57352e4872562487415ab1e3e4bf688f50` | Alt/Option wheel pointer zoom with modifier latching through smoothed/trackpad motion; retain existing command/pinch and plain wheel routes. |
+| [#499](https://github.com/storytold/designcraft/pull/499) | @aiongg | `a73d106ab45158386ea2bb493412ec04b80de9a2` | Interactive command search with localized/English/id matches, keyboard navigation, enabled states, shortcut hints and restored focus; cap query and result count. |
+
+### Additional P11.11 adaptations
+
+| PR | Author | Pinned source head | Local adaptation |
+|---|---|---|---|
+| [#472](https://github.com/storytold/designcraft/pull/472) | @moppeeer | `3943e4c8b74956f659fab5c0731a209033752fd9` | Transformed text and group bounds for incremental repaint; depth cap falls back to full repaint. |
+| [#505](https://github.com/storytold/designcraft/pull/505) | @KnottyDyes | `9b7b5d0e9d976559007441bb1ee8ea61e06c1f95` | Bounded raw ICC profile registration, profile IDs/classes/channel counts; profile-picker and PDF/X integration remain outside these foundations. |
+| [#475](https://github.com/storytold/designcraft/pull/475) | @noah1400 | `40e8dbc6fb358a12cdd5099acef10d8552107d87` | Case-insensitive CLI export dispatch with native save-a-copy, PDF options validation and early unsupported-format errors. |
+| [#500](https://github.com/storytold/designcraft/pull/500) | @aiongg | `47d17ca6f50883eaf1861a10fabb78b0816d9a12` | Custom text-wrap paths in composition, resize/bake and IDML with bounded finite geometry; retain existing contour modes. |
+| [#487](https://github.com/storytold/designcraft/pull/487) | @aiongg | `56c8ed96673efaf553d44ac0f9f0ad6cc72182c3` | Code-drawn tool cursors, including pen add/delete/close/convert; preserve linking cursors and WASM/system fallbacks. |
+| [#463](https://github.com/storytold/designcraft/pull/463) | @KnottyDyes | `97b753619a51f31e5786434bed5d6499e055a62b` | Document paragraph hyphenation defaults and object fitting parameters. |
+| [#469](https://github.com/storytold/designcraft/pull/469) | @moppeeer | `90407a892aa6feb2223a3c4968f400b4daa63c6e` | Page presets, orientation, linked margins, bleed/slug and Adjust Layout in Document Setup; preserve untouched margins. |
+| [#467](https://github.com/storytold/designcraft/pull/467) | @sanyamsingh001 | `004668eba87ab0686e95dde93e1147e52995deb9` | Explicitly edited dialog fields, captured text-frame targets, mixed-selection preservation, partial inset updates, table style creation and Shift+Tab. |
+| [#468](https://github.com/storytold/designcraft/pull/468) | @soro-82 | `2b55f2ed0d9e76c8f0327194e850fbc21fe10a29` | Remaining Create Guides and Margins/Columns UI with document ruler units and page/master-side targeting; retain stronger existing explicit master inheritance. |
+| [#477](https://github.com/storytold/designcraft/pull/477) | @luniiya | `fe21f3c16cd38b67f84f34b30ac9a85b529e353e` | Favorite theme stars and header appearance shortcuts, adapted to Pagenor’s existing System/light/dark brightness settings. |
+| [#466](https://github.com/storytold/designcraft/pull/466) | @moppeeer | `26e75c8608f3fe6fa33c6ae2c655edc747af9cb9` | Font picker filters, sample sizes, recent fonts and expandable styles. Use small table metadata for filters; visible rows alone load preview faces. Interaction verification still in progress. |
+| [#462](https://github.com/storytold/designcraft/pull/462) | @sanyamsingh001 | `1e526c66bdaf54b2e45ce64a69326e81c026dad4` | Bounded styled Markdown import and style mapping, retaining unsupported constructs as literal text with warnings. |
+| [#459](https://github.com/storytold/designcraft/pull/459) | @sanyamsingh001 | `caa6421a3e9079a557daf4816cdc15e50b4d3932` | Respect primary-chain capacity removal during cleanup and avoid deleting groups containing empty tail frames; retain existing reflow decisions. |
+| [#482](https://github.com/storytold/designcraft/pull/482) | @xristosmoug | `af9bddf34d0c2d978524c5b759e530e2c230c2ef` | Strip build-time extended attributes before signing, preserve signed DMG contents and verify the finished image plus installed copy. Local package-helper verification passes. |
+| [#478](https://github.com/storytold/designcraft/pull/478) | @aiongg | `3d7638295a04ffda7c23bff445111b578df78a02` | Dispatch canvas pointer, key, clipboard and IME input in arrival order, including click/drag promotion and final release coordinates. Retain Pagenor multi-click selection, inline dead-key input, Alt-hand gestures, selected-text Alt-copy and platform shortcut distinctions. |
+| [#460](https://github.com/storytold/designcraft/pull/460) | @sanyamsingh001 | `ab80e7f5b03b26787338727e6703ef362c8a2caf` | Resize/snapping preview agreement for fixed/scaled strokes, reflections and reachable dimension matches; retain centered resize and baseline/guide competition. Resize regression suites pass. |
+| [#362](https://github.com/storytold/designcraft/pull/362) update | @aiongg | `0437ab27f5d3d6eb443d671d8194f93b7a741b9c` | Interpret PDF content bounds without rasterizing a 2048px preview; arbitrary clip/mask bounds remain conservative. |
+| [#421](https://github.com/storytold/designcraft/pull/421) update | @aiongg | `8f30ba1c55342caff2bdd4af76c23b3614eeb602` | Avoid nested whole-line RTL ActualText; keep per-run cluster text and decoration. PDF regressions and Poppler codepoint-retention checks pass; exact viewer spacing/mark order remains a follow-up. |
+| [#427](https://github.com/storytold/designcraft/pull/427) update | @MaridWSH (earlier @skylartaylor) | `d0120bf6a642beb92e31e026fc8a9bc64778bc13` | Preserve dash spacing in optical kerning, retaining ordinary Latin kerning. |
+
+## Next adaptation batch — P11.13 (2026-10-12)
+
+The owner authorised the selected queue through upstream #565. Per-change authors,
+pinned heads, scope and validation are in [the adaptation log](docs/pagenor/UPSTREAM_ADOPTION_070.md).
+P11.13.1 adapts the final nested-panic undo correction from #411 by @noah1400 at
+`60f463f03cbe35396e49f3601c42fdf46d662fc2`, preserving Pagenor's earlier restore
+before recovery and its command/document safeguards. Original MIT OR Apache-2.0
+licences and copyright notices remain applicable. Pending rows are provenance
+for reviewed candidates, not claims of completed implementation.
+
+P11.13 adapts the related UI group #525, #527, #532, #533, #541 and #552:
+tint/Frame/Text controls, View grouping and rendered document grid, selected-paragraph
+Justification, Properties transforms, and the Tools Color Picker. Pinned heads/authors,
+Pagenor-specific adaptations and validation are in the same 0.7.0 adaptation log.
+
+P11.13 additionally adapts #519, #528, #550 and #561 (curved corners, one-time
+image fitting, content transforms and saved clipping paths). Pagenor retains its
+placement validation/PDF crop/wrap metadata, adds finite-transform guards, corrects
+the native content outline found during QA, and records clipping capability as native
+format 4. Pinned authors/heads and measured checks are in UPSTREAM_ADOPTION_070.md.
+
+P11.13 adapts #551, #520, #521, #548 and #560 for table text colors, validated
+swatches, command result IDs, scoped/lazy SVG PostScript lookup and IDML family/style
+preservation. Pagenor's caret formatting, font activation epochs, document precedence,
+variable SVG CSS and small-table catalogue scan remain. Sources and checks are in
+the pinned 0.7.0 adaptation log; no private font or new font asset is committed.
+
+P11.13 adapts #529, #523, #559, #562 and #563 (IDML spread rotations, absolute-page
+parent text, section markers, inherited anchored settings and anchored wrap). Existing
+rich contour/side/nested-graphic geometry and anchored text/group handling remain;
+cache, export and repaint paths share the new behavior. Pinned authors/heads and
+all-seven-gate validation are in the 0.7.0 adaptation log.
+
+P11.13 adapts #522, #538 and #539 (CR-normalized text commands, uppercase
+hyphenation and continuous underline/strike geometry). Pagenor's decoration metrics
+and writing directions remain; a neighbor marker/cache regression extends #563.
+Pinned provenance and all-seven-gate validation are in UPSTREAM_ADOPTION_070.md.
+
+P11.13 adapts the pinned incremental deltas of #459, #478, #468 and #473: consumed
+GREP-condition reflow, empty rich native paste, split chronological dispatch/tear
+release, explicit page/spread targets and IDML Nothing spacing. Existing Pagenor
+IME/click counts, drop caps, scoped dispatch, validation and separate master sides
+remain. Sources, tests and native inspection are recorded in the 0.7.0 log.
+
+P11.13 completes the #542 EOF incremental update by @sanyamsingh001 at
+c08b3ddc685ece9534850884567fa3dbac6784a4, retaining Pagenor's ordinary/cell/note
+pending-caret formatting, inherited LF metrics and existing Undo/Redo selection.
+Native format 5 and org.pagenor.eofTyping.v1 IDML labels preserve the root-stage
+capability. Pagenor-specific consumer, font-replacement and stale-pending guards
+are documented and tested; no deferred Warichu feature is introduced.
+
+The #452 update by @skylartaylor at 957890223a0c84070278557bac529d6da848ebe6
+updates craft-print to reviewed pinned revision d991bf6792f8ade99c51358bf3c1d902c8cd96b5.
+Pagenor retains PDF box/export handling and offers Fit oversized sheets or Original
+size; duplex defaults stay with the printer. No physical QA job was submitted.
+
+The #553 user-guide proposal by @itrycodinganditsbad at
+fb90a508b1ccb64ba8cea2e575e015659417aa85 is adapted to Pagenor's actual UI,
+formats, platforms, owner rights, repository and existing importer limitations.
+Development instructions are not replaced. All 32 selected updates are complete
+locally in 0.7.0; tests and native inspection are recorded in UPSTREAM_ADOPTION_070.md.
+
+The completed P11.13 batch is published as the 0.7.0 desktop development preview,
+with matching Mac/Windows/Linux packages and native quality/install/checksum
+evidence in docs/pagenor/DESKTOP_RELEASE_070.md. Tagged source remains
+76f8840071003e51418878f245e18b2230632b98; distribution-record edits change no binary.

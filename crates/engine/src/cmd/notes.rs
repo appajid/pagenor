@@ -3,7 +3,7 @@
 use pagenor_doc::{CellAddr, FootnoteOptions, ParaFormat, StoryId, TextSel};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, str_param};
+use super::{CommandSpec, bad, cmd, has_doc};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -58,15 +58,19 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
-    let text = str_param(p, "text").unwrap_or("").to_string();
+    let text = super::text_param(p, "text");
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
         let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
         let st = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
+        let fmt = super::text::prepare_eof_marker(st, r.start, pagenor_doc::FOOTNOTE_REF);
         st.delete(r.clone());
-        let id = st.insert_note(r.start, &text, para);
+        let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "footnote references and payloads do not match"))?;
+        if let Some(fmt) = fmt {
+            st.format_chars(r.start..r.start + pagenor_doc::FOOTNOTE_REF.len_utf8(), |f| *f = fmt.clone());
+        }
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
     })
@@ -130,7 +134,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.setText")?;
     let id = note_id(p, "footnote.setText")?;
-    let text = str_param(p, "text").unwrap_or("").to_string();
+    let text = super::text_param(p, "text");
     s.edit(|d, _| {
         let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
         let n = st.note_mut(id).ok_or_else(|| bad("footnote.setText", format!("no footnote {id}")))?;
@@ -146,7 +150,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
-        st.delete(at..at + pagenor_doc::FOOTNOTE_REF.len_utf8());
+        super::text::delete_preserving_eof(st, at..at + pagenor_doc::FOOTNOTE_REF.len_utf8(), true);
         if sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
             sel.text = Some(TextSel::caret(sid, at));
         }

@@ -8,7 +8,10 @@ use std::rc::Rc;
 
 use crate::attrs::{self, Attrs};
 use crate::bytes::u32s;
-use crate::model::{Document, Graphic, Item, Kind, Run, Story, Style, TA_AUTOLEAD, TA_COLOR, TA_FONT, TA_JUSTIFY, TA_LEADING, TA_SIZE, TA_STYLE};
+use crate::model::{
+    Document, Graphic, Item, Kind, Run, Story, Style, TA_AUTOLEAD, TA_COLOR, TA_FONT, TA_JUSTIFY, TA_LEADING, TA_SIZE, TA_SPACE_AFTER,
+    TA_SPACE_BEFORE, TA_STYLE,
+};
 use crate::text::{base64, num, xml_escape as esc};
 use crate::{Budget, InddError, Result};
 
@@ -30,7 +33,8 @@ fn justify(j: i64) -> Option<&'static str> {
         1 => "CenterAlign",
         2 => "RightAlign",
         3 => "LeftJustified",
-        4 => "CenterJustified",
+        // Observed in the owner's source/PDF pair: justified lines, left-aligned final line.
+        4 => "LeftJustified",
         5 => "RightJustified",
         6 => "FullyJustified",
         7 => "ToBindingSide",
@@ -177,6 +181,11 @@ impl<'a> Writer<'a> {
 
     fn para_attrs(&self, a: &Attrs) -> String {
         let mut parts = Vec::new();
+        for (id, name) in [(TA_SPACE_BEFORE, "SpaceBefore"), (TA_SPACE_AFTER, "SpaceAfter")] {
+            if let Some(value) = attrs::double(a.get(&id)).filter(|v| v.is_finite() && *v >= 0.0) {
+                parts.push(format!(r#"{name}="{}""#, num(value)));
+            }
+        }
         if let Some(auto) = attrs::double(a.get(&TA_AUTOLEAD)).filter(|v| *v != 0.0) {
             parts.push(format!(r#"AutoLeading="{}""#, num(auto * 100.0)));
         }
@@ -204,8 +213,8 @@ impl<'a> Writer<'a> {
     fn story_xml(&mut self, st: &Story) -> Result<String> {
         let text: Vec<char> = st.text.chars().collect();
         let n = text.len();
-        let para_runs = spans(&st.paras, n);
-        let char_runs = spans(&st.chars, n);
+        let para_runs = spans(&st.paras, &text)?;
+        let char_runs = spans(&st.chars, &text)?;
         let empty = Attrs::new();
         let mut out = vec![
             HEAD.to_string(),
@@ -429,10 +438,12 @@ impl<'a> Writer<'a> {
                 let story = it.story.map(|s| format!("u{s}")).unwrap_or_else(|| "n".into());
                 let _ = write!(
                     out,
-                    r#"<TextFrame Self="u{}" ItemLayer="{layer}" ItemTransform="{xf}" {}{vis} ParentStory="{story}" PreviousTextFrame="n" NextTextFrame="n" ContentType="TextType">{}<TextFramePreference TextColumnCount="1" FirstBaselineOffset="AscentOffset" VerticalJustification="TopAlign"/></TextFrame>"#,
+                    r#"<TextFrame Self="u{}" ItemLayer="{layer}" ItemTransform="{xf}" {}{vis} ParentStory="{story}" PreviousTextFrame="n" NextTextFrame="n" ContentType="TextType">{}<TextFramePreference TextColumnCount="{}" TextColumnGutter="{}" FirstBaselineOffset="AscentOffset" VerticalJustification="TopAlign"/></TextFrame>"#,
                     it.uid,
                     self.paint(it),
-                    self.path_xml(it)
+                    self.path_xml(it),
+                    it.text_columns,
+                    num(it.text_gutter)
                 );
                 self.charge(out.len().saturating_sub(before))?;
             }
@@ -466,7 +477,7 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    fn spread_xml(&mut self, sp: &crate::model::Spread) -> Result<String> {
+    fn spread_xml(&mut self, sp: &crate::model::Spread, first_page: usize) -> Result<String> {
         let mut out = vec![
             HEAD.to_string(),
             format!("<idPkg:Spread {NS} {DOM}>"),
@@ -477,7 +488,7 @@ impl<'a> Writer<'a> {
             out.push(format!(
                 r#"<Page Self="u{}" Name="{}" AppliedMaster="n" GeometricBounds="{} {} {} {}" ItemTransform="{}"/>"#,
                 pg.uid,
-                i + 1,
+                first_page + i + 1,
                 num(t),
                 num(l),
                 num(b),
@@ -499,14 +510,23 @@ impl<'a> Writer<'a> {
     }
 }
 
-fn spans(runs: &[Run], n: usize) -> Vec<(usize, usize, &Run)> {
+fn spans<'a>(runs: &'a [Run], text: &[char]) -> Result<Vec<(usize, usize, &'a Run)>> {
     let mut out = Vec::new();
-    let mut pos = 0usize;
+    let (mut pos, mut units, mut target) = (0usize, 0usize, 0usize);
     for r in runs {
-        out.push((pos, pos.saturating_add(r.length).min(n), r));
-        pos = pos.saturating_add(r.length);
+        let start = pos;
+        target = target.saturating_add(r.length);
+        while units < target {
+            let Some(c) = text.get(pos) else { break };
+            units = units.saturating_add(c.len_utf16());
+            pos += 1;
+        }
+        if units > target {
+            return Err(InddError::Damaged("style run splits a UTF-16 surrogate pair".into()));
+        }
+        out.push((start, pos, r));
     }
-    out
+    Ok(out)
 }
 
 /// Finds the run covering a position, for positions asked in increasing order: the spans from
@@ -774,24 +794,22 @@ pub(crate) fn write_limited(d: &Document, budget: Budget) -> Result<Vec<u8>> {
     for sp in &d.spreads {
         walk(&sp.items, &mut all, 0);
     }
-    let used_layers: BTreeSet<u32> = d.spreads.iter().flat_map(|s| s.items.iter().filter_map(|i| i.layer)).collect();
     let used_stories: BTreeSet<u32> = all.iter().filter_map(|i| i.story).collect();
-    let layers: Vec<String> = d
-        .layers
-        .iter()
-        .rev()
-        .filter(|(u, _)| used_layers.contains(u))
-        .map(|(u, n)| format!(r#"<Layer Self="u{u}" Name="{}" Visible="true" Locked="false" Printable="true"/>"#, esc(n)))
-        .collect();
+    // Both the binary document layer list and IDML list are back to front.
+    // Keep empty layers too: they belong to the source document's layer stack.
+    let layers: Vec<String> =
+        d.layers.iter().map(|(u, n)| format!(r#"<Layer Self="u{u}" Name="{}" Visible="true" Locked="false" Printable="true"/>"#, esc(n))).collect();
     let mut refs = vec![
         r#"<idPkg:Graphic src="Resources/Graphic.xml"/>"#.to_string(),
         r#"<idPkg:Styles src="Resources/Styles.xml"/>"#.into(),
         r#"<idPkg:Preferences src="Resources/Preferences.xml"/>"#.into(),
         layers.join("\n"),
     ];
+    let mut first_page = 0usize;
     for sp in &d.spreads {
         let name = format!("Spreads/Spread_u{}.xml", sp.uid);
-        let xml = w.spread_xml(sp)?;
+        let xml = w.spread_xml(sp, first_page)?;
+        first_page += sp.pages.len(); // validate_model caps the complete document at 4096 pages.
         files.push((name.clone(), xml));
         refs.push(format!(r#"<idPkg:Spread src="{name}"/>"#));
     }

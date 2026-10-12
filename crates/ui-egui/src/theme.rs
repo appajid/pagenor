@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Brightness {
+    /// Follow desktop appearance. Resolves to Light or Medium Dark; unknown uses Medium Dark.
+    System,
     Dark,
     #[default]
     MediumDark,
@@ -17,9 +19,11 @@ pub enum Brightness {
 }
 
 impl Brightness {
-    pub const ALL: [Brightness; 5] = [Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light, Brightness::HighContrast];
+    pub const ALL: [Brightness; 6] =
+        [Brightness::System, Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light, Brightness::HighContrast];
     pub fn label(self) -> &'static str {
         match self {
+            Brightness::System => "System",
             Brightness::Dark => "Dark",
             Brightness::MediumDark => "Medium Dark",
             Brightness::MediumLight => "Medium Light",
@@ -29,11 +33,20 @@ impl Brightness {
     }
     pub fn id(self) -> &'static str {
         match self {
+            Brightness::System => "system",
             Brightness::Dark => "dark",
             Brightness::MediumDark => "mediumDark",
             Brightness::MediumLight => "mediumLight",
             Brightness::Light => "light",
             Brightness::HighContrast => "highContrast",
+        }
+    }
+    /// Resolve without replacing the persisted preference.
+    pub fn resolved(self, system: Option<egui::Theme>) -> Self {
+        match (self, system) {
+            (Self::System, Some(egui::Theme::Light)) => Self::Light,
+            (Self::System, _) => Self::MediumDark,
+            _ => self,
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -83,6 +96,8 @@ pub struct Tokens {
     /// Measurement labels on the canvas (smart dimensions, gaps).
     pub measure_bg: Color32,
     pub measure_text: Color32,
+    /// Live-corner widget and corner diamonds.
+    pub live_corner: Color32,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -125,11 +140,12 @@ impl Tokens {
             smart_guide: hex(0x00c853),
             measure_bg: Color32::from_rgba_unmultiplied(70, 70, 70, 230),
             measure_text: Color32::WHITE,
+            live_corner: hex(0xffe500),
         };
         match b {
             Brightness::Dark => dark,
             // Measured from InDesign 2026 (plan/indesign/11-observed-ui.md §1).
-            Brightness::MediumDark => Tokens {
+            Brightness::System | Brightness::MediumDark => Tokens {
                 app_bar: hex(0x535353),
                 panel: hex(0x535353),
                 panel_darker: hex(0x424242),
@@ -253,36 +269,172 @@ impl Tokens {
     }
 }
 
-/// Install the UI fonts for the interface language `lang` (it orders the CJK fallbacks).
-pub fn install_fonts(ctx: &egui::Context, lang: &str) {
-    let fonts = font_definitions(pagenor_fonts::CRAFT_FONTS, lang);
+/// Install built-in UI faces immediately, then installed fallbacks once their worker is ready.
+/// The returned generation changes when activated fonts are refreshed.
+pub fn install_fonts(ctx: &egui::Context, lang: &str) -> Option<u64> {
+    let mut fonts = font_definitions(pagenor_fonts::CRAFT_FONTS, lang);
+    let snapshot = system_ui_fonts(lang);
+    if let Some((_, system)) = &snapshot {
+        add_system_fallbacks(&mut fonts, system);
+    }
+    ctx.set_fonts(fonts);
+    snapshot.map(|(generation, _)| generation)
+}
+
+#[derive(Clone)]
+struct SystemFont {
+    name: String,
+    data: Arc<FontData>,
+}
+
+impl SystemFont {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    fn from_face(face: &pagenor_fonts::FontFace) -> Self {
+        let data = FontData { index: face.index(), tweak: baseline_tweak(face.data(), face.index()), ..FontData::from_owned(face.data().to_vec()) };
+        Self { name: format!("system-ui-{}", face.id()), data: Arc::new(data) }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct UiFontCache {
+    ready: Option<(u64, String, Vec<SystemFont>)>,
+    running: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ui_font_cache() -> &'static std::sync::Mutex<UiFontCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<UiFontCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Start only metadata-ready font work, off the UI thread. Retain one generation of selected
+/// faces, rather than every installed file. Source bytes are shared across language reinstalls.
+fn system_ui_fonts(lang: &str) -> Option<(u64, Vec<SystemFont>)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = lang;
+        Some((0, Vec::new()))
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    let fonts = {
-        let mut fonts = fonts;
-        // Local builds may omit craft-fonts. Use the shared resolver for readable document
-        // names and font menus without bundling or copying installed fonts into the project.
-        if pagenor_fonts::CRAFT_FONTS.is_empty() {
-            let db = pagenor_fonts::FontDb::global();
-            for c in ['中', 'あ', '한'] {
-                if let Some(face) = db.fallback_for(c, u32::MAX, Some(lang)) {
-                    let name = format!("system-ui-{}", face.id());
-                    if fonts.font_data.contains_key(&name) {
-                        continue;
-                    }
-                    let mut data = FontData::from_owned(face.data().to_vec());
-                    data.index = face.index();
-                    fonts.font_data.insert(name.clone(), Arc::new(data));
-                    for (family, stack) in &mut fonts.families {
-                        if !matches!(family, FontFamily::Name(name) if name.starts_with("arabic")) {
-                            stack.push(name.clone());
-                        }
-                    }
-                }
+    {
+        let db = pagenor_fonts::FontDb::global();
+        if !db.system_fonts_cataloged() {
+            db.scan_in_background();
+            return None;
+        }
+        let generation = db.scan_generation();
+        let mut cache = ui_font_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((ready_generation, ready_lang, faces)) = &cache.ready
+            && *ready_generation == generation
+            && ready_lang == lang
+        {
+            return Some((generation, faces.clone()));
+        }
+        if !cache.running {
+            cache.running = true;
+            let lang = lang.to_owned();
+            if let Err(e) = std::thread::Builder::new().name("ui-fonts".into()).spawn(move || {
+                let faces = installed_ui_fonts(db, pagenor_fonts::CRAFT_FONTS, &lang);
+                let mut cache = ui_font_cache().lock().unwrap_or_else(|e| e.into_inner());
+                // A later catalogue update will cause another pass; never label stale faces
+                // with a newer generation.
+                cache.ready = Some((generation, lang, faces));
+                cache.running = false;
+            }) {
+                cache.running = false;
+                log::warn!("Could not start interface font worker: {e}");
             }
         }
-        fonts
+        None
+    }
+}
+
+/// Current ready UI generation, also scheduling a refresh when the font catalogue changed.
+pub fn system_font_generation(lang: &str) -> Option<u64> {
+    system_ui_fonts(lang).map(|(generation, _)| generation)
+}
+
+// Installed families for scripts absent from the optional bundled fonts. Check a letter and
+// dependent vowel together for Indic scripts; an ASCII/legacy font of the same name is skipped.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+const SYSTEM_UI_FONTS: &[(&str, &str, &[&str])] = &[
+    ("Taml", "தி", &["Tamil Sangam MN", "Tamil MN", "Nirmala UI", "Latha", "Noto Sans Tamil", "Noto Sans Tamil UI", "Lohit Tamil"]),
+    ("Deva", "कि", &["Kohinoor Devanagari", "Devanagari Sangam MN", "Nirmala UI", "Mangal", "Noto Sans Devanagari", "Lohit Devanagari"]),
+    ("Beng", "কি", &["Kohinoor Bangla", "Bangla Sangam MN", "Nirmala UI", "Vrinda", "Noto Sans Bengali", "Lohit Bengali"]),
+    ("Gujr", "કિ", &["Kohinoor Gujarati", "Gujarati Sangam MN", "Nirmala UI", "Shruti", "Noto Sans Gujarati", "Lohit Gujarati"]),
+    ("Guru", "ਕਿ", &["Gurmukhi Sangam MN", "Gurmukhi MN", "Nirmala UI", "Raavi", "Noto Sans Gurmukhi", "Lohit Gurmukhi"]),
+    ("Knda", "ಕಿ", &["Kannada Sangam MN", "Nirmala UI", "Tunga", "Noto Sans Kannada", "Lohit Kannada"]),
+    ("Mlym", "കി", &["Malayalam Sangam MN", "Nirmala UI", "Kartika", "Noto Sans Malayalam", "Lohit Malayalam"]),
+    ("Telu", "కి", &["Kohinoor Telugu", "Telugu Sangam MN", "Nirmala UI", "Gautami", "Noto Sans Telugu", "Lohit Telugu"]),
+    ("Orya", "କି", &["Oriya Sangam MN", "Nirmala UI", "Kalinga", "Noto Sans Oriya", "Lohit Odia"]),
+    ("Sinh", "කි", &["Sinhala Sangam MN", "Nirmala UI", "Iskoola Pota", "Noto Sans Sinhala", "LKLUG"]),
+    ("Thai", "ก", &["Thonburi", "Leelawadee UI", "Tahoma", "Noto Sans Thai", "Loma"]),
+    ("Khmr", "ក", &["Khmer Sangam MN", "Leelawadee UI", "Khmer UI", "Noto Sans Khmer", "Khmer OS"]),
+    ("Laoo", "ກ", &["Lao Sangam MN", "Leelawadee UI", "Lao UI", "Noto Sans Lao", "Phetsarath OT"]),
+    ("Mymr", "က", &["Myanmar Sangam MN", "Myanmar Text", "Noto Sans Myanmar", "Padauk"]),
+    ("Hebr", "א", &["Arial Hebrew", "Segoe UI", "Noto Sans Hebrew", "DejaVu Sans"]),
+    ("Armn", "Ա", &["Mshtakan", "Segoe UI", "Sylfaen", "Noto Sans Armenian", "DejaVu Sans"]),
+    ("Geor", "ა", &["Segoe UI", "Sylfaen", "Noto Sans Georgian", "DejaVu Sans"]),
+    ("Ethi", "አ", &["Kefa", "Ebrima", "Nyala", "Noto Sans Ethiopic", "Abyssinica SIL"]),
+];
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn installed_ui_fonts(db: &pagenor_fonts::FontDb, craft: &[pagenor_fonts::CraftFont], lang: &str) -> Vec<SystemFont> {
+    let mut faces = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Preserve the existing local-build CJK fallback policy.
+    if craft.is_empty() {
+        for c in ['中', 'あ', '한'] {
+            if let Some(face) = db.fallback_for(c, u32::MAX, Some(lang))
+                && seen.insert(face.id())
+            {
+                faces.push(SystemFont::from_face(&face));
+            }
+        }
+    }
+    for (script, sample, families) in SYSTEM_UI_FONTS {
+        if craft.iter().any(|f| f.scripts.contains(script)) {
+            continue;
+        }
+        let found = families.iter().find_map(|family| {
+            if !db.has_family(family) {
+                return None;
+            }
+            let face = db.face(family, "Regular");
+            (face.family.eq_ignore_ascii_case(family) && !face.data().is_empty() && face.covers_cluster(sample)).then_some(face)
+        });
+        if let Some(face) = found
+            && seen.insert(face.id())
+        {
+            faces.push(SystemFont::from_face(&face));
+        }
+    }
+    faces
+}
+
+fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[SystemFont]) {
+    for face in system {
+        fonts.font_data.insert(face.name.clone(), face.data.clone());
+        for stack in fonts.families.values_mut() {
+            if !stack.contains(&face.name) {
+                stack.push(face.name.clone());
+            }
+        }
+    }
+}
+
+/// Shift fallback line metrics onto the primary UI face's baseline (egui otherwise centers
+/// the fallback line box). Unreadable or extreme metrics get a bounded offset.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn baseline_tweak(data: &[u8], index: u32) -> egui::FontTweak {
+    let metrics =
+        |bytes: &[u8], i| pagenor_fonts::line_metrics(bytes, i).map(|(em, ascent, descent, gap)| (ascent / em, (ascent - descent + gap) / em));
+    let shift = match (metrics(include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf"), 0), metrics(data, index)) {
+        (Some((ap, hp)), Some((af, hf))) => ap - (af + 0.5 * (hp - hf)),
+        _ => 0.0,
     };
-    ctx.set_fonts(fonts);
+    egui::FontTweak { y_offset_factor: if shift.is_finite() { shift.clamp(-0.5, 0.5) } else { 0.0 }, ..Default::default() }
 }
 
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
@@ -290,7 +442,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) {
 /// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
 /// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
 /// without craft-fonts CJK and Arabic UI text has no glyphs.
-fn font_definitions(craft: &'static [pagenor_fonts::CraftFont], lang: &str) -> FontDefinitions {
+pub(crate) fn font_definitions(craft: &'static [pagenor_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
@@ -359,18 +511,11 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
-    for (w, fill) in [
-        (&mut v.widgets.noninteractive, t.panel),
-        (&mut v.widgets.inactive, t.button),
-        (&mut v.widgets.hovered, t.hover),
-        (&mut v.widgets.active, t.tool_active),
-        (&mut v.widgets.open, t.hover),
-    ] {
-        w.bg_fill = fill;
-        w.weak_bg_fill = fill;
-        w.corner_radius = r;
-        w.fg_stroke = Stroke::new(1.0, t.text);
-    }
+    craft_ui::theme::WidgetPalette { noninteractive: t.panel, inactive: t.button, hovered: t.hover, active: t.tool_active, open: t.hover }.apply_to(
+        &mut v.widgets,
+        r,
+        Stroke::new(1.0, t.text),
+    );
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.divider);
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.field_border);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_border);
@@ -379,8 +524,12 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_fill = t.input;
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(90) };
-    ctx.set_visuals(v);
-    ctx.global_style_mut(|s| {
+    // Keep native appearance inherited so macOS ThemeChanged continues to reach egui.
+    // Both branches use the resolved palette, including fixed manual and High Contrast choices.
+    ctx.set_theme(egui::ThemePreference::System);
+    ctx.set_visuals_of(egui::Theme::Light, v.clone());
+    ctx.set_visuals_of(egui::Theme::Dark, v);
+    ctx.all_styles_mut(|s| {
         s.text_styles = text_styles.clone();
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(6.0, 2.0);
@@ -449,5 +598,94 @@ mod japanese_font_tests {
         });
         // And the real installer works with whatever this build has.
         super::install_fonts(&egui::Context::default(), "ja");
+    }
+}
+#[cfg(test)]
+mod russian_font_tests {
+    #[test]
+    fn every_catalog_cyrillic_glyph_exists_in_the_bundled_ui_fonts() {
+        // Same check as for Ukrainian: the installed face data only, without craft-fonts or system fonts.
+        let definitions = super::font_definitions(&[], "ru");
+        let db = pagenor_fonts::FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let characters: std::collections::HashSet<_> = crate::i18n::russian_catalog()
+            .iter()
+            .flat_map(|text| text.chars())
+            .chain("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя".chars())
+            .filter(|c| matches!(*c, '\u{0400}'..='\u{052f}'))
+            .collect();
+        for (name, family, style) in
+            [("ui", "Source Sans 3", "Regular"), ("ui-semibold", "Source Sans 3", "Semibold"), ("mono", "JetBrains Mono", "Regular")]
+        {
+            let data = &definitions.font_data[name].font;
+            let face = db.face(family, style);
+            assert_eq!(face.data(), data.as_ref(), "configured UI face {name}");
+            for character in &characters {
+                assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod installed_ui_font_tests {
+    use super::*;
+    // Avoid the already-existing CJK resolver in these non-CJK coverage tests.
+    const CRAFT: &[pagenor_fonts::CraftFont] =
+        &[pagenor_fonts::CraftFont { family: "Test bundled CJK", style: "Regular", scripts: &["Jpan"], bytes: &[] }];
+
+    #[test]
+    fn indic_fallbacks_require_marks_and_deduplicate_shared_faces() {
+        let db = pagenor_fonts::FontDb::with_font_dirs(Vec::new());
+        db.add_font(pagenor_fonts::testing::font_with("Tamil Sangam MN", &['த']).unwrap());
+        db.add_font(pagenor_fonts::testing::font_with("Nirmala UI", &['த', 'ி', 'క', 'ి', 'क', 'ि']).unwrap());
+        let faces = installed_ui_fonts(&db, CRAFT, "en");
+        assert_eq!(faces.len(), 1, "one shared face serves Tamil, Telugu and Devanagari");
+        let mut defs = font_definitions(&[], "en");
+        add_system_fallbacks(&mut defs, &faces);
+        add_system_fallbacks(&mut defs, &faces);
+        for stack in defs.families.values() {
+            assert_eq!(stack.iter().filter(|name| *name == &faces[0].name).count(), 1);
+        }
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx.fonts_mut(|fonts| {
+            for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into())] {
+                for ch in ['த', 'ி', 'క', 'ి', 'क', 'ि'] {
+                    assert!(fonts.has_glyph(&FontId::new(13.0, family.clone()), ch), "missing {ch}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn newly_activated_interface_font_changes_generation_and_coverage() {
+        let db = pagenor_fonts::FontDb::with_font_dirs(Vec::new());
+        assert!(installed_ui_fonts(&db, CRAFT, "en").is_empty());
+        let generation = db.scan_generation();
+        db.add_font(pagenor_fonts::testing::font_with("Noto Sans Telugu", &['క', 'ి']).unwrap());
+        assert_ne!(db.scan_generation(), generation);
+        let faces = installed_ui_fonts(&db, CRAFT, "en");
+        assert_eq!(faces.len(), 1);
+        let mut defs = font_definitions(&[], "en");
+        add_system_fallbacks(&mut defs, &faces);
+        assert!(Arc::ptr_eq(&defs.font_data[&faces[0].name], &faces[0].data));
+    }
+
+    #[test]
+    fn fallback_baseline_matches_primary_line_metrics() {
+        let ui = include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf");
+        let base = pagenor_fonts::testing::font_with("Pagenor tall interface", &['క']).unwrap();
+        let tall = pagenor_fonts::testing::with_table_u16(base, b"hhea", 4, 1200).unwrap();
+        let tall = pagenor_fonts::testing::with_table_u16(tall, b"hhea", 8, 500).unwrap();
+        let em = |m: (f32, f32, f32, f32)| (m.1 / m.0, (m.1 - m.2 + m.3) / m.0);
+        let (ap, hp) = em(pagenor_fonts::line_metrics(ui, 0).unwrap());
+        let (af, hf) = em(pagenor_fonts::line_metrics(&tall, 0).unwrap());
+        let tweak = baseline_tweak(&tall, 0);
+        assert!((af + 0.5 * (hp - hf) + tweak.y_offset_factor - ap).abs() < 1e-4);
+        assert_eq!(baseline_tweak(ui, 0).y_offset_factor, 0.0);
+        assert_eq!(baseline_tweak(b"broken", 0).y_offset_factor, 0.0);
     }
 }

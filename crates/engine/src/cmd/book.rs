@@ -28,7 +28,7 @@ fn no_book() -> EngineError {
 #[cfg(not(target_arch = "wasm32"))]
 fn save(b: &Book) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(b).map_err(|e| EngineError::Other(e.to_string()))?;
-    std::fs::write(&b.path, bytes).map_err(|e| EngineError::Other(format!("{}: {e}", b.path)))
+    crate::write_atomic(std::path::Path::new(&b.path), &bytes).map_err(|e| EngineError::Other(format!("{}: {e}", b.path)))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -45,14 +45,16 @@ fn load(path: &str) -> Result<pagenor_doc::Document> {
         vec![]
     };
     if path.to_lowercase().ends_with(".idml") {
-        return pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")));
+        let mut d = pagenor_idml::import_idml(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        super::interchange::resolve_pdf_crops(&mut d);
+        return Ok(d);
     }
     super::file::from_bytes(&bytes)
 }
 
 fn store(path: &str, d: &pagenor_doc::Document) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    return std::fs::write(path, super::file::to_bytes(d)?).map_err(|e| EngineError::Other(format!("{path}: {e}")));
+    return crate::native_save::write(std::path::Path::new(path), &super::file::to_bytes(d)?).map_err(|e| EngineError::Other(format!("{path}: {e}")));
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (path, d);
@@ -78,6 +80,81 @@ fn start_at(d: &mut pagenor_doc::Document, n: u32) {
     if let Some(first) = d.sections.iter_mut().find(|x| x.start == 0) {
         first.start_number = Some(n.max(1));
     }
+}
+
+/// Compare aliases as well as literal paths when a book refers to an open document.
+pub(super) fn document_path(path: &str) -> std::path::PathBuf {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    std::path::PathBuf::from(path)
+}
+
+fn paginate(s: &mut Session) -> Result<Value> {
+    let b = s.book.clone().ok_or_else(no_book)?;
+    if b.documents.len() > 9_999 {
+        return Err(bad("book.paginate", "a book supports at most 9999 documents"));
+    }
+    let mut next = 1u32;
+    let mut chapter = 0u32;
+    let mut plans = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Resolve and validate every input before the first write. Keep only numbering
+    // metadata in the plan, rather than retaining every document in memory.
+    for path in &b.documents {
+        let key = document_path(path);
+        if !seen.insert(key.clone()) {
+            return Err(bad("book.paginate", format!("duplicate book document: {path}")));
+        }
+        if path.to_lowercase().ends_with(".idml") {
+            return Err(bad("book.paginate", "save IDML book documents as .pgnr before updating numbering"));
+        }
+        if s.documents().iter().any(|st| {
+            st.path.as_deref().is_some_and(|p| document_path(p) == key) && (st.is_dirty() || st.interaction.is_some() || st.preview_stash.is_some())
+        }) {
+            return Err(bad("book.paginate", format!("save or finish editing the open document first: {path}")));
+        }
+        let d = load(path)?;
+        if d.settings.chapter_style == pagenor_doc::NumberStyle::Symbols {
+            return Err(bad("book.paginate", format!("symbols do not number chapters: {path}")));
+        }
+        chapter = match d.settings.chapter_source {
+            pagenor_doc::ChapterSource::Automatic => chapter.saturating_add(1),
+            pagenor_doc::ChapterSource::UserDefined => d.settings.chapter_number.max(1),
+            pagenor_doc::ChapterSource::SameAsPrevious => chapter.max(1),
+        };
+        if chapter > 99_999 {
+            return Err(bad("book.paginate", format!("chapter number exceeds 99999: {path}")));
+        }
+        let pages = u32::try_from(d.page_count()).map_err(|_| bad("book.paginate", "too many pages"))?;
+        plans.push((path.clone(), key, next, chapter));
+        next = next.checked_add(pages).ok_or_else(|| bad("book.paginate", "too many pages"))?;
+    }
+    let mut chapters = Vec::new();
+    for (path, key, first, chapter) in plans {
+        let mut d = load(&path)?;
+        start_at(&mut d, first);
+        d.settings.chapter_number = chapter;
+        super::sync_placeholders(&mut d);
+        store(&path, &d)?;
+        chapters.push(d.chapter_label());
+        // Reflect the successful disk update in clean open documents. Keep their
+        // fonts, selections and history, so a later Save cannot restore stale numbers.
+        for st in &mut s.docs {
+            if st.path.as_deref().is_some_and(|p| document_path(p) == key) {
+                let mut open = (*st.doc).clone();
+                open.sections = d.sections.clone();
+                open.settings.chapter_number = chapter;
+                super::sync_placeholders(&mut open);
+                st.doc = std::sync::Arc::new(open);
+                st.revision = st.revision.saturating_add(1);
+                st.saved_doc = st.doc.clone();
+                st.saved_revision = st.revision;
+            }
+        }
+    }
+    Ok(json!({"pages": next.saturating_sub(1), "chapters": chapters}))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -139,26 +216,16 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(query "book.list", "Book", [], None, "{} → {path, styleSource, documents: [{path, pages, firstPage}]}", has_book, |s, _| {
             let b = s.book.as_ref().ok_or_else(no_book)?;
-            let mut first = 1;
+            let mut first = 1usize;
             let mut docs = Vec::new();
             for p in &b.documents {
                 let pages = load(p).map(|d| d.page_count()).unwrap_or(0);
                 docs.push(json!({"path": p, "pages": pages, "firstPage": first}));
-                first += pages;
+                first = first.saturating_add(pages);
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
-        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended (files are saved)", has_book, |s, _| {
-            let b = s.book.clone().ok_or_else(no_book)?;
-            let mut next = 1u32;
-            for p in &b.documents {
-                let mut d = load(p)?;
-                start_at(&mut d, next);
-                next += d.page_count() as u32;
-                store(p, &d)?;
-            }
-            Ok(json!({"pages": next - 1}))
-        }),
+        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved; save open modified documents first) → {pages, chapters}", has_book, |s, _| paginate(s)),
         cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;
             let src_path = b.documents.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
@@ -200,7 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 // The chapter's own fonts, for this export (skipped font files are logged).
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
                 let cache = pagenor_compose::Cache::new();
-                let r = pagenor_pdf::export_pdf_with_report(&d, &cache, &pagenor_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
+                let r = pagenor_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &pagenor_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
                 let n = pagenor_render::pdf_page_count(&r.bytes).unwrap_or(0);
                 let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| pagenor_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
                 parts.push((r.bytes, sizes));
@@ -210,7 +277,7 @@ pub fn specs() -> Vec<CommandSpec> {
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
-                    std::fs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+                    crate::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
                     Ok(json!({"path": path, "bytes": bytes.len(), "pages": pages}))
                 }
                 None => Ok(json!({"base64": super::file::base64_encode(&bytes), "bytes": bytes.len(), "pages": pages})),
@@ -224,6 +291,75 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn book_numbering_preflights_and_updates_open_documents_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chapter.pgnr").to_string_lossy().to_string();
+        let book = dir.path().join("guide.pbook").to_string_lossy().to_string();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.saveAs", &json!({"path": path})).unwrap();
+        s.execute("book.new", &json!({"path": book})).unwrap();
+        s.execute("book.add", &json!({"path": path})).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        s.execute("layout.chapterNumbering", &json!({"start": 7})).unwrap();
+        assert!(s.execute("book.paginate", &json!({})).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(s.doc().unwrap().is_dirty());
+        s.execute("file.save", &json!({})).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        s.book.as_mut().unwrap().documents.push(dir.path().join("missing.pgnr").to_string_lossy().to_string());
+        assert!(s.execute("book.paginate", &json!({})).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before, "preflight precedes every write");
+        s.book.as_mut().unwrap().documents.pop();
+        s.execute("book.paginate", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.chapter_label(), "7");
+        assert!(!s.doc().unwrap().is_dirty());
+        s.execute("file.save", &json!({})).unwrap();
+        assert_eq!(super::load(&path).unwrap().chapter_label(), "7");
+        #[cfg(unix)]
+        {
+            let alias = dir.path().join("alias.pgnr").to_string_lossy().to_string();
+            std::os::unix::fs::symlink(&path, &alias).unwrap();
+            s.book.as_mut().unwrap().documents.push(alias);
+            let before = std::fs::read(&path).unwrap();
+            assert!(s.execute("book.paginate", &json!({})).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn book_numbering_resolves_chapter_numbers_in_order() {
+        let dir = std::env::temp_dir().join(format!("pagenor-book-chapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| dir.join(n).to_string_lossy().to_string();
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": p("Field Guide.pbook")})).unwrap();
+        let chapters = [
+            ("a.pgnr", json!({"style": "upperRoman"})),
+            ("b.pgnr", json!({"source": "sameAsPrevious"})),
+            ("c.pgnr", json!({})),
+            ("d.pgnr", json!({"start": 7, "style": "lowerLetters"})),
+            ("e.pgnr", json!({})),
+        ];
+        for (name, numbering) in &chapters {
+            s.execute("file.new", &json!({})).unwrap();
+            if numbering.as_object().is_some_and(|o| !o.is_empty()) {
+                s.execute("layout.chapterNumbering", numbering).unwrap();
+            }
+            s.execute("file.saveAs", &json!({"path": p(name)})).unwrap();
+            s.execute("book.add", &json!({"path": p(name)})).unwrap();
+        }
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        // Same as previous takes the number, written in the document's own style.
+        assert_eq!(r["chapters"], json!(["I", "1", "2", "g", "8"]));
+        assert_eq!(super::load(&p("e.pgnr")).unwrap().settings.chapter_number, 8);
+        // The open document (e) names its book.
+        assert_eq!(s.execute("layout.chapterNumbering", &json!({})).unwrap()["book"], "Field Guide");
+        assert_eq!(s.execute("layout.chapterNumbering", &json!({})).unwrap()["label"], "8", "open document reflects the book update");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn book_paginates_syncs_and_exports() {

@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 pagenor-ai = { workspace = true }
+craft-ui = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }
@@ -31,6 +32,7 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+pagenor-format = { workspace = true }
 pagenor-idml = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

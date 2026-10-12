@@ -44,7 +44,7 @@ impl Tool for TypeTool {
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
-            PointerKind::Down | PointerKind::DoubleClick => {
+            PointerKind::Down | PointerKind::DoubleClick | PointerKind::TripleClick => {
                 self.start = Some(ev.pos);
                 self.drawing = false;
                 self.selecting = None;
@@ -155,6 +155,15 @@ impl Tool for TypeTool {
             ToolKey::Backspace => vec![Action::Exec("text.delete".into(), json!({"forward": false, "word": mods.alt}))],
             ToolKey::Delete => vec![Action::Exec("text.delete".into(), json!({"forward": true, "word": mods.alt}))],
             ToolKey::Enter => vec![Action::Exec("text.insert".into(), json!({"text": if mods.shift { "\u{2028}" } else { "\n" }}))],
+            ToolKey::Tab
+                if mods.shift
+                    && cx
+                        .selection
+                        .text
+                        .is_some_and(|t| t.cell.is_some_and(|c| cx.doc.story(t.story).is_some_and(|s| s.tables.contains_key(&c.table)))) =>
+            {
+                vec![Action::Exec("table.prevCell".into(), json!({}))]
+            }
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
             ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
             _ => vec![],

@@ -70,6 +70,27 @@ pub enum Join {
     Bevel,
 }
 
+/// The shortest non-zero dash or gap a command accepts, in points.
+pub const MIN_DASH: f64 = 0.1;
+/// The longest dash or gap a command accepts, in points.
+pub const MAX_DASH: f64 = 10_000.0;
+/// The most lengths a dash pattern holds.
+pub const MAX_DASH_ENTRIES: usize = 64;
+/// The most pattern repeats a renderer expands along one path; finer patterns draw solid.
+pub const MAX_DASH_PERIODS: f64 = 20_000.0;
+
+/// An upper bound of the length of `bp`: the length of its control polygon.
+pub fn path_length_bound(bp: &pagenor_geom::BezPath) -> f64 {
+    use pagenor_geom::PathSeg;
+    bp.segments()
+        .map(|s| match s {
+            PathSeg::Line(l) => l.p0.distance(l.p1),
+            PathSeg::Quad(q) => q.p0.distance(q.p1) + q.p1.distance(q.p2),
+            PathSeg::Cubic(c) => c.p0.distance(c.p1) + c.p1.distance(c.p2) + c.p2.distance(c.p3),
+        })
+        .sum()
+}
+
 /// Stroke types (Stroke panel → Type). Dash/gap arrays are in points.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -115,6 +136,28 @@ impl StrokeType {
             StrokeType::Stripes { .. } => "Stripes",
             StrokeType::Style { .. } => "Custom",
         }
+    }
+
+    /// Whether `pattern` is a dash pattern commands accept: 1 to [`MAX_DASH_ENTRIES`] lengths,
+    /// each 0 or from [`MIN_DASH`] to [`MAX_DASH`] points, not all 0.
+    pub fn valid_dash_pattern(pattern: &[f64]) -> bool {
+        !pattern.is_empty()
+            && pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| *x == 0.0 || (MIN_DASH..=MAX_DASH).contains(x))
+            && pattern.iter().any(|x| *x > 0.0)
+    }
+
+    /// Whether a renderer may expand `pattern` along a path at most `length` points long: at
+    /// most [`MAX_DASH_ENTRIES`] finite, non-negative lengths that repeat at most
+    /// [`MAX_DASH_PERIODS`] times. Otherwise the stroke draws solid, so a degenerate pattern
+    /// from a file can't stall rendering.
+    pub fn expandable_dashes(pattern: &[f64], length: f64) -> bool {
+        let period: f64 = pattern.iter().sum();
+        pattern.len() <= MAX_DASH_ENTRIES
+            && pattern.iter().all(|x| x.is_finite() && *x >= 0.0)
+            && period > 0.0
+            && length.is_finite()
+            && length / period <= MAX_DASH_PERIODS
     }
 
     /// The bands of a striped type (start, width as fractions of the weight).
@@ -326,6 +369,13 @@ pub struct TextFrameOptions {
     pub column_rule: bool,
     pub column_rule_weight: f64,
     pub column_rule_color: String,
+    /// 0..1.
+    pub column_rule_tint: f32,
+    /// Horizontal offset of each rule from the middle of its gutter.
+    pub column_rule_offset: f64,
+    /// The rule starts this far below the column top and ends this far above its bottom.
+    pub column_rule_top_inset: f64,
+    pub column_rule_bottom_inset: f64,
     /// Use a custom baseline grid for this frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_grid: Option<(f64, f64)>,
@@ -375,6 +425,10 @@ impl Default for TextFrameOptions {
             column_rule: false,
             column_rule_weight: 1.0,
             column_rule_color: pagenor_color::swatch::BLACK.into(),
+            column_rule_tint: 1.0,
+            column_rule_offset: 0.0,
+            column_rule_top_inset: 0.0,
+            column_rule_bottom_inset: 0.0,
             baseline_grid: None,
             path: None,
         }
@@ -404,8 +458,28 @@ pub enum WrapSide {
     LargestArea,
 }
 
+/// Text Wrap panel › Contour Options › Type: the outline a contour wrap follows on a graphic frame.
+/// Other frames always wrap around their own path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContourType {
+    /// The placed graphic's rectangle (within the frame).
+    BoundingBox,
+    /// Edges detected in the image. Composition follows the frame path.
+    DetectEdges,
+    /// The image's alpha channel. Composition follows the frame path.
+    AlphaChannel,
+    /// A path saved in the image. Composition follows the frame path.
+    PhotoshopPath,
+    /// The frame's path.
+    GraphicFrame,
+    /// The graphic's clipping path, which is the frame's path.
+    #[default]
+    SameAsClipping,
+}
+
 /// Text Wrap panel settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextWrap {
     pub mode: WrapMode,
@@ -413,6 +487,16 @@ pub struct TextWrap {
     pub offsets: [f64; 4],
     pub invert: bool,
     pub side: WrapSide,
+    pub contour: ContourType,
+    /// Custom boundary in the item's inner space, including wrap offsets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathData>,
+}
+
+impl TextWrap {
+    pub fn is_default(&self) -> bool {
+        *self == TextWrap::default()
+    }
 }
 
 /// Frame fitting options (Object → Fitting → Frame Fitting Options).
@@ -436,6 +520,9 @@ pub struct Graphic {
     pub size: (f64, f64),
     /// Graphic space (0,0)-(w,h) → frame inner space.
     pub xf: Affine,
+    /// Clipping path: only the part of the graphic inside it shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<Arc<ClippingPath>>,
     #[serde(default)]
     pub auto_fit: Fitting,
     /// Frame Fitting Options › Align From: the reference point (0–8, row-major; 4 = centre).
@@ -444,10 +531,99 @@ pub struct Graphic {
     /// Frame Fitting Options › Crop Amount: top, left, bottom, right (negative adds space).
     #[serde(default)]
     pub crop: [f64; 4],
+    /// Text wrap set on the graphic itself (Direct Selection), around the part its frame shows.
+    #[serde(default, skip_serializing_if = "TextWrap::is_default")]
+    pub wrap: TextWrap,
 }
 
 fn center_ref() -> u8 {
     4
+}
+
+/// Most anchors a clipping path read from a file keeps (detected edges can be dense).
+pub const MAX_CLIP_ANCHORS: usize = 100_000;
+
+/// Clipping Path › Type: where the clipping path came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClippingKind {
+    /// Traced from the image's edges against a light background.
+    DetectEdges,
+    /// Traced from one of the image's alpha channels.
+    AlphaChannel,
+    /// A path saved in the image file.
+    PhotoshopPath,
+    /// One of the above, edited by hand.
+    UserModifiedPath,
+}
+
+/// A placed graphic's clipping path. The tracing options are kept as the file had them; the
+/// outline itself is `path`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClippingPath {
+    pub kind: ClippingKind,
+    /// The outline in graphic space ((0,0)-(w,h) is the graphic's natural rectangle).
+    pub path: PathData,
+    /// Show the graphic outside the path instead of inside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+    /// Holes inside the traced shape are part of the path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_inside_edges: bool,
+    /// Detect Edges: trace only the part of the image the frame shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restrict_to_frame: bool,
+    /// Trace the full-resolution image rather than the screen proxy.
+    #[serde(default = "yes")]
+    pub use_high_resolution: bool,
+    /// Detect Edges / Alpha Channel: the darkness or opacity level that counts as inside (0–255).
+    #[serde(default = "clip_threshold")]
+    pub threshold: f64,
+    /// How closely the traced path follows the pixels, in pixels.
+    #[serde(default = "clip_tolerance")]
+    pub tolerance: f64,
+    /// Inset Frame: how far the path is pulled in (points; negative pushes it out).
+    #[serde(default)]
+    pub inset: f64,
+    /// The alpha channel or image path the clip came from.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_name: String,
+    /// Index of the alpha channel (-1 = none).
+    #[serde(default = "no_index")]
+    pub source_index: i32,
+}
+
+fn yes() -> bool {
+    true
+}
+fn clip_threshold() -> f64 {
+    25.0
+}
+fn clip_tolerance() -> f64 {
+    2.0
+}
+fn no_index() -> i32 {
+    -1
+}
+
+impl ClippingPath {
+    /// A clipping path of `kind` with the default options.
+    pub fn new(kind: ClippingKind, path: PathData) -> Self {
+        Self {
+            kind,
+            path,
+            invert: false,
+            include_inside_edges: false,
+            restrict_to_frame: false,
+            use_high_resolution: true,
+            threshold: clip_threshold(),
+            tolerance: clip_tolerance(),
+            inset: 0.0,
+            source_name: String::new(),
+            source_index: no_index(),
+        }
+    }
 }
 
 /// Liquid Layout object rules: which edges stay at their distance from the page edge, and
@@ -603,6 +779,31 @@ fn is_zero_usize(v: &usize) -> bool {
 }
 
 impl Graphic {
+    /// The region the clipping path lets through, in frame inner space, and whether it is filled
+    /// even-odd (an inverted clip: the graphic's rectangle minus the path). `None` when the graphic
+    /// has no clipping path or the path is empty.
+    pub fn clip_region(&self) -> Option<(pagenor_geom::BezPath, bool)> {
+        use pagenor_geom::Shape;
+        let c = self.clip.as_ref().filter(|c| !c.path.is_empty())?;
+        let mut path = c.path.to_bezpath();
+        if !c.invert {
+            path.apply_affine(self.xf);
+            return Some((path, false));
+        }
+        let outer = Rect::new(0.0, 0.0, self.size.0, self.size.1).union(path.bounding_box()).inflate(1.0, 1.0);
+        let mut region = outer.to_path(0.1);
+        region.extend(path.iter());
+        region.apply_affine(self.xf);
+        Some((region, true))
+    }
+
+    /// The part of the graphic its frame shows, in the frame's inner space (bounding boxes);
+    /// None when nothing shows.
+    pub fn shown_bounds(&self, frame: Rect) -> Option<Rect> {
+        let r = self.xf.transform_rect_bbox(Rect::new(0.0, 0.0, self.size.0, self.size.1)).intersect(frame);
+        (r.width() > 0.0 && r.height() > 0.0).then_some(r)
+    }
+
     /// The graphic transform that fits it into `frame` (the frame's inner rect) with `mode`,
     /// honouring the crop amounts and the reference point.
     pub fn fitted(&self, frame: Rect, mode: Fitting) -> Option<Affine> {
@@ -1064,6 +1265,10 @@ impl Item {
             _ => None,
         }
     }
+    /// Does this item, or the graphic it holds, wrap text?
+    pub fn has_wrap(&self) -> bool {
+        self.wrap.mode != WrapMode::None || self.graphic().is_some_and(|g| g.wrap.mode != WrapMode::None)
+    }
     pub fn graphic(&self) -> Option<&Graphic> {
         match &self.content {
             Content::Graphic(g) => Some(g),
@@ -1197,6 +1402,28 @@ impl Item {
 mod tests {
     use super::*;
     use pagenor_geom::shapes;
+
+    #[test]
+    fn graphics_without_a_clipping_path_load_and_save_as_before() {
+        let g = Graphic {
+            wrap: Default::default(),
+            asset: AssetId(3),
+            size: (40.0, 30.0),
+            xf: Affine::translate((5.0, 5.0)),
+            clip: None,
+            auto_fit: Fitting::None,
+            fit_align: 4,
+            crop: [0.0; 4],
+        };
+        let v = serde_json::to_value(&g).unwrap();
+        assert!(v.get("clip").is_none(), "{v}");
+        assert_eq!(serde_json::from_value::<Graphic>(v.clone()).unwrap(), g);
+        // A clip written with only its type and path gets the default options.
+        let mut v = v;
+        v["clip"] = serde_json::json!({"kind": "alphaChannel", "path": {"subpaths": []}});
+        let c = serde_json::from_value::<Graphic>(v).unwrap().clip.unwrap();
+        assert_eq!(*c, ClippingPath::new(ClippingKind::AlphaChannel, PathData::default()));
+    }
 
     #[test]
     fn bounds_and_text_area() {

@@ -2240,8 +2240,8 @@ fn phase3_fetches_http_images() {
     server.join().unwrap();
 }
 
-/// `curl` trusts `SSL_CERT_FILE` from its own environment. This crate forbids the unsafe call
-/// that would set that variable in-process, so the merge runs in a child of this test binary.
+/// The fixture supplies its CA only to a child test binary. This crate forbids unsafe
+/// in-process environment mutation; production keeps the system curl trust store.
 struct StopChild(Option<std::process::Child>);
 
 impl Drop for StopChild {
@@ -2267,7 +2267,16 @@ fn https_server_ready(port: u16) -> bool {
 
 fn phase3_fetches_https_images_in_process() {
     let port: u16 = std::env::var("PAGENOR_HTTPS_PORT").expect("port").parse().expect("port number");
+    if std::env::var_os("PAGENOR_TEST_TLS_UNTRUSTED").is_some() {
+        assert!(super::fetch::fetch_url(&format!("https://127.0.0.1:{port}/ok.png")).is_err(), "an untrusted fixture certificate must be rejected");
+        return;
+    }
     let png = crate::cmd::base64_decode(PNG_B64);
+    assert_eq!(
+        super::fetch::fetch_url(&format!("https://127.0.0.1:{port}/ok.png")).expect("fetch localhost fixture PNG"),
+        png,
+        "the HTTPS test server must serve binary PNG bytes unchanged"
+    );
     let mut s = Session::new();
     new_doc(&mut s, 1);
     select_csv(&mut s, &format!("@Photo\nhttps://127.0.0.1:{port}/ok.png\n"));
@@ -2321,8 +2330,13 @@ fn phase3_fetches_https_images() {
     let accept = format!("127.0.0.1:{port}");
     let err_path = dir.join("server.err");
     let err_file = std::fs::File::create(&err_path).expect("server log");
-    let server = std::process::Command::new("openssl")
-        .args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW"])
+    let mut server = std::process::Command::new("openssl");
+    server.args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW"]);
+    // Windows text mode treats the PNG signature's 0x1a as EOF. Unix reads
+    // binary bytes already; older Mac OpenSSL/LibreSSL lack this option.
+    #[cfg(windows)]
+    server.arg("-http_server_binmode");
+    let server = server
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -2338,13 +2352,87 @@ fn phase3_fetches_https_images() {
     let exe = std::env::current_exe().expect("test binary");
     let output = std::process::Command::new(exe)
         .args(["--exact", "--test-threads=1", "cmd::datamerge::tests::phase3_fetches_https_images"])
-        .env("SSL_CERT_FILE", &cert)
+        .env("PAGENOR_TEST_HTTPS_CERT", &cert)
         .env("PAGENOR_HTTPS_PORT", port.to_string())
         .output()
         .expect("re-run the https merge");
-    drop(server);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success() && stdout.contains("phase3_fetches_https_images ... ok"), "https data.merge did not pass\n{stdout}\n{stderr}");
+    let untrusted = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "--test-threads=1", "cmd::datamerge::tests::phase3_fetches_https_images"])
+        .env("PAGENOR_HTTPS_PORT", port.to_string())
+        .env("PAGENOR_TEST_TLS_UNTRUSTED", "1")
+        .env_remove("PAGENOR_TEST_HTTPS_CERT")
+        .env_remove("SSL_CERT_FILE")
+        .env_remove("CURL_CA_BUNDLE")
+        .output()
+        .expect("check untrusted HTTPS fixture");
+    assert!(untrusted.status.success(), "untrusted fixture was not rejected: {}", String::from_utf8_lossy(&untrusted.stdout));
+    drop(server);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #198: with facing pages on, one record per page must not stack the copies at identical
+/// coordinates on one spread (leaving a later page empty).
+#[test]
+fn facing_pages_merge_puts_each_record_on_its_own_page() {
+    let mut s = Session::new();
+    exec(&mut s, "file.new", json!({"facingPages": true, "pages": 1, "width": 612, "height": 792}));
+    select_csv(&mut s, "Title,Clue\nCase 1,Cellar\nCase 2,Attic\nCase 3,Garden\n");
+    // A block taller than the page's usable height, so only one record fits per page.
+    text_frame(&mut s, [72.0, 72.0, 540.0, 700.0], "<<Title>> - <<Clue>>", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.page_count(), 3, "one page per record");
+
+    // Which absolute page each merged frame sits on.
+    let mut pages_seen = std::collections::BTreeSet::new();
+    let mut origins = Vec::new();
+    for sp in &doc.spreads {
+        for it in &sp.items {
+            if !matches!(it.content, Content::Text(_)) {
+                continue;
+            }
+            let abs = doc.page_of_item(it.id);
+            let b = it.bounds();
+            origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
+            if let Some(a) = abs {
+                pages_seen.insert(a);
+            }
+        }
+    }
+    assert_eq!(origins.len(), 3, "one text frame per record");
+    assert_eq!(pages_seen, [0usize, 1, 2].into_iter().collect(), "each record on its own page, none stacked and none left empty: {origins:?}");
+}
+
+/// The upstream short-block reproduction, adapted to Pagenor's explicit single-record default.
+/// Facing-page records occupy separate pages; unsupported multi-record tiling stays refused.
+#[test]
+fn facing_pages_merge_keeps_short_single_records_on_distinct_pages() {
+    let mut s = Session::new();
+    exec(&mut s, "file.new", json!({"facingPages": true, "pages": 1, "width": 612, "height": 792}));
+    select_csv(&mut s, "Title,Clue\nCase 1,Cellar\nCase 2,Attic\nCase 3,Garden\n");
+    text_frame(&mut s, [72.0, 72.0, 540.0, 200.0], "<<Title>> - <<Clue>>", None);
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 3);
+
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.page_count(), 3, "single-record default must stay explicit");
+    let mut origins = Vec::new();
+    for sp in &doc.spreads {
+        for it in &sp.items {
+            if matches!(it.content, Content::Text(_)) {
+                let abs = doc.page_of_item(it.id);
+                let b = it.bounds();
+                origins.push((abs, b.x0.round() as i32, b.y0.round() as i32));
+            }
+        }
+    }
+    origins.sort();
+    assert_eq!(origins.len(), 3, "one text frame per record");
+    let unique: std::collections::BTreeSet<_> = origins.iter().collect();
+    assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
 }

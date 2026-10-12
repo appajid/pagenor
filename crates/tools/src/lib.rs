@@ -11,6 +11,7 @@
 
 mod anchors;
 pub mod catalog;
+mod corners;
 mod datagrid;
 mod frame;
 mod gradient;
@@ -56,6 +57,7 @@ pub enum PointerKind {
     Up,
     Move,
     DoubleClick,
+    TripleClick,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,9 +85,13 @@ impl PointerEvent {
         self.clicks = n;
         self
     }
-    /// Presses in a row: at least 2 for [`PointerKind::DoubleClick`], at least 1 otherwise.
+    /// Presses in a row: at least 2 for a double click, 3 for a triple click, 1 otherwise.
     pub fn click_count(&self) -> u8 {
-        if self.kind == PointerKind::DoubleClick { self.clicks.max(2) } else { self.clicks.max(1) }
+        match self.kind {
+            PointerKind::DoubleClick => self.clicks.max(2),
+            PointerKind::TripleClick => self.clicks.max(3),
+            _ => self.clicks.max(1),
+        }
     }
 }
 
@@ -119,6 +125,8 @@ pub enum Action {
     SwitchTool(String),
     /// Ask the UI to pan/zoom: `{"pan":[dx,dy]}` (screen px) or `{"zoomAt":[x,y], "factor":f}` (canvas).
     View(Value),
+    /// The tool used the event for its own state; the engine has nothing to do.
+    Handled,
 }
 
 /// Which snap categories are on, and the snap zone in screen pixels.
@@ -214,6 +222,8 @@ pub struct ToolContext<'a> {
     pub layer: pagenor_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
+    /// Whether resizing content also scales stroke weights.
+    pub scale_strokes: bool,
 }
 
 impl ToolContext<'_> {
@@ -323,6 +333,13 @@ pub enum Overlay {
         b: Point,
         label: String,
     },
+    /// The whole content of this frame drawn faintly, the part outside the frame included (while
+    /// the content moves inside it).
+    ContentGhost(ItemId),
+    /// The live-corner widget (yellow square): clicking it starts corner editing.
+    LiveCornerWidget(Point),
+    /// A live-corner diamond: dragging it sets the corner size.
+    LiveCornerDiamond(Point),
 }
 
 /// Correction from a snap, in spread coordinates for `delta`.
@@ -349,6 +366,14 @@ pub enum Cursor {
     ResizeNeSw,
     Rotate,
     Pen,
+    /// The pen over a segment of a selected path: a click adds an anchor there.
+    PenAdd,
+    /// The pen over an anchor of a selected path: a click deletes it.
+    PenDelete,
+    /// The pen over the first anchor of the path it is drawing: a click closes it.
+    PenClose,
+    /// Convert Direction Point.
+    PenConvert,
     Text,
     Hand,
     HandGrab,

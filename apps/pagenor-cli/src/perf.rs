@@ -183,13 +183,12 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             d.assets.insert(
                 id,
                 Arc::new(Asset {
-                    page: 0,
                     id,
                     name: format!("art-{k}.png"),
                     mime: "image/png".into(),
-                    link: None,
                     data: Arc::new(data),
                     pixels: Some((aw, ah)),
+                    ..Default::default()
                 }),
             );
             id
@@ -240,12 +239,14 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             let (nw, nh) = (aw as f64, ah as f64);
             let s = (r.width() / nw).max(r.height() / nh);
             it.content = Content::Graphic(Graphic {
+                clip: None,
                 asset,
                 size: (nw, nh),
                 xf: Affine::translate((r.x0 + (r.width() - nw * s) / 2.0, r.y0 + (r.height() - nh * s) / 2.0)) * Affine::scale(s),
                 auto_fit: pagenor_doc::Fitting::FillProportionally,
                 fit_align: 4,
                 crop: [0.0; 4],
+                wrap: Default::default(),
             });
             if k == 0 && pi == 0 {
                 it.effects.drop_shadow.on = true;

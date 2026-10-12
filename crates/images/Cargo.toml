@@ -16,3 +16,6 @@ pagenor-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
+
+[dev-dependencies]
+pagenor-fonts = { workspace = true, features = ["testing"] }

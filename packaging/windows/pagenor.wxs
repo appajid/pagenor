@@ -26,7 +26,9 @@
     <Property Id="ARPPRODUCTICON" Value="PagenorIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="Pagenor" />
+      <Directory Id="INSTALLFOLDER" Name="Pagenor">
+        <Directory Id="LICENSEFOLDER" Name="licenses" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
@@ -37,6 +39,7 @@
 
   <Fragment>
     <ComponentGroup Id="PagenorFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.BinDir)\licenses\**" Directory="LICENSEFOLDER" />
       <Component Id="PagenorApp" Guid="54E2E178-B8D0-54DC-B725-D4F32DDA891F">
         <File Id="PagenorExe" Source="$(var.BinDir)\pagenor.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Pagenor"
@@ -45,18 +48,22 @@
         </File>
 
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pagenor.exe" Value="[#PagenorExe]" Type="string" />
-        <ProgId Id="Pagenor.Document" Description="Pagenor Document" Icon="PagenorExe" Advertise="no">
+        <ProgId Id="Pagenor.Document" Description="Pagenor Document" Icon="PagenorDocumentIcon" Advertise="no">
           <Extension Id="pgnr" ContentType="application/vnd.pagenor+zip">
             <Verb Id="open" Command="Open" TargetFile="PagenorExe" Argument="&quot;%1&quot;" />
           </Extension>
-          <Extension Id="pagenor" ContentType="application/vnd.pagenor+zip">
-            <Verb Id="open" Command="Open" TargetFile="PagenorExe" Argument="&quot;%1&quot;" />
-          </Extension>
         </ProgId>
+        <!-- Both extensions share the one ProgId/open verb. A second Extension with
+             the same MIME/verb generates duplicate registry symbols in WiX 5. -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\.pagenor" Value="Pagenor.Document" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.pagenor" Name="Content Type" Value="application/vnd.pagenor+zip" Type="string" />
       </Component>
 
       <Component Id="PagenorCli">
         <File Id="PagenorCliExe" Source="$(var.BinDir)\pagenor-cli.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="PagenorDocumentArtwork">
+        <File Id="PagenorDocumentIcon" Source="$(var.BinDir)\pagenor-document.ico" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

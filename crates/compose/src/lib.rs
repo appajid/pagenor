@@ -16,30 +16,73 @@ mod cache;
 pub mod hyphen;
 mod mojikumi;
 mod notes;
+pub mod optical;
 mod overlay;
+mod parabox;
 mod ruby;
 pub mod shape;
 pub mod table;
 pub mod vars;
+pub mod wrap;
 pub mod xref;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use pagenor_doc::{
-    Align, Composer, Document, FirstBaseline, GridAlign, ItemId, ParaProps, SpanColumns, StartParagraph, Story, StoryId, TabAlign, TextFrameOptions,
-    VerticalJustification, WrapMode, story,
+    Align, Composer, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ListAlign, ListCounter, ParaProps, SpanColumns, StartParagraph,
+    Story, StoryId, TabAlign, TextFrameOptions, VerticalJustification, WrapMode, WrapSide, story,
 };
 use pagenor_fonts::{FontDb, ScopedFonts};
-use pagenor_geom::{Point, Rect};
+use pagenor_geom::{Affine, Point, Rect};
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::Cache;
 use crate::notes::Notes;
 pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+use crate::parabox::ParaBox;
 use crate::shape::{Glyph, StyleTable, SubstCtx};
 pub use crate::table::{PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_cell, hit_cell_with};
+
+/// Character-style overlays for a complete paragraph, in application order (later wins).
+/// Returned byte ranges are relative to `text`.
+pub fn paragraph_style_overlays(text: &str, nested: &[pagenor_doc::NestedStyle], grep: &[pagenor_doc::GrepStyle]) -> Vec<(Range<usize>, String)> {
+    overlay::overlays(text, 0..text.len(), nested, grep, 0)
+}
+
+/// Compare condition visibility on a complete paragraph, including its overset text.
+/// Run ranges are paragraph-relative. Invalid/incomplete coverage conservatively differs.
+/// Requires already-matched story formatting and style definitions. Callers separately
+/// retain layout-dependent line/note and style-definition dependencies.
+pub fn paragraph_conditions_same<'a>(
+    before: &Document,
+    after: &Document,
+    text: &str,
+    para: &ParaProps,
+    base: &pagenor_doc::CharProps,
+    runs: impl Iterator<Item = (Range<usize>, &'a pagenor_doc::CharFormat)>,
+) -> bool {
+    let drop_end = if para.drop_cap_lines > 1 { text.char_indices().nth(para.drop_cap_chars as usize).map_or(text.len(), |(i, _)| i) } else { 0 };
+    let mut overlays = overlay::overlays(text, 0..text.len(), &para.nested_styles, &para.grep_styles, drop_end);
+    if drop_end > 0 && !para.drop_cap_style.is_empty() && para.drop_cap_style != pagenor_doc::NO_CHAR_STYLE {
+        overlays.push((0..drop_end, para.drop_cap_style.clone()));
+    }
+    let mut end = 0;
+    for segment in shape::style_segments(runs, 0..text.len(), &overlays) {
+        if segment.range.start != end || !text.is_char_boundary(segment.range.start) || !text.is_char_boundary(segment.range.end) {
+            return false;
+        }
+        end = segment.range.end;
+        let base = shape::overlay_base(&before.styles, base, segment.overlay);
+        let chars = before.styles.resolve_char(base.as_ref(), segment.format);
+        if chars.change != pagenor_doc::ChangeMark::Deleted && before.conditions_hide(&chars.conditions) != after.conditions_hide(&chars.conditions) {
+            return false;
+        }
+    }
+    end == text.len()
+}
 
 /// Character appearance shared by many glyphs (indexed from [`PlacedGlyph::style`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +150,8 @@ pub struct PlacedGlyph {
     pub style: u32,
     pub byte: usize,
     pub len: usize,
+    /// Text of a generated glyph (see [`shape::Glyph::generated_text`]).
+    pub generated_text: Option<Box<str>>,
     /// Control characters (tabs, breaks, markers' carriers) are not drawn.
     pub visible: bool,
     /// Stays upright in vertical frames (CJK ideographs, kana, hangul, full-width forms).
@@ -195,12 +240,16 @@ pub struct DropCapBox {
     pub rect: Rect,
 }
 
-/// A paragraph rule or shading rectangle in frame inner space.
-#[derive(Clone, Debug, PartialEq)]
+/// A paragraph rule, border or shading in frame inner space: `rect` filled, or `path` (non-zero
+/// winding) when it has one, with `rect` its bounds.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Deco {
     pub rect: Rect,
     pub color: String,
     pub tint: f32,
+    pub path: Option<pagenor_geom::BezPath>,
+    /// Shown on screen only (not printed or exported).
+    pub nonprinting: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -285,8 +334,139 @@ impl ComposedStory {
 /// A text-wrap exclusion in a frame's inner space.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exclusion {
+    /// Bounding box, offsets included.
     pub rect: Rect,
     pub mode: WrapMode,
+    /// Where text may go beside the object. Spine sides are resolved to `LeftSide`/`RightSide`.
+    pub side: WrapSide,
+    /// Contour wrap: the outline the text follows (None wraps around `rect`).
+    pub contour: Option<Contour>,
+    /// Own-story anchored objects wrap only lines starting after their anchor byte.
+    pub after: Option<usize>,
+}
+
+/// An object outline for contour wrap: closed polylines in the frame's inner space and the
+/// distance text keeps from them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contour {
+    pub rings: Vec<Vec<Point>>,
+    pub offset: f64,
+}
+
+/// Points a contour outline may have; a larger outline wraps around its bounding box.
+const MAX_CONTOUR_POINTS: usize = 8192;
+
+impl Contour {
+    /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
+    fn of(path: &pagenor_geom::BezPath, to_inner: pagenor_geom::Affine, offset: f64) -> Option<Contour> {
+        let mut rings: Vec<Vec<Point>> = Vec::new();
+        let mut n = 0usize;
+        let mut too_many = false;
+        pagenor_geom::kurbo::flatten(to_inner * path.clone(), 0.25, |el| {
+            n += 1;
+            too_many |= n > MAX_CONTOUR_POINTS;
+            if too_many {
+                return;
+            }
+            match el {
+                pagenor_geom::PathEl::MoveTo(p) => rings.push(vec![p]),
+                pagenor_geom::PathEl::LineTo(p) => match rings.last_mut() {
+                    Some(r) => r.push(p),
+                    None => rings.push(vec![p]),
+                },
+                _ => {}
+            }
+        });
+        rings.retain(|r| r.len() >= 2 && r.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+        (!too_many && !rings.is_empty() && offset.is_finite()).then_some(Contour { rings, offset: offset.max(0.0) })
+    }
+
+    fn bounds(&self) -> Rect {
+        let mut pts = self.rings.iter().flatten();
+        let Some(&p0) = pts.next() else { return Rect::ZERO };
+        let r = pts.fold(Rect::from_points(p0, p0), |r, &p| r.union_pt(p));
+        r.inflate(self.offset, self.offset)
+    }
+
+    /// Horizontal extent of the outline (offset included) within the band `y0..y1`: the band is
+    /// widened by the offset, and the outline's x-range there is widened by it too.
+    fn band_extent(&self, y0: f64, y1: f64) -> Option<(f64, f64)> {
+        let (y0, y1) = (y0 - self.offset, y1 + self.offset);
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for ring in &self.rings {
+            let Some(&last) = ring.last() else { continue };
+            let mut p = last;
+            for &q in ring {
+                let (a, b) = (p, q);
+                p = q;
+                if a.y.max(b.y) < y0 || a.y.min(b.y) > y1 {
+                    continue;
+                }
+                let dy = b.y - a.y;
+                let (t0, t1) = if dy.abs() < 1e-12 {
+                    (0.0, 1.0)
+                } else {
+                    let (ta, tb) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
+                    (ta.min(tb).clamp(0.0, 1.0), ta.max(tb).clamp(0.0, 1.0))
+                };
+                for t in [t0, t1] {
+                    let x = a.x + t * (b.x - a.x);
+                    lo = lo.min(x);
+                    hi = hi.max(x);
+                }
+            }
+        }
+        (lo <= hi).then_some((lo - self.offset, hi + self.offset))
+    }
+}
+
+/// The wrap exclusion of `other` (an item whose inner space maps to the spread by `xf`) for a
+/// frame whose inner space is reached from the spread by `inv`. `left_page` places the object on
+/// a left page (for the spine sides).
+pub fn exclusion(other: &pagenor_doc::Item, xf: pagenor_geom::Affine, inv: pagenor_geom::Affine, left_page: bool) -> Exclusion {
+    let o = other.wrap.offsets;
+    let b = if other.shape == pagenor_doc::Shape::Group {
+        (xf * other.xf.inverse()).transform_rect_bbox(other.bounds())
+    } else {
+        other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO)
+    };
+    let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
+    let side = match other.wrap.side {
+        WrapSide::TowardsSpine if left_page => WrapSide::RightSide,
+        WrapSide::TowardsSpine => WrapSide::LeftSide,
+        WrapSide::AwayFromSpine if left_page => WrapSide::LeftSide,
+        WrapSide::AwayFromSpine => WrapSide::RightSide,
+        s => s,
+    };
+    // Imported custom boundaries already include the offsets.
+    if let Some(custom) = other.wrap.path.as_ref().and_then(|p| Contour::of(&p.to_bezpath(), inv * xf, 0.0)) {
+        let rect = custom.bounds();
+        let contour = matches!(other.wrap.mode, WrapMode::BoundingBox | WrapMode::Contour).then_some(custom);
+        return Exclusion { rect, mode: other.wrap.mode, side, contour, after: None };
+    }
+    let contour = (other.wrap.mode == WrapMode::Contour && other.shape != pagenor_doc::Shape::Group)
+        .then(|| contour_path(other))
+        .and_then(|path| Contour::of(&path, inv * xf, other.wrap.offsets[0]));
+    let rect = contour.as_ref().map_or_else(|| inv.transform_rect_bbox(r), Contour::bounds);
+    Exclusion { rect, mode: other.wrap.mode, side, contour, after: None }
+}
+
+/// The outline a contour wrap follows, in the item's inner space. Graphic frames follow their contour type; detected edges, alpha channels and image paths need
+/// the image, so they follow the frame's path (as other frames do).
+fn contour_path(it: &pagenor_doc::Item) -> pagenor_geom::BezPath {
+    let frame = pagenor_geom::corners::apply(&it.path, &it.corners);
+    if it.wrap.contour == pagenor_doc::ContourType::BoundingBox
+        && let Some(g) = it.graphic()
+        && let Some(fb) = it.path.bounds()
+    {
+        let gb = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        let r = gb.intersect(fb);
+        if r.width() > 0.0 && r.height() > 0.0 {
+            return pagenor_geom::kurbo::Shape::to_path(&r, 0.1);
+        }
+    }
+    frame
 }
 
 /// One frame of the thread, ready for composition.
@@ -301,6 +481,8 @@ pub struct FrameSpec {
     pub vertical: bool,
     pub exclusions: Vec<Exclusion>,
     pub page_name: Option<String>,
+    /// Marker text of the section the frame's page is in (None on parent pages).
+    pub section_marker: Option<String>,
     /// Absolute document page the frame is on (None on parent pages).
     pub page: Option<usize>,
     /// Baseline grid in inner space: (first grid line y, increment).
@@ -327,11 +509,18 @@ impl FrameSpec {
     }
 }
 
+/// The marker text of the section absolute page `abs` is in (empty when it has none).
+pub fn section_marker(doc: &Document, abs: usize) -> String {
+    doc.section_of(abs).map(|s| s.marker.clone()).unwrap_or_default()
+}
+
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
+    /// Section marker text when the story is composed for a specific page (parent items).
+    pub section_marker: Option<String>,
     /// Absolute page for text variables when composed for a specific page (parent items).
     pub page: Option<usize>,
     /// Running-header index (needed when the story contains running-header variables).
@@ -340,6 +529,37 @@ pub struct ComposeOptions {
     pub label: Option<String>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
+}
+
+/// Nesting depth past which wrap obstacles inside groups are not collected.
+const MAX_WRAP_DEPTH: usize = 64;
+
+/// The text wrap obstacles of a page item, the graphic it holds and the items in it, as
+/// (spread-space box grown by the wrap offsets, mode). `parent` maps the item's parent space to
+/// the spread; `skip` is the text frame being wrapped.
+fn wrap_obstacles(it: &Item, parent: Affine, inv: Affine, left: bool, skip: ItemId, depth: usize, out: &mut Vec<Exclusion>) {
+    if it.id == skip || it.hidden || depth > MAX_WRAP_DEPTH {
+        return;
+    }
+    let xf = parent * it.xf;
+    if it.wrap.mode != WrapMode::None {
+        out.push(exclusion(it, xf, inv, left));
+    }
+    match &it.content {
+        Content::Graphic(g) if g.wrap.mode != WrapMode::None => {
+            if let Some(r) = g.shown_bounds(it.inner_bounds()) {
+                let mut visible = Item::new(it.id, it.layer, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
+                visible.wrap = g.wrap.clone();
+                out.push(exclusion(&visible, xf, inv, left));
+            }
+        }
+        Content::Group { .. } => {
+            for c in it.shown_children() {
+                wrap_obstacles(c, xf, inv, left, skip, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Build the frame specs of a story from the document (geometry, wrap, page names, grid).
@@ -358,19 +578,16 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         if !tf.options.ignore_wrap
             && let Some(sp) = spread
         {
+            let mut obstacles = Vec::new();
             for other in &sp.items {
-                if other.id == item.id || other.wrap.mode == WrapMode::None || other.hidden {
-                    continue;
-                }
                 if doc.layer(other.layer).is_some_and(|l| !l.visible) {
                     continue;
                 }
-                let o = other.wrap.offsets;
-                let b = other.bounds();
-                let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
-                let inner = inv.transform_rect_bbox(r);
-                exclusions.push(Exclusion { rect: inner, mode: other.wrap.mode });
+                let left =
+                    sp.page_at_x(other.bounds().center().x).and_then(|pi| sp.pages.get(pi)).is_some_and(|p| p.side == pagenor_doc::PageSide::Left);
+                wrap_obstacles(other, Affine::IDENTITY, inv, left, item.id, 0, &mut obstacles);
             }
+            exclusions.extend(obstacles);
         }
         let (page_name, page, left_page) = match (spread_ref, spread) {
             (Some(pagenor_doc::SpreadRef::Doc(si)), Some(sp)) => {
@@ -386,6 +603,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             }
             _ => (None, None, false),
         };
+        let section_marker = page.map(|abs| section_marker(doc, abs));
         // The page under the frame and its margins, in inner space (bounding boxes).
         let page_rect = match (spread_ref, spread) {
             (_, Some(sp)) => sp
@@ -424,7 +642,14 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
         let vertical = doc.frame_vertical(item);
         let (area, exclusions, grid, page_rect) = if vertical {
             let v = pagenor_doc::vertical_text_xf(area).inverse();
-            let ex = exclusions.into_iter().map(|e| Exclusion { rect: v.transform_rect_bbox(e.rect), ..e }).collect();
+            let ex = exclusions
+                .into_iter()
+                .map(|e| Exclusion {
+                    rect: v.transform_rect_bbox(e.rect),
+                    contour: e.contour.map(|c| Contour { rings: c.rings.iter().map(|r| r.iter().map(|&p| v * p).collect()).collect(), ..c }),
+                    ..e
+                })
+                .collect();
             let pr = page_rect.map(|(a, b)| (v.transform_rect_bbox(a), v.transform_rect_bbox(b)));
             (Rect::new(0.0, 0.0, area.height(), area.width()), ex, None, pr)
         } else {
@@ -437,6 +662,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             vertical,
             exclusions: if tf.options.path.is_some() { vec![] } else { exclusions },
             page_name,
+            section_marker,
             page,
             grid,
             left_page,
@@ -446,23 +672,34 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     out
 }
 
-/// Compose a story of `doc` through its frames.
+/// Compose a story of `doc` through its frames, with the text wrap of page items and of anchored
+/// objects ([`wrap`]).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
-    let specs = frame_specs(doc, sid);
-    match doc.story(sid) {
-        Some(st) => compose(doc, st, &specs, opts),
-        None => ComposedStory { story: sid, ..Default::default() },
-    }
+    let others: Vec<ComposedStory> =
+        wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
+    wrap::compose_among(doc, sid, opts, &others.iter().collect::<Vec<_>>())
 }
 
 const DEFAULT_TAB: f64 = 36.0;
 
-/// Compose `story` into `frames`.
-pub fn compose(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
-    compose_with_db(doc, story, frames, opts, FontDb::global())
+// Child stories can share IDs with document stories. Callers carry the composition
+// context explicitly; neither IDs nor the presence of paragraph attrs identify an EOF stage.
+#[derive(Clone, Copy)]
+enum StoryContext {
+    Outer,
+    Child,
 }
 
-fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
+/// Compose an outer `story` into `frames`, including standalone story values.
+pub fn compose(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
+    compose_with_db(doc, story, frames, opts, FontDb::global(), StoryContext::Outer)
+}
+
+fn compose_child(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
+    compose_with_db(doc, story, frames, opts, FontDb::global(), StoryContext::Child)
+}
+
+fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb, context: StoryContext) -> ComposedStory {
     let db = &db.scoped(doc.font_scope);
     let mut out = ComposedStory { story: story.id, rev: story.rev, text_len: story.text.len(), ..Default::default() };
     let mut styles_tab: Vec<RunStyle> = Vec::new();
@@ -482,28 +719,43 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         .zip(&cols)
         .map(|(f, columns)| FrameText { frame: f.id, vertical: f.vertical, columns: columns.clone(), ..Default::default() })
         .collect();
-    let mut cur = Cursor { fi: 0, col: 0, last_baseline: None, last_descent: 0.0, last_reference: 0.0, pending: 0.0 };
+    let mut cur = Cursor {
+        fi: 0,
+        col: 0,
+        last_baseline: None,
+        last_descent: 0.0,
+        last_reference: 0.0,
+        pending: 0.0,
+        pi: 0,
+        band: Band::default(),
+        limits: Rc::default(),
+        split: None,
+        split_limits: Rc::default(),
+    };
     let para_ranges = story.para_ranges();
     let np = para_ranges.len();
     let hyph_exceptions = doc.hyphenation_exception_map();
-    let mut list_counter: u32 = 0;
-    // Named lists number independently of layout: one pass up front.
-    let named_numbers: Vec<Option<u32>> = {
-        let mut counters: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut list_counter = ListCounter::default();
+    // Named lists number independently of layout: one pass up front, for the labels.
+    let named_labels: Vec<Option<String>> = {
+        let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
         story
             .paras
             .iter()
-            .map(|p| {
+            .zip(&para_ranges)
+            .map(|(p, r)| {
                 let (pp, _) = doc.styles.resolve_para(p);
-                if pp.list_type != pagenor_doc::ListType::Numbers || pp.list_name.is_empty() {
+                if pp.list_type != pagenor_doc::ListType::Numbers || pp.list_name.is_empty() || r.is_empty() {
                     return None;
                 }
                 let c = counters.entry(pp.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &pp.list_name));
-                *c = pp.start_at.map_or(*c + 1, |s| s.max(1));
-                Some(*c)
+                c.advance(&pp);
+                Some(pp.number_label_in(c))
             })
             .collect()
     };
+    // Border and shading of each paragraph set, drawn once the lines are in place.
+    let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
     // into the next column or with a cap on the lines set before moving on (widow control).
     let mut snaps: Vec<Snapshot> = Vec::with_capacity(np);
@@ -516,30 +768,76 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut notes = Notes::new(doc, story);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<Option<usize>, std::sync::Arc<Vec<String>>> = Default::default();
+    // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
+    // in progress, and a budget for the re-lays.
+    let mut limits: Rc<Vec<(BandKey, f64)>> = Rc::default();
+    let mut trial: Option<Trial> = None;
+    let mut balance_runs = 0usize;
+    let balance_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Span(_))).count();
+    // Balancing split-column blocks that text follows.
+    let mut split_limits: Rc<Vec<(SplitKey, f64)>> = Rc::default();
+    let mut split_trial: Option<Trial<SplitKey>> = None;
+    let mut split_runs = 0usize;
+    let split_budget = 20 * story.paras.iter().filter(|p| matches!(doc.styles.resolve_para(p).0.span_columns, SpanColumns::Split(_))).count();
+    // Paragraphs set across columns (vertical justification moves their frames' lines together),
+    // and in split columns.
+    let mut span_paras = vec![false; np];
+    let mut split_paras = vec![false; np];
     'paras: while pi < np {
         let prange = para_ranges[pi].clone();
-        let snap = Snapshot::take(&out, &cur, list_counter);
+        cur.pi = pi;
+        cur.limits = Rc::clone(&limits);
+        cur.split_limits = Rc::clone(&split_limits);
+        let snap = Snapshot::take(&out, &cur, &list_counter);
         snaps.truncate(pi);
         snaps.push(snap);
         note_snaps.truncate(pi);
         note_snaps.push((notes.num, notes.key, notes.placed.len()));
         info.truncate(pi);
+        // A balancing trial whose band ran past its frame: re-lay the band with more room.
+        if trial.as_ref().is_some_and(|t| cur.fi > t.key.0)
+            && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
+        {
+            balance_runs += 1;
+            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+            pi = j;
+            continue 'paras;
+        }
         let pf = &story.paras[pi];
-        let (pp, base_chars) = doc.styles.resolve_para(pf);
+        let (mut pp, mut base_chars) = doc.styles.resolve_para(pf);
+        // The separator supplies character metrics for a paragraph with no glyphs.
+        if prange.is_empty() && story.text.as_bytes().get(prange.start) == Some(&b'\n') {
+            base_chars = doc.styles.resolve_char(&base_chars, story.format_after(prange.start));
+        } else if matches!(context, StoryContext::Outer)
+            && prange.is_empty()
+            && prange.start == story.len()
+            && story.text.ends_with('\n')
+            && (!pf.chars.is_empty() || pf.eof_inherited_chars.is_some())
+        {
+            let fmt = pagenor_doc::CharFormat { style: story.char_format_at(prange.start).style.clone(), over: pf.chars.clone() };
+            base_chars = doc.styles.resolve_char(&base_chars, &fmt);
+        }
+        // A break character that ends the previous paragraph sends this one on, like a start option.
+        let after_break = pi
+            .checked_sub(1)
+            .and_then(|p| para_ranges.get(p))
+            .and_then(|r| story.text.get(r.clone()))
+            .and_then(|t| t.chars().next_back())
+            .and_then(break_start);
         if let Some(t) = story.para_table(pi) {
             if cur.last_baseline.is_some() {
-                match pp.start_paragraph {
-                    StartParagraph::NextColumn => cur.next_column(&cols),
-                    StartParagraph::NextFrame | StartParagraph::NextPage | StartParagraph::NextOddPage | StartParagraph::NextEvenPage => {
-                        cur.next_frame()
-                    }
-                    StartParagraph::Anywhere => {}
-                }
+                cur.start(after_break.unwrap_or(pp.start_paragraph), &cols, frames, doc);
             }
             let at_top = cur.last_baseline.is_none();
             let start_at = (cur.fi, cur.col);
             let anchor = prange.start + story.text[prange.clone()].find(story::TABLE_ANCHOR).unwrap_or(0);
             if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, opts) {
+                if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
+                    balance_runs += 1;
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    pi = j;
+                    continue 'paras;
+                }
                 out.overset_at = Some(prange.start);
                 break 'paras;
             }
@@ -555,7 +853,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 keep_first: 1,
                 keep_last: 1,
             });
-            list_counter = 0;
+            list_counter = ListCounter::default();
+            boxes[pi] = None;
             cur.pending += pp.space_after;
             pi += 1;
             continue;
@@ -570,7 +869,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         };
         let mut sub = SubstCtx {
             page_name: opts.page_name.clone().or_else(|| cur_frame.and_then(|f| f.page_name.clone())),
-            section_marker: None,
+            section_marker: opts.section_marker.clone().or_else(|| cur_frame.and_then(|f| f.section_marker.clone())),
             vars: var_values,
             hidden_conditions: doc.conditions.iter().filter(|c| !c.visible).map(|c| c.name.clone()).collect(),
             vertical: cur_frame.is_some_and(|f| f.vertical),
@@ -637,7 +936,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             // Nested line styles: find where the first lines end in this column, restyle them, and
             // look again (the style changes the widths) until the lines settle.
             let cols_here = &cols[cur.fi];
-            let col = cols_here[cur.col.min(cols_here.len() - 1)];
+            let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
+            let col = SplitCfg::of(&pp).map_or(col, |c| c.sub_rect(col, 0));
             let spacing = spacing_for(&pp, base_chars.size);
             let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
             for _ in 0..3 {
@@ -656,7 +956,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
                 let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
-                    breaker::greedy(&gl, &hy, &spacing, &width)
+                    let tab = |j: usize, x: f64, i: usize| {
+                        let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
+                        tab_advance(&pp.tabs, pp.left_indent, ind + x, gl.get(i + 1..).unwrap_or_default()).0
+                    };
+                    breaker::greedy(&gl, &hy, &spacing, &width, &tab)
                 } else if pp.balance_ragged && !spacing.justify {
                     breaker::balanced(&gl, &hy, &spacing, &width)
                 } else {
@@ -711,29 +1015,54 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let drop_cap = split_drop_cap(db, &mut sp.glyphs, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align);
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
-        match pp.list_type {
+        let list_label = match pp.list_type {
+            // An empty paragraph has no bullet or number, and the numbering carries on past it.
+            pagenor_doc::ListType::Numbers | pagenor_doc::ListType::Bullets if prange.is_empty() => None,
+            // A named list: carries on past other paragraphs (and from earlier stories).
             pagenor_doc::ListType::Numbers if !pp.list_name.is_empty() => {
-                // A named list: carries on past other paragraphs (and from earlier stories).
-                let n = named_numbers.get(pi).copied().flatten().unwrap_or(1);
-                let label = format!("{}.{}", pp.number_style.format(n), pp.list_separator);
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+                Some(named_labels.get(pi).cloned().flatten().unwrap_or_else(|| pp.number_label(1)))
             }
             pagenor_doc::ListType::Numbers => {
-                list_counter = pp.start_at.map_or(list_counter + 1, |s| s.max(1));
-                let label = format!("{}.{}", pp.number_style.format(list_counter), pp.list_separator);
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+                list_counter.advance(&pp);
+                Some(pp.number_label_in(&list_counter))
             }
-            pagenor_doc::ListType::Bullets => {
-                let label = format!("{}{}", pp.bullet_char, pp.list_separator);
-                prepend_label(db, &mut sp.glyphs, &label, prange.start, &base_chars, label_env, &mut table);
+            pagenor_doc::ListType::Bullets => Some(pp.bullet_label()),
+            pagenor_doc::ListType::None => {
+                list_counter = ListCounter::default();
+                None
             }
-            pagenor_doc::ListType::None => list_counter = 0,
+        };
+        // The label's glyphs at the paragraph start, and how many of them (up to its first tab)
+        // the list alignment places.
+        let mut label_aligned = 0usize;
+        let mut label_tab = false;
+        if let Some(label) = &list_label {
+            let chars = label_chars(doc, &pp, &base_chars);
+            let before = sp.glyphs.len();
+            prepend_label(db, &mut sp.glyphs, label, prange.start, &chars, label_env, &mut table);
+            let n = sp.glyphs.len().saturating_sub(before);
+            label_aligned = sp.glyphs.get(..n).unwrap_or_default().iter().position(|g| g.ch == '\t').unwrap_or(n);
+            label_tab = label_aligned < n;
+            // Tab Position: a stop for the text after the label.
+            if let Some(t) = pp.list_tab.filter(|t| t.is_finite() && *t >= 0.0)
+                && !pp.tabs.iter().any(|s| (s.position - t).abs() < 1e-6)
+            {
+                pp.tabs.push(pagenor_doc::TabStop { position: t, align: TabAlign::Left, leader: String::new(), align_on: String::new() });
+                pp.tabs.sort_by(|a, b| a.position.total_cmp(&b.position));
+            }
         }
         if pi == 0
             && let Some(label) = &opts.label
         {
             prepend_label(db, &mut sp.glyphs, label, prange.start, &base_chars, label_env, &mut table);
+            label_aligned = 0;
         }
+        let list_align = match pp.list_type {
+            _ if label_aligned == 0 || pp.direction == pagenor_doc::TextDirection::RightToLeft => pagenor_doc::ListAlign::Left,
+            pagenor_doc::ListType::Bullets => pp.bullet_align,
+            _ => pp.number_align,
+        };
+        boxes[pi] = ParaBox::of(doc, &pp);
         let mut glyphs = sp.glyphs;
         let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
         let bidi_info = unicode_bidi::BidiInfo::new(
@@ -747,7 +1076,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let base_size = base_chars.size;
         let spacing = spacing_for(&pp, base_size);
         // An empty paragraph takes its height from its paragraph mark's character format.
-        let mark_chars = if glyphs.is_empty() {
+        let staged_eof = matches!(context, StoryContext::Outer)
+            && prange.start == story.len()
+            && story.text.ends_with('\n')
+            && (!pf.chars.is_empty() || pf.eof_inherited_chars.is_some());
+        let mark_chars = if glyphs.is_empty() && !staged_eof {
             std::borrow::Cow::Owned(doc.styles.resolve_char(&base_chars, story.char_format_of(prange.start)))
         } else {
             std::borrow::Cow::Borrowed(&base_chars)
@@ -756,19 +1089,118 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             pagenor_doc::Leading::Auto => mark_chars.size * pp.auto_leading,
             pagenor_doc::Leading::Points(v) => v,
         };
+        // The paragraph mark is a character of the last line: its leading counts there like any
+        // other character's. It doesn't set the line's ascent or descent. A hidden or deleted
+        // mark takes no room.
+        let terminal_mark_leading = story.text.get(prange.end..).filter(|t| t.starts_with('\n')).and_then(|_| {
+            let props = doc.styles.resolve_char(&base_chars, story.format_after(prange.end));
+            let hidden = props.change == pagenor_doc::ChangeMark::Deleted
+                || (!props.conditions.is_empty() && props.conditions.iter().all(|c| sub.hidden_conditions.contains(c)));
+            (!hidden).then_some(match props.leading {
+                pagenor_doc::Leading::Auto => props.size * pp.auto_leading,
+                pagenor_doc::Leading::Points(v) => v,
+            })
+        });
+        // A paragraph set across the columns moves on to the next frame where others move on to
+        // the next column.
+        let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
+        span_paras[pi] = spanning;
+        // Span space applies where the paragraph spans more than one column; in a one-column frame
+        // a span changes nothing.
+        let spans_in = |fi: usize| spanning && cols.get(fi).is_some_and(|c| c.len() > 1);
+        // Consecutive paragraphs with the same Split Columns settings share a split block; within
+        // it, a paragraph moves on to the next sub-column.
+        let split_cfg = SplitCfg::of(&pp);
+        split_paras[pi] = split_cfg.is_some();
+        if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
+            cur.split = None;
+        }
+        let next_column = |cur: &mut Cursor| {
+            if spanning {
+                cur.next_frame()
+            } else if cur.can_next_sub() {
+                cur.next_sub()
+            } else {
+                cur.next_column(&cols)
+            }
+        };
+        // A paragraph start or a break character; Next Column while a paragraph spans columns is
+        // the next frame, as above.
+        let begin_at = |cur: &mut Cursor, start: StartParagraph| match start {
+            StartParagraph::NextColumn => next_column(cur),
+            other => cur.start(other, &cols, frames, doc),
+        };
         // Paragraph start options.
+        if let Some(start) = after_break
+            && cur.last_baseline.is_some()
+        {
+            begin_at(&mut cur, start);
+        }
         if force_col[pi] {
-            cur.next_column(&cols);
+            next_column(&mut cur);
         }
         if cur.last_baseline.is_some() {
-            match pp.start_paragraph {
-                StartParagraph::NextColumn => cur.next_column(&cols),
-                StartParagraph::NextFrame | StartParagraph::NextPage | StartParagraph::NextOddPage | StartParagraph::NextEvenPage => cur.next_frame(),
-                StartParagraph::Anywhere => {}
+            begin_at(&mut cur, pp.start_paragraph);
+        }
+        // Text in the columns above a spanning paragraph, or a split block starting below text.
+        let mut text_above = cur.split.is_none() && split_cfg.is_some();
+        if spanning && cur.fi < frames.len() {
+            // Close the band: the paragraph goes below the deepest of its columns, which are
+            // balanced first.
+            let key = cur.band_key();
+            let deepest = out.frames[cur.fi]
+                .lines
+                .get(cur.band.line0..)
+                .unwrap_or_default()
+                .iter()
+                .map(|l| (l.baseline, l.descent))
+                .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
+            if let Some((baseline, descent)) = deepest {
+                let bottom = baseline + descent;
+                let multi = cols[cur.fi].len() > 1;
+                let active = trial.as_ref().is_some_and(|t| t.key == key && t.span == pi);
+                if !active && let Some(t) = trial.take() {
+                    set_limit(&mut limits, t.key, None);
+                }
+                if multi && (active || limit_of(&limits, key).is_none() && balance_runs < balance_budget) {
+                    let top = cur.clip(cols[cur.fi][0]).y0;
+                    let mut t = trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                    // This layout fits: its bottom is the best so far.
+                    t.hi = t.hi.min(bottom);
+                    let next = if t.done { t.hi } else { t.next() };
+                    set_limit(&mut limits, key, Some(next));
+                    if !t.done {
+                        trial = Some(t);
+                        balance_runs += 1;
+                        rewind(key.1, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        pi = key.1;
+                        continue 'paras;
+                    }
+                }
+                cur.col = 0;
+                cur.last_baseline = Some(baseline);
+                cur.last_descent = descent;
+                text_above = multi;
+            } else if cur.col != 0 {
+                cur.col = 0;
+                cur.resume();
             }
         }
         if cur.last_baseline.is_some() {
-            cur.pending += pp.space_before;
+            let same_style = pi.checked_sub(1).and_then(|p| story.paras.get(p)).is_some_and(|prev| prev.style == pf.style && prev.table.is_none());
+            match pp.same_para_style_spacing {
+                Some(gap) if same_style && gap.is_finite() && gap >= 0.0 => {
+                    cur.pending = if text_above { gap.max(pp.span_space_before) } else { gap };
+                }
+                _ => cur.pending += if text_above { pp.space_before.max(pp.span_space_before) } else { pp.space_before },
+            }
+        }
+        if let Some(cfg) = split_cfg
+            && cur.split.is_none()
+        {
+            let start = cur.state();
+            cur.split = Some(SplitBlock { cfg, sub: 0, sub_lines: 0, part_lines: 0, line0: None, para: pi, start, top: None });
+            cur.split_part();
         }
         let at_top = cur.last_baseline.is_none();
         let start_at = (cur.fi, cur.col);
@@ -783,29 +1215,36 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         // The drop cap's line (frame, index) and the baseline it sits on, once that line is set.
         let mut drop_line: Option<(usize, usize)> = None;
         let mut drop_baseline: Option<f64> = None;
+        // Segments of a line already placed (beside an object with text on both sides) that the
+        // next lines of the paragraph fill before a new line starts, and that line's baseline.
+        let mut carry: Vec<(f64, f64)> = Vec::new();
+        let mut carry_baseline = 0.0;
+        // Re-breaks after a line's segment turned out other than the breaker assumed.
+        let mut rebreaks = 0usize;
         loop {
             if cur.fi >= frames.len() {
+                if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
+                    balance_runs += 1;
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    pi = j;
+                    continue 'paras;
+                }
                 out.overset_at = Some(glyphs.get(g0).map(|g| g.byte).unwrap_or(prange.start));
-                // The part of the paragraph that fits keeps its shading and border.
-                para_box_decos(&mut out, pi, &pp);
                 break 'paras;
             }
             let f = &frames[cur.fi];
-            let col = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
-            let col = match pp.span_columns {
-                SpanColumns::Span(n) if cur.col == 0 => {
-                    let n = if n == 0 { cols[cur.fi].len() } else { (n as usize).min(cols[cur.fi].len()) };
-                    let other = cols[cur.fi][n - 1];
-                    Rect::new(col.x0.min(other.x0), col.y0, col.x1.max(other.x1), col.y1)
-                }
-                _ => col,
-            };
+            let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
+            let col = cur.clip(base);
+            // A spanning paragraph isn't held to the balanced bottom of the columns above it.
+            let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
+            let col = cur.split_rect(col);
             // Estimate slots for the breaker with the paragraph's base leading.
             let est_asc = base_chars.size * 0.75;
             let est_tops = Tops { typo_ascent: est_asc, cap: est_asc * 0.72, xh: est_asc * 0.5 };
-            let est_first = cur.next_baseline(f, col, base_leading, est_asc, est_tops, &pp);
+            let est_first =
+                if carry.is_empty() { cur.next_baseline(f, col, base_leading, est_asc, est_tops, &pp) } else { carry_baseline + base_leading };
             let est_jump = cur.jump(f, base_leading, est_asc, est_tops);
-            let slots = estimate_slots(f, col, est_first, est_jump, base_leading, base_chars.size, &glyphs[g0..], &pp, line_no);
+            let slots = estimate_slots(f, col, est_first, est_jump, base_leading, base_chars.size, &glyphs[g0..], rtl, &carry);
             let width = |j: usize| -> f64 {
                 let (x0, x1) = slots.get(j).copied().unwrap_or((col.x0, col.x1));
                 // Beside the drop cap (in the column the paragraph starts in), its width; else the
@@ -822,7 +1261,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let rest = &glyphs[g0..];
             let rest_h = &hyph_after[g0..];
             let breaks: Vec<Break> = if pp.composer == Composer::SingleLine || has_tabs || rest.len() > 4000 {
-                breaker::greedy(rest, rest_h, &spacing, &width)
+                // Where each line starts relative to the tab origin, as `layout_line` places it.
+                let tab = |j: usize, x: f64, i: usize| {
+                    let x0 = slots.get(j).map_or(col.x0, |s| s.0);
+                    let ind = pp.left_indent + if line_no + j == 0 { pp.first_line_indent } else { 0.0 };
+                    tab_advance(&pp.tabs, pp.left_indent, x0 + ind + x - col.x0, rest.get(i + 1..).unwrap_or_default()).0
+                };
+                breaker::greedy(rest, rest_h, &spacing, &width, &tab)
             } else if pp.balance_ragged && !spacing.justify {
                 breaker::balanced(rest, rest_h, &spacing, &width)
             } else {
@@ -833,38 +1278,65 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
                 let (asc, tops, desc, lead) = line_metrics(line_glyphs, &glyphs, s, mark_leading, mark_chars.size, db, &mark_chars);
+                let lead = match terminal_mark_leading {
+                    Some(m) if k + 1 == breaks.len() => lead.max(m),
+                    _ => lead,
+                };
                 let reference = cjk_line_reference(line_glyphs);
-                // Baseline grid: the next grid line at or below.
+                let (mut x0, mut x1) = (col.x0, col.x1);
+                let continues = !carry.is_empty();
                 let grid = f.grid.filter(|&(_, inc)| {
                     inc > 0.0 && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
                 });
-                let snap = |y: f64| grid.map_or(y, |(g_start, inc)| g_start + ((y - g_start) / inc - 1e-6).ceil() * inc);
-                let mut baseline = cur.next_baseline(f, col, lead, asc, tops, &pp);
-                if cur.last_baseline.is_some() {
-                    baseline += cur.last_reference - reference;
-                }
-                baseline = snap(baseline);
-                // Wrap: push the line down to the first position with a slot (back on the grid).
-                let (mut x0, mut x1) = (col.x0, col.x1);
-                if !f.exclusions.is_empty() {
-                    let jump = cur.jump(f, lead, asc, tops);
-                    let mut tries = 0;
-                    loop {
-                        let Some((nb, (a, z))) = wrap_slot(f, col, baseline, asc, desc, jump, base_size) else {
-                            // No room in this column.
-                            baseline = baseline.max(col.y1) + 1.0;
-                            break;
-                        };
-                        let pushed = nb > baseline;
-                        (baseline, x0, x1) = (nb, a, z);
-                        tries += 1;
-                        if !pushed || grid.is_none() || tries > 4000 {
-                            break;
+                let snap = |y: f64| grid.map_or(y, |(start, inc)| start + ((y - start) / inc - 1e-6).ceil() * inc);
+                let mut baseline;
+                if continues {
+                    baseline = carry_baseline;
+                    (x0, x1) = carry.remove(0);
+                } else {
+                    baseline = cur.next_baseline(f, col, lead, asc, tops, &pp);
+                    if cur.last_baseline.is_some() {
+                        baseline += cur.last_reference - reference;
+                    }
+                    baseline = snap(baseline);
+                    if !f.exclusions.is_empty() {
+                        let jump = cur.jump(f, lead, asc, tops);
+                        for tries in 0..=4000 {
+                            let Some((nb, segs)) =
+                                wrap_slots(f, col, baseline, asc, desc, jump, base_size, rtl, glyphs.get(s).map_or(prange.start, |g| g.byte))
+                            else {
+                                baseline = baseline.max(col.y1) + 1.0;
+                                break;
+                            };
+                            let pushed = nb > baseline;
+                            baseline = nb;
+                            if let Some((&first, rest)) = segs.split_first() {
+                                (x0, x1) = first;
+                                carry = rest.to_vec();
+                                carry_baseline = baseline;
+                            }
+                            if !pushed || grid.is_none() || tries == 4000 {
+                                break;
+                            }
+                            baseline = snap(baseline);
                         }
-                        baseline = snap(baseline);
                     }
                 }
-                let capped = line_cap[pi] == Some(line_no) && line_no > col_first_line;
+                // The breaker set this line for another segment width: re-break the rest of the
+                // paragraph from here, starting with this line's segments as they are. A pass
+                // re-breaks at its first line only for a new line, whose segments it carries, so
+                // every re-break makes progress; their number is capped too.
+                if (k > 0 || !continues) && rebreaks < 256 && slots.get(k).is_some_and(|&(a, b)| ((b - a) - (x1 - x0)).abs() > 0.5) {
+                    rebreaks += 1;
+                    carry.insert(0, (x0, x1));
+                    if !continues {
+                        carry_baseline = baseline;
+                    }
+                    g0 = s;
+                    moved = true;
+                    break;
+                }
+                let capped = cur.split.is_none() && line_cap[pi] == Some(line_no) && line_no > col_first_line;
                 // Footnotes referenced on this line need room at the bottom of the column too
                 // (a line at the top of a column is set anyway).
                 let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
@@ -886,7 +1358,33 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 };
                 let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
-                    if !capped {
+                    if cur.can_next_sub() {
+                        g0 = s;
+                        cur.next_sub();
+                        col_first_line = line_no;
+                        carry.clear();
+                        moved = true;
+                        break;
+                    }
+                    // A split block that doesn't fit above its trial bottom: re-lay it lower.
+                    if let Some(key) = cur.split_key()
+                        && limit_of(&split_limits, key).is_some_and(f64::is_finite)
+                    {
+                        let j = if split_trial.as_ref().is_some_and(|t| t.key == key) {
+                            trial_failed(&mut split_trial, &mut split_limits, split_runs < split_budget)
+                        } else {
+                            set_limit(&mut split_limits, key, Some(f64::INFINITY));
+                            Some(key.2)
+                        };
+                        if let Some(j) = j {
+                            split_runs += 1;
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            pi = j;
+                            continue 'paras;
+                        }
+                    }
+                    // Keep options don't apply between a split block's lines.
+                    if !capped && cur.split.is_none_or(|s| s.part_lines == 0) {
                         let ctx = KeepCtx {
                             pi,
                             line_no,
@@ -896,7 +1394,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                             remaining: breaks.len() - k,
                             here: (cur.fi, cur.col),
                         };
-                        let action = if restores < 4 * np + 64 { keep_violation(&ctx, &pp, &info, &force_col, &line_cap) } else { None };
+                        let action = if restores < (4 * np + 64) * (balance_runs + 1) {
+                            keep_violation(&ctx, &pp, &info, &force_col, &line_cap)
+                        } else {
+                            None
+                        };
                         if let Some(action) = action {
                             restores += 1;
                             let j = match action {
@@ -909,21 +1411,16 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                                     j
                                 }
                             };
-                            for k in j + 1..np {
-                                force_col[k] = false;
-                                line_cap[k] = None;
-                            }
-                            snaps[j].restore(&mut out, &mut cur, &mut list_counter);
-                            (notes.num, notes.key) = (note_snaps[j].0, note_snaps[j].1);
-                            notes.placed.truncate(note_snaps[j].2);
+                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
                             pi = j;
                             continue 'paras;
                         }
                     }
                     // Next column / frame; re-break the rest of the paragraph there.
                     g0 = s;
-                    cur.next_column(&cols);
+                    next_column(&mut cur);
                     col_first_line = line_no;
+                    carry.clear();
                     moved = true;
                     break;
                 }
@@ -937,8 +1434,19 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let lx0 = x0 + ind_l;
                 let lx1 = x1 - ind_r;
                 let last = k + 1 == breaks.len();
+                // The break character that ends this line, if any (it is the line's last glyph).
+                let brk = if b.forced && e > s {
+                    e.checked_sub(1).and_then(|i| glyphs.get(i)).map(|g| g.ch).filter(|&c| breaker::is_forced(c))
+                } else {
+                    None
+                };
+                // A column, frame or page break ends the line as a paragraph's last line (last-line
+                // alignment); a justified line ended by a forced line break stays justified.
+                let ends_para = last || matches!(brk, Some(story::COLUMN_BREAK | story::FRAME_BREAK | story::PAGE_BREAK));
+                let forced_mid = brk == Some(story::FORCED_LINE_BREAK) && !last;
                 let (mut placed, end_x, ratio) =
-                    layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, last, b.forced && !last, f.left_page, &bidi_info);
+                    layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, ends_para, forced_mid, f.left_page, &bidi_info);
+                let end_x = if line_no == 0 && s == 0 { align_label(&mut placed, label_aligned, label_tab, list_align, end_x) } else { end_x };
                 // The spaces the break trimmed off the end follow the line undrawn, so the caret
                 // and the selection reach them; alignment and justification ignore them.
                 if pp.direction != pagenor_doc::TextDirection::RightToLeft && !placed.iter().any(|g| g.rtl) {
@@ -967,6 +1475,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 let ft = &mut out.frames[cur.fi];
                 if line_no == 0 {
                     first_line_rect = Some((cur.fi, baseline, asc, x0));
+                }
+                if let Some(sb) = cur.split.as_mut() {
+                    sb.line0.get_or_insert(ft.lines.len());
+                    sb.sub_lines += 1;
+                    sb.part_lines += 1;
                 }
                 ft.lines.push(Line {
                     column: cur.col as u32,
@@ -1026,29 +1539,33 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 cur.last_descent = desc;
                 cur.pending = 0.0;
                 line_no += 1;
-                // Column / frame / page break characters.
-                if b.forced && e < glyphs.len() + 1 {
-                    let brk = glyphs.get(g0 + b.next.saturating_sub(1)).map(|g| g.ch);
-                    let jumped = match brk {
-                        Some(story::COLUMN_BREAK) => {
-                            cur.next_column(&cols);
-                            true
-                        }
-                        Some(story::FRAME_BREAK) | Some(story::PAGE_BREAK) => {
-                            cur.next_frame();
-                            true
-                        }
-                        _ => false,
-                    };
-                    if jumped {
-                        // The rest of the paragraph continues in the new column/frame: re-break it there.
-                        col_first_line = line_no;
-                        if k + 1 < breaks.len() {
-                            g0 += b.next;
-                            moved = true;
-                            break;
-                        }
-                    }
+                // Breaks inside a paragraph move its continuation; terminal breaks move the next paragraph.
+                if b.forced
+                    && k + 1 < breaks.len()
+                    && let Some(start) = brk.and_then(break_start)
+                {
+                    begin_at(&mut cur, start);
+                    col_first_line = line_no;
+                    g0 += b.next;
+                    carry.clear();
+                    moved = true;
+                    break;
+                }
+                // An own-story anchored object anchored in this line wraps the lines after it,
+                // which were broken without it: break them again.
+                if k + 1 < breaks.len()
+                    && f.exclusions.iter().any(|ex| {
+                        ex.after.is_some_and(|a| (range_start..range_end).contains(&a))
+                            && ex.rect.x0 < col.x1
+                            && ex.rect.x1 > col.x0
+                            && ex.rect.y1 > baseline
+                            && ex.rect.y0 < col.y1
+                    })
+                {
+                    g0 += b.next;
+                    carry.clear();
+                    moved = true;
+                    break;
                 }
             }
             if !moved {
@@ -1080,18 +1597,41 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             keep_first: pp.keep_first as usize,
             keep_last: pp.keep_last as usize,
         });
+        // The columns below a spanning paragraph start under it.
+        if spanning
+            && let Some(ft) = out.frames.get(cur.fi)
+            && let Some(l) = ft.lines.last().filter(|l| l.para == pi)
+        {
+            let above = Above {
+                top: l.baseline + l.descent,
+                baseline: l.baseline,
+                descent: l.descent,
+                reference: cur.last_reference,
+                pending: if spans_in(cur.fi) { pp.space_after.max(pp.span_space_after) } else { pp.space_after },
+            };
+            cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(above) };
+        }
         // Rules and shading for the paragraph.
         if let Some((fi, bl, asc, _)) = first_line_rect {
             let ft = &mut out.frames[fi];
             if pp.rule_above.on {
                 let r = &pp.rule_above;
                 let y = bl - asc - r.offset;
-                let col = ft.lines.iter().rev().find(|l| l.para == pi).map(|l| (l.x0, l.x1)).unwrap_or((0.0, 0.0));
+                let col = ft
+                    .lines
+                    .iter()
+                    .find(|l| l.para == pi && l.first_in_para)
+                    .map(|l| if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) })
+                    .unwrap_or((0.0, 0.0));
                 let (color, tint) = rule_color(r, &above);
-                ft.decos.push(Deco { rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y), color, tint });
+                ft.decos.push(Deco {
+                    rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y),
+                    color,
+                    tint,
+                    ..Deco::default()
+                });
             }
         }
-        para_box_decos(&mut out, pi, &pp);
         if pp.rule_below.on
             && let Some(ft) = out.frames.get_mut(cur.fi.min(frames.len().saturating_sub(1)))
             && let Some(l) = ft.lines.iter().rev().find(|l| l.para == pi)
@@ -1100,9 +1640,52 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             let y = l.baseline + r.offset;
             let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
             let (color, tint) = rule_color(r, &below);
-            ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color, tint });
+            ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color, tint, ..Deco::default() });
         }
-        cur.pending += pp.space_after;
+        // The end of a split block: text after it continues below its deepest sub-column, which
+        // are balanced first. A block that ends the story fills its sub-columns in turn.
+        let mut ends_split = false;
+        if let Some(sb) = cur.split {
+            let next =
+                story.paras.get(pi + 1).filter(|_| story.para_table(pi + 1).is_none()).and_then(|p| SplitCfg::of(&doc.styles.resolve_para(p).0));
+            if next != Some(sb.cfg) {
+                cur.split = None;
+                ends_split = true;
+                let part = out.frames.get(cur.fi).and_then(|ft| {
+                    let lines = ft.lines.get(sb.line0?..)?;
+                    let top = lines.first().map(|l| l.baseline - l.ascent)?;
+                    let deepest = lines.iter().map(|l| (l.baseline, l.descent)).max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))?;
+                    Some((sb.top.unwrap_or(top), deepest))
+                });
+                if pi + 1 < np
+                    && let Some((top, (baseline, descent))) = part
+                {
+                    let key = (cur.fi, cur.col, sb.para);
+                    let active = split_trial.as_ref().is_some_and(|t| t.key == key);
+                    if !active && let Some(t) = split_trial.take() {
+                        set_limit(&mut split_limits, t.key, None);
+                    }
+                    if sb.part_lines > 1 && (active || limit_of(&split_limits, key).is_none() && split_runs < split_budget) {
+                        let bottom = baseline + descent;
+                        let mut t = split_trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                        // This layout fits: its bottom is the best so far.
+                        t.hi = t.hi.min(bottom);
+                        let next = if t.done { t.hi } else { t.next() };
+                        set_limit(&mut split_limits, key, Some(next));
+                        if !t.done {
+                            split_trial = Some(t);
+                            split_runs += 1;
+                            rewind(key.2, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            pi = key.2;
+                            continue 'paras;
+                        }
+                    }
+                    cur.last_baseline = Some(baseline);
+                    cur.last_descent = descent;
+                }
+            }
+        }
+        cur.pending += if spans_in(cur.fi) || ends_split { pp.space_after.max(pp.span_space_after) } else { pp.space_after };
         pi += 1;
     }
     notes.finish(doc, story, frames, &cols, &mut out);
@@ -1111,13 +1694,17 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let f = &frames[fi];
         if let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) {
             ft.range = a.range.start..z.range.end;
-            ft.content_height = z.baseline + z.descent - f.area.y0;
+            // The deepest line of the last column (split columns can end higher up).
+            let bottom = ft.lines.iter().filter(|l| l.column == z.column).map(|l| l.baseline + l.descent).fold(z.baseline + z.descent, f64::max);
+            ft.content_height = bottom - f.area.y0;
         } else {
             let p = ft_prev_end(&out.overset_at, story.text.len());
             ft.range = p..p;
         }
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
-        vertical_justify(ft, f);
+        let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
+            || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
+        vertical_justify(ft, f, spanned);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -1181,9 +1768,27 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             last_end = ft.range.end;
         }
     }
+    // Paragraph borders and shading (the part of a paragraph that fits keeps its box), and column
+    // rules, once vertical justification has put the lines in place.
+    parabox::draw(&mut out, &boxes, frames);
+    for (ft, f) in out.frames.iter_mut().zip(frames) {
+        if f.opts.column_rule {
+            let rects = column_rule_rects(&ft.columns, &ft.lines, &f.opts);
+            let tint = if f.opts.column_rule_tint.is_finite() { f.opts.column_rule_tint.clamp(0.0, 1.0) } else { 1.0 };
+            ft.decos.extend(rects.into_iter().map(|rect| Deco { rect, color: f.opts.column_rule_color.clone(), tint, ..Deco::default() }));
+        }
+    }
     out.styles = styles_tab;
     mark_keep_violations(doc, story, &mut out);
     out
+}
+
+/// The columns a spanning paragraph is set across, from `col`'s top to its bottom.
+fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
+    let SpanColumns::Span(n) = span else { return col };
+    let n = if n == 0 { cols.len() } else { (n as usize).min(cols.len()) };
+    let (Some(a), Some(b)) = (cols.first(), n.checked_sub(1).and_then(|i| cols.get(i))) else { return col };
+    Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
@@ -1231,50 +1836,67 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
     }
 }
 
-/// Paragraph shading and border, per column the paragraph sits in (a split paragraph gets one box
-/// per part; the border's top edge on the first part, its bottom edge on the last).
-fn para_box_decos(out: &mut ComposedStory, pi: usize, pp: &ParaProps) {
-    if !pp.shading_on && !pp.border_on {
-        return;
+/// Thickest column rule drawn (points).
+const MAX_COLUMN_RULE_WEIGHT: f64 = 1000.0;
+
+/// Text Frame Options › Column Rules: one bar per gutter, `column_rule_weight` wide, centred
+/// between the facing edges of the two columns and moved by `column_rule_offset`, from the
+/// columns' top to their bottom (the text area, inside the insets) shortened by the rule's top
+/// and bottom insets. Works in the composed space, so right-to-left and vertical frames (whose
+/// columns are laid out in the turned box) get their rules between the columns too.
+///
+/// A paragraph that spans columns interrupts the rule: the bar stops at the top of its first line
+/// and resumes below its last line. Nothing is drawn for a single column or a weight that is not a
+/// positive finite number.
+pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptions) -> Vec<Rect> {
+    let weight = opts.column_rule_weight;
+    if !weight.is_finite() || weight <= 0.0 || columns.len() < 2 {
+        return Vec::new();
     }
-    let mut parts: Vec<(usize, Rect)> = Vec::new();
-    for (fi, ft) in out.frames.iter().enumerate() {
-        let mut cols_seen: Vec<u32> = ft.lines.iter().filter(|l| l.para == pi).map(|l| l.column).collect();
-        cols_seen.dedup();
-        for c in cols_seen {
-            let lines: Vec<&Line> = ft.lines.iter().filter(|l| l.para == pi && l.column == c).collect();
-            if let (Some(a), Some(z)) = (lines.first(), lines.last()) {
-                parts.push((fi, Rect::new(a.x0, a.baseline - a.ascent, a.x1, z.baseline + z.descent)));
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let (offset, top_inset, bottom_inset) =
+        (finite(opts.column_rule_offset), finite(opts.column_rule_top_inset), finite(opts.column_rule_bottom_inset));
+    let half = weight.min(MAX_COLUMN_RULE_WEIGHT) / 2.0;
+    let mut cols: Vec<Rect> =
+        columns.iter().copied().filter(|c| c.x0.is_finite() && c.x1.is_finite() && c.y0.is_finite() && c.y1.is_finite()).collect();
+    cols.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    let mut out = Vec::new();
+    for pair in cols.windows(2) {
+        let [a, b] = [pair[0], pair[1]];
+        let cx = (a.x1 + b.x0) / 2.0;
+        let (top, bottom) = (a.y0.max(b.y0) + top_inset, a.y1.min(b.y1) - bottom_inset);
+        if bottom <= top {
+            continue;
+        }
+        // Vertical bands of the paragraphs whose lines cross this gutter.
+        let mut spans: Vec<(usize, f64, f64)> = Vec::new();
+        for l in lines.iter().filter(|l| l.x0 < cx && l.x1 > cx) {
+            let (t, z) = (l.baseline - l.ascent, l.baseline + l.descent);
+            match spans.iter_mut().find(|s| s.0 == l.para) {
+                Some(s) => {
+                    s.1 = s.1.min(t);
+                    s.2 = s.2.max(z);
+                }
+                None => spans.push((l.para, t, z)),
             }
         }
-    }
-    let n = parts.len();
-    for (k, (fi, r)) in parts.into_iter().enumerate() {
-        let ft = &mut out.frames[fi];
-        if pp.shading_on {
-            let [t, l, b, rr] = pp.shading_offsets;
-            ft.decos
-                .insert(0, Deco { rect: Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + b), color: pp.shading_color.clone(), tint: pp.shading_tint });
-        }
-        if pp.border_on {
-            let [t, l, b, rr] = pp.border_offsets;
-            let o = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + b);
-            let [wt, wl, wb, wr] = pp.border_weights.map(|w| w.max(0.0));
-            let mut edge = |rect: Rect| ft.decos.push(Deco { rect, color: pp.border_color.clone(), tint: pp.border_tint });
-            if k == 0 && wt > 0.0 {
-                edge(Rect::new(o.x0 - wl, o.y0 - wt, o.x1 + wr, o.y0));
+        spans.sort_by(|p, q| p.1.total_cmp(&q.1));
+        let x = cx + offset;
+        let mut y = top;
+        for (_, t, z) in spans {
+            if t > y {
+                out.push(Rect::new(x - half, y, x + half, t.min(bottom)));
             }
-            if k + 1 == n && wb > 0.0 {
-                edge(Rect::new(o.x0 - wl, o.y1, o.x1 + wr, o.y1 + wb));
-            }
-            if wl > 0.0 {
-                edge(Rect::new(o.x0 - wl, o.y0, o.x0, o.y1));
-            }
-            if wr > 0.0 {
-                edge(Rect::new(o.x1, o.y0, o.x1 + wr, o.y1));
+            y = y.max(z);
+            if y >= bottom {
+                break;
             }
         }
+        if y < bottom {
+            out.push(Rect::new(x - half, y, x + half, bottom));
+        }
     }
+    out
 }
 
 /// Breaker parameters from the paragraph's settings.
@@ -1347,7 +1969,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
         if g.locked_advance {
             continue;
         }
-        if g.ch == ' ' || (g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+        if g.is_word_space() {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
@@ -1361,18 +1983,18 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
 /// paragraphs from here). Only the cursor's frame and later ones can change afterwards.
 struct Snapshot {
     cur: Cursor,
-    list_counter: u32,
+    list_counter: ListCounter,
     lines: usize,
     decos: usize,
     tables: usize,
 }
 
 impl Snapshot {
-    fn take(out: &ComposedStory, cur: &Cursor, list_counter: u32) -> Snapshot {
+    fn take(out: &ComposedStory, cur: &Cursor, list_counter: &ListCounter) -> Snapshot {
         let (lines, decos, tables) = out.frames.get(cur.fi).map_or((0, 0, 0), |f| (f.lines.len(), f.decos.len(), f.tables.len()));
-        Snapshot { cur: cur.clone(), list_counter, lines, decos, tables }
+        Snapshot { cur: cur.clone(), list_counter: list_counter.clone(), lines, decos, tables }
     }
-    fn restore(&self, out: &mut ComposedStory, cur: &mut Cursor, list_counter: &mut u32) {
+    fn restore(&self, out: &mut ComposedStory, cur: &mut Cursor, list_counter: &mut ListCounter) {
         let fi = self.cur.fi;
         for (i, f) in out.frames.iter_mut().enumerate().skip(fi) {
             let (l, d, t) = if i == fi { (self.lines, self.decos, self.tables) } else { (0, 0, 0) };
@@ -1382,8 +2004,33 @@ impl Snapshot {
             f.objects.retain(|o| o.line < l);
         }
         *cur = self.cur.clone();
-        *list_counter = self.list_counter;
+        *list_counter = self.list_counter.clone();
         out.overset_at = None;
+    }
+}
+
+/// Re-lay from paragraph `j`: back to its snapshot and footnote numbering, with fresh keep
+/// decisions for the paragraphs after it.
+#[allow(clippy::too_many_arguments)]
+fn rewind(
+    j: usize,
+    snaps: &[Snapshot],
+    note_snaps: &[(u32, Option<usize>, usize)],
+    notes: &mut Notes,
+    out: &mut ComposedStory,
+    cur: &mut Cursor,
+    list_counter: &mut ListCounter,
+    force_col: &mut [bool],
+    line_cap: &mut [Option<usize>],
+) {
+    force_col.iter_mut().skip(j + 1).for_each(|f| *f = false);
+    line_cap.iter_mut().skip(j + 1).for_each(|c| *c = None);
+    if let Some(s) = snaps.get(j) {
+        s.restore(out, cur, list_counter);
+    }
+    if let Some(&(num, key, placed)) = note_snaps.get(j) {
+        (notes.num, notes.key) = (num, key);
+        notes.placed.truncate(placed);
     }
 }
 
@@ -1496,6 +2143,18 @@ fn keep_violation(ctx: &KeepCtx, pp: &ParaProps, info: &[ParaInfo], force_col: &
     None
 }
 
+/// The start option a column, frame or page break character stands for.
+fn break_start(c: char) -> Option<StartParagraph> {
+    match c {
+        story::COLUMN_BREAK => Some(StartParagraph::NextColumn),
+        story::FRAME_BREAK => Some(StartParagraph::NextFrame),
+        story::PAGE_BREAK => Some(StartParagraph::NextPage),
+        story::ODD_PAGE_BREAK => Some(StartParagraph::NextOddPage),
+        story::EVEN_PAGE_BREAK => Some(StartParagraph::NextEvenPage),
+        _ => None,
+    }
+}
+
 fn ft_prev_end(overset: &Option<usize>, len: usize) -> usize {
     overset.unwrap_or(len)
 }
@@ -1509,23 +2168,276 @@ struct Cursor {
     last_reference: f64,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
+    /// The paragraph being laid.
+    pi: usize,
+    /// The band of columns the cursor is in.
+    band: Band,
+    /// Column bottoms that balance bands, by band key (kept by the compose loop).
+    limits: Rc<Vec<(BandKey, f64)>>,
+    /// The split-column block the text is in.
+    split: Option<SplitBlock>,
+    /// Bottoms that balance split blocks, by block part (kept by the compose loop).
+    split_limits: Rc<Vec<(SplitKey, f64)>>,
+}
+
+/// A band's frame and first paragraph.
+type BandKey = (usize, usize);
+
+/// A split block's part in one column: frame, column and the paragraph it starts in.
+type SplitKey = (usize, usize, usize);
+
+/// What a balancing trial re-lays from.
+trait TrialKey: Copy + PartialEq {
+    fn para(&self) -> usize;
+}
+
+impl TrialKey for BandKey {
+    fn para(&self) -> usize {
+        self.1
+    }
+}
+
+impl TrialKey for SplitKey {
+    fn para(&self) -> usize {
+        self.2
+    }
+}
+
+/// Split Columns settings: sub-columns, inside and outside gutters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SplitCfg {
+    n: usize,
+    inside: f64,
+    outside: f64,
+}
+
+impl SplitCfg {
+    fn of(pp: &ParaProps) -> Option<SplitCfg> {
+        let SpanColumns::Split(n) = pp.span_columns else { return None };
+        let gutter = |g: f64| if g.is_finite() { g.max(0.0) } else { 0.0 };
+        Some(SplitCfg { n: (n as usize).clamp(2, 64), inside: gutter(pp.split_inside_gutter), outside: gutter(pp.split_outside_gutter) })
+    }
+    /// Sub-column `sub` of `col`.
+    fn sub_rect(&self, col: Rect, sub: usize) -> Rect {
+        let (x0, x1) = (col.x0 + self.outside, col.x1 - self.outside);
+        let w = ((x1 - x0 - self.inside * (self.n - 1) as f64) / self.n as f64).max(1.0);
+        let x = x0 + sub.min(self.n - 1) as f64 * (w + self.inside);
+        Rect::new(x, col.y0, x + w, col.y1)
+    }
+}
+
+/// Where the cursor resumes: the line above (if any) and the space waiting below it.
+#[derive(Clone, Copy, Debug)]
+struct Resume {
+    last_baseline: Option<f64>,
+    last_descent: f64,
+    last_reference: f64,
+    pending: f64,
+}
+
+/// Consecutive paragraphs with the same Split Columns settings, set in sub-columns of their
+/// column: text fills the sub-columns one after the other from the block's top, then moves on to
+/// the next column. Text after the block continues below its deepest sub-column.
+#[derive(Clone, Copy, Debug)]
+struct SplitBlock {
+    cfg: SplitCfg,
+    /// The sub-column the text is in.
+    sub: usize,
+    /// Lines set in the current sub-column, and in the block's part in this column.
+    sub_lines: usize,
+    part_lines: usize,
+    /// The part's first line in its frame.
+    line0: Option<usize>,
+    /// The paragraph the part starts in (balancing re-lays from there).
+    para: usize,
+    /// Every sub-column starts from here.
+    start: Resume,
+    /// The part's top.
+    top: Option<f64>,
+}
+
+/// A run of the frame's columns: the whole frame, or the part between spanning paragraphs.
+/// Text fills its columns one after the other; a spanning paragraph closes it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Band {
+    /// First paragraph laid (at least in part) in the band: balancing re-lays from there.
+    para: usize,
+    /// Lines of the frame above the band.
+    line0: usize,
+    /// Below a spanning paragraph, its last line: every column of the band continues from it.
+    above: Option<Above>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Above {
+    /// Bottom of the spanning paragraph's last line (the band's top).
+    top: f64,
+    baseline: f64,
+    descent: f64,
+    reference: f64,
+    /// The spanning paragraph's space after.
+    pending: f64,
+}
+
+/// Balancing the columns above a spanning paragraph: a search for the lowest column bottom at
+/// which the band's text still fits its frame, re-laying the band at each trial bottom.
+#[derive(Debug)]
+struct Trial<K = BandKey> {
+    key: K,
+    /// The spanning paragraph that closes the band.
+    span: usize,
+    /// Highest bottom known not to fit / lowest known to fit.
+    lo: f64,
+    hi: f64,
+    tries: u32,
+    /// The band is laid at `hi` for good.
+    done: bool,
+}
+
+impl<K> Trial<K> {
+    /// The next bottom to try: half way, or `hi` once settled.
+    fn next(&mut self) -> f64 {
+        self.tries += 1;
+        if self.hi - self.lo > 0.5 && self.tries < 16 {
+            (self.lo + self.hi) / 2.0
+        } else {
+            self.done = true;
+            self.hi
+        }
+    }
+}
+
+/// A balancing trial whose band didn't fit its frame: records the next bottom to try in
+/// `limits` (or, when even the settled bottom fails or the budget is spent, leaves the band
+/// unbalanced) and returns the paragraph to re-lay from.
+fn trial_failed<K: TrialKey>(trial: &mut Option<Trial<K>>, limits: &mut Rc<Vec<(K, f64)>>, budget_left: bool) -> Option<usize> {
+    let t = trial.as_mut()?;
+    let key = t.key;
+    let bottom = if t.done || !budget_left {
+        *trial = None;
+        f64::INFINITY
+    } else {
+        t.lo = limit_of(limits, key).unwrap_or(t.lo);
+        t.next()
+    };
+    set_limit(limits, key, Some(bottom));
+    Some(key.para())
+}
+
+fn set_limit<K: TrialKey>(limits: &mut Rc<Vec<(K, f64)>>, key: K, bottom: Option<f64>) {
+    let v = Rc::make_mut(limits);
+    v.retain(|(k, _)| *k != key);
+    if let Some(b) = bottom {
+        v.push((key, b));
+    }
+}
+
+fn limit_of<K: TrialKey>(limits: &[(K, f64)], key: K) -> Option<f64> {
+    limits.iter().find(|(k, _)| *k == key).map(|&(_, b)| b)
 }
 
 impl Cursor {
     fn next_column(&mut self, cols: &[Vec<Rect>]) {
         self.col += 1;
         if self.fi < cols.len() && self.col >= cols[self.fi].len() {
-            self.col = 0;
-            self.fi += 1;
+            self.next_frame();
+        } else {
+            self.resume();
+            self.split_part();
         }
-        self.last_baseline = None;
-        self.pending = 0.0;
     }
     fn next_frame(&mut self) {
         self.fi += 1;
         self.col = 0;
-        self.last_baseline = None;
-        self.pending = 0.0;
+        self.band = Band { para: self.pi, ..Band::default() };
+        self.resume();
+        self.split_part();
+    }
+    fn state(&self) -> Resume {
+        Resume { last_baseline: self.last_baseline, last_descent: self.last_descent, last_reference: self.last_reference, pending: self.pending }
+    }
+    /// Start a split block (or its part in a new column) here.
+    fn split_part(&mut self) {
+        let start = self.state();
+        let top = start.last_baseline.map(|b| b + start.last_descent);
+        let para = self.pi;
+        if let Some(s) = self.split.as_mut() {
+            *s = SplitBlock { sub: 0, sub_lines: 0, part_lines: 0, line0: None, para, start, top, ..*s };
+        }
+    }
+    /// Move on to the next sub-column of the split block, back at the block's top.
+    fn next_sub(&mut self) {
+        let Some(s) = self.split.as_mut() else { return };
+        s.sub += 1;
+        s.sub_lines = 0;
+        let r = s.start;
+        self.last_baseline = r.last_baseline;
+        self.last_descent = r.last_descent;
+        self.last_reference = r.last_reference;
+        self.pending = r.pending;
+    }
+    /// Within a split block, the next sub-column when there's one to go to.
+    fn can_next_sub(&self) -> bool {
+        self.split.is_some_and(|s| s.sub_lines > 0 && s.sub + 1 < s.cfg.n)
+    }
+    fn split_key(&self) -> Option<SplitKey> {
+        self.split.map(|s| (self.fi, self.col, s.para))
+    }
+    /// The sub-column the split block's text is in, within `col` and above its balanced bottom.
+    fn split_rect(&self, col: Rect) -> Rect {
+        let Some(s) = self.split else { return col };
+        let r = s.cfg.sub_rect(col, s.sub);
+        let y1 = self.split_key().and_then(|k| limit_of(&self.split_limits, k)).map_or(col.y1, |b| b.min(col.y1).max(col.y0));
+        Rect::new(r.x0, r.y0, r.x1, y1)
+    }
+    /// Move on as a paragraph start option (or a break character) asks.
+    fn start(&mut self, start: StartParagraph, cols: &[Vec<Rect>], frames: &[FrameSpec], doc: &Document) {
+        match start {
+            StartParagraph::Anywhere => {}
+            StartParagraph::NextColumn => self.next_column(cols),
+            StartParagraph::NextFrame => self.next_frame(),
+            StartParagraph::NextPage => self.next_page(frames, doc, None),
+            StartParagraph::NextOddPage => self.next_page(frames, doc, Some(true)),
+            StartParagraph::NextEvenPage => self.next_page(frames, doc, Some(false)),
+        }
+    }
+    /// Move to the next frame on a later page, one with an odd page number (`odd` true) or an
+    /// even one (false) when asked. Frames without a page (parent pages) qualify; with no frame
+    /// left, the rest of the story is overset.
+    fn next_page(&mut self, frames: &[FrameSpec], doc: &Document, odd: Option<bool>) {
+        let from = frames.get(self.fi).and_then(|f| f.page);
+        let skip = |f: &FrameSpec| f.page.is_some_and(|p| Some(p) == from || odd.is_some_and(|o| (doc.page_number(p) % 2 == 1) != o));
+        let mut fi = self.fi.saturating_add(1);
+        while frames.get(fi).is_some_and(skip) {
+            fi += 1;
+        }
+        self.next_frame();
+        self.fi = fi;
+    }
+    /// Start the current column at the top of the band.
+    fn resume(&mut self) {
+        match self.band.above {
+            Some(a) => {
+                self.last_baseline = Some(a.baseline);
+                self.last_descent = a.descent;
+                self.last_reference = a.reference;
+                self.pending = a.pending;
+            }
+            None => {
+                self.last_baseline = None;
+                self.pending = 0.0;
+            }
+        }
+    }
+    fn band_key(&self) -> BandKey {
+        (self.fi, self.band.para)
+    }
+    /// Column `col` of the current frame limited to the band: below the spanning paragraph above
+    /// it and, while balancing, above the trial bottom.
+    fn clip(&self, col: Rect) -> Rect {
+        let y0 = self.band.above.map_or(col.y0, |a| a.top.max(col.y0).min(col.y1.max(col.y0)));
+        let y1 = limit_of(&self.limits, self.band_key()).map_or(col.y1, |b| b.min(col.y1).max(y0));
+        Rect::new(col.x0, y0, col.x1, y1)
     }
     /// Baseline for the next line with leading `lead`, ascent `asc` and first baseline heights
     /// `tops`.
@@ -1656,7 +2568,18 @@ const JUMP_EPS: f64 = 1e-6;
 /// A line under a Jump Object wrap moves below it as `jump` says. Other wraps are rectangles, so the
 /// free space only grows where one in the line's band ends: the search jumps from one such bottom
 /// edge to the next, and a line that clears a wrap has its top exactly on the wrap's bottom.
-fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump: Jump, size: f64) -> Option<(f64, (f64, f64))> {
+#[allow(clippy::too_many_arguments)]
+fn wrap_slots(
+    f: &FrameSpec,
+    col: Rect,
+    baseline: f64,
+    asc: f64,
+    desc: f64,
+    jump: Jump,
+    size: f64,
+    rtl: bool,
+    line_start: usize,
+) -> Option<(f64, Vec<(f64, f64)>)> {
     let top = jump.top.max(0.0);
     let mut b = baseline;
     // Each step passes at least one wrap; the cap bounds hostile geometry.
@@ -1664,7 +2587,7 @@ fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump:
         let jumped = f
             .exclusions
             .iter()
-            .filter(|e| e.mode == WrapMode::JumpObject)
+            .filter(|e| e.mode == WrapMode::JumpObject && e.after.is_none_or(|a| a < line_start))
             .map(|e| e.rect)
             .filter(|r| r.x0 < col.x1 && r.x1 > col.x0 && b > r.y0 + JUMP_EPS && b - top < r.y1 - JUMP_EPS)
             .fold(f64::NEG_INFINITY, |m, r| m.max(r.y1));
@@ -1675,14 +2598,16 @@ fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump:
             } else {
                 jumped + top
             }
-        } else if let Some(slot) = free_slot(f, col, b - asc, b + desc, size) {
-            return Some((b, slot));
+        } else if let slots = free_slots(f, col, b - asc, b + desc, size, rtl, line_start)
+            && !slots.is_empty()
+        {
+            return Some((b, slots));
         } else {
             let (y0, y1) = (b - asc, b + desc);
             let edge = f
                 .exclusions
                 .iter()
-                .filter(|e| e.mode != WrapMode::JumpObject)
+                .filter(|e| e.mode != WrapMode::JumpObject && e.after.is_none_or(|a| a < line_start))
                 .map(|e| e.rect)
                 .filter(|r| r.y0 < y1 && r.y1 > y0)
                 .fold(f64::INFINITY, |m, r| m.min(r.y1));
@@ -1695,36 +2620,61 @@ fn wrap_slot(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump:
     None
 }
 
-/// Widest free horizontal interval of `col` in the band, or None if blocked.
-fn free_slot(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64) -> Option<(f64, f64)> {
+/// Free segments of `col` in the band `y0..y1`, in the order text fills them (left to right, or
+/// right to left for right-to-left paragraphs); empty if the band is blocked. A line beside an
+/// object that lets text through on both sides has a segment on each side. Segments narrower than
+/// 1.5 em of `size` are skipped (the model has no minimum segment width).
+fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64, rtl: bool, line_start: usize) -> Vec<(f64, f64)> {
     let mut free = vec![(col.x0, col.x1)];
-    for ex in &f.exclusions {
+    for ex in f.exclusions.iter().filter(|e| e.after.is_none_or(|a| a < line_start)) {
         let r = ex.rect;
         let overlaps_band = r.y0 < y1 && r.y1 > y0;
-        match ex.mode {
-            WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return None,
-            WrapMode::BoundingBox | WrapMode::Contour if overlaps_band => {
-                let mut next = Vec::new();
-                for (a, b) in free {
-                    if r.x1 <= a || r.x0 >= b {
-                        next.push((a, b));
-                        continue;
-                    }
-                    if r.x0 > a {
-                        next.push((a, r.x0));
-                    }
-                    if r.x1 < b {
-                        next.push((r.x1, b));
-                    }
-                }
-                free = next;
+        let blocked = match ex.mode {
+            WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return vec![],
+            WrapMode::BoundingBox if overlaps_band => Some((r.x0, r.x1)),
+            WrapMode::Contour if overlaps_band => match &ex.contour {
+                Some(c) => c.band_extent(y0, y1),
+                None => Some((r.x0, r.x1)),
+            },
+            _ => None,
+        };
+        let Some((a, b)) = blocked.filter(|&(a, b)| a < col.x1 && b > col.x0) else { continue };
+        // One-sided wraps also block the column on the other side of the object.
+        let text_left = match ex.side {
+            WrapSide::LeftSide => Some(true),
+            WrapSide::RightSide => Some(false),
+            WrapSide::LargestArea => Some(r.x0 - col.x0 >= col.x1 - r.x1),
+            WrapSide::BothSides | WrapSide::TowardsSpine | WrapSide::AwayFromSpine => None,
+        };
+        let (a, b) = match text_left {
+            Some(true) => (a, b.max(col.x1)),
+            Some(false) => (a.min(col.x0), b),
+            None => (a, b),
+        };
+        let mut next = Vec::with_capacity(free.len() + 1);
+        for (fa, fb) in free {
+            if b <= fa || a >= fb {
+                next.push((fa, fb));
+                continue;
             }
-            _ => {}
+            if a > fa {
+                next.push((fa, a));
+            }
+            if b < fb {
+                next.push((b, fb));
+            }
         }
+        free = next;
     }
-    free.into_iter().filter(|(a, b)| b - a >= size * 1.5).max_by(|x, y| (x.1 - x.0).total_cmp(&(y.1 - y.0)))
+    free.retain(|(a, b)| b - a >= size * 1.5);
+    if rtl {
+        free.reverse();
+    }
+    free
 }
 
+/// Line slots for the breaker: the free segments of each line from baseline `first` down, `lead`
+/// apart; `carry` holds segments left on the line above (they come first).
 #[allow(clippy::too_many_arguments)]
 fn estimate_slots(
     f: &FrameSpec,
@@ -1734,31 +2684,31 @@ fn estimate_slots(
     lead: f64,
     size: f64,
     glyphs: &[Glyph],
-    pp: &ParaProps,
-    line_no: usize,
+    rtl: bool,
+    carry: &[(f64, f64)],
 ) -> Vec<(f64, f64)> {
-    let _ = (pp, line_no);
     if f.exclusions.is_empty() {
         return vec![];
     }
-    // Rough upper bound on lines: total advance / column width × 2.
     let total: f64 = glyphs.iter().map(|g| g.adv).sum();
-    let n = ((total / (col.width().max(10.0) * 0.5)).ceil() as usize + 2).min(2000);
-    let mut v = Vec::with_capacity(n);
+    let n = ((total / (col.width().max(10.0) * 0.5)).ceil() as usize).saturating_add(2).min(2000);
+    let mut v = carry.to_vec();
     let mut b = first;
     let mut jump = jump;
     for _ in 0..n {
-        let slot = match wrap_slot(f, col, b, size * 0.8, size * 0.25, jump, size) {
-            Some((nb, s)) => {
+        match wrap_slots(f, col, b, size * 0.8, size * 0.25, jump, size, rtl, glyphs.first().map_or(0, |g| g.byte)) {
+            Some((nb, slots)) => {
                 b = nb;
-                s
+                v.extend(slots);
             }
             None => {
-                b = b.max(col.y1);
-                (col.x0, col.x1)
+                v.push((col.x0, col.x1));
+                break;
             }
-        };
-        v.push(slot);
+        }
+        if v.len() >= n.saturating_add(carry.len()) {
+            break;
+        }
         b += lead;
         jump = Jump { top: lead, step: lead };
     }
@@ -1782,6 +2732,34 @@ pub fn hj_severity(ratio: f64, min: f64, max: f64) -> u8 {
     } else {
         3
     }
+}
+
+/// Advance of a tab that starts `abs` from the tab origin and is followed by `after`, and the
+/// explicit tab stop it reaches (none: the left indent or the next default stop, left aligned).
+/// Right, centre and character alignment look at the text up to the next tab or forced break.
+///
+/// The left indent is a left stop of its own: in a hanging indent, the tab after a bullet or
+/// number reaches it unless an explicit stop comes first.
+fn tab_advance<'a>(tabs: &'a [pagenor_doc::TabStop], left_indent: f64, abs: f64, after: &[Glyph]) -> (f64, Option<&'a pagenor_doc::TabStop>) {
+    let indent_ahead = left_indent > abs + 0.01;
+    let stop = tabs.iter().find(|t| t.position > abs + 0.01).filter(|t| !indent_ahead || t.position <= left_indent);
+    let (pos, align) = match stop {
+        Some(t) => (t.position, t.align),
+        None if indent_ahead => (left_indent, TabAlign::Left),
+        None => (((abs / DEFAULT_TAB).floor() + 1.0) * DEFAULT_TAB, TabAlign::Left),
+    };
+    let seg = after.iter().take_while(|g| g.ch != '\t' && !breaker::is_forced(g.ch));
+    let gap = pos - abs;
+    let w = match align {
+        TabAlign::Left => gap,
+        TabAlign::Right => gap - seg.map(|g| g.adv).sum::<f64>(),
+        TabAlign::Center => gap - seg.map(|g| g.adv).sum::<f64>() / 2.0,
+        TabAlign::Char => {
+            let ch = stop.and_then(|t| t.align_on.chars().next()).unwrap_or('.');
+            gap - seg.take_while(|g| g.ch != ch).map(|g| g.adv).sum::<f64>()
+        }
+    };
+    (w.max(0.0), stop)
 }
 
 /// Position glyphs `s..e` within `[x0, x1]`; returns (glyphs, end x, word-space ratio).
@@ -1822,37 +2800,22 @@ fn layout_line(
     let mut x = 0.0;
     let mut i = 0;
     let mut leaders: Vec<(usize, String)> = Vec::new();
+    // The line's last tab and whether it is a left tab (only text after a left tab justifies).
+    let mut last_tab: Option<(usize, bool)> = None;
     while i < line.len() {
         if line[i].ch == '\t' {
-            let abs = x0 + x - tab_origin;
-            let stop = pp.tabs.iter().find(|t| t.position > abs + 0.01).cloned();
-            if let Some(t) = &stop
+            let (w, stop) = tab_advance(&pp.tabs, pp.left_indent, x0 + x - tab_origin, line.get(i + 1..).unwrap_or_default());
+            if let Some(t) = stop
                 && !t.leader.is_empty()
             {
                 leaders.push((i, t.leader.clone()));
             }
-            let (pos, align) = match &stop {
-                Some(t) => (t.position, t.align),
-                None => (((abs / DEFAULT_TAB).floor() + 1.0) * DEFAULT_TAB, TabAlign::Left),
-            };
-            // Width of the text after this tab up to the next tab / line end.
-            let seg_end = line[i + 1..].iter().position(|g| g.ch == '\t').map_or(line.len(), |p| i + 1 + p);
-            let seg_w: f64 = line[i + 1..seg_end].iter().map(|g| g.adv).sum();
-            let target = pos + tab_origin - x0;
-            let w = match align {
-                TabAlign::Left => target - x,
-                TabAlign::Right => target - x - seg_w,
-                TabAlign::Center => target - x - seg_w / 2.0,
-                TabAlign::Char => {
-                    let ch = stop.as_ref().and_then(|t| t.align_on.chars().next()).unwrap_or('.');
-                    let before: f64 = line[i + 1..seg_end].iter().take_while(|g| g.ch != ch).map(|g| g.adv).sum();
-                    target - x - before
-                }
-            };
-            line[i].adv = w.max(0.0);
+            line[i].adv = w;
+            last_tab = Some((i, stop.is_none_or(|stop| stop.align == TabAlign::Left)));
         } else if line[i].ch == story::RIGHT_INDENT_TAB {
             let rest: f64 = line[i + 1..].iter().map(|g| g.adv).sum();
             line[i].adv = (measure - x - rest).max(0.0);
+            last_tab = Some((i, false));
         }
         x += line[i].adv;
         i += 1;
@@ -1877,7 +2840,12 @@ fn layout_line(
     }
     let natural: f64 = line.iter().map(|g| g.adv).sum();
     let mut extra = measure - natural;
-    let spaces: Vec<usize> = line.iter().enumerate().filter(|(_, g)| g.is_space() && !g.no_break).map(|(i, _)| i).collect();
+    // Justification adjusts only the text after the last tab (InDesign keeps tab stops aligned);
+    // a line whose last tab is a right, centre, character or right-indent tab is not justified.
+    let seg = last_tab.map_or(0, |(i, _)| i + 1);
+    let seg_justifies = last_tab.is_none_or(|(_, left)| left);
+    // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
+    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
     let align = match pp.align {
         Align::TowardsSpine => {
             if left_page {
@@ -1895,10 +2863,10 @@ fn layout_line(
         }
         a => a,
     };
-    let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && !has_tab;
+    let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
     let squeeze_last = !justify_this
-        && !has_tab
+        && seg_justifies
         && extra < 0.0
         && (align.is_justified() || line.iter().any(|g| g.moji.shrink > 0.0 || mojikumi::start_elastic(g, false, true)[1] > 0.0));
     // Extra advance per glyph (word spaces and letter gaps) and horizontal scale per glyph.
@@ -1908,7 +2876,7 @@ fn layout_line(
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let mut kashidas: Vec<(usize, f64)> = Vec::new();
     if justify_this && extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification" {
-        let points = kashida_points(&line);
+        let points: Vec<usize> = kashida_points(&line).into_iter().filter(|&i| i >= seg).collect();
         if !points.is_empty() {
             let total = extra.min(points.iter().map(|&i| line[i].size * 1.5).sum());
             let per = total / points.len() as f64;
@@ -1920,11 +2888,14 @@ fn layout_line(
         }
     }
     if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
-        extra = mojikumi::distribute(&mut line, extra, &mut add);
+        extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or(&mut []), extra, add.get_mut(seg..).unwrap_or(&mut []));
     }
     if (justify_this || squeeze_last) && !spaces.is_empty() {
-        distribute(&line, &spaces, extra, sp, &mut add, &mut scale);
-    } else if justify_this && spaces.is_empty() && line.len() > 1 && !last {
+        let rebased: Vec<usize> = spaces.iter().map(|&i| i - seg).collect();
+        let (seg_line, seg_add, seg_scale) =
+            (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
+        distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
+    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last {
         // Single word: Single Word Justification.
         match pp.single_word_justify {
             Align::FullyJustified => {
@@ -1932,6 +2903,7 @@ fn layout_line(
                     .iter()
                     .enumerate()
                     .take(line.len() - 1)
+                    .skip(seg)
                     .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
                     .map(|(i, _)| i)
                     .collect();
@@ -1942,8 +2914,14 @@ fn layout_line(
                     }
                 }
             }
-            Align::Center => offset = extra / 2.0,
-            Align::Right => offset = extra,
+            // After a tab the word moves by widening the tab, so text before it stays put.
+            Align::Center | Align::Right => {
+                let shift = if pp.single_word_justify == Align::Center { extra / 2.0 } else { extra };
+                match seg.checked_sub(1).and_then(|t| add.get_mut(t)) {
+                    Some(tab) => *tab += shift,
+                    None => offset = shift,
+                }
+            }
             _ => {}
         }
     } else {
@@ -1969,7 +2947,7 @@ fn layout_line(
     let mut ratio_n = 0usize;
     for &i in &spaces {
         let g = &line[i];
-        if g.ch == ' ' && g.space > 0.0 {
+        if matches!(g.ch, ' ' | shape::NBSP) && g.space > 0.0 {
             ratio_sum += (g.adv + add[i]) / g.space;
             ratio_n += 1;
         }
@@ -2020,7 +2998,18 @@ fn layout_line(
         }
         // One tatweel stretched over the gap (overlapping its neighbours a little).
         let k = (l + 0.4) / w;
-        out.push(PlacedGlyph { gid, x: at - 0.2, y: -g.shift, adv: 0.0, sx: g.sx * k, len: 0, upright: false, tcy: None, ..place(g, at) });
+        out.push(PlacedGlyph {
+            gid,
+            x: at - 0.2,
+            y: -g.shift,
+            adv: 0.0,
+            sx: g.sx * k,
+            len: 0,
+            generated_text: None,
+            upright: false,
+            tcy: None,
+            ..place(g, at)
+        });
     }
     (out, x, ratio)
 }
@@ -2138,6 +3127,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 style: tab.style,
                 byte: tab.byte,
                 len: 0,
+                generated_text: None,
                 visible: true,
                 upright: false,
                 tcy: None,
@@ -2156,7 +3146,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .iter()
         .map(|&i| {
             let g = &line[i];
-            if g.ch != ' ' && !(g.ch == '\u{3000}' && g.ideographic_space_elastic) {
+            if !g.is_word_space() {
                 0.0
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
@@ -2166,8 +3156,8 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         })
         .collect();
     // Letter gaps: between visible glyphs (not after the line's last glyph).
-    let last_box = line.iter().rposition(|g| !g.is_space() && g.adv > 0.0).unwrap_or(0);
-    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
+    let last_box = line.iter().rposition(|g| !g.is_justify_space() && g.adv > 0.0).unwrap_or(0);
+    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
     let letter: Vec<f64> = line
         .iter()
         .enumerate()
@@ -2184,7 +3174,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let glyph: Vec<f64> = line
         .iter()
         .map(|g| {
-            if g.is_space() || g.adv <= 0.0 || g.locked_advance {
+            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance {
                 0.0
             } else {
                 let natural = g.adv / sp.glyph_desired.max(0.01);
@@ -2242,6 +3232,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         style: g.style,
         byte: g.byte,
         len: g.len,
+        generated_text: g.generated_text.clone(),
         visible,
         upright: g.upright,
         tcy: g.tcy,
@@ -2365,6 +3356,43 @@ fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
     out
 }
 
+/// The character attributes of a list label: the paragraph's, under the bullet's or number's
+/// character style, in the bullet font.
+fn label_chars(doc: &Document, pp: &ParaProps, base: &pagenor_doc::CharProps) -> pagenor_doc::CharProps {
+    let bullets = pp.list_type == pagenor_doc::ListType::Bullets;
+    let style = if bullets { &pp.bullet_char_style } else { &pp.number_char_style };
+    let mut cp = if style.is_empty() || style == pagenor_doc::NO_CHAR_STYLE {
+        base.clone()
+    } else {
+        doc.styles.resolve_char(base, &pagenor_doc::CharFormat { style: style.clone(), over: Default::default() })
+    };
+    if bullets && !pp.bullet_font.is_empty() {
+        cp.font_family = pp.bullet_font.clone();
+        if !pp.bullet_font_style.is_empty() {
+            cp.font_style = pp.bullet_font_style.clone();
+        }
+    }
+    cp
+}
+
+/// List alignment on a paragraph's first line: the label's first `n` glyphs (its text before the
+/// tab) are centred on or end at the line start. Text after the label's tab stays at its stop;
+/// without a tab the whole line moves with the label. Returns the line's end x.
+fn align_label(placed: &mut [PlacedGlyph], n: usize, tab: bool, align: ListAlign, end_x: f64) -> f64 {
+    let Some(label) = placed.get(..n).filter(|l| l.iter().all(|g| g.len == 0)) else { return end_x };
+    let w: f64 = label.iter().map(|g| g.adv).sum();
+    let dx = match align {
+        ListAlign::Left => return end_x,
+        ListAlign::Center => -w / 2.0,
+        ListAlign::Right => -w,
+    };
+    let moved = if tab { n } else { placed.len() };
+    for g in placed.iter_mut().take(moved) {
+        g.x += dx;
+    }
+    if tab { end_x } else { end_x + dx }
+}
+
 fn prepend_label(
     db: &ScopedFonts<'_>,
     glyphs: &mut Vec<Glyph>,
@@ -2383,6 +3411,9 @@ fn prepend_label(
         .glyphs
         .into_iter()
         .map(|mut g| {
+            if g.generated_text.is_none() {
+                g.generated_text = Some(label.get(g.byte..g.byte + g.len).unwrap_or("").into());
+            }
             g.byte = at;
             g.len = 0;
             g
@@ -2492,16 +3523,20 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
     out
 }
 
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec) {
+/// `spanned`: a paragraph spans the frame's columns, so the lines move together.
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
-    // Per column.
-    let ncols = ft.columns.len().max(1) as u32;
+    if spanned && f.opts.vertical_justification == VerticalJustification::Justify {
+        return;
+    }
+    // Per column (or all lines together).
+    let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
-        let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| l.column == c).map(|(i, _)| i).collect();
-        let (Some(&a), Some(&z)) = (idx.first(), idx.last()) else { continue };
-        let bottom = ft.lines[z].baseline + ft.lines[z].descent;
+        let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
+        let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
+        let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
         let space = f.area.y1 - bottom;
         if space <= 0.0 {
             continue;
@@ -2510,10 +3545,25 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec) {
         match f.opts.vertical_justification {
             VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
             VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
-            VerticalJustification::Justify if idx.len() > 1 => {
-                let per = space / (idx.len() - 1) as f64;
-                for (k, &i) in idx.iter().enumerate() {
-                    ft.lines[i].baseline += per * k as f64;
+            VerticalJustification::Justify => {
+                // Segments of one line (beside an object) share a row and move together.
+                let rows: Vec<usize> = idx
+                    .iter()
+                    .scan((0usize, f64::NAN), |(row, prev), &i| {
+                        let b = ft.lines[i].baseline;
+                        if !prev.is_nan() && (b - *prev).abs() > 1e-9 {
+                            *row += 1;
+                        }
+                        *prev = b;
+                        Some(*row)
+                    })
+                    .collect();
+                let n = rows.last().copied().unwrap_or(0);
+                if n > 0 {
+                    let per = space / n as f64;
+                    for (&i, &k) in idx.iter().zip(&rows) {
+                        ft.lines[i].baseline += per * k as f64;
+                    }
                 }
             }
             _ => {}
@@ -2612,7 +3662,12 @@ fn hit_line(ft: &FrameText, p: Point) -> Option<&Line> {
     ft.lines
         .iter()
         .filter(|l| p.x >= l.x0 - 20.0 && p.x <= l.x1 + 20.0 || ft.columns.len() <= 1)
-        .min_by(|a, b| line_dist(a, p.y).total_cmp(&line_dist(b, p.y)))
+        .min_by(|a, b| {
+            line_dist(a, p.y).total_cmp(&line_dist(b, p.y)).then_with(|| {
+                let dx = |l: &Line| (l.x0 - p.x).max(p.x - l.x1).max(0.0);
+                dx(a).total_cmp(&dx(b))
+            })
+        })
         .or_else(|| ft.lines.first())
 }
 

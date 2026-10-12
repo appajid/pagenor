@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 pagenor-ai = { workspace = true }
+craft-print = { workspace = true }
 pagenor-images = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
@@ -27,6 +28,8 @@ pagenor-pdf = { workspace = true }
 pagenor-tools = { workspace = true }
 pagenor-idml = { workspace = true }
 pagenor-indd = { workspace = true }
+# Existing locked provider; wasm_js selects the supported browser backend.
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -37,6 +40,12 @@ caseless = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1.5", features = ["fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+exacl = "0.13.0"
 
 [dev-dependencies]
 pagenor-indd = { workspace = true, features = ["synthetic"] }

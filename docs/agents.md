@@ -33,7 +33,7 @@ frame.create {"rect": [72, 320, 540, 500], "content": "text", "text": "See ."}
 text.select  {"story": "$3.story", "anchor": 4, "focus": 4}
 xref.insert  {"paragraph": "Results", "format": "Paragraph Text & Page Number"}
 DCS
-pagenor-cli script page.dcs --save page.pagenor --export page.pdf --export page.png
+pagenor-cli script page.dcs --save page.pgnr --export page.pdf --export page.png
 pagenor-cli script page.dcs --connect 7979      # the same steps, live in the running app
 ```
 
@@ -44,6 +44,11 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `run` works through its arguments in order. `--page`, `--scale` and `--pdf-options` apply to the `--export` /
 `--all-pages` that follow them, so one run can write several sizes
 (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
+
+CLI exports select their format by the case-insensitive output extension: `.png` (or no
+extension), `.jpg`/`.jpeg`, `.pdf`, `.pgnr`/legacy `.pagenor`, `.idml`, `.epub`, `.pptx`,
+`.html`/`.htm`, `.rtf` and `.txt`. Unsupported extensions fail before executing commands.
+Native exports save a copy and keep the active document's path. PDF options must be a JSON object.
 
 ## Data merge
 

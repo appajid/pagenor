@@ -240,3 +240,29 @@ sync), actual cleanup-denied storage and simultaneous app processes claiming the
 checkpoint are not established by these tests. Key reservation prevents new-entry
 collisions; it does not add inter-process ownership locking. Keep these limits
 separate from the verified immediate-restart and reused-UID fixes.
+
+## P02.11 — Native saved-file replacement
+
+Save, Save As and Save a Copy now stage the complete serialized file beside its
+destination, sync it and replace the destination using the existing tempfile
+dependency. Failed staging leaves previous file bytes intact; failed commands
+retain live dirty/path/saved state and recovery ownership. The GUI clears a stale
+save error after success. Five new regressions, the seven-step gate (1,484 tests,
+3 ignored; 20 WASM packages) and native read-only failure/retry pass. Extended
+metadata retention, directory-sync/power-loss durability and native Windows/Linux
+execution remain open. [Detailed behavior and limits](NATIVE_SAVE_SAFETY.md).
+
+
+## P02.12 — Saved-file metadata retention
+
+Native staging copies macOS Finder tags/binary xattrs/extended ACLs and Unix
+ownership before replacement; Linux source copies visible xattrs/POSIX ACLs.
+Metadata access/copy errors retain the last saved contents and current dirty/recovery
+state. Bounded allocation avoids rereading document bytes. Four new regressions
+(two failing against the preceding behavior) and all seven gates pass: 1,488 tests,
+3 ignored; 20 WASM packages. Writer-only Windows/Linux strict Clippy passes.
+Native Mac File Open/edit/Cmd+S saves the new marker while tags/ACL/UID/GID/mode
+remain exact; the QA document closes to Welcome. The signed installed app stays
+0.3.0 with separate verified icons. Windows extended metadata, invisible privileged
+Linux attributes, native Windows/Linux execution, creation times and power-loss
+durability remain open. [Implementation and evidence](NATIVE_SAVE_METADATA.md).

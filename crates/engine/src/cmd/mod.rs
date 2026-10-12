@@ -29,12 +29,15 @@ mod linked;
 mod links;
 mod liquid;
 mod lists;
+mod masters;
 mod mathexpr;
 mod media;
 mod notes;
 mod object;
 mod overrides;
 mod package;
+mod pagemaker;
+pub use pagemaker::is_name as is_pagemaker_name;
 mod path_type;
 mod paths;
 mod pdflayers;
@@ -50,6 +53,7 @@ mod states;
 mod strokes;
 mod style;
 pub mod table;
+pub mod tabs;
 pub mod text;
 mod thread;
 mod toc;
@@ -118,6 +122,14 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// Why [`has_selection`] disables a command. A command that documents `ids` still runs when the
 /// call names its objects (see [`named_targets`]).
 pub const NOTHING_SELECTED: &str = "nothing selected";
+/// Why Object › Group is disabled for a selection it can't group. Like [`NOTHING_SELECTED`], a
+/// call that names its objects still runs, and the command checks those instead.
+pub const CANT_GROUP_SELECTION: &str = "select two or more objects on one spread, all top-level or all in the same group";
+
+/// Whether `reason` only concerns the selection, so a call that names its objects runs anyway.
+pub(crate) fn selection_reason(reason: &str) -> bool {
+    reason == NOTHING_SELECTED || reason == CANT_GROUP_SELECTION
+}
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| !d.selection.items.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }
@@ -187,10 +199,12 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(package::specs());
         v.extend(print::specs());
         v.extend(text::specs());
+        v.extend(tabs::specs());
         v.extend(thread::specs());
         v.extend(style::specs());
         v.extend(table::specs());
         v.extend(layout::specs());
+        v.extend(masters::specs());
         v.extend(overrides::specs());
         v.extend(prefs::specs());
         v.extend(inspect::specs());
@@ -304,4 +318,5 @@ pub fn file_from(b: &[u8]) -> Result<pagenor_doc::Document> {
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
 pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
+pub use layout::chapter_numbering;
 pub(crate) use place_text::autoflow as place_text_autoflow;

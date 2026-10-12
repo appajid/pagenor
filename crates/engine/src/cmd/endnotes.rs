@@ -4,7 +4,7 @@
 use pagenor_doc::{ParaFormat, SpreadRef, StoryId};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, has_text, ok, str_param};
+use super::{CommandSpec, bad, cmd, has_doc, has_text, ok};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("endnote.edit", "Edit Endnote", [], None, "{story, id, text}", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            let text = str_param(p, "text").unwrap_or("").to_string();
+            let text = super::text_param(p, "text");
             s.edit(|d, _| {
                 let style = d.endnote_options.para_style.clone();
                 let st = d.story_mut(sid).ok_or_else(|| bad("endnote.edit", "no such story"))?;
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     .nth(k)
                     .map(|(i, _)| i)
                     .ok_or_else(|| bad("endnote.delete", format!("endnote {id} has no reference in the text")))?;
-                st.delete(at..at + pagenor_doc::ENDNOTE_REF.len_utf8());
+                super::text::delete_preserving_eof(st, at..at + pagenor_doc::ENDNOTE_REF.len_utf8(), true);
                 ok()
             })
         }),
@@ -103,7 +103,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     if st.doc.endnote_story == Some(ts.story) {
         return Err(bad(ID, "the endnote frame lists the endnotes"));
     }
-    let text = str_param(p, "text").unwrap_or("").to_string();
+    let text = super::text_param(p, "text");
     let at = ts.anchor.max(ts.focus);
     s.edit(|d, sel| {
         // The endnote frame: a text frame in the margins of a new last page.
@@ -121,8 +121,14 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let style = d.endnote_options.para_style.clone();
         let story = d.story_mut(ts.story).ok_or_else(|| bad(ID, "no such story"))?;
-        let id = story.insert_endnote(at, &text, ParaFormat { style, ..Default::default() });
+        let fmt = super::text::prepare_eof_marker(story, at, pagenor_doc::ENDNOTE_REF);
+        let id = story
+            .insert_endnote(at, &text, ParaFormat { style, ..Default::default() })
+            .ok_or_else(|| bad(ID, "endnote references and payloads do not match"))?;
         let caret = at + pagenor_doc::ENDNOTE_REF.len_utf8();
+        if let Some(fmt) = fmt {
+            story.format_chars(at..caret, |f| *f = fmt.clone());
+        }
         if let Some(t) = &mut sel.text {
             (t.anchor, t.focus) = (caret, caret);
         }

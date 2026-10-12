@@ -6,7 +6,137 @@ use pagenor_doc::{CharAttrs, Document, Fill, ParaFormat, Shape, SpreadRef, story
 use pagenor_geom::{Rect, shapes};
 
 use super::*;
+mod clipping;
+mod spread_rotation;
+/// One single-column text frame at (0, 0)-(300, 200) on page 1, beside a 100 pt wide rectangle
+/// with a bounding-box wrap and `wrap_props` inside its `TextWrapPreference/Properties`.
+fn custom_wrap_fixture(wrap_props: &str) -> Vec<u8> {
+    let rect = |w: f64, h: f64| {
+        format!(
+            r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0"/><PathPointType Anchor="0 {h}"/><PathPointType Anchor="{w} {h}"/><PathPointType Anchor="{w} 0"/></PathPointArray></GeometryPathType></PathGeometry>"#
+        )
+    };
+    let spread = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Spread Self="sp1" PageCount="2" ItemTransform="1 0 0 1 0 0">
+    <Page Self="p1" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 -500 -350"/>
+    <Page Self="p2" AppliedMaster="m1" GeometricBounds="0 0 700 500" ItemTransform="1 0 0 1 0 -350"/>
+    <TextFrame Self="t1" ParentStory="s1" PreviousTextFrame="n" NextTextFrame="n" ItemLayer="L1" ItemTransform="1 0 0 1 -450 -300">
+      <Properties>{frame}</Properties>
+    </TextFrame>
+    <Rectangle Self="w" ItemLayer="L1" ItemTransform="1 0 0 1 -450 -300">
+      <Properties>{obj}</Properties>
+      <TextWrapPreference TextWrapMode="BoundingBoxTextWrap" TextWrapSide="BothSides"><Properties>{wrap_props}<TextWrapOffset Top="0" Left="0" Bottom="0" Right="0"/></Properties></TextWrapPreference>
+    </Rectangle>
+  </Spread>
+</idPkg:Spread>"#,
+        frame = rect(300.0, 200.0),
+        obj = rect(100.0, 200.0),
+    );
+    let words = "wrap ".repeat(120);
+    let story = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>{words}</Content></CharacterStyleRange></ParagraphStyleRange></Story>
+</idPkg:Story>"#
+    );
+    zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", &story),
+    ])
+}
 
+/// The custom boundary: 40 pt wide, the full height of the 100 pt wide rectangle.
+const NARROW_WRAP_PATH: &str = r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray><PathPointType Anchor="0 0" LeftDirection="0 0" RightDirection="0 0"/><PathPointType Anchor="0 200" LeftDirection="0 200" RightDirection="0 200"/><PathPointType Anchor="40 200" LeftDirection="40 200" RightDirection="40 200"/><PathPointType Anchor="40 0" LeftDirection="40 0" RightDirection="40 0"/></PathPointArray></GeometryPathType></PathGeometry>"#;
+
+fn wrapping_item(d: &Document) -> &pagenor_doc::Item {
+    d.spreads[0].items.iter().find(|i| i.wrap.mode != pagenor_doc::WrapMode::None).unwrap()
+}
+
+/// Leftmost line start in the frame.
+fn first_line_x(d: &Document) -> f64 {
+    let sid = *d.stories.keys().next().unwrap();
+    let cs = pagenor_compose::compose_story(d, sid, &Default::default());
+    assert!(cs.frames[0].lines.len() > 3);
+    cs.frames[0].lines.iter().map(|l| l.x0).fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn custom_wrap_boundary_imports_composes_and_round_trips() {
+    let plain = import_idml_with(&custom_wrap_fixture(""), &|_| None).unwrap();
+    assert_eq!(wrapping_item(&plain).wrap.path, None);
+    assert!(first_line_x(&plain) >= 100.0 - 1e-6, "the frame's bounds push text to x = 100");
+
+    let d = import_idml_with(&custom_wrap_fixture(NARROW_WRAP_PATH), &|_| None).unwrap();
+    let path = wrapping_item(&d).wrap.path.clone().unwrap();
+    assert_eq!(path.bounds(), Some(Rect::new(0.0, 0.0, 40.0, 200.0)));
+    let x = first_line_x(&d);
+    assert!((40.0 - 1e-6..100.0).contains(&x), "lines start at the custom boundary's edge, not the frame's: {x}");
+
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(wrapping_item(&back).wrap.path, Some(path));
+}
+
+#[test]
+fn hostile_custom_wrap_boundary_is_dropped() {
+    let nan = NARROW_WRAP_PATH.replacen(r#"Anchor="40 200""#, r#"Anchor="NaN 200""#, 1);
+    let inf = NARROW_WRAP_PATH.replacen(r#"Anchor="40 200""#, r#"Anchor="inf 200""#, 1);
+    let huge = format!(
+        r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{}</PathPointArray></GeometryPathType></PathGeometry>"#,
+        r#"<PathPointType Anchor="1 1"/>"#.repeat(50_000)
+    );
+    let empty = r#"<PathGeometry><GeometryPathType PathOpen="false"><PathPointArray/></GeometryPathType></PathGeometry>"#;
+    for props in [nan.as_str(), inf.as_str(), huge.as_str(), empty] {
+        let d = import_idml_with(&custom_wrap_fixture(props), &|_| None).unwrap();
+        let it = wrapping_item(&d);
+        assert_eq!(it.wrap.mode, pagenor_doc::WrapMode::BoundingBox);
+        assert_eq!(it.wrap.path, None);
+        assert!(first_line_x(&d) >= 100.0 - 1e-6);
+    }
+}
+#[test]
+fn same_para_style_spacing_imports_and_round_trips() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" SameParaStyleSpacing="0">
+    <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Gap</Content><Br/></CharacterStyleRange>
+    </ParagraphStyleRange>
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" SameParaStyleSpacing="Nothing">
+    <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Ignore</Content></CharacterStyleRange>
+    </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    let st = d.stories.values().find(|s| s.text.contains("Gap")).unwrap();
+    assert_eq!(st.paras[0].para.same_para_style_spacing, Some(Some(0.0)));
+    // Ignore is an explicit "off", not an unset value.
+    assert_eq!(st.paras[1].para.same_para_style_spacing, Some(None));
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut xml = String::new();
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        if file.name().starts_with("Stories/") {
+            std::io::Read::read_to_string(&mut file, &mut xml).unwrap();
+        }
+    }
+    assert!(xml.contains(r#"SameParaStyleSpacing="Nothing""#));
+    assert!(!xml.contains(r#"SameParaStyleSpacing="Ignore""#));
+    let back = import_idml(&bytes).unwrap();
+    let b = back.stories.values().find(|s| s.text.contains("Gap")).unwrap();
+    assert_eq!(b.paras[0].para.same_para_style_spacing, Some(Some(0.0)));
+    assert_eq!(b.paras[1].para.same_para_style_spacing, Some(None));
+}
+
+mod assets;
+mod indic;
+mod object_styles;
+mod rtl_binding;
+mod table_dashes;
+mod wrap;
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -569,13 +699,58 @@ fn absent_item_and_document_attributes_take_indesign_defaults() {
     assert_eq!(fills(t.options.alt_rows.as_ref().unwrap()), want);
     let cols = t.options.alt_cols.as_ref().unwrap();
     assert_eq!((fills(cols), cols.first), (want.clone(), 2));
-    let banded = d.styles.table.iter().find(|s| s.name == "Banded").unwrap();
-    assert_eq!(fills(banded.alt_rows.as_ref().unwrap()), want);
+    // Styles now retain partial attributes for inheritance; defaults are materialized on the table.
+    let mut banded = pagenor_doc::Table::new(0, 1, 1, 0, 0, 72.0);
+    d.styles.resolve_table_style("Banded").apply_to(&mut banded, &d.styles.cell);
+    assert_eq!(fills(banded.options.alt_rows.as_ref().unwrap()), want);
     let c = t.cell(0, 0).unwrap();
     assert_eq!((c.insets, c.vj, c.fill.as_str()), ([4.0; 4], VerticalJustification::Top, "[None]"));
     for e in &c.strokes {
         assert_eq!((e.weight, e.color.as_str(), e.tint, &e.kind), (1.0, "[Black]", 1.0, &pagenor_doc::StrokeType::Solid));
     }
+}
+
+/// InDesign: a break character ends its paragraph (`<Br/>` with a ParagraphBreakType closes the
+/// range); the text after it is a paragraph with its own style, set on the next page of the
+/// break's parity.
+const ODD_PAGE_BREAK_STORY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Body</Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" ParagraphBreakType="NextOddPage"><Br/></CharacterStyleRange>
+    </ParagraphStyleRange>
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle" Justification="CenterAlign">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>1</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+
+#[test]
+fn odd_page_break_ends_its_paragraph_and_keeps_its_parity() {
+    let mut d = import_idml_with(&fixture_with_story(ODD_PAGE_BREAK_STORY), &|_| None).unwrap();
+    let sid = *d.stories.keys().next().unwrap();
+    let story = &d.stories[&sid];
+    assert_eq!(story.text, format!("Body{}\n1", st::ODD_PAGE_BREAK));
+    assert_eq!(story.paras.len(), 2);
+    assert_eq!(story.paras[0].style, "Text/Body");
+    assert_eq!(story.paras[1].style, st::BASIC_PARAGRAPH);
+    assert_eq!(story.paras[1].para.align, Some(pagenor_doc::Align::Center));
+    // Export writes the break as the paragraph's one `Br`; importing that gives the same story.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let again = back.stories.values().next().unwrap();
+    assert_eq!(again.text, story.text);
+    assert_eq!(again.paras, story.paras);
+    // The fixture's frames are on pages v and vi: the next odd page after v has no frame.
+    let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
+    assert_eq!(cs.frames[0].lines.len(), 1, "no empty line after the break");
+    assert!(cs.frames[1].lines.is_empty());
+    assert_eq!(cs.overset_at, Some(story.text.len() - 1));
+    // Numbered from 4, the second frame is on page 5: "1" starts there.
+    d.sections[0].start_number = Some(4);
+    let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
+    assert_eq!(cs.overset_at, None);
+    assert_eq!(cs.frames[1].lines.iter().map(|l| l.para).collect::<Vec<_>>(), vec![1]);
 }
 
 #[test]
@@ -622,8 +797,8 @@ fn imports_hand_written_fixture() {
     assert_eq!(d.styles.char_style("Strong").unwrap().chars.font_style.as_deref(), Some("Bold"));
     // Frames, threads, text.
     let story = d.stories.values().next().unwrap();
-    assert_eq!(story.text, format!("Hello & bold\nPage {}\tend{}after", st::PAGE_NUMBER, st::FRAME_BREAK));
-    assert_eq!(story.paras.len(), 2);
+    assert_eq!(story.text, format!("Hello & bold\nPage {}\tend{}\nafter", st::PAGE_NUMBER, st::FRAME_BREAK));
+    assert_eq!(story.paras.len(), 3);
     assert_eq!(story.paras[0].style, "Text/Body");
     assert_eq!(story.paras[1].style, st::BASIC_PARAGRAPH);
     assert_eq!(story.paras[1].para.align, Some(pagenor_doc::Align::Center));
@@ -766,6 +941,59 @@ fn imports_scalar_insets_in_object_style_without_replacing_frame_override() {
     assert_eq!(frame_inset(&d), [3.0; 4]);
 }
 
+/// A one-page spread part `Self` with one rectangle.
+fn one_frame_spread(id: &str) -> String {
+    format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <Spread Self="{id}">
+            <Page Self="{id}p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+            <Rectangle Self="{id}r" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="10 10"/><PathPointType Anchor="10 50"/>
+                <PathPointType Anchor="50 50"/><PathPointType Anchor="50 10"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+            </Rectangle>
+          </Spread>
+        </idPkg:Spread>"#
+    )
+}
+
+/// Writers differ in how a designmap `src` spells its part: percent-encoded, another case,
+/// backslashes, a leading `./`. Those resolve; a part absent from the package is a warning that
+/// names it, not silently dropped objects.
+#[test]
+fn designmap_parts_match_leniently_and_missing_ones_are_reported() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_u1a%20b.xml"/>
+          <idPkg:Spread src="./spreads\SPREAD_u2.xml"/>
+          <idPkg:Spread src="Spreads/Spread_gone.xml"/>
+        </Document>"#;
+    let zip = zip_files(&[
+        ("designmap.xml", designmap),
+        ("Spreads/Spread_u1a b.xml", &one_frame_spread("u1")),
+        ("Spreads/Spread_u2.xml", &one_frame_spread("u2")),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!(r.document.spreads.len(), 2, "both lenient spellings resolve");
+    assert!(r.document.spreads.iter().all(|sp| sp.items.len() == 1), "the spreads keep their frames");
+    assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+    assert!(r.warnings[0].contains("Spreads/Spread_gone.xml"), "{:?}", r.warnings);
+
+    // With every spread part missing the import fails, and the error names the part.
+    let only_missing = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_gone.xml"/>
+        </Document>"#;
+    let err = import_idml(&zip_files(&[("designmap.xml", only_missing)])).unwrap_err();
+    assert!(err.to_string().contains("Spreads/Spread_gone.xml"), "{err}");
+}
+
+#[test]
+fn percent_decode_keeps_malformed_escapes() {
+    assert_eq!(import::percent_decode("a%20b%2"), "a b%2");
+    assert_eq!(import::percent_decode("%é%zz"), "%é%zz");
+    assert_eq!(import::uri_to_path("file:///C:/a%20b"), "C:/a b");
+}
+
 #[test]
 fn rejects_non_idml() {
     assert!(import_idml(b"not a zip").is_err());
@@ -790,7 +1018,7 @@ fn small_doc() -> Document {
     if let Some(s) = d.story_mut(sid) {
         s.format_chars(0..3, |f| f.over = CharAttrs { size: Some(20.0), fill: Some("Brand".into()), ..Default::default() });
         let end = s.len();
-        s.insert(end, &format!(" {}", st::COLUMN_BREAK));
+        s.insert(end, &format!(" {}\n", st::COLUMN_BREAK));
     }
     let id = pagenor_doc::ItemId(d.alloc());
     let mut it = pagenor_doc::Item::new(id, lid, Shape::Oval, shapes::ellipse(Rect::new(650.0, 300.0, 750.0, 380.0)));
@@ -841,6 +1069,14 @@ fn uri_and_base64_helpers() {
     assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");
     assert_eq!(import::uri_to_path("file:///C:/x/y.jpg"), "C:/x/y.jpg");
     assert_eq!(export::path_to_uri("/a b/c.png"), "file:/a%20b/c.png");
+    assert_eq!(import::uri_to_path("file://server/share/a%20b.png"), "//server/share/a b.png");
+    assert_eq!(export::path_to_uri(r"C:\Links\a b.png"), "file:C:/Links/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\?\C:\Links\a b.png"), "file:C:/Links/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\server\share\a b.png"), "file://server/share/a%20b.png");
+    assert_eq!(export::path_to_uri(r"\\?\UNC\server\share\a b.png"), "file://server/share/a%20b.png");
+    assert_eq!(export::path_to_uri("/a%#?/b.png"), "file:/a%25%23%3F/b.png");
+    assert_eq!(export::path_to_uri("https://example.com/a%20b.png"), "https://example.com/a%20b.png");
+    assert_eq!(export::path_to_uri("file:///C:/a%20b.png"), "file:///C:/a%20b.png");
     let data: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
     assert_eq!(base64_decode(&base64_encode(&data)), data);
 }
@@ -1055,6 +1291,112 @@ fn round_trips_anchored_objects() {
     assert_eq!(s.objects[1].position, AnchorPosition::AboveLine { align: AnchorAlign::Center, space_before: 3.0, space_after: 4.0 });
 }
 
+/// Anchored settings an item leaves unset come from its object style chain, attribute by attribute.
+#[test]
+fn anchored_objects_take_unset_settings_from_object_styles() {
+    use pagenor_doc::{AnchorPosition, anchored::AnchorRelative as R};
+    let styles = STYLES.replace(
+        r#"<ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]"/>"#,
+        r#"<ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]">
+          <AnchoredObjectSetting AnchoredPosition="InlinePosition" SpineRelative="false" LockPosition="false" PinPosition="true"
+            AnchorPoint="BottomRightAnchor" HorizontalAlignment="LeftAlign" HorizontalReferencePoint="TextFrame"
+            VerticalAlignment="BottomAlign" VerticalReferencePoint="LineBaseline" AnchorXoffset="0" AnchorYoffset="0" AnchorSpaceAbove="0"/>
+        </ObjectStyle>
+        <ObjectStyle Self="ObjectStyle/Side" Name="Side"><AnchoredObjectSetting HorizontalReferencePoint="PageMargins" PinPosition="false"/></ObjectStyle>
+        <ObjectStyle Self="ObjectStyle/Note" Name="Note"><Properties><BasedOn type="object">ObjectStyle/Side</BasedOn></Properties></ObjectStyle>"#,
+    );
+    let rect = |style: &str, setting: &str| {
+        format!(
+            r#"<Rectangle Self="r{style}" AppliedObjectStyle="ObjectStyle/{style}" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+              <AnchoredObjectSetting AnchoredPosition="Anchored" {setting}/>
+            </Rectangle>"#
+        )
+    };
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+          <ParagraphStyleRange><CharacterStyleRange><Content>a</Content>{}{}{}</CharacterStyleRange></ParagraphStyleRange>
+        </Story></idPkg:Story>"#,
+        rect("$ID/[None]", r#"AnchorXoffset="5" AnchorYoffset="-3""#),
+        rect("$ID/[None]", r#"AnchorPoint="TopLeftAnchor" VerticalReferencePoint="PageEdge""#),
+        rect("Note", r#"AnchorXoffset="2""#),
+    );
+    let d = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    let s = d.stories.values().find(|s| !s.objects.is_empty()).unwrap();
+    let custom = |x_relative, y_relative, x_offset, y_offset, object_point, keep_within_column| AnchorPosition::Custom {
+        x_relative,
+        y_relative,
+        x_offset,
+        y_offset,
+        object_point,
+        ref_point: 6,
+        keep_within_column,
+    };
+    let positions: Vec<_> = s.objects.iter().map(|o| o.position.clone()).collect();
+    assert_eq!(
+        positions,
+        [
+            custom(R::TextFrame, R::Anchor, -5.0, -3.0, 8, true),
+            custom(R::TextFrame, R::PageEdge, 0.0, 0.0, 0, true),
+            custom(R::PageMargin, R::Anchor, -2.0, 0.0, 8, false),
+        ]
+    );
+}
+
+/// IDML measures a left-aligned anchored object's X offset leftwards; the document model and
+/// composition measure every X offset rightwards.
+#[test]
+fn left_aligned_anchored_x_offsets_flip_at_the_idml_boundary() {
+    use pagenor_doc::AnchorPosition;
+    let rect = |id: &str, align: &str, x: &str| {
+        format!(
+            r#"<Rectangle Self="{id}" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+              <AnchoredObjectSetting AnchoredPosition="Anchored" AnchorPoint="TopLeftAnchor" HorizontalReferencePoint="TextFrame"
+                HorizontalAlignment="{align}" VerticalAlignment="TopAlign" VerticalReferencePoint="PageEdge" AnchorXoffset="{x}" AnchorYoffset="0"/>
+            </Rectangle>"#
+        )
+    };
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+          <ParagraphStyleRange><CharacterStyleRange><Content>a</Content>{}{}{}</CharacterStyleRange></ParagraphStyleRange>
+        </Story></idPkg:Story>"#,
+        rect("left", "LeftAlign", "-108"),
+        rect("zero", "LeftAlign", "0"),
+        rect("center", "CenterAlign", "116"),
+    );
+    let d = import_idml(&fixture_with_story(&story)).unwrap();
+    let x_offsets = |d: &Document| -> Vec<f64> {
+        let s = d.stories.values().find(|s| !s.objects.is_empty()).unwrap();
+        s.objects.iter().map(|o| if let AnchorPosition::Custom { x_offset, .. } = o.position { x_offset } else { f64::NAN }).collect()
+    };
+    assert_eq!(x_offsets(&d), [108.0, 0.0, 116.0]);
+    // The left-aligned object lands 108 pt right of the reference point.
+    let sid = d.stories.iter().find(|(_, s)| !s.objects.is_empty()).map(|(id, _)| *id).unwrap();
+    let cs = pagenor_compose::compose_story(&d, sid, &Default::default());
+    let placed: Vec<_> = cs.frames.iter().flat_map(|f| &f.objects).collect();
+    let x = |i: usize| placed.iter().find(|o| o.index == i).unwrap().origin.x;
+    assert!((x(0) - x(1) - 108.0).abs() < 1e-6, "{} {}", x(0), x(1));
+    // Export writes the original IDML values back.
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut stories = String::new();
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        if f.name().starts_with("Stories/") {
+            std::io::Read::read_to_string(&mut f, &mut stories).unwrap();
+        }
+    }
+    for v in [r#"AnchorXoffset="-108""#, r#"AnchorXoffset="0""#, r#"AnchorXoffset="116""#] {
+        assert!(stories.contains(v), "{v} missing");
+    }
+    assert_eq!(x_offsets(&import_idml(&export_idml(&d)).unwrap()), [108.0, 0.0, 116.0]);
+}
+
 #[test]
 fn round_trips_frames_with_pasted_in_items() {
     let mut d = Document::new(&NewDocument::default());
@@ -1143,7 +1485,7 @@ fn cjk_composite_fonts_and_custom_kinsoku_are_document_resources() {
     let map = DESIGNMAP.replace("</Document>", r#"
       <KinsokuTable Self="KinsokuTable/Test" Name="Test" CantBeginLineChars="乙" CantEndLineChars="甲" CantBeSeparatedChars="—" HangingPunctuationChars="。"/>
       <CompositeFont Self="CompositeFont/Mixed" Name="Mixed"><CompositeFontEntry Self="cf1" Name="Base" FontStyle="Regular"><Properties><AppliedFont type="string">Source Serif 4</AppliedFont></Properties></CompositeFontEntry>
-      <CompositeFontEntry Self="cf2" Name="Digits" CustomCharacters="0123456789" FontStyle="Regular" RelativeSize="80" BaselineShift="10"><Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties></CompositeFontEntry></CompositeFont>
+      <CompositeFontEntry Self="cf2" Name="Digits" CustomCharacters="0123456789" FontStyle="Regular" RelativeSize="80" BaselineShift="10"><Properties><AppliedFont type="string">$ID/Source Sans 3</AppliedFont></Properties></CompositeFontEntry></CompositeFont>
     </Document>"#);
     let story = STORY.replace("<ParagraphStyleRange ", "<ParagraphStyleRange KinsokuSet=\"KinsokuTable/Test\" ");
     let bytes = zip_files(&[
@@ -1231,6 +1573,382 @@ fn arabic_story_and_table_directions_survive_idml_export() {
     let st = back.stories.values().find(|st| !st.tables.is_empty()).unwrap();
     assert_eq!(st.direction, pagenor_doc::TextDirection::RightToLeft);
     assert_eq!(st.tables.values().next().unwrap().options.direction, pagenor_doc::TextDirection::RightToLeft);
+}
+/// Fully synthetic style-only table, including sparse based-on attributes and local overrides.
+const CASCADE_STYLES: &str = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootCellStyleGroup>
+  <CellStyle Self="CellStyle/$ID/[None]" Name="$ID/[None]"/>
+  <CellStyle Self="cs-base" Name="Base" FillColor="Color/Brand" FillTint="25"
+    TopInset="2" LeftInset="3" BottomInset="4" RightInset="5" VerticalJustification="CenterAlign"
+    TopEdgeStrokeWeight="2" TopEdgeStrokeColor="Color/Brand" TopEdgeStrokeTint="40" TopEdgeStrokeType="StrokeStyle/$ID/Dashed"
+    LeftEdgeStrokeWeight="3" BottomEdgeStrokeWeight="4" RightEdgeStrokeWeight="5"
+    AppliedParagraphStyle="ParagraphStyle/CellParagraph"/>
+  <CellStyle Self="cs-body" Name="Body" FillTint="50"><Properties><BasedOn type="object">cs-base</BasedOn></Properties></CellStyle>
+  <CellStyle Self="cs-left" Name="Left" FillColor="Color/Black" LeftEdgeStrokeWeight="0"><Properties><BasedOn type="object">cs-body</BasedOn></Properties></CellStyle>
+  <CellStyle Self="cs-header" Name="Header" FillColor="Color/Paper" BottomEdgeStrokeColor="Color/Brand" BottomEdgeStrokeWeight="6">
+    <Properties><BasedOn type="object">cs-body</BasedOn></Properties>
+  </CellStyle>
+  <CellStyle Self="cs-explicit" Name="Explicit" FillColor="Color/Brand" FillTint="75" TopInset="0"
+    TopEdgeStrokeColor="Swatch/None" RightEdgeStrokeTint="30"/>
+</RootCellStyleGroup>
+<RootParagraphStyleGroup><ParagraphStyle Self="ParagraphStyle/CellParagraph" Name="CellParagraph" PointSize="9"/></RootParagraphStyleGroup>
+<RootTableStyleGroup>
+  <TableStyle Self="TableStyle/$ID/[No table style]" Name="$ID/[No table style]"
+    TopBorderStrokeWeight="7" LeftBorderStrokeWeight="8" BottomBorderStrokeWeight="9" RightBorderStrokeWeight="10"
+    StartRowFillCount="0" StartRowFillColor="Color/Brand" StartRowFillTint="20" EndRowFillCount="0" EndRowFillColor="Swatch/None"
+    HeaderRegionSameAsBodyRegion="true" FooterRegionSameAsBodyRegion="true"
+    LeftColumnRegionSameAsBodyRegion="true" RightColumnRegionSameAsBodyRegion="true"/>
+  <TableStyle Self="ts-base" Name="BaseTable" BodyRegionCellStyle="cs-body" HeaderRegionCellStyle="cs-header"
+    LeftColumnRegionCellStyle="cs-left" HeaderRegionSameAsBodyRegion="false" LeftColumnRegionSameAsBodyRegion="false">
+    <Properties><BasedOn type="string">$ID/[No table style]</BasedOn></Properties>
+  </TableStyle>
+  <TableStyle Self="ts-child" Name="Table" SpaceBefore="12" StartRowFillCount="1" EndRowFillCount="1">
+    <Properties><BasedOn type="object">ts-base</BasedOn></Properties>
+  </TableStyle>
+  <TableStyle Self="TableStyle/$ID/[Basic Table]" Name="$ID/[Basic Table]" SpaceAfter="17">
+    <Properties><BasedOn type="object">ts-child</BasedOn></Properties>
+  </TableStyle>
+</RootTableStyleGroup></idPkg:Styles>"#;
+
+const CASCADE_STORY: &str = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Table AppliedTableStyle="ts-child" HeaderRowCount="1" SpaceBefore="19" RightBorderStrokeColor="Color/Brand">
+<Row Name="0" MinimumHeight="24"/><Row Name="1" MinimumHeight="24"/>
+<Column Name="0" SingleColumnWidth="60"/><Column Name="1" SingleColumnWidth="60"/><Column Name="2" SingleColumnWidth="60"/>
+<Cell Name="0:0" AppliedCellStyle="CellStyle/$ID/[None]"><ParagraphStyleRange><CharacterStyleRange><Content>Header left</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+<Cell Name="1:0" AppliedCellStyle="cs-explicit"><ParagraphStyleRange><CharacterStyleRange><Content>Explicit</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+<Cell Name="2:0" AppliedCellStyle="cs-explicit" FillColor="Swatch/None" FillTint="0" LeftInset="0" VerticalJustification="BottomAlign"
+  TopEdgeStrokeWeight="0" RightEdgeStrokeColor="Swatch/None" RightEdgeStrokePriority="7">
+  <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange><Content>Local</Content></CharacterStyleRange></ParagraphStyleRange>
+</Cell>
+<Cell Name="0:1" AppliedCellStyle="CellStyle/$ID/[None]"><ParagraphStyleRange><CharacterStyleRange><Content>Left</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+<Cell Name="1:1"><ParagraphStyleRange><CharacterStyleRange><Content>Body</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+<Cell Name="2:1"><ParagraphStyleRange><CharacterStyleRange><Content>Body right</Content></CharacterStyleRange></ParagraphStyleRange></Cell>
+</Table></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+
+fn fixture_with_table_styles(styles: &str, story: &str) -> Vec<u8> {
+    zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ])
+}
+
+#[test]
+fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
+    let d = import_idml(&fixture_with_table_styles(CASCADE_STYLES, CASCADE_STORY)).unwrap();
+    d.check().unwrap();
+    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!((table.nrows(), table.ncols()), (2, 3));
+    assert_eq!(table.style, "Table");
+    assert_eq!(table.options.space_before, 19.0);
+    assert_eq!(std::array::from_fn::<_, 4, _>(|i| table.options.border_for(i).weight), [7.0, 8.0, 9.0, 10.0]);
+    assert_eq!(table.options.border_for(3).color, "Brand");
+    let fills = table.options.alt_rows.as_ref().unwrap();
+    assert_eq!((fills.first, fills.next, fills.first_tint), (1, 1, 0.2));
+    assert_eq!(fills.first_color, "Brand");
+    let header = table.cell(0, 0).unwrap();
+    assert_eq!(header.fill, pagenor_color::swatch::PAPER, "header takes precedence over left region");
+    assert!(header.style.is_empty(), "a table region does not become AppliedCellStyle");
+    assert_eq!(header.insets, [2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(header.vj, pagenor_doc::VerticalJustification::Center);
+    assert_eq!(header.text.paras[0].style, "CellParagraph");
+    assert_eq!(header.strokes[0].weight, 2.0);
+    assert_eq!(header.strokes[0].tint, 0.4);
+    assert_ne!(header.strokes[0].kind, pagenor_doc::StrokeType::Solid);
+    assert_eq!(header.strokes[2].weight, 6.0);
+    assert_eq!(header.border_overrides, [true; 4]);
+    assert_eq!(header.stroke_defined, [true; 4]);
+    assert_eq!(header.stroke_priorities, [0; 4]);
+    let explicit = table.cell(0, 1).unwrap();
+    assert_eq!(explicit.fill, "Brand");
+    assert_eq!(explicit.fill_tint, 0.75);
+    assert_eq!(explicit.insets, [0.0, 3.0, 4.0, 5.0]);
+    assert_eq!(explicit.strokes[0].weight, 2.0, "color-only override inherits weight");
+    assert_eq!(explicit.strokes[0].color, pagenor_color::swatch::NONE);
+    assert_eq!(explicit.strokes[3].weight, 5.0);
+    assert_eq!(explicit.strokes[3].tint, 0.3);
+    let local = table.cell(0, 2).unwrap();
+    assert_eq!(local.fill, pagenor_color::swatch::NONE);
+    assert_eq!(local.fill_tint, 0.0);
+    assert_eq!(local.insets[1], 0.0);
+    assert_eq!(local.vj, pagenor_doc::VerticalJustification::Bottom);
+    assert_eq!(local.strokes[0].weight, 0.0);
+    assert_eq!(local.strokes[3].color, pagenor_color::swatch::NONE);
+    assert_eq!(local.stroke_priorities, [0, 0, 0, 7]);
+    assert_eq!(local.text.paras[0].style, st::BASIC_PARAGRAPH, "explicit paragraph style wins");
+    assert_eq!(table.cell(1, 0).unwrap().fill, pagenor_color::swatch::BLACK);
+    assert_eq!(table.cell(1, 0).unwrap().strokes[1].weight, 0.0);
+    assert_eq!(table.cell(1, 1).unwrap().fill_tint, 0.5);
+    assert_eq!(table.cell(1, 2).unwrap().fill, "Brand");
+
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let roundtrip = back.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    for (before, after) in table.cells.iter().zip(&roundtrip.cells) {
+        assert_eq!(after.strokes, before.strokes);
+        assert_eq!(after.border_overrides, before.border_overrides);
+        assert_eq!(after.stroke_priorities, before.stroke_priorities);
+        assert_eq!(after.style, before.style);
+        assert_eq!(after.fill, before.fill);
+        assert_eq!(after.insets, before.insets);
+    }
+    for i in 0..4 {
+        assert_eq!(roundtrip.options.border_for(i), table.options.border_for(i));
+    }
+    let style = back.styles.cell.iter().find(|s| s.name == "Explicit").unwrap();
+    assert_eq!(style.strokes[0].weight, None, "style export keeps absence distinct from zero");
+    assert_eq!(style.strokes[0].color.as_deref(), Some(pagenor_color::swatch::NONE));
+    assert_eq!(back.styles.table.iter().find(|s| s.name == "Table").unwrap().based_on.as_deref(), Some("BaseTable"));
+}
+
+#[test]
+fn table_style_same_as_body_flags_and_editable_basic_table_are_inherited() {
+    let styles = CASCADE_STYLES.replace(
+        "Name=\"Table\" SpaceBefore",
+        "Name=\"Table\" HeaderRegionSameAsBodyRegion=\"true\" LeftColumnRegionSameAsBodyRegion=\"true\" SpaceBefore",
+    );
+    let story = CASCADE_STORY.replace("AppliedTableStyle=\"ts-child\"", "AppliedTableStyle=\"TableStyle/$ID/[Basic Table]\"");
+    let d = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert!(table.style.is_empty());
+    assert_eq!(table.options.space_after, 17.0);
+    assert_eq!(table.cell(0, 0).unwrap().fill, "Brand");
+    assert_eq!(table.cell(0, 0).unwrap().strokes[2].weight, 4.0);
+    assert_eq!(table.cell(1, 0).unwrap().fill, "Brand");
+    assert_eq!(table.cell(1, 0).unwrap().strokes[1].weight, 3.0);
+}
+
+#[test]
+fn table_style_cycles_and_missing_bases_terminate_without_losing_nearest_values() {
+    let styles = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootCellStyleGroup>
+<CellStyle Self="CellStyle/A" Name="A" TopEdgeStrokeWeight="0"><Properties><BasedOn type="object">CellStyle/B</BasedOn></Properties></CellStyle>
+<CellStyle Self="CellStyle/B" Name="B" TopEdgeStrokeColor="Color/Brand"><Properties><BasedOn type="object">CellStyle/A</BasedOn></Properties></CellStyle>
+<CellStyle Self="CellStyle/Missing" Name="Missing" LeftInset="0"><Properties><BasedOn type="object">CellStyle/Unknown</BasedOn></Properties></CellStyle>
+</RootCellStyleGroup><RootTableStyleGroup>
+<TableStyle Self="ts-child" Name="A" BodyRegionCellStyle="CellStyle/A"><Properties><BasedOn type="object">TableStyle/B</BasedOn></Properties></TableStyle>
+<TableStyle Self="TableStyle/B" Name="B" SpaceAfter="20"><Properties><BasedOn type="object">ts-child</BasedOn></Properties></TableStyle>
+</RootTableStyleGroup></idPkg:Styles>"#;
+    let d = import_idml(&fixture_with_table_styles(styles, CASCADE_STORY)).unwrap();
+    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!(table.options.space_after, 20.0);
+    assert_eq!(table.cell(1, 1).unwrap().strokes[0].weight, 0.0);
+    assert_eq!(table.cell(1, 1).unwrap().strokes[0].color, "Brand");
+    let missing = pagenor_doc::resolve_cell_style(&d.styles.cell, "Missing");
+    assert_eq!(missing.inset_overrides[1], Some(0.0));
+}
+
+#[test]
+fn table_local_alternating_fill_off_survives_named_style_roundtrip() {
+    let styles = CASCADE_STYLES.replace(
+        "Name=\"Table\" SpaceBefore",
+        "Name=\"Table\" StartColumnFillCount=\"1\" EndColumnFillCount=\"1\" StartColumnFillColor=\"Color/Brand\" SpaceBefore",
+    );
+    let story = CASCADE_STORY.replace("HeaderRowCount=\"1\"", "HeaderRowCount=\"1\" StartRowFillCount=\"0\" StartColumnFillCount=\"0\"");
+    let document = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    for document in [&document, &import_idml(&export_idml(&document)).unwrap()] {
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        assert!(table.options.alt_rows.is_none());
+        assert!(table.options.alt_cols.is_none());
+    }
+}
+
+#[test]
+fn table_local_fill_counts_enable_inherited_disabled_pattern_colors() {
+    let story =
+        CASCADE_STORY.replace("AppliedTableStyle=\"ts-child\"", "AppliedTableStyle=\"ts-base\" StartRowFillCount=\"1\" EndRowFillCount=\"1\"");
+    let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+    let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    let fills = table.options.alt_rows.as_ref().unwrap();
+    assert_eq!((fills.first, fills.next), (1, 1));
+    assert_eq!(fills.first_color, "Brand");
+    assert_eq!(fills.first_tint, 0.2);
+}
+
+#[test]
+fn table_absent_and_explicit_default_edges_remain_distinct_on_idml_roundtrip() {
+    let story = CASCADE_STORY
+        .replace("AppliedTableStyle=\"ts-child\"", "AppliedTableStyle=\"Missing\"")
+        .replace("Name=\"1:1\"", "Name=\"1:1\" TopEdgeStrokeWeight=\"1\" TopEdgeStrokePriority=\"0\"");
+    let document = import_idml(&fixture_with_table_styles(STYLES, &story)).unwrap();
+    for document in [&document, &import_idml(&export_idml(&document)).unwrap()] {
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        assert_eq!(table.cell(1, 0).unwrap().stroke_defined, [false; 4]);
+        assert_eq!(table.cell(1, 1).unwrap().stroke_defined, [true, false, false, false]);
+        assert_eq!(table.cell(1, 1).unwrap().border_overrides, [false; 4]);
+        assert_eq!(table.cell(1, 1).unwrap().stroke_priorities, [0; 4]);
+    }
+}
+
+#[test]
+fn multiline_table_and_cell_style_bases_resolve() {
+    let styles = CASCADE_STYLES.replace(">cs-base</BasedOn>", ">\n  cs-base \n</BasedOn>").replace(">ts-base</BasedOn>", ">\n ts-base \n</BasedOn>");
+    let document = import_idml(&fixture_with_table_styles(&styles, CASCADE_STORY)).unwrap();
+    let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!(table.cell(1, 1).unwrap().strokes[0].weight, 2.0);
+    assert_eq!(table.options.border_for(0).weight, 7.0);
+}
+
+#[test]
+fn legacy_native_documents_export_both_builtin_table_styles_when_missing() {
+    let story = CASCADE_STORY.replace("AppliedTableStyle=\"ts-child\"", "AppliedTableStyle=\"TableStyle/$ID/[Basic Table]\"");
+    let mut document = import_idml(&fixture_with_story(&story)).unwrap();
+    document.styles_mut().table.clear();
+    let bytes = export_idml(&document);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut styles = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("Resources/Styles.xml").unwrap(), &mut styles).unwrap();
+    assert_eq!(styles.matches("Self=\"TableStyle/$ID/[Basic Table]\"").count(), 1);
+    assert_eq!(styles.matches("Self=\"TableStyle/$ID/[No table style]\"").count(), 1);
+    let back = import_idml(&bytes).unwrap();
+    assert!(back.styles.table.iter().any(|s| s.name == pagenor_doc::BASIC_TABLE));
+}
+
+#[test]
+fn hostile_table_spans_are_clamped_before_arithmetic() {
+    let story = CASCADE_STORY.replace("Name=\"1:1\"", "Name=\"1:1\" RowSpan=\"inf\" ColumnSpan=\"inf\"");
+    let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+    document.check().unwrap();
+    let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!(table.cell(1, 1).unwrap().row_span, 1);
+    assert_eq!(table.cell(1, 1).unwrap().col_span, 2);
+}
+
+#[test]
+fn signed_idml_edge_priorities_roundtrip_without_clamping() {
+    let story = CASCADE_STORY.replace(
+        "Name=\"1:1\"",
+        "Name=\"1:1\" TopEdgeStrokePriority=\"-5\" LeftEdgeStrokePriority=\"-2147483648\" RightEdgeStrokePriority=\"2147483647\"",
+    );
+    let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+    for document in [&document, &import_idml(&export_idml(&document)).unwrap()] {
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        assert_eq!(table.cell(1, 1).unwrap().stroke_priorities, [-5, i32::MIN, 0, i32::MAX]);
+    }
+}
+
+#[test]
+fn alternating_table_strokes_inherit_and_roundtrip_without_flattening_cell_edges() {
+    let styles = CASCADE_STYLES.replace(
+        "Name=\"BaseTable\"",
+        "Name=\"BaseTable\" StartRowStrokeCount=\"1\" EndRowStrokeCount=\"1\" StartRowStrokeWeight=\"0\" EndRowStrokeWeight=\"0\" StartRowStrokeColor=\"Color/Paper\" EndRowStrokeColor=\"Color/Brand\" StartColumnStrokeCount=\"2\" EndColumnStrokeCount=\"1\" StartColumnStrokeWeight=\"1\" EndColumnStrokeWeight=\"2\" EndColumnLineStyle=\"StrokeStyle/$ID/Dotted\" SkipFirstAlternatingStrokeColumns=\"1\"",
+    ).replace("Name=\"Table\"", "Name=\"Table\" StartRowStrokeTint=\"25\"");
+    let story = CASCADE_STORY.replace("HeaderRowCount=\"1\"", "HeaderRowCount=\"1\" EndRowStrokeColor=\"Swatch/None\"");
+    let document = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    let before = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    let row = before.options.row_strokes.as_ref().unwrap();
+    assert_eq!((row.first, row.next), (1, 1));
+    assert_eq!(row.first_stroke.tint, 0.25);
+    assert_eq!(row.first_stroke.color, pagenor_color::swatch::PAPER);
+    assert_eq!(row.next_stroke.color, pagenor_color::swatch::NONE);
+    assert!(!row.uniform_stroke().unwrap().is_visible(), "zero patterns are uniform even when their colors differ");
+    let column = before.options.column_strokes.as_ref().unwrap();
+    assert_eq!((column.first, column.next, column.skip_first), (2, 1, 1));
+    assert_eq!(column.next_stroke.kind, pagenor_doc::StrokeType::Dotted);
+    assert!(column.uniform_stroke().is_none(), "nonuniform/skipped patterns are preserved without guessing their phase");
+    assert_eq!(before.cell(0, 0).unwrap().strokes[2].weight, 6.0, "cell styles remain higher-precedence edges");
+    let back = import_idml(&export_idml(&document)).unwrap();
+    let after = back.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    assert_eq!(after.options.row_strokes, before.options.row_strokes);
+    assert_eq!(after.options.column_strokes, before.options.column_strokes);
+    let style = back.styles.table.iter().find(|s| s.name == "Table").unwrap();
+    assert_eq!(style.row_strokes.first_stroke.weight, None);
+    assert_eq!(style.row_strokes.first_stroke.tint, Some(0.25));
+}
+
+#[test]
+fn alternating_table_strokes_local_off_overrides_named_style_on_roundtrip() {
+    let styles = CASCADE_STYLES.replace(
+        "Name=\"Table\"",
+        "Name=\"Table\" StartRowStrokeCount=\"1\" EndRowStrokeCount=\"1\" StartColumnStrokeCount=\"1\" EndColumnStrokeCount=\"1\"",
+    );
+    let story = CASCADE_STORY.replace(
+        "HeaderRowCount=\"1\"",
+        "HeaderRowCount=\"1\" StartRowStrokeCount=\"0\" EndRowStrokeCount=\"0\" StartRowStrokeWeight=\"4\" EndRowStrokeColor=\"Color/Brand\" StartColumnStrokeCount=\"0\" EndColumnStrokeCount=\"0\" SkipFirstAlternatingStrokeColumns=\"3\" EndColumnLineStyle=\"StrokeStyle/$ID/Dotted\"",
+    );
+    let document = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    for document in [&document, &import_idml(&export_idml(&document)).unwrap()] {
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let row = table.options.row_strokes.as_ref().unwrap();
+        let column = table.options.column_strokes.as_ref().unwrap();
+        assert_eq!((row.first, row.next, column.first, column.next), (0, 0, 0, 0));
+        assert!(row.uniform_stroke().is_none());
+        assert!(column.uniform_stroke().is_none());
+        assert_eq!(row.first_stroke.weight, 4.0);
+        assert_eq!(row.next_stroke.color, "Brand");
+        assert_eq!(column.skip_first, 3);
+        assert_eq!(column.next_stroke.kind, pagenor_doc::StrokeType::Dotted);
+    }
+}
+
+#[test]
+fn complete_uniform_native_style_fields_keep_legacy_identity_on_idml_roundtrip() {
+    let mut document = import_idml(&fixture()).unwrap();
+    let stroke = pagenor_doc::CellStroke { weight: 3.0, tint: 0.5, ..Default::default() };
+    document.styles_mut().cell.push(pagenor_doc::CellStyle {
+        name: "Uniform".into(),
+        insets: Some([5.0; 4]),
+        stroke: Some(stroke.clone()),
+        ..Default::default()
+    });
+    document.styles_mut().table.push(pagenor_doc::TableStyle { name: "Uniform".into(), border: Some(stroke.clone()), ..Default::default() });
+    let back = import_idml(&export_idml(&document)).unwrap();
+    let cell = back.styles.cell.iter().find(|s| s.name == "Uniform").unwrap();
+    assert_eq!(cell.insets, Some([5.0; 4]));
+    assert_eq!(cell.stroke.as_ref(), Some(&stroke));
+    assert!(cell.strokes.iter().all(pagenor_doc::CellStrokeAttrs::is_empty));
+    let table = back.styles.table.iter().find(|s| s.name == "Uniform").unwrap();
+    assert_eq!(table.border.as_ref(), Some(&stroke));
+    assert!(table.borders.iter().all(pagenor_doc::CellStrokeAttrs::is_empty));
+}
+
+#[test]
+fn imports_column_rules_from_frames_and_object_styles() {
+    let rule = r#"ColumnRuleOverride="true" ColumnRuleStrokeWidth="2.5" ColumnRuleStrokeColor="Color/Black" ColumnRuleStrokeTint="40"
+        ColumnRuleStrokeType="StrokeStyle/$ID/Solid" ColumnRuleOverprintOverride="false" ColumnRuleOffset="-3" ColumnRuleTopInset="6"
+        ColumnRuleBottomInset="9" ColumnRuleInsetChainOverride="false""#;
+    let styles = format!(
+        r#"<ObjectStyle Self="ObjectStyle/Padded" Name="Padded" EnableTextFrameGeneralOptions="true"><TextFramePreference TextColumnCount="2" {rule}/></ObjectStyle>"#
+    );
+    let d = inset_fixture(&format!(r#"<TextFramePreference TextColumnCount="3" {rule}/>"#), &styles);
+    let style = d.styles.object.iter().find(|s| s.name == "Padded").unwrap().text_frame.clone().unwrap();
+    for o in [d.spreads[0].items[0].text_frame().unwrap().options.clone(), style] {
+        assert!(o.column_rule, "{o:?}");
+        assert_eq!(o.column_rule_weight, 2.5);
+        assert_eq!(o.column_rule_color, pagenor_color::swatch::BLACK);
+        assert!((o.column_rule_tint - 0.4).abs() < 1e-6);
+        assert_eq!((o.column_rule_offset, o.column_rule_top_inset, o.column_rule_bottom_inset), (-3.0, 6.0, 9.0));
+    }
+    // Absent attributes: no rule, InDesign's defaults.
+    let d = inset_fixture(r#"<TextFramePreference TextColumnCount="3"/>"#, "");
+    assert_eq!(d.spreads[0].items[0].text_frame().unwrap().options, pagenor_doc::TextFrameOptions { columns: 3, ..Default::default() });
+}
+
+#[test]
+fn column_rules_round_trip() {
+    let mut d = small_doc();
+    let fid = d.spreads[0].items[0].id;
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.column_rule = true;
+    o.column_rule_weight = 0.75;
+    o.column_rule_color = "Brand".into();
+    o.column_rule_tint = 0.5;
+    o.column_rule_offset = 1.5;
+    o.column_rule_top_inset = 4.0;
+    o.column_rule_bottom_inset = 2.0;
+    let want = o.clone();
+    let bytes = export_idml(&d);
+    let back = import_idml(&bytes).unwrap();
+    let got = back.spreads[0].items.iter().find_map(|i| i.text_frame().filter(|t| t.options.column_rule)).unwrap().options.clone();
+    assert_eq!(got, want);
+    // Frames without a rule stay without one.
+    let plain = export_idml(&small_doc());
+    let back = import_idml(&plain).unwrap();
+    assert!(back.spreads.iter().flat_map(|s| &s.items).filter_map(|i| i.text_frame()).all(|t| !t.options.column_rule));
 }
 
 #[test]
@@ -1483,4 +2201,431 @@ fn malformed_mojikumi_rows_are_not_silently_coerced() {
             assert!(err.contains("Mojikumi"), "{key}={value}: {err}");
         }
     }
+}
+
+/// InDesign's designmap lists layers back to front; `Document::layers[0]` is the front layer.
+#[test]
+fn layers_import_and_export_in_stacking_order() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Background"/>
+      <Layer Self="L2" Name="Content"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s">
+        <Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+        <Rectangle Self="r" ItemLayer="L1">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 100"/>
+            <PathPointType Anchor="100 100"/><PathPointType Anchor="100 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+        </Rectangle>
+      </Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let names = |d: &Document| d.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&d), ["Content", "Background"]);
+    assert_eq!(d.spreads[0].items[0].layer, d.layers[1].id, "the rectangle stays on Background");
+
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut map = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("designmap.xml").unwrap(), &mut map).unwrap();
+    let (bg, content) = (map.find(r#"Name="Background""#).unwrap(), map.find(r#"Name="Content""#).unwrap());
+    assert!(bg < content, "designmap lists the back layer first");
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(names(&back), ["Content", "Background"]);
+    assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
+}
+
+/// A file's tab list is sanitized as the Tabs commands check theirs: a hostile one imports
+/// within the limits instead of failing the import.
+#[test]
+fn split_columns_import_and_round_trip() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" SpanColumnType="SplitColumns" SplitColumnInsideGutter="27" SplitColumnOutsideGutter="4.5">
+        <Properties><SpanSplitColumnCount type="short">3</SpanSplitColumnCount></Properties>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Split list</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let para = |d: &Document| d.stories.values().find(|s| s.text.contains("Split list")).unwrap().paras[0].para.clone();
+    let a = para(&doc);
+    assert_eq!(a.span_columns, Some(pagenor_doc::SpanColumns::Split(3)));
+    assert_eq!(a.split_inside_gutter, Some(27.0));
+    assert_eq!(a.split_outside_gutter, Some(4.5));
+    let b = para(&import_idml(&export_idml(&doc)).unwrap());
+    assert_eq!((b.span_columns, b.split_inside_gutter, b.split_outside_gutter), (a.span_columns, a.split_inside_gutter, a.split_outside_gutter));
+}
+
+#[test]
+fn hostile_tab_lists_import_within_the_limits() {
+    let item = |position: &str, leader: &str| {
+        format!(
+            r#"<ListItem type="record"><Alignment type="enumeration">LeftAlign</Alignment><AlignmentCharacter type="string">.</AlignmentCharacter><Leader type="string">{leader}</Leader><Position type="unit">{position}</Position></ListItem>"#
+        )
+    };
+    let mut items: String = (0..500).rev().map(|i| item(&(i * 3).to_string(), "")).collect();
+    items.push_str(&item("NaN", ""));
+    items.push_str(&item("1e300", "0123456789"));
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <Properties><TabList type="list">{items}</TabList></Properties>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Many tabs</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#
+    );
+    let doc = import_idml(&fixture_with_story(&story)).unwrap();
+    let tabs = doc.stories.values().find(|s| s.text.contains("Many tabs")).unwrap().paras[0].para.tabs.clone().unwrap();
+    assert_eq!(tabs.len(), pagenor_doc::MAX_TAB_STOPS);
+    assert!(tabs.iter().all(|t| t.position.is_finite() && t.leader.chars().count() <= pagenor_doc::MAX_TAB_LEADER));
+    assert!(tabs.windows(2).all(|w| w[0].position < w[1].position), "sorted");
+    assert_eq!((tabs[0].position, tabs[99].position), (0.0, 297.0), "the first stops by position");
+}
+
+#[test]
+fn cell_edge_gap_colours_and_tints_import_and_round_trip_per_edge() {
+    let styles = CASCADE_STYLES.replace(
+        r#"TopEdgeStrokeType="StrokeStyle/$ID/Dashed""#,
+        r#"TopEdgeStrokeType="StrokeStyle/$ID/Dashed" TopEdgeStrokeGapColor="Color/Paper" TopEdgeStrokeGapTint="60" BottomEdgeStrokeGapColor="Color/Brand""#,
+    );
+    let story = CASCADE_STORY.replace(
+        r#"<Cell Name="1:1">"#,
+        r#"<Cell Name="1:1" LeftEdgeStrokeType="StrokeStyle/$ID/Dotted" LeftEdgeStrokeGapColor="Color/Brand" LeftEdgeStrokeGapTint="30" RightEdgeStrokeGapColor="Color/Paper">"#,
+    );
+    let gaps = |d: &Document| {
+        let base = d.styles.cell.iter().find(|s| s.name == "Base").unwrap().strokes.clone();
+        let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(1, 1).unwrap().strokes.clone();
+        (base.map(|e| (e.gap_color, e.gap_tint)), cell.map(|e| (e.gap_color, e.gap_tint)))
+    };
+    let d = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    d.check().unwrap();
+    let (style, cell) = gaps(&d);
+    assert_eq!(style[0], (Some("[Paper]".to_string()), Some(0.6)));
+    assert_eq!(style[2], (Some("Brand".to_string()), None));
+    assert_eq!((style[1].clone(), style[3].clone()), ((None, None), (None, None)));
+    assert_eq!(cell[1], ("Brand".to_string(), 0.3), "left");
+    assert_eq!(cell[3], ("[Paper]".to_string(), 1.0), "right");
+    assert_eq!(cell[0].0, "[Paper]", "the Base style's top gap colour reaches the cell");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(gaps(&back), (style, cell));
+}
+
+#[test]
+fn paragraph_border_shading_span_and_list_options_import_and_round_trip() {
+    use pagenor_doc::{BoxBottom, BoxTop, BoxWidth, Cap, Join, ListAlign, StrokeType};
+    use pagenor_geom::corners::{Corner, CornerShape};
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" ParagraphBorderOn="true"
+        ParagraphBorderStrokeEndCap="RoundEndCap" ParagraphBorderStrokeEndJoin="BevelEndJoin"
+        ParagraphBorderTopLeftCornerOption="RoundedCorner" ParagraphBorderTopLeftCornerRadius="6"
+        ParagraphBorderTopRightCornerOption="BevelCorner" ParagraphBorderTopRightCornerRadius="4"
+        ParagraphBorderBottomRightCornerOption="None" ParagraphBorderBottomRightCornerRadius="12"
+        ParagraphBorderBottomLeftCornerOption="InsetCorner" ParagraphBorderBottomLeftCornerRadius="3"
+        ParagraphBorderWidth="TextWidth" ParagraphBorderTopOrigin="EmBoxTopOrigin" ParagraphBorderBottomOrigin="EmBoxBottomOrigin"
+        ParagraphBorderDisplayIfSplits="true" MergeConsecutiveParaBorders="false" ParagraphBorderGapTint="50"
+        ParagraphShadingOn="true" ParagraphShadingTopLeftCornerOption="RoundedCorner" ParagraphShadingTopLeftCornerRadius="8"
+        ParagraphShadingTopRightCornerOption="RoundedCorner" ParagraphShadingTopRightCornerRadius="8"
+        ParagraphShadingWidth="TextWidth" ParagraphShadingTopOrigin="BaselineTopOrigin" ParagraphShadingBottomOrigin="BaselineBottomOrigin"
+        ParagraphShadingClipToFrame="true" ParagraphShadingSuppressPrinting="true"
+        SpanColumnType="SpanColumns" SpanColumnMinSpaceBefore="6" SpanColumnMinSpaceAfter="9"
+        BulletsAndNumberingListType="NumberedList" NumberingLevel="2" NumberingAlignment="RightAlign" BulletsAlignment="CenterAlign"
+        NumberingApplyRestartPolicy="false">
+        <Properties>
+          <ParagraphBorderType type="object">StrokeStyle/$ID/Dashed</ParagraphBorderType>
+          <ParagraphBorderGapColor type="object">Swatch/None</ParagraphBorderGapColor>
+          <SpanSplitColumnCount type="enumeration">All</SpanSplitColumnCount>
+          <NumberingRestartPolicies RestartPolicy="SpecificPreviousLevel" LowerLevel="1" UpperLevel="1"/>
+          <BulletsFont type="string">Courier New</BulletsFont>
+          <BulletsFontStyle type="string">Bold</BulletsFontStyle>
+        </Properties>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Boxed</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let para = |d: &Document| d.stories.values().find(|s| s.text.contains("Boxed")).unwrap().paras[0].para.clone();
+    let a = para(&doc);
+    let corner = |shape, size| Corner { shape, size };
+    assert_eq!(a.border_type, Some(StrokeType::Dashed { pattern: vec![] }));
+    assert_eq!((a.border_cap, a.border_join), (Some(Cap::Round), Some(Join::Bevel)));
+    assert_eq!(
+        a.border_corners,
+        Some([corner(CornerShape::Rounded, 6.0), corner(CornerShape::Bevel, 4.0), corner(CornerShape::None, 12.0), corner(CornerShape::Inset, 3.0)])
+    );
+    assert_eq!((a.border_width, a.border_top, a.border_bottom), (Some(BoxWidth::Text), Some(BoxTop::EmBox), Some(BoxBottom::EmBox)));
+    assert_eq!((a.border_display_if_splits, a.border_merge, a.border_gap_tint), (Some(true), Some(false), Some(0.5)));
+    assert!(a.border_gap_color.is_some());
+    assert_eq!(a.shading_corners.map(|c| c[1]), Some(corner(CornerShape::Rounded, 8.0)));
+    assert_eq!((a.shading_width, a.shading_top, a.shading_bottom), (Some(BoxWidth::Text), Some(BoxTop::Baseline), Some(BoxBottom::Baseline)));
+    assert_eq!((a.shading_clip, a.shading_nonprinting), (Some(true), Some(true)));
+    assert_eq!((a.span_space_before, a.span_space_after), (Some(6.0), Some(9.0)));
+    assert_eq!((a.list_level, a.number_align, a.bullet_align), (Some(2), Some(ListAlign::Right), Some(ListAlign::Center)));
+    assert_eq!((a.restart_numbers, a.restart_after_level), (Some(false), Some(1)));
+    assert_eq!((a.bullet_font.as_deref(), a.bullet_font_style.as_deref()), (Some("Courier New"), Some("Bold")));
+    let b = para(&import_idml(&export_idml(&doc)).unwrap());
+    let pick = |p: &pagenor_doc::ParaAttrs| {
+        let border = (&p.border_type, p.border_cap, p.border_join, p.border_corners, p.border_width, p.border_top, p.border_bottom);
+        let more = (p.border_display_if_splits, p.border_merge, &p.border_gap_color, p.border_gap_tint);
+        let shading = (p.shading_corners, p.shading_width, p.shading_top, p.shading_bottom, p.shading_clip, p.shading_nonprinting);
+        let list = (p.span_space_before, p.span_space_after, p.list_level, p.number_align, p.bullet_align, p.restart_numbers);
+        format!("{:?}", (border, more, shading, list, p.restart_after_level, &p.bullet_font, &p.bullet_font_style))
+    };
+    assert_eq!(pick(&b), pick(&a), "the attributes survive export and import");
+}
+
+#[test]
+fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
+    let styles = STYLES.replace(
+        "    </ParagraphStyleGroup>",
+        r#"      <ParagraphStyle Self="ParagraphStyle/Text%3aHead" Name="Text:Head" BulletsAndNumberingListType="NumberedList" NumberingExpression="^#.^t">
+        <Properties><NumberingFormat type="string">A, B, C, D...</NumberingFormat></Properties>
+      </ParagraphStyle>
+      <ParagraphStyle Self="ParagraphStyle/Text%3aTable" Name="Text:Table" BulletsAndNumberingListType="NumberedList" NumberingExpression="Tabel ^#^t">
+        <Properties><NumberingFormat type="string">001, 002, 003...</NumberingFormat></Properties>
+      </ParagraphStyle>
+      <ParagraphStyle Self="ParagraphStyle/Text%3aKanji" Name="Text:Kanji" BulletsAndNumberingListType="NumberedList">
+        <Properties><NumberingFormat type="string">一, 二, 三, 四...</NumberingFormat></Properties>
+      </ParagraphStyle>
+      <ParagraphStyle Self="ParagraphStyle/Text%3aPoint" Name="Text:Point" BulletsAndNumberingListType="BulletList" BulletsTextAfter="^&gt;">
+        <Properties><BulletChar BulletCharacterType="UnicodeOnly" BulletCharacterValue="9632"/></Properties>
+      </ParagraphStyle>
+    </ParagraphStyleGroup>"#,
+    );
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let check = |d: &Document| {
+        let (head, _) = d.styles.resolve_para_style("Text/Head");
+        assert_eq!(head.number_style, pagenor_doc::NumberStyle::UpperLetters);
+        assert_eq!(head.number_label(2), "B.\t");
+        let (table, _) = d.styles.resolve_para_style("Text/Table");
+        assert_eq!(table.number_label(7), "Tabel 007\t");
+        let (kanji, _) = d.styles.resolve_para_style("Text/Kanji");
+        assert_eq!(kanji.number_style, pagenor_doc::NumberStyle::Arabic);
+        let (point, _) = d.styles.resolve_para_style("Text/Point");
+        assert_eq!(point.bullet_label(), "\u{25A0}\u{2002}");
+    };
+    let d = import_idml(&bytes).unwrap();
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+
+/// A family name keeps its spaces ("Minion Pro " is a font of its own) and `FontStyle="Nothing"`
+/// leaves the style to the paragraph, also after an export.
+#[test]
+fn applied_font_keeps_spaces_and_font_style_nothing_inherits() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+        <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody" FontStyle="Bold">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" FontStyle="Nothing"><Properties><AppliedFont type="string">Pagenor Space </AppliedFont></Properties><Content>Spaced</Content></CharacterStyleRange>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" FontStyle="$ID/Nothing"><Content> plain</Content></CharacterStyleRange>
+        </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let check = |d: &Document| {
+        let s = d.stories.values().find(|s| s.text.contains("Spaced")).unwrap();
+        let (_, base) = d.styles.resolve_para(&s.paras[0]);
+        let runs: Vec<_> = s.runs().map(|(_, f)| f.clone()).collect();
+        assert_eq!(runs[0].over.font_family.as_deref(), Some("Pagenor Space "));
+        for f in &runs {
+            assert_eq!(d.styles.resolve_char(&base, f).font_style, "Bold", "the enclosing range's style");
+        }
+    };
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+#[test]
+fn list_tab_position_round_trips_as_a_tab_stop() {
+    use pagenor_doc::{ListType, ParaAttrs, ParagraphStyle, TabAlign, TabStop};
+    let stop = |position, align| TabStop { position, align, leader: String::new(), align_on: String::new() };
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.styles).paragraph.push(ParagraphStyle {
+        name: "List".into(),
+        based_on: None,
+        next_style: None,
+        para: ParaAttrs { list_type: Some(ListType::Bullets), list_tab: Some(Some(24.0)), ..Default::default() },
+        chars: CharAttrs::default(),
+        shortcut: String::new(),
+    });
+    let local = ParaAttrs {
+        list_type: Some(ListType::Bullets),
+        list_tab: Some(Some(36.0)),
+        tabs: Some(vec![stop(100.0, TabAlign::Right)]),
+        ..Default::default()
+    };
+    let ended = ParaAttrs { list_type: Some(ListType::None), ..Default::default() };
+    let lid = d.default_layer();
+    for (i, (text, style, para)) in
+        [("Local\tx", "", local), ("Styled\ty", "List", ParaAttrs::default()), ("Ended\tz", "List", ended)].into_iter().enumerate()
+    {
+        let pf = ParaFormat { style: if style.is_empty() { ParaFormat::default().style } else { style.into() }, para, ..Default::default() };
+        let y = 40.0 + 100.0 * i as f64;
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, y, 300.0, y + 80.0), lid, text, pf).unwrap();
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let tabs = |prefix: &str| {
+        let s = back.stories.values().find(|s| s.text.starts_with(prefix)).unwrap();
+        back.styles.resolve_para(&s.paras[0]).0.tabs
+    };
+    assert_eq!(tabs("Local"), vec![stop(36.0, TabAlign::Left), stop(100.0, TabAlign::Right)]);
+    assert_eq!(tabs("Styled"), vec![stop(24.0, TabAlign::Left)]);
+    assert_eq!(tabs("Ended"), vec![], "a paragraph that ends the list has no list tab stop");
+}
+
+#[test]
+fn imports_and_round_trips_text_wrap_side_and_contour_type() {
+    let wrap = r#"<TextWrapPreference TextWrapMode="Contour" TextWrapSide="LeftSide"><ContourOption ContourType="BoundingBox" IncludeInsideEdges="false"/></TextWrapPreference><Image Self="im""#;
+    let spread = SPREAD.replace(r#"<Image Self="im""#, wrap);
+    assert_ne!(spread, SPREAD);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let mut d = import_idml(&bytes).unwrap();
+    let id = d.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().id;
+    let w = &d.item(id).unwrap().wrap;
+    assert_eq!((w.mode, w.side, w.contour), (pagenor_doc::WrapMode::Contour, pagenor_doc::WrapSide::LeftSide, pagenor_doc::ContourType::BoundingBox));
+    // Every side and contour type survives export and import (detected edges included, which
+    // composition follows as the frame's path).
+    d.item_mut(id).unwrap().wrap.side = pagenor_doc::WrapSide::AwayFromSpine;
+    d.item_mut(id).unwrap().wrap.contour = pagenor_doc::ContourType::DetectEdges;
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let w = &back.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().wrap;
+    assert_eq!((w.side, w.contour), (pagenor_doc::WrapSide::AwayFromSpine, pagenor_doc::ContourType::DetectEdges));
+}
+
+fn feather_fixture(transparency: &str) -> Document {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+          <idPkg:Spread src="Spreads/Spread_s.xml"/>
+        </Document>"#;
+    let rect = |id: &str, inner: &str| {
+        format!(
+            r#"<Rectangle Self="{id}" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="0 0"/><PathPointType Anchor="0 100"/>
+                <PathPointType Anchor="100 100"/><PathPointType Anchor="100 0"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+              {inner}
+            </Rectangle>"#
+        )
+    };
+    let spread = format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <Spread Self="s">
+            <Page Self="p" GeometricBounds="0 0 200 200" ItemTransform="1 0 0 1 0 0"/>
+            {}{}
+          </Spread>
+        </idPkg:Spread>"#,
+        rect("a", transparency),
+        rect("b", "")
+    );
+    import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", &spread)])).unwrap()
+}
+
+#[test]
+fn imports_gradient_and_directional_feathers() {
+    let d = feather_fixture(
+        r#"<TransparencySetting>
+             <GradientFeatherSetting Applied="true" Type="Linear" Angle="0" Length="50" GradientStart="10 20">
+               <OpacityGradientStop Self="s0" Opacity="90" Location="20"/>
+               <OpacityGradientStop Self="s2" Opacity="10" Location="80" Midpoint="40"/>
+               <OpacityGradientStop Self="s1" Opacity="55" Location="50" Midpoint="50"/>
+             </GradientFeatherSetting>
+             <DirectionalFeatherSetting Applied="true" LeftWidth="3" RightWidth="4" TopWidth="5" BottomWidth="6" Angle="0" Noise="0" ChokeAmount="0"/>
+           </TransparencySetting>"#,
+    );
+    let items = &d.spreads[0].items;
+    let gf = &items[0].effects.gradient_feather;
+    assert!(gf.on && !gf.radial);
+    assert!((gf.start - 0.9).abs() < 1e-6 && (gf.end - 0.1).abs() < 1e-6, "{gf:?}");
+    let v = gf.vector.unwrap();
+    for (a, b) in v.iter().zip([20.0, 20.0, 50.0, 20.0]) {
+        assert!((a - b).abs() < 1e-9, "{v:?}");
+    }
+    let df = &items[0].effects.directional_feather;
+    assert!(df.on);
+    assert_eq!(df.widths, [5.0, 3.0, 6.0, 4.0]);
+    assert_eq!(items[1].effects, pagenor_doc::Effects::default());
+
+    // Not applied: the settings stay off.
+    let off = feather_fixture(
+        r#"<TransparencySetting>
+             <GradientFeatherSetting Applied="false" Length="50" GradientStart="10 20"/>
+             <DirectionalFeatherSetting Applied="false" LeftWidth="3"/>
+           </TransparencySetting>"#,
+    );
+    assert_eq!(off.spreads[0].items[0].effects, pagenor_doc::Effects::default());
+}
+
+#[test]
+fn gradient_and_directional_feathers_round_trip() {
+    use pagenor_doc::{DirectionalFeather, GradientFeather, Item, ItemId};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let add = |d: &mut Document, effects: pagenor_doc::Effects| {
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 40.0, 140.0, 120.0)));
+        it.effects = effects;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    };
+    let linear = pagenor_doc::Effects {
+        gradient_feather: GradientFeather { on: true, radial: false, angle: 0.0, start: 0.75, end: 0.25, vector: Some([50.0, 60.0, 110.0, 60.0]) },
+        directional_feather: DirectionalFeather { on: true, widths: [1.0, 2.0, 3.0, 4.0] },
+        ..Default::default()
+    };
+    let radial = pagenor_doc::Effects {
+        gradient_feather: GradientFeather { on: true, radial: true, angle: 30.0, start: 0.0, end: 1.0, vector: None },
+        ..Default::default()
+    };
+    add(&mut d, linear.clone());
+    add(&mut d, radial.clone());
+    add(&mut d, pagenor_doc::Effects::default());
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let effects: Vec<_> = back.spreads[0].items.iter().map(|i| i.effects.clone()).collect();
+    assert_eq!(effects, [linear, radial, pagenor_doc::Effects::default()]);
+}
+
+/// InDesign can write `AppliedFont` with its `$ID/` prefix (`$ID/Source Serif 4`). The text is
+/// set in that family instead of counting as a missing font drawn in the fallback.
+#[test]
+fn applied_font_with_an_id_prefix_names_the_family() {
+    let styles = STYLES.replace(">Source Serif 4</AppliedFont>", ">$ID/Source Serif 4</AppliedFont>");
+    let story = STORY.replace(
+        r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Strong" PointSize="14">"#,
+        r#"<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/Strong" PointSize="14"><Properties><AppliedFont type="string">$ID/Source Serif 4</AppliedFont></Properties>"#,
+    );
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", &story),
+    ]);
+    let d = import_idml_with(&bytes, &|_| None).unwrap();
+    let fonts: Vec<&str> = d.styles.paragraph.iter().filter_map(|s| s.chars.font_family.as_deref()).collect();
+    assert!(!fonts.is_empty() && fonts.iter().all(|f| *f == "Source Serif 4"), "{fonts:?}");
+    let (sid, story) = d.stories.iter().next().unwrap();
+    let bold = story.runs().find(|(r, _)| story.text[r.clone()].starts_with("bold")).unwrap().1;
+    assert_eq!(bold.over.font_family.as_deref(), Some("Source Serif 4"));
+    // The bundled family draws the text (an unknown family would fall back to Source Sans 3).
+    let cs = pagenor_compose::compose_story(&d, *sid, &Default::default());
+    let first_para = story.text.find('\n').unwrap();
+    let families: Vec<&str> = cs
+        .frames
+        .iter()
+        .flat_map(|f| &f.lines)
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.visible && g.len > 0 && g.byte < first_para)
+        .map(|g| g.face.get().family.as_str())
+        .collect();
+    assert!(!families.is_empty() && families.iter().all(|f| *f == "Source Serif 4"), "{families:?}");
 }

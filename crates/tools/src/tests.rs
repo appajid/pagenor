@@ -8,8 +8,20 @@ use pagenor_geom::{Point, Rect, Unit};
 
 use super::*;
 
+mod resize;
+
 fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout) -> ToolContext<'a> {
-    ToolContext { doc: d, selection: s, cache: c, layout: l, zoom: 1.0, layer: d.default_layer(), snap: SnapView::OFF, unit: Unit::Points }
+    ToolContext {
+        doc: d,
+        selection: s,
+        cache: c,
+        layout: l,
+        zoom: 1.0,
+        layer: d.default_layer(),
+        snap: SnapView::OFF,
+        unit: Unit::Points,
+        scale_strokes: true,
+    }
 }
 
 #[test]
@@ -58,6 +70,31 @@ fn resize_rect_modifiers() {
     assert_eq!(p, Rect::new(0.0, 0.0, 200.0, 100.0));
     let c = select::resize_rect(r, 3, pagenor_geom::Point::new(150.0, 25.0), Mods { alt: true, ..Default::default() });
     assert_eq!(c, Rect::new(-50.0, 0.0, 150.0, 50.0));
+}
+
+#[test]
+fn resize_side_shift_keeps_the_other_axis_centred() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let shift = Mods { shift: true, ..Default::default() };
+    assert_eq!(select::resize_rect(r, 3, Point::new(150.0, 25.0), shift), Rect::new(0.0, -12.5, 150.0, 62.5));
+    assert_eq!(select::resize_rect(r, 5, Point::new(50.0, 100.0), shift), Rect::new(-50.0, 0.0, 150.0, 100.0));
+}
+
+#[test]
+fn resize_corner_alt_shift_scales_around_the_centre() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let mods = Mods { shift: true, alt: true, ..Default::default() };
+    // From the centre the pointer is at 0.2 by 0.6; the larger factor drives and the corner stays on y = 40.
+    assert_eq!(select::resize_rect(r, 4, Point::new(60.0, 40.0), mods), Rect::new(20.0, 10.0, 80.0, 40.0));
+    assert_eq!(select::resize_rect(r, 0, Point::new(-50.0, 10.0), mods), Rect::new(-50.0, -25.0, 150.0, 75.0));
+}
+
+#[test]
+fn resize_corner_alt_mirrors_the_opposite_side() {
+    let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+    let alt = Mods { alt: true, ..Default::default() };
+    assert_eq!(select::resize_rect(r, 0, Point::new(10.0, 5.0), alt), Rect::new(10.0, 5.0, 90.0, 45.0));
+    assert_eq!(select::resize_rect(r, 4, Point::new(120.0, 60.0), alt), Rect::new(-20.0, -10.0, 120.0, 60.0));
 }
 
 #[test]
@@ -172,7 +209,18 @@ fn pencil_draws_a_smooth_path() {
         t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 100.0 + 50.0 * a.sin() + off.x, 100.0 + 50.0 * (1.0 - a.cos()) + off.y));
     }
     assert!(t.busy());
+    // While drawing, the stroke so far is shown, in the colour of the layer it goes on.
+    let layer = d.layer(cx.layer).unwrap().color;
+    match &t.overlays(&cx)[..] {
+        [crate::Overlay::Path { path, color, dashed: false }] => {
+            assert_eq!(*color, layer);
+            assert!(path.elements().len() > 40, "the stroke so far: {} points", path.elements().len());
+            assert_eq!(path.elements()[0], pagenor_geom::PathEl::MoveTo(pagenor_geom::Point::new(100.0 + off.x, 100.0 + off.y)));
+        }
+        other => panic!("{other:?}"),
+    }
     let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 150.0 + off.x, 150.0 + off.y));
+    assert!(t.overlays(&cx).is_empty(), "the preview ends with the stroke");
     match &a[..] {
         [Action::Exec(cmd, p)] => {
             assert_eq!(cmd, "path.create");
@@ -923,6 +971,13 @@ fn clicks_in_a_row_edit_and_select_text() {
     let a = t.pointer(&cx, &press(2));
     assert_eq!(a.first(), Some(&Action::SwitchTool("type".into())));
     assert!(matches!(&a[1], Action::Exec(id, p) if id == "text.placeCaret" && p["frame"] == fid.0), "{a:?}");
+    // Explicit automation events enter editing from the Selection tool too.
+    for kind in [PointerKind::DoubleClick, PointerKind::TripleClick] {
+        let mut selection = create("selection");
+        let a = selection.pointer(&cx, &PointerEvent::new(kind, x, y));
+        assert_eq!(a.first(), Some(&Action::SwitchTool("type".into())));
+        assert!(matches!(&a[1], Action::Exec(id, p) if id == "text.placeCaret" && p["frame"] == fid.0));
+    }
     // Type tool: word, line, paragraph, then the story.
     let mut t = create("type");
     let unit = |a: Vec<Action>| match a.as_slice() {
@@ -936,6 +991,285 @@ fn clicks_in_a_row_edit_and_select_text() {
     }
     // A double click sent as such (control channel) selects a word too.
     assert_eq!(unit(t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, x, y))).as_deref(), Some("word"));
+    assert_eq!(unit(t.pointer(&cx, &PointerEvent::new(PointerKind::TripleClick, x, y))).as_deref(), Some("line"));
     // Moving a little while pressed keeps the unit selected.
     assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, x + 2.0, y)).is_empty());
+}
+
+/// A 100×100 frame at (100, 100) holding a 200×100 graphic that overhangs it.
+fn graphic_frame(doc: &mut Document) -> ItemId {
+    let id = ItemId(doc.alloc());
+    let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+        clip: None,
+        asset: pagenor_doc::AssetId(1),
+        size: (200.0, 100.0),
+        xf: pagenor_geom::Affine::translate((50.0, 100.0)),
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+    });
+    doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    id
+}
+
+fn preview_params(a: &[Action]) -> serde_json::Value {
+    match a.last() {
+        Some(Action::Preview(cmd, p)) if cmd == "transform.move" => p.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn direct_selection_drags_content_inside_its_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let none = Selection::default();
+    let mut t = create("directSelection");
+    let at = spread_pt(&l, 120.0, 130.0);
+    let a = t.pointer(&ctx(&d, &none, &c, &l), &PointerEvent::new(PointerKind::Down, at.x, at.y));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let sel = Selection { content: true, ..Selection::items(vec![f]) };
+    let cx = ctx(&d, &sel, &c, &l);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 15.0, at.y - 4.0));
+    assert_eq!(a.first(), Some(&Action::Begin("Move Content".into())));
+    let p = preview_params(&a);
+    assert_eq!(
+        (p["dx"].as_f64(), p["dy"].as_f64(), &p["content"], &p["ids"]),
+        (Some(15.0), Some(-4.0), &serde_json::json!(true), &serde_json::json!([f.0]))
+    );
+    assert_eq!(t.cursor(&cx, at, Mods::default()), Cursor::HandGrab);
+    assert!(t.overlays(&cx).contains(&Overlay::ContentGhost(f)));
+    // Shift keeps the drag on one axis.
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, at.x + 15.0, at.y - 4.0).with_mods(Mods { shift: true, ..Default::default() }));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p["dy"].as_f64()), (Some(15.0), Some(0.0)));
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, at.x + 15.0, at.y)), vec![Action::Commit]);
+}
+
+#[test]
+fn selection_tool_grabber_moves_content_elsewhere_moves_the_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let frame = Selection::items(vec![f]);
+    let content = Selection { content: true, ..Selection::items(vec![f]) };
+    let centre = spread_pt(&l, 150.0, 150.0);
+    let mut t = create("selection");
+    // Hovering the grabber shows the hand; it is there on hover before any click, too.
+    assert_eq!(t.cursor(&ctx(&d, &Selection::default(), &c, &l), centre, Mods::default()), Cursor::Hand);
+    let g = select::grabbers(&ctx(&d, &Selection::default(), &c, &l), Some(centre));
+    assert!(matches!(g.as_slice(), [(id, p)] if *id == f && near(*p, centre)), "{g:?}");
+    // Press on the grabber: the content is selected; the drag moves it.
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Down, centre.x, centre.y));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Drag, centre.x - 20.0, centre.y + 10.0));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p["dy"].as_f64(), &p["content"]), (Some(-20.0), Some(10.0), &serde_json::json!(true)));
+    assert_eq!(t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Up, centre.x - 20.0, centre.y + 10.0)), vec![Action::Commit]);
+    // A press elsewhere in the frame keeps the content selection; dragging selects and moves the frame.
+    let edge = spread_pt(&l, 115.0, 185.0);
+    assert!(t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Down, edge.x, edge.y)).is_empty());
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Drag, edge.x + 30.0, edge.y));
+    assert_eq!(a[0], Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0]})));
+    assert_eq!(a[1], Action::Begin("Move".into()));
+    let p = preview_params(&a);
+    assert_eq!((p["dx"].as_f64(), p.get("content"), p.get("ids")), (Some(30.0), None, None));
+    t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Up, edge.x + 30.0, edge.y));
+    // With the frame selected, a drag away from the grabber moves the frame.
+    t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Down, edge.x, edge.y));
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &PointerEvent::new(PointerKind::Drag, edge.x, edge.y + 30.0));
+    assert_eq!(a[0], Action::Begin("Move".into()));
+    assert_eq!(preview_params(&a).get("content"), None);
+}
+
+#[test]
+fn double_click_toggles_frame_and_content() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let at = spread_pt(&l, 120.0, 180.0);
+    let mut t = create("selection");
+    let dbl = PointerEvent::new(PointerKind::DoubleClick, at.x, at.y);
+    let frame = Selection::items(vec![f]);
+    let a = t.pointer(&ctx(&d, &frame, &c, &l), &dbl);
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": true}))]);
+    let content = Selection { content: true, ..Selection::items(vec![f]) };
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &dbl);
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0], "content": false}))]);
+}
+
+/// A 200 × 150 pt rectangle frame, selected.
+fn live_corner_doc() -> (Document, ItemId) {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 250.0));
+    (d, id)
+}
+
+fn corner_preview(a: &[Action]) -> Vec<(String, f64)> {
+    let p = match a {
+        [Action::Preview(cmd, p)] | [Action::Exec(cmd, p)] if cmd == "object.cornerOptions" => p,
+        other => panic!("{other:?}"),
+    };
+    p["corners"].as_array().unwrap().iter().map(|c| (c["shape"].as_str().unwrap().to_string(), c["size"].as_f64().unwrap())).collect()
+}
+
+fn diamonds(o: &[Overlay]) -> Vec<Point> {
+    o.iter().filter_map(|o| if let Overlay::LiveCornerDiamond(p) = o { Some(*p) } else { None }).collect()
+}
+
+#[test]
+fn live_corners_click_widget_then_drag_rounds_all_corners() {
+    let (d, id) = live_corner_doc();
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let at = |x, y| spread_pt(&l, x, y);
+    let mut t = create("selection");
+    // The widget sits on the right edge, a little below the top-right corner.
+    let w = at(300.0, 111.5);
+    assert!(t.overlays(&cx).iter().any(|o| matches!(o, Overlay::LiveCornerWidget(p) if near(*p, w))));
+    assert!(diamonds(&t.overlays(&cx)).is_empty());
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, w.x, w.y)), vec![Action::Handled]);
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, w.x, w.y)).is_empty());
+    // Without corner sizes the diamonds sit 12 px along the top and bottom edges.
+    let want = [at(112.0, 100.0), at(288.0, 100.0), at(288.0, 250.0), at(112.0, 250.0)];
+    let got = diamonds(&t.overlays(&cx));
+    assert!(got.len() == 4 && got.iter().zip(want).all(|(g, w)| near(*g, w)), "{got:?}");
+    assert!(!t.overlays(&cx).iter().any(|o| matches!(o, Overlay::LiveCornerWidget(_))));
+    // Drag the top-left diamond 20 pt toward the centre.
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, want[0].x, want[0].y));
+    assert_eq!(a, vec![Action::Begin("Corner Options".into())]);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, want[0].x + 20.0, want[0].y + 3.0));
+    assert_eq!(corner_preview(&a), vec![("rounded".to_string(), 20.0); 4]);
+    // The size stops at half the shorter side.
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, want[0].x + 500.0, want[0].y));
+    assert_eq!(corner_preview(&a), vec![("rounded".to_string(), 75.0); 4]);
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, want[0].x + 500.0, want[0].y)), vec![Action::Commit]);
+}
+
+#[test]
+fn live_corners_shift_drag_and_alt_click_change_one_corner() {
+    let (mut d, id) = live_corner_doc();
+    d.item_mut(id).unwrap().corners = pagenor_geom::corners::CornerOptions::uniform(pagenor_geom::corners::CornerShape::Rounded, 30.0);
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let at = |x, y| spread_pt(&l, x, y);
+    let mut t = create("selection");
+    let w = at(300.0, 111.5);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, w.x, w.y));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, w.x, w.y));
+    // With 30 pt corners the diamonds sit 30 pt along the edges.
+    let tr = at(270.0, 100.0);
+    assert!(diamonds(&t.overlays(&cx)).iter().any(|p| near(*p, tr)));
+    let shift = Mods { shift: true, ..Default::default() };
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, tr.x, tr.y).with_mods(shift));
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, tr.x - 10.0, tr.y).with_mods(shift));
+    let r = |n: f64| ("rounded".to_string(), n);
+    assert_eq!(corner_preview(&a), vec![r(30.0), r(40.0), r(30.0), r(30.0)]);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, tr.x - 10.0, tr.y));
+    // Alt-click steps the bottom-right corner's shape; Shift+Alt steps every corner.
+    let br = at(270.0, 250.0);
+    let alt = Mods { alt: true, ..Default::default() };
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, br.x, br.y).with_mods(alt));
+    assert_eq!(corner_preview(&a), vec![r(30.0), r(30.0), ("inverseRounded".to_string(), 30.0), r(30.0)]);
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, br.x - 30.0, br.y).with_mods(alt)).is_empty());
+    assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, br.x - 30.0, br.y)).is_empty());
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, br.x, br.y).with_mods(Mods { alt: true, shift: true, ..Default::default() }));
+    assert_eq!(corner_preview(&a), vec![("inverseRounded".to_string(), 30.0); 4]);
+}
+
+#[test]
+fn live_corners_end_on_escape_empty_click_and_other_selection() {
+    let (mut d, id) = live_corner_doc();
+    let other = add_rect(&mut d, Rect::new(400.0, 100.0, 500.0, 200.0));
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let w = spread_pt(&l, 300.0, 111.5);
+    let mut t = create("selection");
+    let enter = |t: &mut Box<dyn Tool>| {
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, w.x, w.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, w.x, w.y));
+        assert_eq!(diamonds(&t.overlays(&cx)).len(), 4);
+    };
+    // Escape leaves corner editing and keeps the selection; the next Escape deselects.
+    enter(&mut t);
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Handled]);
+    assert!(diamonds(&t.overlays(&cx)).is_empty());
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+    // A click on empty canvas.
+    enter(&mut t);
+    let e = spread_pt(&l, 350.0, 400.0);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, e.x, e.y));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, e.x, e.y));
+    assert!(diamonds(&t.overlays(&cx)).is_empty());
+    // Another selection.
+    enter(&mut t);
+    let s2 = Selection { items: vec![other], ..Default::default() };
+    let cx2 = ctx(&d, &s2, &c, &l);
+    assert!(diamonds(&t.overlays(&cx2)).is_empty());
+    t.pointer(&cx2, &PointerEvent::new(PointerKind::Move, 0.0, 0.0));
+    assert!(diamonds(&t.overlays(&cx)).is_empty());
+    // A frame too small on screen has no widget.
+    let mut far = ctx(&d, &s, &c, &l);
+    far.zoom = 0.1;
+    assert!(!t.overlays(&far).iter().any(|o| matches!(o, Overlay::LiveCornerWidget(_))));
+}
+
+#[test]
+fn live_corner_diamonds_follow_a_rotated_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rotated(&mut d, Rect::new(100.0, 100.0, 300.0, 250.0), 30.0);
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let m = l.xf(SpreadRef::Doc(0)) * d.item(id).unwrap().xf;
+    let mut t = create("selection");
+    // The widget: 11.5 pt from the top-right corner along the turned right edge.
+    let w = m * Point::new(300.0, 111.5);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, w.x, w.y));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, w.x, w.y));
+    let tl = m * Point::new(112.0, 100.0);
+    assert!(diamonds(&t.overlays(&cx)).iter().any(|p| near(*p, tl)), "{:?}", t.overlays(&cx));
+    // Dragging along the turned top edge sets the size.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, tl.x, tl.y));
+    let to = m * Point::new(137.0, 100.0);
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y));
+    let got = corner_preview(&a);
+    assert!(got.iter().all(|(shape, size)| shape == "rounded" && (size - 25.0).abs() < 1e-6), "{got:?}");
+}
+
+#[test]
+fn arrow_selects_table_cells_and_drags_a_range_in_transformed_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let (fid, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 120.0, 400.0, 420.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().insert_table(0, pagenor_doc::Table::new(77, 3, 3, 0, 0, 250.0));
+    d.item_mut(fid).unwrap().xf = Affine::rotate(0.2) * d.item(fid).unwrap().xf;
+    let cache = Cache::new();
+    let layout = CanvasLayout::new(&d, false);
+    let s = Selection::default();
+    let cx = ctx(&d, &s, &cache, &layout);
+    let cs = cache.get(&d, sid, None);
+    let table = &cs.frames[0].tables[0];
+    let xf = cx.item_canvas_xf(fid).unwrap() * d.text_xf(d.item(fid).unwrap());
+    let first = xf * table.cell(0, 0).unwrap().rect.center();
+    let last = xf * table.cell(2, 2).unwrap().rect.center();
+    let mut tool = create("selection");
+    let a = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, first.x, first.y));
+    assert_eq!(a, vec![Action::Exec("table.select".into(), serde_json::json!({"frame":fid.0,"story":sid.0,"table":77,"rows":[0,0],"cols":[0,0]}))]);
+    let a = tool.pointer(&cx, &PointerEvent::new(PointerKind::Drag, last.x, last.y));
+    assert_eq!(a, vec![Action::Exec("table.select".into(), serde_json::json!({"frame":fid.0,"story":sid.0,"table":77,"rows":[0,2],"cols":[0,2]}))]);
+    assert!(tool.pointer(&cx, &PointerEvent::new(PointerKind::Up, last.x, last.y)).is_empty());
+    assert!(
+        tool.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, first.x, first.y))
+            .iter()
+            .any(|a| matches!(a, Action::Exec(id, _) if id == "text.placeCaret"))
+    );
+    let a = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, first.x, first.y).with_mods(Mods { cmd: true, ..Default::default() }));
+    assert!(a.iter().any(|a| matches!(a, Action::Exec(id, _) if id == "selection.set")));
 }

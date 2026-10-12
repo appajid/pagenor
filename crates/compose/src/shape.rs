@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use pagenor_doc::{Capitalization, CharProps, Kerning, Leading, Position, Story, Styles, story};
 use pagenor_fonts::{FaceRef, Feature, FontFace, ScopedFonts, ShapedGlyph, feature};
 
@@ -18,6 +20,10 @@ pub struct Glyph {
     pub len: usize,
     /// First source character of the cluster (special characters keep their code).
     pub ch: char,
+    /// What a generated glyph (page number, list label) reads as in exported text, since its
+    /// `byte..byte + len` holds a marker or nothing: the cluster's text on its first glyph, empty
+    /// on the others. `None` for story text, which reads as its source bytes.
+    pub generated_text: Option<Box<str>>,
     /// Advance in points (tracking and horizontal scale applied).
     pub adv: f64,
     pub dx: f64,
@@ -77,12 +83,24 @@ impl Glyph {
     pub fn is_space(&self) -> bool {
         matches!(self.ch, ' ' | '\u{2002}'..='\u{200A}') || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
     }
+    /// A space whose width justification and word spacing vary: U+0020, the nonbreaking space
+    /// U+00A0 and an elastic ideographic space. Fixed-width spaces (U+2002–U+200A, U+202F) get no
+    /// word-space stretch or shrink.
+    pub fn is_word_space(&self) -> bool {
+        matches!(self.ch, ' ' | NBSP) || (self.ch == '\u{3000}' && self.ideographic_space_elastic)
+    }
+    /// A space that justification treats as a word space rather than a letter: [`Self::is_space`]
+    /// plus U+00A0, which is never a break opportunity.
+    pub fn is_justify_space(&self) -> bool {
+        self.is_space() || self.ch == NBSP
+    }
     pub fn is_letter(&self) -> bool {
         self.ch.is_alphabetic() || matches!(self.ch, '\'' | '’')
     }
 }
 
 pub const SOFT_HYPHEN: char = '\u{AD}';
+pub const NBSP: char = '\u{A0}';
 
 /// Shaped paragraph.
 pub struct ShapedPara {
@@ -147,6 +165,7 @@ fn shaping_key(p: &CharProps) -> CharProps {
 #[derive(Clone, Debug, Default)]
 pub struct SubstCtx {
     pub page_name: Option<String>,
+    /// The section marker text of the page being composed (`None` on parent pages: "Section").
     pub section_marker: Option<String>,
     /// Text variable values by index (on the page being composed).
     pub vars: Arc<Vec<String>>,
@@ -237,6 +256,52 @@ impl StyleTable<'_> {
     }
 }
 
+pub(crate) struct StyledSegment<'run, 'overlay> {
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) overlay: Option<&'overlay str>,
+    pub(crate) format: &'run pagenor_doc::CharFormat,
+}
+
+// Shared with the condition-consumer check: later covering overlays win as a whole.
+pub(crate) fn style_segments<'run, 'overlay>(
+    runs: impl Iterator<Item = (std::ops::Range<usize>, &'run pagenor_doc::CharFormat)>,
+    range: std::ops::Range<usize>,
+    overlays: &'overlay [(std::ops::Range<usize>, String)],
+) -> Vec<StyledSegment<'run, 'overlay>> {
+    let mut segments = Vec::new();
+    for (rr, fmt) in runs {
+        let a = rr.start.max(range.start);
+        let b = rr.end.min(range.end);
+        if a >= b {
+            continue;
+        }
+        if overlays.is_empty() {
+            segments.push(StyledSegment { range: a..b, overlay: None, format: fmt });
+            continue;
+        }
+        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
+        cuts.push(a);
+        cuts.push(b);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
+            segments.push(StyledSegment { range: w[0]..w[1], overlay: top, format: fmt });
+        }
+    }
+    segments
+}
+
+// A nested / GREP character style sits under the run's own style and overrides.
+pub(crate) fn overlay_base<'a>(styles: &Styles, para_chars: &'a CharProps, overlay: Option<&str>) -> std::borrow::Cow<'a, CharProps> {
+    match overlay {
+        Some(style) => {
+            std::borrow::Cow::Owned(styles.resolve_char(para_chars, &pagenor_doc::CharFormat { style: style.to_string(), over: Default::default() }))
+        }
+        None => std::borrow::Cow::Borrowed(para_chars),
+    }
+}
+
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
 pub(crate) fn shape_para(
@@ -265,41 +330,14 @@ pub(crate) fn shape_para(
     if drop.0 > range.start && !drop.1.is_empty() && drop.1 != pagenor_doc::NO_CHAR_STYLE {
         overlays.push((range.start..drop.0, drop.1.to_string()));
     }
-    // Each run, cut where nested / GREP styles start and end.
-    let mut segments: Vec<(usize, usize, Option<&str>, &pagenor_doc::CharFormat)> = Vec::new();
-    for (rr, fmt) in story.runs() {
-        let a = rr.start.max(range.start);
-        let b = rr.end.min(range.end);
-        if a >= b {
-            continue;
-        }
-        if overlays.is_empty() {
-            segments.push((a, b, None, fmt));
-            continue;
-        }
-        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
-        cuts.push(a);
-        cuts.push(b);
-        cuts.sort_unstable();
-        cuts.dedup();
-        for w in cuts.windows(2) {
-            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
-            segments.push((w[0], w[1], top, fmt));
-        }
-    }
+    let segments = style_segments(story.runs(), range.clone(), &overlays);
     // Resolve every segment, then shape runs of segments that differ only in how they are
     // painted as one piece, so kerning, ligatures and joining work across a colour change.
     let mut resolved = Vec::new();
-    for (a, b, overlay, fmt) in segments {
-        // A nested / GREP character style sits under the run's own style and overrides.
-        let base;
-        let para_chars = match overlay {
-            Some(st) => {
-                base = styles.resolve_char(para_chars, &pagenor_doc::CharFormat { style: st.to_string(), over: Default::default() });
-                &base
-            }
-            None => para_chars,
-        };
+    for StyledSegment { range, overlay, format: fmt } in segments {
+        let (a, b) = (range.start, range.end);
+        let base = overlay_base(styles, para_chars, overlay);
+        let para_chars = base.as_ref();
         let props = styles.resolve_char(para_chars, fmt);
         if let Some(font) = styles.composite_font(&props.font_family) {
             let mut start = a;
@@ -487,7 +525,8 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
 
 fn features_for(p: &CharProps) -> Vec<Feature> {
     let mut v = Vec::new();
-    if !matches!(p.kerning, Kerning::Metrics | Kerning::Optical) {
+    // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
+    if p.kerning != Kerning::Metrics {
         v.extend(feature("-kern"));
     }
     if !p.ligatures || p.tracking.abs() > 1e-9 {
@@ -545,6 +584,30 @@ fn is_mark(c: char) -> bool {
     unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM || matches!(c, '\u{200C}' | '\u{200D}')
 }
 
+fn is_indic(c: char) -> bool {
+    use unicode_script::{Script, UnicodeScript};
+    matches!(
+        c.script(),
+        Script::Bengali
+            | Script::Devanagari
+            | Script::Gujarati
+            | Script::Gurmukhi
+            | Script::Kannada
+            | Script::Malayalam
+            | Script::Oriya
+            | Script::Sinhala
+            | Script::Tamil
+            | Script::Telugu
+    )
+}
+
+fn ends_in_indic_linker(text: &str) -> bool {
+    matches!(
+        text.chars().rev().find(|c| !matches!(c, '\u{200C}' | '\u{200D}')),
+        Some('\u{094D}' | '\u{09CD}' | '\u{0A4D}' | '\u{0ACD}' | '\u{0B4D}' | '\u{0BCD}' | '\u{0C4D}' | '\u{0CCD}' | '\u{0D4D}' | '\u{0DCA}')
+    )
+}
+
 fn composite_props(db: &ScopedFonts<'_>, base: &CharProps, entry: Option<&pagenor_doc::cjk::CompositeFontEntry>) -> CharProps {
     let mut p = base.clone();
     if let Some(e) = entry {
@@ -578,6 +641,9 @@ fn shape_run(
     let start = out.len();
     shape_run_raw(db, text, range, p, env, styles, sub, out);
     let run = &mut out[start..];
+    if p.kerning == Kerning::Optical {
+        crate::optical::kern_run(db, run, p.tracking / 1000.0 * p.size);
+    }
     let em = p.size * p.h_scale;
     for g in run.iter_mut().filter(|g| g.adv > 0.0 && !g.ch.is_control()) {
         let (mut left, mut right) = (0.0, 0.0);
@@ -651,7 +717,36 @@ fn shape_run_raw(
             shape_segment(db, text, a..b, None, p, face, auto_leading, styles, out, sub.vertical);
         }
     };
-    for (i, c) in text[range.clone()].char_indices() {
+    let run = &text[range.clone()];
+    let mut clusters = run.grapheme_indices(true).peekable();
+    let mut cluster_face = None;
+    for (i, c) in run.char_indices() {
+        if clusters.peek().is_some_and(|(start, _)| *start == i) {
+            let (start, first) = clusters.next().unwrap_or((i, ""));
+            let mut end = start + first.len();
+            // Extended grapheme boundaries alone do not join conjuncts in every Indic script
+            // (notably Kannada and Tamil). Keep a virama-linked continuation in the same face.
+            while ends_in_indic_linker(&run[start..end]) {
+                use unicode_script::UnicodeScript;
+                let script = run[start..end].chars().find(|&c| is_indic(c)).map(|c| c.script());
+                let Some(&(next, part)) = clusters.peek() else { break };
+                if !part.chars().next().is_some_and(|c| is_indic(c) && Some(c.script()) == script) {
+                    break;
+                }
+                end = next + part.len();
+                clusters.next();
+            }
+            let cluster = &run[start..end];
+            cluster_face = if cluster.chars().any(is_indic) {
+                Some(if primary.covers_cluster(cluster) || !auto_leading.glyph_fallback {
+                    primary.clone()
+                } else {
+                    db.fallback_for_cluster(cluster, primary.id(), lang).unwrap_or_else(|| primary.clone())
+                })
+            } else {
+                None
+            };
+        }
         let i = range.start + i;
         if let Some(context) = strong(c) {
             arabic_context = Some(context);
@@ -687,6 +782,8 @@ fn shape_run_raw(
                 | story::COLUMN_BREAK
                 | story::FRAME_BREAK
                 | story::PAGE_BREAK
+                | story::ODD_PAGE_BREAK
+                | story::EVEN_PAGE_BREAK
                 | story::INDENT_HERE
                 | story::RIGHT_INDENT_TAB
                 | story::TABLE_ANCHOR
@@ -719,7 +816,13 @@ fn shape_run_raw(
                     } else {
                         sub.page_name.clone().unwrap_or_else(|| "#".into())
                     };
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.vertical);
+                    if s.is_empty() {
+                        let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);
+                        g.adv = 0.0;
+                        out.push(g);
+                    } else {
+                        shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.vertical);
+                    }
                 }
                 pagenor_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);
@@ -779,7 +882,9 @@ fn shape_run_raw(
             continue;
         }
         let covered = c.is_whitespace() || c.is_control() || c == SOFT_HYPHEN || primary.covers(c);
-        let face = if covered || is_mark(c) { if is_mark(c) { seg_face.clone() } else { primary.clone() } } else { fallback(c) };
+        let face = cluster_face
+            .clone()
+            .unwrap_or_else(|| if covered || is_mark(c) { if is_mark(c) { seg_face.clone() } else { primary.clone() } } else { fallback(c) });
         if face.id() != seg_face.id() {
             flush(seg_start, i, &seg_face, out);
             seg_start = i;
@@ -906,6 +1011,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         byte,
         len: ch.len_utf8(),
         ch,
+        generated_text: None,
         adv: 0.0,
         dx: 0.0,
         dy: 0.0,
@@ -1028,6 +1134,15 @@ fn shape_segment(
             (cl, end.saturating_sub(cl), text[cl..].chars().next().unwrap_or(' '))
         };
         let last_in_cluster = gi + 1 == n || shaped[gi + 1].cluster != sg.cluster;
+        // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
+        let first_in_cluster = gi == 0 || shaped[gi - 1].cluster != sg.cluster;
+        let generated_text = replacement.map(|src| {
+            if !first_in_cluster {
+                return Box::from("");
+            }
+            let end = shaped[gi + 1..].iter().map(|r| r.cluster).find(|&c| c > sg.cluster).unwrap_or(src.len());
+            Box::from(src.get(sg.cluster..end).unwrap_or(""))
+        });
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
         let mut adv = if up { -(sg.y_advance as f64) * k_v } else { sg.x_advance as f64 * k * hs };
         let (dx, dy) = if up {
@@ -1042,8 +1157,6 @@ fn shape_segment(
         } else if last_in_cluster {
             adv += tracking + manual;
         }
-        // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
-        let first_in_cluster = gi == 0 || shaped[gi - 1].cluster != sg.cluster;
         let mark = face.glyph_is_mark(sg.gid);
         let mark_x = if mark { p.diacritic_x_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * hs } else { 0.0 };
         let mark_y = if mark { p.diacritic_y_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * p.v_scale } else { 0.0 };
@@ -1053,6 +1166,7 @@ fn shape_segment(
             byte,
             len: if first_in_cluster || replacement.is_some() { len } else { 0 },
             ch,
+            generated_text,
             adv,
             dx: dx + mark_x,
             dy: dy - mark_y,
@@ -1129,5 +1243,6 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.ch = '-';
     h.rendered_char = '-';
     h.moji = Default::default();
+    h.generated_text = None;
     h
 }

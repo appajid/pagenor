@@ -101,6 +101,9 @@ pub struct Page {
     /// Applied parent spread (`None` = [None]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SpreadId>,
+    /// Margins and columns follow the matching master side. Older files preserve local settings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inherit_parent_settings: bool,
     #[serde(default)]
     pub side: PageSide,
     /// Parent items overridden on this page (hidden from the parent rendering).
@@ -296,6 +299,25 @@ impl Spread {
             None => self.bounds().center().x,
         }
     }
+    /// Indices of the leftmost and rightmost pages. A right-to-left bound spread lists its right
+    /// page first, so list order says nothing about position.
+    pub fn outer_page_indices(&self) -> Option<(usize, usize)> {
+        let mut it = self.pages.iter().enumerate();
+        let (first, _) = it.next()?;
+        Some(it.fold((first, first), |(l, r), (i, p)| (if p.x < self.pages[l].x { i } else { l }, if p.x > self.pages[r].x { i } else { r })))
+    }
+    /// The parent page (index into this parent spread) shown behind a document page on `side`:
+    /// the leftmost page for a left page and the rightmost for a right page, whichever binding
+    /// ordered the list; the first listed page for a single-sided page or a one-page parent.
+    pub fn parent_page_for_side(&self, side: PageSide) -> Option<usize> {
+        let (l, r) = self.outer_page_indices()?;
+        match side {
+            _ if self.pages.len() < 2 => Some(l),
+            PageSide::Left => Some(l),
+            PageSide::Right => Some(r),
+            PageSide::Single => Some(0),
+        }
+    }
     /// Index of the page under spread x (nearest page for the pasteboard).
     pub fn page_at_x(&self, x: f64) -> Option<usize> {
         if self.pages.is_empty() {
@@ -303,9 +325,7 @@ impl Spread {
         }
         self.pages.iter().position(|p| x >= p.x && x < p.x + p.width).or_else(|| {
             // The pasteboard: the page nearest that side.
-            let (l, r) = (0..self.pages.len()).fold((0, 0), |(l, r), i| {
-                (if self.pages[i].x < self.pages[l].x { i } else { l }, if self.pages[i].x > self.pages[r].x { i } else { r })
-            });
+            let (l, r) = self.outer_page_indices()?;
             Some(if x < self.pages[l].x { l } else { r })
         })
     }
@@ -327,6 +347,9 @@ impl Spread {
         }
     }
 }
+
+/// The highest start page number a document or section accepts.
+pub const MAX_PAGE_NUMBER: u32 = 99_999;
 
 /// A numbering section starting at a document page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -360,6 +383,7 @@ mod tests {
             margins: Margins { top: 36.0, bottom: 36.0, inside: 54.0, outside: 36.0 },
             columns: Columns { count: 2, gutter: 12.0, positions: None },
             parent: None,
+            inherit_parent_settings: false,
             side,
             overridden: vec![],
             guides: vec![],

@@ -5,6 +5,6 @@
     <sub-class-of type="application/zip"/>
     <glob pattern="*.pgnr" weight="80"/>
     <glob pattern="*.pagenor" weight="60"/>
-    <icon name="org.pagenor.app"/>
+    <icon name="org.pagenor.app.document"/>
   </mime-type>
 </mime-info>

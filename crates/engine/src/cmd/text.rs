@@ -1,5 +1,7 @@
 //! Text editing (Type tool) and character/paragraph formatting.
 
+use std::borrow::Cow;
+
 use pagenor_compose as compose;
 use pagenor_doc::story::floor_char_boundary;
 use pagenor_doc::{CellAddr, CharAttrs, Content, ItemId, ParaAttrs, Selection, StoryId, TextSel};
@@ -22,6 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
             release
         ),
         cmd!(noundo "text.extendTo", "Extend Text Selection", [], None, "{frame, point}", has_doc, |s, p| place(s, p, true)),
+        cmd!(noundo "text.selectLine", "Select Line", [], None, "{frame, point} — the composed line under the point", has_doc, |s, p| select_at(s, p, "line")),
         cmd!(noundo "text.selectWord", "Select Word", [], None, "{frame, point} — the word (or run of spaces) under the point", has_doc, |s, p| {
             select_at(s, p, "word")
         }),
@@ -79,7 +82,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("story.setText", "Set Story Text", [], None, "{story, text} — replace a story's whole text", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("story.setText", "missing story"))?);
-            let text = str_param(p, "text").unwrap_or("").to_string();
+            let text = super::text_param(p, "text");
             s.edit(|d, sel| {
                 d.set_story_text(sid, &text)?;
                 if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
@@ -100,11 +103,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("story.replaceRange", "missing story"))?);
                 let a = p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize;
                 let b = p.get("end").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(a);
-                let text = str_param(p, "text").unwrap_or("").to_string();
+                let text = super::text_param(p, "text");
                 s.edit(|d, sel| {
                     let st = d.story_mut(sid).ok_or(pagenor_doc::DocError::NoStory(sid))?;
                     let (a, b) = (a.min(st.len()), b.min(st.len()).max(a.min(st.len())));
-                    st.replace(a..b, &text);
+                    replace_preserving_eof(st, a..b, &text, true, false);
                     let len = st.len();
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
                         t.anchor = floor_char_boundary(&st.text, t.anchor);
@@ -138,7 +141,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?, composer?, tabs?, …}}",
+            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, tabs?, …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
@@ -190,7 +193,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(v) => v,
                     None => !format_targets(s).first().is_some_and(|t| {
                         s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
-                            st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.tate_chu_yoko == Some(true)
+                            let at = if t.range.is_empty() { t.range.start } else { t.range.start + 1 };
+                            caret_typing_format(s, st, at, t.cell.is_none() && t.range.is_empty()).over.tate_chu_yoko == Some(true)
                         })
                     }),
                 };
@@ -218,7 +222,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     Some(v) => v,
                     None => !format_targets(s).first().is_some_and(|t| {
                         s.doc().ok().and_then(|d| d.doc.text_story(t.story, t.cell)).is_some_and(|st| {
-                            st.char_format_at(if t.range.is_empty() { t.range.start } else { t.range.start + 1 }).over.kenten == Some(true)
+                            let at = if t.range.is_empty() { t.range.start } else { t.range.start + 1 };
+                            caret_typing_format(s, st, at, t.cell.is_none() && t.range.is_empty()).over.kenten == Some(true)
                         })
                     }),
                 };
@@ -263,7 +268,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_text_or_frames,
             break_link
         ),
-        cmd!(query "type.selectionAttrs", "Selection Attributes", [], None, "{} → resolved character/paragraph attributes at the text selection", has_doc, selection_attrs),
+        cmd!(
+            query "type.selectionAttrs",
+            "Selection Attributes",
+            [],
+            None,
+            "{mixed?: bool} → resolved character/paragraph attributes at the text selection; with mixed, paraMixed lists the paragraph attributes that differ across the selected paragraphs",
+            has_doc,
+            selection_attrs
+        ),
     ]
 }
 
@@ -378,7 +391,43 @@ fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
     if needs_convert {
         s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
     }
-    let (sid, b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    let (sid, mut b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    if extend && cell.is_none() {
+        let st = s.doc()?;
+        let cs = s.cache.get(&st.doc, sid, None);
+        if let Some(loc) = st.doc.find(frame)
+            && let Some(it) = st.doc.item_at(&loc)
+            && let Some(fi) = cs.frames.iter().position(|f| f.frame == frame)
+        {
+            let inner = (st.doc.parent_xf(&loc) * st.doc.text_xf(it)).inverse() * pt;
+            // Only selection extension beyond a hard paragraph end includes its separator.
+            // Ordinary caret placement, soft wraps, forced breaks and EOF keep compose::hit's result.
+            if extend
+                && st.doc.story(sid).is_some_and(|story| story.text.as_bytes().get(b) == Some(&b'\n'))
+                && cs.frames.get(fi).is_some_and(|f| {
+                    f.lines.iter().any(|l| {
+                        if !l.last_in_para || l.range.end != b {
+                            return false;
+                        }
+                        let end = compose::caret_x(l, b);
+                        // Glyphs stay in source order: the final source cluster sets the end's direction.
+                        let rtl = l.glyphs.iter().rev().find(|g| g.len > 0).map(|g| g.rtl).unwrap_or_else(|| {
+                            // Glyphless lines take their effective paragraph direction, including style inheritance.
+                            st.doc
+                                .story(sid)
+                                .and_then(|story| story.paras.get(l.para))
+                                .is_some_and(|p| st.doc.styles.resolve_para(p).0.direction == pagenor_doc::TextDirection::RightToLeft)
+                        });
+                        // Ignore affine forward/inverse noise at an exactly mapped caret.
+                        let past = if rtl { end - inner.x } else { inner.x - end };
+                        past > pagenor_geom::EPS
+                    })
+                })
+            {
+                b = b.saturating_add(1);
+            }
+        }
+    }
     // Drag and drop: a press inside the selected text keeps it (to be dragged).
     if !extend {
         s.text_drag = s.doc()?.selection.text.is_some_and(|t| t.story == sid && t.cell == cell && !t.range().is_empty() && t.range().contains(&b));
@@ -431,8 +480,14 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit(|d, sel| {
         let st = d.text_story_mut(sid, cell).ok_or(pagenor_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
+        let mut piece = st.extract(r.clone());
+        piece.slice_has_eof_stage = cell.is_none() && r.end == st.len() && st.text.ends_with('\n');
         let mut at = b;
+        let moves_tail_earlier = cell.is_none() && !copy && r.end == st.len() && at < r.start;
+        if cell.is_none() {
+            prepare_outer_formatted_slice(&mut piece);
+            prepare_formatted_insert(st, b, &piece.text);
+        }
         if !copy {
             st.delete(r.clone());
             if at > r.start {
@@ -440,6 +495,10 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         let end = st.insert_story(at, &piece);
+        if moves_tail_earlier {
+            // Stage only the final result, not an EOF temporarily exposed before reinsertion.
+            stage_new_eof(st);
+        }
         sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
         Ok(json!({"moved": piece.text.len(), "at": at}))
     })
@@ -462,6 +521,14 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.text_story_mut(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let mut r = r.start.min(st.len())..r.end.min(st.len());
+        // Between a break character and its return is the end of that paragraph: typing there goes
+        // to the start of the next one.
+        if r.is_empty()
+            && st.text.get(r.start..).is_some_and(|t| t.starts_with('\n'))
+            && st.text.get(..r.start).and_then(|t| t.chars().next_back()).is_some_and(pagenor_doc::is_break_char)
+        {
+            r = r.start + 1..r.start + 1;
+        }
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -479,13 +546,18 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                     } else {
                         to.clone()
                     };
-                    st.replace(ws..r.start, &to);
+                    replace_preserving_eof(st, ws..r.start, &to, t.cell.is_none(), false);
                     r = ws + to.len()..ws + to.len();
                 }
             }
         }
+        // A column, frame or page break ends its paragraph.
+        let mut text = if text.contains(pagenor_doc::is_break_char) {
+            pagenor_doc::end_paragraphs_at_breaks(&text, st.text.get(r.end..).and_then(|t| t.chars().next()))
+        } else {
+            text.clone()
+        };
         // Typing next to a table anchor starts a paragraph of its own.
-        let mut text = text.clone();
         let mut trail = 0;
         if t.cell.is_none() && !text.is_empty() && st.table_at(r.start).is_some() {
             let pi = st.para_at(r.start);
@@ -500,29 +572,202 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                 text.insert(0, '\n');
             }
         }
-        if tracking && t.cell.is_none() {
-            // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = super::changes::mark_deleted(st, r.clone());
-            let mut fmt = st.char_format_at(at).clone();
-            if let Some(f) = &typing {
-                apply_typing_format(&mut fmt, f);
-            }
-            fmt.over.change = Some(pagenor_doc::ChangeMark::Inserted);
-            st.insert_with(at, &text, fmt);
-            let pos = at + text.len() - trail;
-            sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
-            return Ok(json!({"pos": pos}));
-        }
-        st.replace(r.clone(), &text);
+        let end = replace_preserving_eof(st, r, &text, t.cell.is_none(), tracking);
         if let Some(f) = &typing
             && !text.is_empty()
         {
-            st.format_chars(r.start..r.start + text.len(), |fmt| apply_typing_format(fmt, f));
+            st.format_chars(end - text.len()..end, |fmt| apply_typing_format(fmt, f));
+            if t.cell.is_none() && end == st.len() && text.ends_with('\n') {
+                let mut over = st.char_format_at(end).over.clone();
+                over.change = None;
+                if let Some(pf) = st.paras.last_mut() {
+                    pf.chars = over;
+                }
+            }
         }
-        let pos = r.start + text.len() - trail;
+        let pos = end - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"pos": pos}))
     })
+}
+
+// Share the existing typing splice with Story Editor's explicit range edits.
+// Callers retain their own selection, quoting, autocorrect and Track Changes policies.
+pub(super) fn replace_preserving_eof(st: &mut pagenor_doc::Story, r: std::ops::Range<usize>, text: &str, outer: bool, tracking: bool) -> usize {
+    let eof_chars = if outer && r.is_empty() && blank_eof(st, r.start) {
+        st.paras.last().filter(|pf| !pf.chars.is_empty() || pf.eof_inherited_chars.is_some()).map(|pf| pf.chars.clone())
+    } else {
+        None
+    };
+    let eof_para = st.paras.len().saturating_sub(1);
+    let replaces_tail = outer && !r.is_empty() && r.end == st.len();
+    // A newly created blank EOF keeps sparse direct attrs and its live named style.
+    let continuation = if outer && r.is_empty() && r.start == st.len() && text.ends_with('\n') {
+        st.paras.last().map(|pf| {
+            let fmt = match &eof_chars {
+                Some(a) => eof_typing_format(st, r.start, a),
+                None => st.char_format_at(r.start).clone(),
+            };
+            eof_continuation_chars(pf, &fmt, blank_eof(st, r.start))
+        })
+    } else {
+        None
+    };
+    if tracking && outer {
+        // Track Changes: replaced text is marked deleted, typing inserted after it.
+        let at = super::changes::mark_deleted(st, r.clone());
+        let mut fmt = match &eof_chars {
+            Some(a) => eof_typing_format(st, at, a),
+            None => st.char_format_at(at).clone(),
+        };
+        fmt.over.change = Some(pagenor_doc::ChangeMark::Inserted);
+        if !r.is_empty() {
+            // Removing tracked insertions may expose an EOF stage that these bytes consume.
+            prepare_formatted_insert(st, at, text);
+        }
+        st.insert_with(at, text, fmt);
+        finish_eof_insert(st, eof_para, text, eof_chars.is_some(), continuation);
+        if replaces_tail && !text.is_empty() {
+            stage_new_eof(st);
+        }
+        return at + text.len();
+    }
+    if let Some(a) = &eof_chars {
+        let fmt = eof_typing_format(st, r.start, a);
+        st.insert_with(r.start, text, fmt);
+    } else {
+        st.replace(r.clone(), text);
+    }
+    finish_eof_insert(st, eof_para, text, eof_chars.is_some(), continuation);
+    if replaces_tail {
+        stage_new_eof(st);
+    }
+    r.start + text.len()
+}
+
+// Named styles remain bound to the LF run; only direct typing attrs live on a blank EOF.
+fn eof_typing_format(st: &pagenor_doc::Story, pos: usize, over: &CharAttrs) -> pagenor_doc::CharFormat {
+    pagenor_doc::CharFormat { style: st.char_format_at(pos).style.clone(), over: over.clone() }
+}
+
+// Read the same typing format for queries and language-sensitive input.
+// Ordinary positions and child stories keep borrowing their existing run.
+pub(super) fn story_typing_format(st: &pagenor_doc::Story, pos: usize, outer: bool) -> Cow<'_, pagenor_doc::CharFormat> {
+    if outer
+        && blank_eof(st, pos)
+        && let Some(pf) = st.paras.last().filter(|pf| !pf.chars.is_empty() || pf.eof_inherited_chars.is_some())
+    {
+        Cow::Owned(eof_typing_format(st, pos, &pf.chars))
+    } else {
+        Cow::Borrowed(st.char_format_at(pos))
+    }
+}
+
+fn caret_typing_format<'a>(s: &Session, story: &'a pagenor_doc::Story, pos: usize, outer: bool) -> Cow<'a, pagenor_doc::CharFormat> {
+    let format = story_typing_format(story, pos, outer);
+    if let Some(pending) = typing_format(s) {
+        let mut format = format.into_owned();
+        apply_typing_format(&mut format, pending);
+        Cow::Owned(format)
+    } else {
+        format
+    }
+}
+
+fn eof_continuation_chars(pf: &pagenor_doc::ParaFormat, fmt: &pagenor_doc::CharFormat, was_blank_eof: bool) -> (CharAttrs, Option<CharAttrs>) {
+    // Paragraph defaults are inherited below the named character style. Keep them
+    // separate even when an explicit typing choice happens to have the same value.
+    let inherited = pf.eof_inherited_chars.clone().or_else(|| (!was_blank_eof && !pf.chars.is_empty()).then(|| pf.chars.clone()));
+    let mut over = fmt.over.clone();
+    // Changes describe inserted bytes, not an as-yet empty paragraph.
+    over.change = None;
+    (over, inherited)
+}
+
+// Deletion or selected replacement can expose an ordinary paragraph as a new
+// blank EOF. Preserve its genuine defaults below the surviving/inserted LF format.
+fn stage_new_eof(st: &mut pagenor_doc::Story) {
+    if !blank_eof(st, st.len()) {
+        return;
+    }
+    let fmt = st.char_format_at(st.len()).clone();
+    if let Some(pf) = st.paras.last_mut() {
+        let (over, inherited) = eof_continuation_chars(pf, &fmt, false);
+        pf.chars = over;
+        pf.eof_inherited_chars = inherited;
+    }
+}
+
+pub(super) fn delete_preserving_eof(st: &mut pagenor_doc::Story, range: std::ops::Range<usize>, outer: bool) {
+    let old_len = st.len();
+    // If the old final LF survives, its existing EOF stage remains authoritative.
+    let new_eof = outer && (!blank_eof(st, old_len) || range.end >= old_len);
+    st.delete(range);
+    if new_eof && st.len() != old_len {
+        stage_new_eof(st);
+    }
+}
+
+// A clipped or child-story slice can end with genuine paragraph defaults. At the
+// outer transfer boundary, keep that baseline below the actual copied LF format.
+// insert_story restores it if destination bytes consume the new EOF; otherwise
+// the existing typing, formatted-insert and table consumers restore it later.
+pub(super) fn prepare_outer_formatted_slice(slice: &mut pagenor_doc::Story) {
+    if slice.slice_has_eof_stage || !slice.text.ends_with('\n') {
+        return;
+    }
+    let fmt = slice.char_format_at(slice.len()).clone();
+    let Some(pf) = slice.paras.last_mut().filter(|pf| !pf.chars.is_empty() && pf.eof_inherited_chars.is_none()) else { return };
+    let (over, inherited) = eof_continuation_chars(pf, &fmt, false);
+    pf.chars = over;
+    pf.eof_inherited_chars = inherited;
+    slice.slice_has_eof_stage = true;
+}
+
+// Formatted insertion keeps the source runs, so the destination's typing attrs must
+// not become paragraph defaults. Call before deletion: replacing ordinary paragraph
+// text can also leave a blank EOF, but its paragraph defaults are not a typing stage.
+// Callers restrict this to story text; cell/note paragraphs retain their existing policy.
+pub(super) fn prepare_formatted_insert(st: &mut pagenor_doc::Story, pos: usize, text: &str) {
+    if !text.is_empty()
+        && blank_eof(st, pos)
+        && let Some(pf) = st.paras.last_mut()
+    {
+        pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+    }
+}
+
+// Generated markers consume the outer typing stage just like typed bytes.
+// Any note body is initialized separately and keeps its own paragraph defaults.
+pub(super) fn prepare_eof_marker(st: &mut pagenor_doc::Story, pos: usize, marker: char) -> Option<pagenor_doc::CharFormat> {
+    if !blank_eof(st, pos) {
+        return None;
+    }
+    let pf = st.paras.last().filter(|pf| !pf.chars.is_empty() || pf.eof_inherited_chars.is_some())?;
+    let fmt = eof_typing_format(st, pos, &pf.chars);
+    prepare_formatted_insert(st, pos, &marker.to_string());
+    Some(fmt)
+}
+
+// Blank-EOF overrides are a persisted typing format. Once a paragraph gains bytes,
+// its inserted runs own that format so a range clear can return to the paragraph style.
+fn finish_eof_insert(st: &mut pagenor_doc::Story, first: usize, text: &str, staged: bool, continuation: Option<(CharAttrs, Option<CharAttrs>)>) {
+    if staged {
+        // An LF consumes its former EOF's stage; a trailing blank EOF stays staged below.
+        for (k, segment) in text.split_inclusive('\n').enumerate() {
+            if !segment.is_empty()
+                && let Some(pf) = st.paras.get_mut(first + k)
+            {
+                pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+            }
+        }
+    }
+    if let Some((over, inherited)) = continuation
+        && let Some(pf) = st.paras.last_mut()
+    {
+        pf.chars = over;
+        pf.eof_inherited_chars = inherited;
+    }
 }
 
 fn smart_quotes(s: &Session, text: &str) -> String {
@@ -546,7 +791,11 @@ fn smart_quotes(s: &Session, text: &str) -> String {
             let pos = t.range().start.min(story.len());
             let pi = story.para_at(pos).min(story.paras.len().saturating_sub(1));
             let base = st.doc.styles.resolve_para(story.paras.get(pi)?).1;
-            Some(st.doc.styles.resolve_char(&base, story.char_format_at(pos)).language)
+            let mut fmt = story_typing_format(story, pos, t.cell.is_none() && t.is_caret()).into_owned();
+            if let Some(f) = typing_format(s) {
+                apply_typing_format(&mut fmt, f);
+            }
+            Some(st.doc.styles.resolve_char(&base, &fmt).language)
         })
         .unwrap_or_default();
     let [dq_open, dq_close, sq_open, sq_close] = quote_marks(&language);
@@ -613,7 +862,7 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
             if tracking && t.cell.is_none() {
                 super::changes::mark_deleted(st, r.clone());
             } else {
-                st.delete(r.clone());
+                delete_preserving_eof(st, r.clone(), t.cell.is_none());
             }
         }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
@@ -638,6 +887,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             let start = if word { prev_word(&st.text, r.start) } else { prev_char(&st.text, r.start) };
             start..r.start
         };
+        let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
             let at = super::changes::mark_deleted(st, r.clone());
@@ -645,10 +895,24 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return ok();
         }
-        st.delete(r.clone());
+        delete_preserving_eof(st, r.clone(), t.cell.is_none());
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
+}
+
+/// A break character and the return after it end one paragraph: deleting either deletes both.
+fn with_break_pair(text: &str, r: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let Some(del) = text.get(r.clone()) else { return r };
+    let mut chars = del.chars();
+    match (chars.next(), chars.next()) {
+        (Some('\n'), None) => match text.get(..r.start).and_then(|t| t.chars().next_back()) {
+            Some(b) if pagenor_doc::is_break_char(b) => r.start.saturating_sub(b.len_utf8())..r.end,
+            _ => r,
+        },
+        (Some(b), None) if pagenor_doc::is_break_char(b) && text.get(r.end..).is_some_and(|t| t.starts_with('\n')) => r.start..r.end + 1,
+        _ => r,
+    }
 }
 
 pub fn next_char(s: &str, i: usize) -> usize {
@@ -715,7 +979,7 @@ pub(crate) fn set_story_direction(d: &mut pagenor_doc::Document, stories: &[Stor
             && st.vertical != vertical
         {
             st.vertical = vertical;
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
     }
 }
@@ -784,8 +1048,10 @@ fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> 
     let (fi, x, baseline, _, _) = compose::caret(cs, pos)?;
     let lines: Vec<(usize, &compose::Line)> = cs.frames.iter().enumerate().flat_map(|(i, f)| f.lines.iter().map(move |l| (i, l))).collect();
     let cur = lines.iter().position(|(i, l)| *i == fi && (l.baseline - baseline).abs() < 0.01 && pos >= l.range.start && pos <= l.range.end)?;
-    let target = if up { cur.checked_sub(1)? } else { cur + 1 };
-    let (tf, tl) = lines.get(target)?;
+    let (_, l) = lines.get(cur)?;
+    // The next row: segments of the same line (beside a wrap object) share its baseline.
+    let other_row = |(i, t): &&(usize, &compose::Line)| *i != fi || (t.baseline - l.baseline).abs() > 1e-6;
+    let (tf, tl) = if up { lines.get(..cur)?.iter().rfind(other_row)? } else { lines.get(cur + 1..)?.iter().find(other_row)? };
     compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
 }
 
@@ -848,6 +1114,29 @@ fn typing_format(s: &Session) -> Option<&TypingFormat> {
     s.typing_format.as_ref().filter(|f| f.doc == st.uid && f.at.story == t.story && f.at.cell == t.cell && f.at.range() == t.range())
 }
 
+pub(crate) fn retain_pending_typing_format(s: &mut Session) {
+    // Leaving a caret invalidates its choice; returning later must not revive stale attrs.
+    if s.typing_format.is_some() && typing_format(s).is_none() {
+        s.typing_format = None;
+    }
+}
+
+pub(crate) fn validate_char_fill(document: &pagenor_doc::Document, attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    if let Some(fill) = &attrs.fill
+        && document.swatch(fill).is_none()
+    {
+        return Err(bad(
+            command_id,
+            format!("unknown character fill `{fill}`; create a swatch with `swatch.create` and use its returned name as `fill`"),
+        ));
+    }
+    Ok(())
+}
+
+fn blank_eof(story: &pagenor_doc::Story, pos: usize) -> bool {
+    pos == story.len() && story.text.ends_with('\n')
+}
+
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
     let mut a = CharAttrs::default();
     if let Some(o) = attrs.as_object() {
@@ -855,13 +1144,14 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
             a.set_json(k, v).map_err(|e| bad("type.char", e))?;
         }
     }
+    validate_char_fill(&s.doc()?.doc, &a, "type.char")?;
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let targets = format_targets(s);
     // A caret in text: the format is for the next typing.
     if let [t] = targets.as_slice()
         && t.range.is_empty()
         && let Some(at) = s.doc()?.selection.text
-        && s.doc()?.doc.text_story(t.story, t.cell).is_some_and(|st| !st.is_empty())
+        && s.doc()?.doc.text_story(t.story, t.cell).is_some_and(|st| !st.is_empty() && (t.cell.is_some() || !blank_eof(st, t.range.start)))
     {
         let doc = s.doc()?.uid;
         let mut f = typing_format(s).cloned().unwrap_or(TypingFormat { doc, at, attrs: CharAttrs::default(), cleared: vec![] });
@@ -870,6 +1160,11 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
         f.cleared.extend(cleared);
         s.typing_format = Some(f);
         return ok();
+    }
+    if let [t] = targets.as_slice()
+        && t.range.is_empty()
+    {
+        s.typing_format = None;
     }
     s.edit(|d, _| {
         apply_char_attrs(d, &targets, &a, &cleared);
@@ -888,7 +1183,25 @@ pub(crate) fn apply_char_attrs(d: &mut pagenor_doc::Document, targets: &[Target]
                 && let Some(run) = st.chars.first_mut()
             {
                 run.format.over.merge(a);
-                st.rev += 1;
+                st.rev = st.rev.wrapping_add(1);
+            } else if t.cell.is_none() && blank_eof(st, r.start) {
+                let initial = st.paras.last().filter(|pf| pf.chars.is_empty() && pf.eof_inherited_chars.is_none()).map(|_| {
+                    let mut over = st.char_format_at(r.start).over.clone();
+                    over.change = None;
+                    over
+                });
+                let Some(pf) = st.paras.last_mut() else { continue };
+                if let Some(over) = initial {
+                    pf.chars = over;
+                }
+                pf.chars.merge(a);
+                for k in cleared {
+                    let _ = pf.chars.set_json(k, &Value::Null);
+                }
+                if pf.chars.is_empty() && !cleared.is_empty() && pf.eof_inherited_chars.is_none() {
+                    pf.eof_inherited_chars = Some(CharAttrs::default());
+                }
+                st.rev = st.rev.wrapping_add(1);
             }
             continue;
         }
@@ -902,24 +1215,39 @@ pub(crate) fn apply_char_attrs(d: &mut pagenor_doc::Document, targets: &[Target]
 }
 
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
+    let empty = serde_json::Map::new();
+    let obj = attrs.as_object().unwrap_or(&empty);
+    // A rule object changes only the rule fields it names, so each paragraph gets its own attrs
+    // over its resolved rule; this pass validates them.
     let mut a = ParaAttrs::default();
-    if let Some(o) = attrs.as_object() {
-        for (k, v) in o {
-            a.set_json(k, v).map_err(|e| bad("type.para", e))?;
-        }
+    for (k, v) in obj {
+        a.set_json_over(k, v, &pagenor_doc::ParaProps::default()).map_err(|e| bad("type.para", e))?;
     }
     // `null` removes the override (back to the style's value).
-    let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
+    let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
     let targets = format_targets(s);
     s.edit(|d, _| {
+        let styles = d.styles.clone();
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
+                let mut error = None;
                 st.format_paras(t.range.clone(), |p| {
+                    let (current, _) = styles.resolve_para(p);
+                    let mut a = a.clone();
+                    for (k, v) in obj {
+                        if let Err(e) = a.set_json_over(k, v, &current) {
+                            error = Some(e);
+                            return;
+                        }
+                    }
                     p.para.merge(&a);
                     for k in &cleared {
                         let _ = p.para.set_json(k, &Value::Null);
                     }
                 });
+                if let Some(e) = error {
+                    return Err(bad("type.para", e));
+                }
             }
         }
         ok()
@@ -946,11 +1274,28 @@ fn break_link(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
             let r = t.range.clone();
             if para {
+                let eof_para = (t.cell.is_none() && blank_eof(st, st.len())).then_some(st.paras.len() - 1);
+                let eof_over = st.char_format_at(st.len()).over.clone();
+                let mut pi = st.para_at(r.start);
                 st.format_paras(r, |pf| {
+                    let at_eof = eof_para == Some(pi);
+                    pi += 1;
                     let (pp, pc) = styles.resolve_para(pf);
+                    if at_eof || pf.eof_inherited_chars.is_some() {
+                        // Flatten the paragraph baseline without promoting it above the
+                        // independent live character style or replacing explicit EOF attrs.
+                        let mut base = pf.clone();
+                        base.chars = CharAttrs::default();
+                        if at_eof && pf.chars.is_empty() && pf.eof_inherited_chars.is_none() {
+                            // An unstaged EOF still types with the preceding LF run.
+                            pf.chars = eof_over.clone();
+                        }
+                        pf.eof_inherited_chars = Some(CharProps::default().delta(&styles.resolve_para(&base).1));
+                    } else {
+                        pf.chars = CharProps::default().delta(&pc);
+                    }
                     pf.style = pagenor_doc::styles::NO_PARA_STYLE.into();
                     pf.para = ParaProps::default().delta(&pp);
-                    pf.chars = CharProps::default().delta(&pc);
                 });
             } else {
                 let ranges = st.para_ranges();
@@ -996,7 +1341,7 @@ fn open_type(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"features": list, "figures": otf::figures(&list)}))
 }
 
-fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
+fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let targets = format_targets(s);
     let Some(Target { story: sid, cell, range: r }) = targets.first().cloned() else { return Ok(Value::Null) };
@@ -1004,13 +1349,46 @@ fn selection_attrs(s: &mut Session, _p: &Value) -> Result<Value> {
     let pi = story.para_at(r.start);
     let pf = &story.paras[pi];
     let (pp, base) = st.doc.styles.resolve_para(pf);
-    let mut cf = if r.is_empty() { story.char_format_at(r.start) } else { story.format_after(r.start) }.clone();
+    let mut cf = if r.is_empty() { story_typing_format(story, r.start, cell.is_none()).into_owned() } else { story.format_after(r.start).clone() };
     if let Some(f) = typing_format(s) {
         apply_typing_format(&mut cf, f);
     }
     let cp = st.doc.styles.resolve_char(&base, &cf);
-    Ok(json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
-        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count()}))
+    let selected: String = story
+        .text
+        .get(r.start..r.end)
+        .unwrap_or_default()
+        .chars()
+        .take(256)
+        .map(|c| if c.is_control() || c == pagenor_doc::OBJECT_MARK { ' ' } else { c })
+        .skip_while(|c| c.is_whitespace())
+        .take(60)
+        .collect();
+    let mut out = json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
+        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count(), "selectedText": selected.trim()});
+    if bool_or(p, "mixed", false) {
+        out["paraMixed"] = json!(mixed_para_attrs(&st.doc, &targets));
+    }
+    Ok(out)
+}
+
+/// The paragraph attributes whose resolved values differ across the paragraphs of `targets`.
+fn mixed_para_attrs(doc: &pagenor_doc::Document, targets: &[Target]) -> Vec<String> {
+    let mut first: Option<serde_json::Map<String, Value>> = None;
+    let mut mixed = std::collections::BTreeSet::new();
+    for t in targets {
+        let Some(story) = doc.text_story(t.story, t.cell) else { continue };
+        let a = story.para_at(t.range.start);
+        let b = story.para_at(t.range.end.max(t.range.start));
+        for pf in story.paras.get(a..=b).unwrap_or(&[]) {
+            let Ok(Value::Object(v)) = serde_json::to_value(doc.styles.resolve_para(pf).0) else { continue };
+            match &first {
+                None => first = Some(v),
+                Some(f) => mixed.extend(v.into_iter().filter(|(k, x)| f.get(k) != Some(x)).map(|(k, _)| k)),
+            }
+        }
+    }
+    mixed.into_iter().collect()
 }
 
 fn apply_typing_format(cf: &mut pagenor_doc::CharFormat, f: &TypingFormat) {
@@ -1166,6 +1544,8 @@ fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
         for t in &targets {
             let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
             let r = t.range.start.min(st.len())..t.range.end.min(st.len());
+            // Case mapping preserves the final LF, but run replacement may rebuild its paragraph.
+            let eof = if t.cell.is_none() && blank_eof(st, r.end) { st.paras.last().cloned() } else { None };
             let mapped = case_map(st.slice(r.clone()), &case);
             // Replace run by run (from the end) so every run keeps its formatting.
             let segs: Vec<std::ops::Range<usize>> =
@@ -1179,6 +1559,9 @@ fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
                     delta += new.len() as isize - old.len() as isize;
                     st.replace(seg.clone(), &new);
                 }
+            }
+            if let (Some(eof), Some(pf)) = (eof, st.paras.last_mut()) {
+                *pf = eof;
             }
             if let Some(ts) = sel.text.as_mut().filter(|ts| ts.story == t.story && ts.cell == t.cell && !ts.is_caret()) {
                 let end = (r.end as isize + delta).max(r.start as isize) as usize;
@@ -1609,6 +1992,47 @@ mod autocorrect_tests {
 }
 
 #[cfg(test)]
+mod break_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Type › Insert Break Character: the break ends its paragraph, the caret starts the next one.
+    #[test]
+    fn inserted_break_ends_its_paragraph() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "OneTwo\nThree"})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let story = |s: &Session| s.doc().unwrap().doc.stories[&sid].clone();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 3, "focus": 3})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e011}", "raw": true})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nTwo\nThree");
+        assert_eq!(s.doc().unwrap().selection.text.unwrap().focus, "One\u{e011}\n".len());
+        // At the end of a paragraph the break takes the place of its return.
+        let at = story(&s).text.find("\nThree").unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "\u{e002}", "raw": true})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "One\u{e011}\nTwo\u{e002}\nThree");
+        assert_eq!(st.paras.len(), 3);
+        st.check().unwrap();
+        // Typing after the break goes to the next paragraph; deleting the break or its return
+        // removes both.
+        let at = "One\u{e011}".len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at})).unwrap();
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert_eq!(story(&s).text, "One\u{e011}\nxTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at + 1, "focus": at + 1})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwo\u{e002}\nThree");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": "OnexTwo".len(), "focus": "OnexTwo".len()})).unwrap();
+        s.execute("text.delete", &json!({"forward": true})).unwrap();
+        assert_eq!(story(&s).text, "OnexTwoThree");
+    }
+}
+
+#[cfg(test)]
 mod language_tests {
     use serde_json::json;
 
@@ -1955,6 +2379,9 @@ mod vertical_caret_tests {
         assert_eq!(mv(&mut s, "up", false, false), 3 * c);
     }
 }
+#[cfg(test)]
+#[path = "text/tests_payload.rs"]
+mod tests_payload;
 
 #[cfg(test)]
 mod story_query_contract_tests {
@@ -1971,3 +2398,120 @@ mod story_query_contract_tests {
         assert_eq!(s.execute("story.get", &json!({})).unwrap()["text"], "");
     }
 }
+
+#[cfg(test)]
+mod rule_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn a_partial_rule_edit_keeps_the_other_fields() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let rule = json!({"on": true, "weight": 3.0, "color": "[Black]", "tint": 0.5, "columnWidth": false, "offset": 4.0, "leftIndent": 6.0, "rightIndent": 2.0});
+        s.execute("style.paragraph.create", &json!({"name": "Ruled", "para": {"ruleBelow": rule}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "One\nTwo"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Ruled"})).unwrap();
+        // Local: only the colour changes; the rest is inherited from the style.
+        s.execute("type.para", &json!({"attrs": {"ruleBelow": {"color": "[Registration]"}}})).unwrap();
+        let attrs = s.execute("type.selectionAttrs", &json!({})).unwrap();
+        let mut want = rule.clone();
+        want["color"] = json!("[Registration]");
+        assert_eq!(attrs["para"]["ruleBelow"], want);
+        assert_eq!(attrs["para"]["ruleAbove"]["on"], false, "the other rule is untouched");
+        // Style: only the weight changes.
+        s.execute("style.paragraph.edit", &json!({"name": "Ruled", "para": {"ruleBelow": {"weight": 1.5}}})).unwrap();
+        let st = s.doc().unwrap().doc.styles.para("Ruled").cloned().unwrap();
+        let below = serde_json::to_value(st.para.rule_below.unwrap()).unwrap();
+        let mut want = rule.clone();
+        want["weight"] = json!(1.5);
+        assert_eq!(below, want);
+        assert!(s.execute("type.para", &json!({"attrs": {"ruleBelow": {"thickness": 2}}})).is_err(), "unknown rule field");
+    }
+
+    #[test]
+    fn rule_above_width_follows_column_or_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Short"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let mut widths = vec![];
+        for column in [true, false] {
+            s.execute("type.para", &json!({"ruleAbove": {"on": true, "columnWidth": column}})).unwrap();
+            let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+            widths.push(cs.frames[0].decos[0].rect.width());
+        }
+        assert!((widths[0] - 328.0).abs() < 1e-6, "column: {widths:?}");
+        assert!(widths[1] < 100.0, "text: {widths:?}");
+    }
+}
+
+#[cfg(test)]
+mod double_triple_click_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Double-click (`text.selectWord`) selects the clicked word; triple-click
+    /// (`text.selectLine`) selects the whole composed line.
+    #[test]
+    fn select_word_and_select_line() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "Hello brave world\nSecond line here"}))
+            .unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        // Spread point of the glyph at byte `b`.
+        let at = |s: &Session, b: usize| {
+            let d = &s.doc().unwrap().doc;
+            let cs = pagenor_compose::compose_story(d, pagenor_doc::StoryId(sid), &Default::default());
+            let (l, g) = cs.frames[0].lines.iter().find_map(|l| l.glyphs.iter().find(|g| g.byte == b).map(|g| (l, g))).unwrap();
+            json!([g.x + g.adv * 0.25, l.baseline - 3.0])
+        };
+        let text = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().text.clone();
+
+        // Double-click inside "brave" selects just that word.
+        let b = text.find("brave").unwrap() + 1;
+        s.execute("text.selectWord", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "brave");
+
+        // Triple-click anywhere on the first line selects the whole line.
+        let b = text.find("world").unwrap() + 1;
+        s.execute("text.selectLine", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "Hello brave world");
+
+        // Triple-click on the second line selects only that line.
+        let b = text.find("Second").unwrap() + 2;
+        s.execute("text.selectLine", &json!({"frame": fid, "point": at(&s, b)})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "Second line here");
+    }
+}
+
+#[cfg(test)]
+#[path = "text/tests_eof.rs"]
+mod tests_eof;
+#[cfg(test)]
+#[path = "text/tests_eof_consumers_markers.rs"]
+mod tests_eof_consumers_markers;
+#[cfg(test)]
+#[path = "text/tests_eof_consumers_ranges.rs"]
+mod tests_eof_consumers_ranges;
+#[cfg(test)]
+#[path = "text/tests_eof_transport.rs"]
+mod tests_eof_transport;
+#[cfg(test)]
+#[path = "text/tests_inheritance.rs"]
+mod tests_inheritance;
+
+#[cfg(test)]
+use pagenor_format as fixture_format;
+#[cfg(test)]
+#[path = "../../tests/support/eof_format.rs"]
+mod eof_fixture;

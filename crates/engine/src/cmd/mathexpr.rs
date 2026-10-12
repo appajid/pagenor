@@ -13,16 +13,30 @@ use crate::{Result, Session};
 
 fn math_item(d: &mut pagenor_doc::Document, latex: &str, size: f64, lid: pagenor_doc::LayerId, at: (f64, f64)) -> Item {
     let (svg, (w, h)) = crate::math::to_svg(latex, size);
-    let aid = AssetId(d.alloc());
-    d.assets.insert(
-        aid,
-        Arc::new(Asset { page: 0, id: aid, name: "math.svg".into(), mime: "image/svg+xml".into(), link: None, data: Arc::new(svg), pixels: None }),
-    );
+    let fresh = AssetId(d.alloc());
+    let aid = d.add_asset(Asset {
+        page: 0,
+        id: fresh,
+        name: "math.svg".into(),
+        mime: "image/svg+xml".into(),
+        link: None,
+        data: Arc::new(svg),
+        pixels: None,
+        ..Default::default()
+    });
     let id = ItemId(d.alloc());
     let r = Rect::new(at.0, at.1, at.0 + w, at.1 + h);
     let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
-    it.content =
-        Content::Graphic(Graphic { asset: aid, size: (w, h), xf: Affine::translate(at), auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4] });
+    it.content = Content::Graphic(Graphic {
+        clip: None,
+        asset: aid,
+        size: (w, h),
+        xf: Affine::translate(at),
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+    });
     it.alt_text = latex.to_string();
     it.name = "Math".into();
     it
@@ -70,11 +84,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
-            let r = t.range();
-            if let Some(st) = d.story_mut(t.story) {
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
-            }
-            let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
+            let end = super::anchored::anchor_items(d, t.story, t.range(), vec![it], &Default::default())?;
             sel.text = Some(pagenor_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));
         }

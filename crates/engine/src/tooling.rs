@@ -93,20 +93,24 @@ impl Session {
             layer,
             snap: view.snap,
             unit: view.unit,
+            scale_strokes: self.prefs.scale_strokes,
         };
         Some(f(self.tool.as_mut(), &cx))
     }
 
     pub fn pointer(&mut self, ev: &PointerEvent, view: ViewInfo) -> Result<()> {
         let actions = self.with_ctx(view, |t, cx| t.pointer(cx, ev)).unwrap_or_default();
-        self.run_actions(actions)
+        let result = self.run_actions(actions);
+        crate::cmd::text::retain_pending_typing_format(self);
+        result
     }
 
     pub fn tool_key(&mut self, key: ToolKey, mods: Mods, view: ViewInfo) -> Result<bool> {
         let actions = self.with_ctx(view, |t, cx| t.key(cx, key, mods)).unwrap_or_default();
         let handled = !actions.is_empty();
-        self.run_actions(actions)?;
-        Ok(handled)
+        let result = self.run_actions(actions);
+        crate::cmd::text::retain_pending_typing_format(self);
+        result.map(|()| handled)
     }
 
     pub fn overlays(&mut self, view: ViewInfo) -> Vec<Overlay> {
@@ -115,6 +119,15 @@ impl Session {
 
     pub fn cursor(&mut self, p: pagenor_geom::Point, mods: Mods, view: ViewInfo) -> Cursor {
         self.with_ctx(view, |t, cx| t.cursor(cx, p, mods)).unwrap_or_default()
+    }
+
+    /// Canvas centres of the content grabbers the Selection tool shows: the selected frame's and
+    /// the one under `hover`.
+    pub fn content_grabbers(&mut self, hover: Option<pagenor_geom::Point>, view: ViewInfo) -> Vec<pagenor_geom::Point> {
+        if self.tool.id() != "selection" {
+            return vec![];
+        }
+        self.with_ctx(view, |_, cx| pagenor_tools::select::grabbers(cx, hover).into_iter().map(|(_, c)| c).collect()).unwrap_or_default()
     }
 
     pub fn tool_busy(&self) -> bool {
@@ -138,6 +151,7 @@ impl Session {
                 Action::Dialog(id, params) => self.ui_requests.push(UiRequest::Dialog { id, params }),
                 Action::SwitchTool(id) => self.set_tool(&id),
                 Action::View(params) => self.ui_requests.push(UiRequest::View { params }),
+                Action::Handled => {}
             }
         }
         Ok(())
@@ -171,7 +185,16 @@ impl Session {
     pub fn commit_interaction(&mut self) -> Result<()> {
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.take() else { return Ok(()) };
-        if !Arc::ptr_eq(&it.doc, &st.doc) {
+        let (uid, changed) = (st.uid, !Arc::ptr_eq(&it.doc, &st.doc));
+        // Smart Text Reflow answers the finished gesture as it would the command, in its undo step.
+        if changed && self.prefs.smart_text_reflow {
+            let _ = self.guarded("smart text reflow", |s| {
+                s.smart_reflow(Some((uid, &it.doc)));
+                Ok(Value::Null)
+            });
+        }
+        let st = self.doc_mut()?;
+        if changed {
             record_undo(st, HistoryEntry { label: it.label, doc: it.doc, selection: it.selection });
         }
         if let Some((c, p)) = it.preview {

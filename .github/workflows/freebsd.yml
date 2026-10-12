@@ -2,16 +2,20 @@
 # (GitHub has no FreeBSD runners). GPU tests skip themselves when the VM has no adapter.
 name: FreeBSD
 
+# The VM build is slow, so it runs nightly on main and on pushes to `release`, not on every push
+# or dependency change: a drifted dependency still shows up within a day, and always before a
+# release ships. PRs that change the FreeBSD packaging itself still run it.
 on:
+  schedule:
+    - cron: "27 2 * * *"
   push:
-    branches: [main]
+    branches: [release]
   pull_request:
     paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
       - "crates/fonts/**"
       - .github/workflows/freebsd.yml
+      - packaging/freebsd/**
+      - packaging/env.sh
   workflow_dispatch:
 
 concurrency:
@@ -46,7 +50,13 @@ jobs:
           # Nothing to bring back; copying the target dir out of the VM fails on large builds.
           copyback: false
           prepare: |
-            pkg install -y git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+            pkg install -y git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 dejavu alsa-lib
+            # Font registry tests compare actual installed fonts, not just embedded inputs.
+            fc-cache -f
+            if [ -z "$(fc-list --format='%{file}\n')" ]; then
+              echo "error: FreeBSD CI requires usable installed host fonts"
+              exit 1
+            fi
             curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
           run: |
             . "$HOME/.cargo/env"
