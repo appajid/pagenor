@@ -342,6 +342,7 @@ fn flatten(d: &pagenor_doc::Document, cache: &pagenor_compose::Cache, ppi: f64) 
         );
         let mut it = Item::new(ItemId(out.alloc()), layer, Shape::Rectangle, pagenor_geom::shapes::rectangle(r));
         it.content = Content::Graphic(Graphic {
+            clip: None,
             asset: aid,
             size: (w as f64, h as f64),
             xf: pagenor_geom::Affine::translate((r.x0, r.y0)) * pagenor_geom::Affine::scale_non_uniform(r.width() / w as f64, r.height() / h as f64),
@@ -522,6 +523,7 @@ fn rasterize_where(
             asset: aid,
             size: (w as f64, h as f64),
             xf: pagenor_geom::Affine::translate((reach.x0, reach.y0)) * pagenor_geom::Affine::scale(1.0 / k),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],

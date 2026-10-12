@@ -799,3 +799,9 @@ P11.13 adapts the related UI group #525, #527, #532, #533, #541 and #552:
 tint/Frame/Text controls, View grouping and rendered document grid, selected-paragraph
 Justification, Properties transforms, and the Tools Color Picker. Pinned heads/authors,
 Pagenor-specific adaptations and validation are in the same 0.7.0 adaptation log.
+
+P11.13 additionally adapts #519, #528, #550 and #561 (curved corners, one-time
+image fitting, content transforms and saved clipping paths). Pagenor retains its
+placement validation/PDF crop/wrap metadata, adds finite-transform guards, corrects
+the native content outline found during QA, and records clipping capability as native
+format 4. Pinned authors/heads and measured checks are in UPSTREAM_ADOPTION_070.md.

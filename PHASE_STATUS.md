@@ -145,3 +145,9 @@ including the six related UI adaptations. The UI group passes all seven gates
 (2,322 tests, no failures, seven ignored; twenty WASM packages) and native visual
 inspection in an isolated synthetic QA profile. The rest of the queue remains in
 progress; published 0.6.0 packages and the owner's running session remain intact.
+
+P11.13 graphics group: #519, #528, #550 and #561 are complete. All seven gates
+pass with 2,337 tests, no failures and seven ignored; twenty WASM packages. Native
+inspection verifies content transforms, tight selection bounds and normal/inverted
+saved masks. Native format 4 retains clipping paths and reads prior formats. Twelve
+queue items are now complete; color/font and remaining publishing work continues.

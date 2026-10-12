@@ -125,7 +125,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Transform Panel",
             [],
             None,
-            "{x?, y?, width?, height?, scaleX? (%), scaleY? (%), rotation? (°), shear? (°), ref?: 0..8, ids?} — reference-point based geometry; rotation and shear are absolute (Transformations are Totals decides whether nested objects measure them on the pasteboard)",
+            "{x?, y?, width?, height?, scaleX? (%), scaleY? (%), rotation? (°), shear? (°), ref?: 0..8, ids?, content?: bool (the placed graphic inside each frame; the frame stays. Default: whether the selection is content, when no ids are given)} — reference-point based geometry; rotation and shear are absolute (Transformations are Totals decides whether nested objects measure them on the pasteboard)",
             has_selection,
             transform_set
         ),
@@ -661,6 +661,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{type?: alpha|edges (default alpha), threshold?: 0–255 (alpha: opaque above; edges: darker than 255 − threshold counts; default 25), tolerance?: px (2), ids?} — traces the placed graphic and makes the outline the frame (Convert Clipping Path to Frame)",
             has_selection,
             clipping_path
+        ),
+        cmd!(
+            "object.clippingPathOptions",
+            "Clipping Path Options…",
+            ["Object", "Clipping Path"],
+            None,
+            "{type?: none, invert?: bool, includeInsideEdges?: bool, ids?} — without type, invert or includeInsideEdges, reports each selected graphic's clipping path ({items: [{id, type: none|detectEdges|alphaChannel|photoshopPath|userModifiedPath, anchors, invert, includeInsideEdges, threshold, tolerance, inset, sourceName}]}); type none removes it, invert shows the graphic outside it instead of inside",
+            has_selection,
+            clipping_path_options
         ),
         cmd!(
             "object.primaryTextFrame",
@@ -1301,6 +1310,11 @@ fn transform_values(s: &mut Session, p: &Value, ids: &[ItemId], rf: usize) -> Re
 
 fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
+    // Direct Selection of a placed graphic (or `content`): the graphic moves inside its frame.
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or(p.get("ids").is_none() && p.get("id").is_none() && s.doc()?.selection.content);
+    if content {
+        return transform_content(s, p, &ids);
+    }
     if ["rotation", "shear", "scaleX", "scaleY"].iter().any(|k| p.get(*k).is_some()) {
         let rf = p.get("ref").and_then(Value::as_u64).unwrap_or(4) as usize;
         if !["x", "y", "width", "height"].iter().any(|k| p.get(*k).is_some()) {
@@ -1362,6 +1376,103 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         ok()
+    })
+}
+
+/// `transform.set` on the placed graphics of `ids` (the frames stay): rotation, shear and scale are
+/// absolute, measured as `transform.info` reports the content (on the pasteboard with
+/// Transformations are Totals, else in the frame); x, y, width and height are the graphic's bounds
+/// on the page, about the reference point. Frames without a placed graphic are left alone.
+fn transform_content(s: &mut Session, p: &Value, ids: &[ItemId]) -> Result<Value> {
+    let totals = s.prefs.transformations_are_totals;
+    let get = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let (rot, shear, sx, sy) = (get("rotation"), get("shear").map(|v| v.clamp(-85.0, 85.0)), get("scaleX"), get("scaleY"));
+    let (x, y, w, h) = (get("x"), get("y"), get("width").map(|v| v.max(0.01)), get("height").map(|v| v.max(0.01)));
+    if [sx, sy].iter().flatten().any(|v| v.abs() < 0.01) {
+        return Err(bad("transform.set", "scale too small"));
+    }
+    let rf = p.get("ref").and_then(Value::as_u64).unwrap_or(4).min(8) as usize;
+    {
+        let d = &s.doc()?.doc;
+        if !ids.iter().any(|i| d.item(*i).is_some_and(|it| it.graphic().is_some())) {
+            return Err(bad("transform.set", "no placed graphic to transform"));
+        }
+    }
+    s.edit(|d, _| {
+        let mut changed = 0;
+        for id in ids {
+            let Some(loc) = d.find(*id) else { continue };
+            let full = d.parent_xf(&loc);
+            let Some(it) = d.item(*id) else { continue };
+            if it.locked {
+                continue;
+            }
+            let Some(g) = it.graphic() else { continue };
+            let frame = full * it.xf;
+            if !frame.as_coeffs().iter().all(|v| v.is_finite())
+                || !frame.determinant().is_finite()
+                || frame.determinant().abs() < 1e-12
+                || !g.size.0.is_finite()
+                || !g.size.1.is_finite()
+                || g.size.0 <= 0.0
+                || g.size.1 <= 0.0
+            {
+                return Err(bad("transform.set", "invalid graphic geometry"));
+            }
+            let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+            // Rotation, shear and scale in the measuring space (pasteboard or frame).
+            let q = if totals { frame } else { Affine::IDENTITY };
+            let mut cur = q * g.xf;
+            if !cur.as_coeffs().iter().all(|v| v.is_finite()) || !cur.determinant().is_finite() || cur.determinant().abs() < 1e-12 {
+                return Err(bad("transform.set", "graphic transform is not invertible"));
+            }
+            let lin = |m: Affine| {
+                let c = m.as_coeffs();
+                Affine::new([c[0], c[1], c[2], c[3], 0.0, 0.0])
+            };
+            if rot.is_some() || shear.is_some() || sx.is_some() || sy.is_some() {
+                let a = pagenor_geom::reference_point(cur.transform_rect_bbox(rect), rf).to_vec2();
+                let v = pagenor_geom::decompose::decompose(cur);
+                let mut t = v;
+                if let Some(r) = rot {
+                    t.rotation = r;
+                }
+                if let Some(k) = shear {
+                    t.shear = k;
+                }
+                if let Some(x) = sx {
+                    t.scale_x = x / 100.0;
+                }
+                if let Some(y) = sy {
+                    t.scale_y = y / 100.0;
+                }
+                let delta = pagenor_geom::decompose::compose(&t) * lin(cur).inverse();
+                cur = Affine::translate(a) * delta * Affine::translate(-a) * cur;
+            }
+            let mut gx = q.inverse() * cur;
+            // Position and size: the graphic's bounds on the page.
+            if x.is_some() || y.is_some() || w.is_some() || h.is_some() {
+                let b = (frame * gx).transform_rect_bbox(rect);
+                let a = pagenor_geom::reference_point(b, rf);
+                let (fx, fy) = (w.map_or(1.0, |w| w / b.width().max(1e-9)), h.map_or(1.0, |h| h / b.height().max(1e-9)));
+                let page_x =
+                    d.spread(loc.spread).and_then(|sp| sp.page_at_x(b.center().x).and_then(|pi| sp.pages.get(pi)).map(|pg| pg.x)).unwrap_or(0.0);
+                let to = Point::new(x.map_or(a.x, |x| x + page_x), y.unwrap_or(a.y));
+                let m = Affine::translate(to.to_vec2()) * Affine::scale_non_uniform(fx, fy) * Affine::translate(-a.to_vec2());
+                gx = frame.inverse() * m * frame * gx;
+            }
+            if !gx.as_coeffs().iter().all(|v| v.is_finite())
+                || !gx.transform_rect_bbox(rect).is_finite()
+                || !(frame * gx).transform_rect_bbox(rect).is_finite()
+            {
+                return Err(bad("transform.set", "graphic transform is out of range"));
+            }
+            if let Some(Content::Graphic(g)) = d.item_mut(*id).map(|it| &mut it.content) {
+                g.xf = gx;
+                changed += 1;
+            }
+        }
+        Ok(json!({ "changed": changed }))
     })
 }
 
@@ -2076,6 +2187,63 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Clipping Path Options: report a graphic's clipping path, remove it, or change its options.
+fn clipping_path_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.clippingPathOptions";
+    let ids = targets(s, p)?;
+    let remove = match str_param(p, "type") {
+        None => false,
+        Some("none") => true,
+        Some(t) => return Err(bad(ID, format!("type `{t}` can't be set here (only `none`); object.clippingPath traces an outline"))),
+    };
+    let flag = |key: &str| p.get(key).map(|v| v.as_bool().ok_or_else(|| bad(ID, format!("{key} must be true or false")))).transpose();
+    let (invert, inside) = (flag("invert")?, flag("includeInsideEdges")?);
+    let graphics: Vec<ItemId> = {
+        let d = &s.doc()?.doc;
+        ids.into_iter().filter(|id| d.item(*id).and_then(Item::graphic).is_some()).collect()
+    };
+    if graphics.is_empty() {
+        return Err(bad(ID, "select a frame with a placed graphic"));
+    }
+    if !remove && invert.is_none() && inside.is_none() {
+        let d = &s.doc()?.doc;
+        let items: Vec<Value> = graphics
+            .iter()
+            .filter_map(|id| d.item(*id).and_then(Item::graphic).map(|g| (id, g)))
+            .map(|(id, g)| match &g.clip {
+                None => json!({"id": id.0, "type": "none"}),
+                Some(c) => json!({
+                    "id": id.0,
+                    "type": serde_json::to_value(c.kind).ok(),
+                    "anchors": c.path.anchor_count(),
+                    "invert": c.invert,
+                    "includeInsideEdges": c.include_inside_edges,
+                    "threshold": c.threshold,
+                    "tolerance": c.tolerance,
+                    "inset": c.inset,
+                    "sourceName": c.source_name,
+                }),
+            })
+            .collect();
+        return Ok(json!({"items": items}));
+    }
+    s.edit(|d, _| {
+        let mut n = 0;
+        for id in &graphics {
+            let Some(Content::Graphic(g)) = d.item_mut(*id).map(|it| &mut it.content) else { continue };
+            if remove {
+                n += usize::from(g.clip.take().is_some());
+            } else if let Some(c) = &mut g.clip {
+                let c = Arc::make_mut(c);
+                c.invert = invert.unwrap_or(c.invert);
+                c.include_inside_edges = inside.unwrap_or(c.include_inside_edges);
+                n += 1;
+            }
+        }
+        Ok(json!({"changed": n}))
+    })
+}
+
 fn fitting_mode(s: &str) -> Option<pagenor_doc::Fitting> {
     use pagenor_doc::Fitting as F;
     Some(match s {
@@ -2743,8 +2911,8 @@ mod fitting_tests {
         s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally", "align": 0})).unwrap();
         let c = content(&s);
         assert!((c.x0 - 100.0).abs() < 1e-6 && (c.y0 - 100.0).abs() < 1e-6 && (c.width() - 200.0).abs() < 1e-6, "{c:?}");
-        // Crop 10 pt on every side: the content spreads past the frame.
-        s.execute("object.fittingOptions", &json!({"ids": [f], "crop": 10, "align": 4})).unwrap();
+        // Crop 10 pt on every side and fit again: the content spreads past the frame.
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally", "crop": 10, "align": 4})).unwrap();
         let c = content(&s);
         assert!((c.width() - 220.0).abs() < 1e-6, "{c:?}");
         // Auto-fit: resizing the frame refits the content.
@@ -2806,6 +2974,39 @@ mod clipping_tests {
         assert!((b.x0 - 105.0).abs() < 1.5 && (b.x1 - 135.0).abs() < 1.5, "{b:?}");
         assert_eq!(it.shape, Shape::Path);
         assert!(s.execute("object.clippingPath", &json!({"ids": [f], "threshold": 255})).is_err());
+    }
+
+    #[test]
+    fn clipping_path_options_report_invert_and_remove_the_clip() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = pagenor_render::Rendered { width: 4, height: 4, pixels: vec![255; 64] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 140, 140]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "white.png", "frame": f})).unwrap();
+        let get = |s: &mut Session| s.execute("object.clippingPathOptions", &json!({"ids": [f]})).unwrap()["items"][0].clone();
+        assert_eq!(get(&mut s)["type"], "none");
+        // As an imported file would carry it.
+        let triangle = pagenor_geom::PathData::single(pagenor_geom::path::SubPath::polyline(
+            &[Point::new(0.0, 4.0), Point::new(2.0, 0.0), Point::new(4.0, 4.0)],
+            true,
+        ));
+        s.edit(|d, _| {
+            if let Some(Content::Graphic(g)) = d.item_mut(ItemId(f)).map(|it| &mut it.content) {
+                g.clip = Some(Arc::new(pagenor_doc::ClippingPath::new(pagenor_doc::ClippingKind::PhotoshopPath, triangle)));
+            }
+            Ok(json!({}))
+        })
+        .unwrap();
+        let c = get(&mut s);
+        assert_eq!((c["type"].as_str(), c["anchors"].as_u64(), c["invert"].as_bool()), (Some("photoshopPath"), Some(3), Some(false)));
+        s.execute("object.clippingPathOptions", &json!({"ids": [f], "invert": true})).unwrap();
+        assert_eq!(get(&mut s)["invert"], true);
+        assert_eq!(s.execute("object.clippingPathOptions", &json!({"ids": [f], "type": "none"})).unwrap()["changed"], 1);
+        assert_eq!(get(&mut s)["type"], "none");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(get(&mut s)["type"], "photoshopPath");
+        assert!(s.execute("object.clippingPathOptions", &json!({"ids": [f], "type": "alphaChannel"})).is_err());
+        assert!(s.execute("object.clippingPathOptions", &json!({"ids": [f], "invert": "yes"})).is_err());
     }
 }
 
@@ -3147,6 +3348,78 @@ mod blend_mode_tests {
     }
 }
 
+#[cfg(test)]
+mod content_transform_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A rotated graphic frame holding a 200 x 100 image, its content selected.
+    fn rotated_frame_with_image() -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![200u8; 200 * 100 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        s.execute("transform.rotate", &json!({"ids": [f], "angle": -45})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+        (s, f)
+    }
+
+    #[test]
+    fn explicit_item_target_keeps_frame_semantics_and_bad_content_geometry_changes_nothing() {
+        let (mut s, f) = rotated_frame_with_image();
+        s.execute("transform.set", &json!({"id": f, "rotation": 0})).unwrap();
+        let info = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!(info["rotation"].as_f64().unwrap().abs() < 1e-6);
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("transform.set", &json!({"content": true, "scaleX": 1e308})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.edit(|d, _| {
+            if let pagenor_doc::Content::Graphic(g) = &mut d.item_mut(pagenor_doc::ItemId(f)).unwrap().content {
+                g.xf = pagenor_geom::Affine::scale_non_uniform(0.0, 1.0);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("transform.set", &json!({"content": true, "rotation": 45})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn rotating_the_content_leaves_the_frame_as_it_is() {
+        let (mut s, f) = rotated_frame_with_image();
+        let before = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((before["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6 && (before["content"]["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6);
+        // The tutorial's step: the image straightened inside its tilted frame.
+        s.execute("transform.set", &json!({"rotation": 0})).unwrap();
+        let after = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((after["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "the frame stays at -45: {after}");
+        assert!(after["content"]["rotation"].as_f64().unwrap().abs() < 1e-6, "the image is upright: {after}");
+        // Scale and position act on the image too.
+        s.execute("transform.set", &json!({"scaleX": 50, "scaleY": 50})).unwrap();
+        let info = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((info["content"]["scaleX"].as_f64().unwrap() - 50.0).abs() < 1e-6, "{info}");
+        assert!((info["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6);
+        // One undo step each.
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let undone = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((undone["content"]["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "{undone}");
+    }
+
+    #[test]
+    fn a_frame_selection_still_transforms_the_frame_and_an_empty_frame_has_no_content() {
+        let (mut s, f) = rotated_frame_with_image();
+        // `content: false` (or a frame selection) turns frame and image together.
+        s.execute("transform.set", &json!({"rotation": 0, "content": false})).unwrap();
+        let info = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!(info["rotation"].as_f64().unwrap().abs() < 1e-6, "{info}");
+        let e = s.execute("frame.create", &json!({"rect": [400, 100, 500, 200], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        assert!(s.execute("transform.set", &json!({"ids": [e], "content": true, "rotation": 10})).is_err());
+    }
+}
 #[cfg(test)]
 mod reorder_tests {
     use super::*;

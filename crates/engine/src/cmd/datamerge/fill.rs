@@ -692,6 +692,7 @@ fn inline_picture_item(doc: &mut pagenor_doc::Document, loaded: Option<&LoadedPi
             }),
         );
         let graphic = Graphic {
+            clip: None,
             asset: aid,
             size: (w, h),
             xf: Affine::IDENTITY,
@@ -862,6 +863,7 @@ fn place_image(
     };
     let mode = fitting_of(&options.fitting);
     let mut g = Graphic {
+        clip: None,
         asset: AssetId(0),
         size: (nw, nh),
         xf: Affine::translate((inner.x0, inner.y0)),

@@ -897,6 +897,7 @@ mod tests {
                 pagenor_geom::shapes::rectangle(pagenor_geom::Rect::new(0.0, 0.0, 1.0, 1.0)),
             );
             item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+                clip: None,
                 asset: id,
                 size: (1.0, 1.0),
                 xf: pagenor_geom::Affine::IDENTITY,

@@ -107,7 +107,16 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let mut b: Option<Rect> = None;
     for id in &st.selection.items {
         let it = d.item(*id)?;
-        let ib = if with_stroke { it.visible_bounds() } else { it.bounds() };
+        let ib = if st.selection.content
+            && let Some(g) = it.graphic()
+        {
+            let parent = d.find(*id).map_or(pagenor_geom::Affine::IDENTITY, |loc| d.parent_xf(&loc));
+            (parent * it.xf * g.xf).transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1))
+        } else if with_stroke {
+            it.visible_bounds()
+        } else {
+            it.bounds()
+        };
         b = Some(b.map_or(ib, |r| r.union(ib)));
     }
     let b = b?;

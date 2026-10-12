@@ -1001,6 +1001,7 @@ fn graphic_frame(doc: &mut Document) -> ItemId {
     let id = ItemId(doc.alloc());
     let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
     item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+        clip: None,
         asset: pagenor_doc::AssetId(1),
         size: (200.0, 100.0),
         xf: pagenor_geom::Affine::translate((50.0, 100.0)),

@@ -63,6 +63,7 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     let id = ItemId(d.alloc());
     let mut it = Item::new(id, lid, pagenor_doc::Shape::Rectangle, pagenor_geom::shapes::rectangle(Rect::new(72.0, 72.0, 272.0, 172.0)));
     it.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+        clip: None,
         asset,
         size: (px.0 as f64, px.1 as f64),
         xf: pagenor_geom::Affine::translate((72.0, 72.0)) * pagenor_geom::Affine::scale(50.0),

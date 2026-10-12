@@ -965,7 +965,7 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
         if let Content::Graphic(g) = &it.content
             && sel.content
         {
-            let gb = xf.rect((a * it.xf).transform_rect_bbox(g.xf.transform_rect_bbox(DRect::new(0.0, 0.0, g.size.0, g.size.1))));
+            let gb = xf.rect((a * it.xf * g.xf).transform_rect_bbox(DRect::new(0.0, 0.0, g.size.0, g.size.1)));
             painter.rect_stroke(gb, 0.0, Stroke::new(1.0, Color32::from_rgb(196, 111, 43)), StrokeKind::Middle);
         }
     }
@@ -3028,6 +3028,30 @@ mod tests {
         h.run_steps(3);
         assert!(yellow(&h, diamond), "no diamond at {diamond:?}");
         assert!(!yellow(&h, widget));
+    }
+
+    #[test]
+    fn upright_content_inside_a_rotated_frame_has_a_tight_selection_outline() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect":[100,100,300,300],"content":"graphic"})).unwrap()["id"].clone();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![255; 200 * 100 * 4] }.to_png();
+        app.run("file.place", json!({"base64":pagenor_engine::cmd::base64_encode(&png),"frame":f,"name":"synthetic.png"})).unwrap();
+        app.run("transform.rotate", json!({"ids":[f],"angle":-45})).unwrap();
+        app.run("selection.set", json!({"ids":[f],"content":true})).unwrap();
+        app.run("transform.set", json!({"rotation":0})).unwrap();
+        let mut h = harness(app);
+        h.run_steps(3);
+        fn outline(s: &egui::Shape) -> Option<egui::Rect> {
+            match s {
+                egui::Shape::Rect(r) if r.stroke.color == Color32::from_rgb(196, 111, 43) => Some(r.rect),
+                egui::Shape::Vec(v) => v.iter().find_map(outline),
+                _ => None,
+            }
+        }
+        let r = h.output().shapes.iter().find_map(|s| outline(&s.shape)).unwrap();
+        let zoom = h.state().view().unwrap().zoom as f32;
+        assert!((r.width() - 400.0 * zoom).abs() < 0.01 && (r.height() - 200.0 * zoom).abs() < 0.01, "{r:?} at zoom {zoom}");
     }
 
     #[test]

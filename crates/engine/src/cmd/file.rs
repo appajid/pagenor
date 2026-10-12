@@ -448,7 +448,8 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let r = d.item(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.inner_bounds();
         let k = (r.width() / bw).max(r.height() / bh);
         let xf = Affine::translate((r.x0 + (r.width() - bw * k) / 2.0, r.y0 + (r.height() - bh * k) / 2.0)) * Affine::scale(k);
-        (r, xf, pagenor_doc::Fitting::FillProportionally)
+        // Fill once; keep Auto-Fit off so resizing the frame crops the placed image.
+        (r, xf, Default::default())
     } else {
         let sp = d.spread(spread).ok_or_else(|| bad("file.place", "no such spread"))?;
         let pr = sp.pages.first().map(|pg| pg.margin_rect()).unwrap_or(Rect::new(36.0, 36.0, 300.0, 300.0));
@@ -463,7 +464,16 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
         let aid = d.add_asset(Asset { id: fresh, ..asset });
-        let graphic = Content::Graphic(Graphic { asset: aid, size: (bw, bh), xf, auto_fit, fit_align: 4, crop: [0.0; 4], wrap: Default::default() });
+        let graphic = Content::Graphic(Graphic {
+            clip: None,
+            asset: aid,
+            size: (bw, bh),
+            xf,
+            auto_fit,
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+        });
         let id = if let Some(fid) = target_frame {
             let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
             it.content = graphic;
@@ -645,7 +655,8 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         let r = d.item(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.inner_bounds();
         let k = (r.width() / nw).max(r.height() / nh);
         let xf = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
-        (r, xf, pagenor_doc::Fitting::FillProportionally)
+        // Fill once; keep Auto-Fit off so resizing the frame crops the placed image.
+        (r, xf, Default::default())
     } else {
         if d.spread(sr).is_none() {
             return Err(bad("place.drop", "no such spread"));
@@ -662,7 +673,16 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     };
     validate_placement((nw, nh), frame_rect, xf, "place.drop")?;
     let r = s.edit(|d, sel| {
-        let graphic = Content::Graphic(Graphic { asset: aid, size: (nw, nh), xf, auto_fit, fit_align: 4, crop: [0.0; 4], wrap: Default::default() });
+        let graphic = Content::Graphic(Graphic {
+            clip: None,
+            asset: aid,
+            size: (nw, nh),
+            xf,
+            auto_fit,
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+        });
         let id = if let Some(fid) = frame {
             d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.content = graphic;
             fid
@@ -1721,6 +1741,7 @@ mod serialization_failure_tests {
                     pagenor_geom::shapes::rectangle(pagenor_geom::Rect::new(0.0, 0.0, 1.0, 1.0)),
                 );
                 item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+                    clip: None,
                     asset: id,
                     size: (1.0, 1.0),
                     xf: pagenor_geom::Affine::IDENTITY,

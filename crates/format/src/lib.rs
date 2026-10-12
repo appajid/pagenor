@@ -19,8 +19,9 @@ use pagenor_doc::{AssetId, Document, ParaAttrs, Story};
 use serde_json::{Value, json};
 
 pub use pagenor_doc::file_type::MIME;
-/// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering.
-pub const VERSION: u32 = 3;
+/// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering;
+/// format 4 retains placed-graphic clipping paths that older readers would otherwise discard.
+pub const VERSION: u32 = 4;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
@@ -452,6 +453,7 @@ mod tests {
             asset,
             size: (1.0, 1.0),
             xf: Affine::translate((crop, crop)),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [crop; 4],
@@ -514,6 +516,42 @@ mod tests {
         assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.as_slice(), source);
         Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"\x89PNG\r\n\x1a\npreview".to_vec());
         assert_eq!(version(&d), u64::from(VERSION), "saving never downgrades new paragraph defaults");
+    }
+
+    #[test]
+    fn native_clipping_path_roundtrip_preserves_geometry_and_options() {
+        use pagenor_doc::{ClippingKind, ClippingPath, Content};
+        let mut d = Document::new(&NewDocument::default());
+        let aid = png_asset(&mut d, &[1, 2, 3, 4]);
+        let id = place(&mut d, aid, 0.25);
+        let path = pagenor_doc::geom::shapes::rectangle(Rect::new(0.1, 0.1, 0.9, 0.8));
+        let mut clip = ClippingPath::new(ClippingKind::UserModifiedPath, path);
+        clip.invert = true;
+        clip.source_name = "Synthetic outline".into();
+        clip.threshold = 42.0;
+        if let Content::Graphic(g) = &mut d.item_mut(id).unwrap().content {
+            g.clip = Some(Arc::new(clip.clone()));
+        }
+        let bytes = save(&d).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let mut meta = String::new();
+        archive.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 4);
+        let back = load(&bytes).unwrap();
+        let g = back.item(id).unwrap().graphic().unwrap();
+        assert_eq!(g.clip.as_deref(), Some(&clip));
+        assert_eq!(g.xf, d.item(id).unwrap().graphic().unwrap().xf);
+        let mut v3 = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        v3.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+        v3.write_all(br#"{"format":"pagenor","version":3}"#).unwrap();
+        let mut legacy = d.clone();
+        if let Content::Graphic(g) = &mut legacy.item_mut(id).unwrap().content {
+            g.clip = None;
+        }
+        v3.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+        v3.write_all(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let old = load(&v3.finish().unwrap().into_inner()).unwrap();
+        assert!(old.item(id).unwrap().graphic().unwrap().clip.is_none());
     }
 
     #[test]

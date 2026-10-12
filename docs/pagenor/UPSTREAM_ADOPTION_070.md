@@ -23,10 +23,10 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.6 | [#533](https://github.com/storytold/designcraft/pull/533) / @aiongg | `3f752312d6229acc6e9f36346bb69b2c77a00bf3` | Complete — all seven gates and native UI inspection passed |
 | P11.13.7 | [#541](https://github.com/storytold/designcraft/pull/541) / @moppeeer | `65ddf1f119e84972208a661b138cccd3c6301020` | Complete — all seven gates and native UI inspection passed |
 | P11.13.8 | [#552](https://github.com/storytold/designcraft/pull/552) / @moppeeer | `3e9881c29bb2410dcb7a46261f91c977a681b7d4` | Complete — all seven gates and native UI inspection passed |
-| P11.13.9 | [#519](https://github.com/storytold/designcraft/pull/519) / @moppeeer | `c6d285668875179ad804eb9b3adc5ee6d1e9ab89` | Pending |
-| P11.13.10 | [#528](https://github.com/storytold/designcraft/pull/528) / @aiongg | `54b607525e1614f574778409e686dda76e2069ad` | Pending |
-| P11.13.11 | [#550](https://github.com/storytold/designcraft/pull/550) / @moppeeer | `2db2da0bbcd70548581c6fd574b57b9c2aae3a86` | Pending |
-| P11.13.12 | [#561](https://github.com/storytold/designcraft/pull/561) / @aiongg | `e111bb74f76a438f7cf3fa488c4e1cc8421bf599` | Pending |
+| P11.13.9 | [#519](https://github.com/storytold/designcraft/pull/519) / @moppeeer | `c6d285668875179ad804eb9b3adc5ee6d1e9ab89` | Complete — all seven gates and native graphics inspection passed |
+| P11.13.10 | [#528](https://github.com/storytold/designcraft/pull/528) / @aiongg | `54b607525e1614f574778409e686dda76e2069ad` | Complete — all seven gates and native graphics inspection passed |
+| P11.13.11 | [#550](https://github.com/storytold/designcraft/pull/550) / @moppeeer | `2db2da0bbcd70548581c6fd574b57b9c2aae3a86` | Complete — all seven gates and native graphics inspection passed |
+| P11.13.12 | [#561](https://github.com/storytold/designcraft/pull/561) / @aiongg | `e111bb74f76a438f7cf3fa488c4e1cc8421bf599` | Complete — all seven gates and native graphics inspection passed |
 | P11.13.13 | [#551](https://github.com/storytold/designcraft/pull/551) / @moppeeer | `ce9b269df28bb94b124419af54b4969ce687600c` | Pending |
 | P11.13.14 | [#520](https://github.com/storytold/designcraft/pull/520) / @moppeeer | `23bafc9e53a0c29a25230e0a23246d9de380244e` | Pending |
 | P11.13.15 | [#521](https://github.com/storytold/designcraft/pull/521) / @moppeeer | `db63e203188c06bd7c6452b86e7b0dc63b70e820` | Pending |
@@ -100,3 +100,38 @@ packages. Native QA screenshots were inspected at 1440×900: grid/transform cont
 swatch menu (Frame/Text and 35% tint), and the complete Justification dialog. The
 disposable QA app was closed; the owner application/session was untouched. Both Tools
 boxes, Frame/Text targets and undo were checked by component interaction tests.
+
+## P11.13 — placed graphics and geometry (#519, #528, #550, #561)
+
+Live corner options trim curved sides by arc length, preserving arcs and leaving smooth
+points unchanged. Nine focused geometry tests pass, including exact bevel distances.
+Image placement fits once into an existing frame and leaves Auto-Fit off; the placement
+regression confirms that moving a frame edge crops without moving/scaling the image.
+Pagenor's validated PDF crop geometry and graphic wrap metadata remain in place.
+
+transform.set acts on placed content when Direct Selection has selected that content,
+with an explicit content override. Explicit item IDs keep frame semantics. Frame and
+content measurements remain separate, and Properties shows the selected graphic's
+bounds/angle/scales. Singular/overflowing geometry is rejected through the existing
+copy-on-write edit transaction. Three focused content-transform regressions pass.
+
+Saved graphic clipping paths have a defaulted optional model field. IDML import/export,
+CPU rendering and PDF export retain the path and inverted fill rule. Imports cap the
+outline at 100,000 anchors and reject non-finite transforms/coordinates. Options can
+report, invert or remove an existing saved path; the existing tracing command remains.
+Seven focused clipping tests pass, including normal/inverted pixel and PDF checks.
+
+Native format 4 identifies the retained clipping capability; prior native versions
+continue to load. A new native round-trip verifies geometry/options, transform and
+format metadata, preventing older readers from silently discarding the new field.
+All Pagenor-specific graphic constructors preserve their other metadata and initialise
+absent clips to None. All seven gates pass: 2,337 tests passed, zero failed, seven ignored; twenty WASM
+packages. Native QA inspected upright selected content in a tilted frame, retained
+triangle clipping and its inverse at 1440×900, using generated pixels and a synthetic
+native document. Only disposable QA instances were closed; the owner session remained.
+
+Native inspection also caught the legacy selection outline measuring intermediate
+axis-aligned bounds twice. Canvas now composes frame and graphic matrices first,
+then measures the final bounds. Its painted-output regression fails before the fix
+(600×600 pt outline for upright 400×200 pt content), passes afterwards, and the corrected
+native screenshots were inspected. This is a Pagenor integration correction for #550.

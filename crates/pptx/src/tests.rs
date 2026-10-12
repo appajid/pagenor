@@ -213,6 +213,7 @@ fn pictures_are_cropped_to_their_frames() {
         it.fill = Fill::none();
         // 200 × 100 image at 1:1, its left quarter cut off by the frame.
         it.content = Content::Graphic(Graphic {
+            clip: None,
             asset,
             size: (200.0, 100.0),
             xf: Affine::translate((50.0, 100.0)),

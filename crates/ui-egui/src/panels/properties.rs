@@ -480,7 +480,8 @@ fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let tv = app.session.execute("transform.info", &json!({})).ok();
-    let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
+    let content = app.session.active().is_some_and(|st| st.selection.content);
+    let tv_get = |k: &str| tv.as_ref().and_then(|v| if content { v["content"][k].as_f64() } else { v[k].as_f64() });
     ui.add_space(4.0);
     let b = block(ui, 2.0 * FIELD_H + 4.0);
     let mut set = serde_json::Map::new();
@@ -2600,6 +2601,25 @@ mod color_picker_tests {
         );
         h.run_steps(3);
         h
+    }
+
+    #[test]
+    fn properties_transform_values_follow_a_selected_graphic() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].clone();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![255; 200 * 100 * 4] }.to_png();
+        app.run("file.place", json!({"base64": pagenor_engine::cmd::base64_encode(&png), "name": "synthetic.png", "frame": f})).unwrap();
+        app.run("transform.rotate", json!({"ids": [f], "angle": -45})).unwrap();
+        app.run("selection.set", json!({"ids": [f], "content": true})).unwrap();
+        app.run("transform.set", json!({"rotation": 0})).unwrap();
+        let info = super::sel_info(&app).unwrap();
+        assert!((info.page_rect.width() - 400.0).abs() < 1e-6 && (info.page_rect.height() - 200.0).abs() < 1e-6);
+        let h = panel(app);
+        assert!(
+            h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("-45°")).is_none(),
+            "the graphic's angle is shown rather than its frame's angle"
+        );
     }
 
     #[test]

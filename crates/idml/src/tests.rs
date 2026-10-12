@@ -6,6 +6,7 @@ use pagenor_doc::{CharAttrs, Document, Fill, ParaFormat, Shape, SpreadRef, story
 use pagenor_geom::{Rect, shapes};
 
 use super::*;
+mod clipping;
 /// One single-column text frame at (0, 0)-(300, 200) on page 1, beside a 100 pt wide rectangle
 /// with a bounding-box wrap and `wrap_props` inside its `TextWrapPreference/Properties`.
 fn custom_wrap_fixture(wrap_props: &str) -> Vec<u8> {
