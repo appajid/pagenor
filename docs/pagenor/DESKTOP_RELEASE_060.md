@@ -69,3 +69,10 @@ association/icon, CLI export and uninstall checks but retain the subsequently
 corrected IDML path issue. Linux ARM64/Flatpak packages at `c8c0d1b` passed native
 package/CLI checks. These are intermediate snapshots, separate from the final
 candidates. Source integration is in [PR #3](https://github.com/appajid/pagenor/pull/3).
+
+The resume attempt again refused the Windows job before startup with the same
+GitHub account billing message. The separate FreeBSD job's two font-discovery
+failures exposed a fontless VM: Fontconfig was present but had no system faces.
+The VM preparation now installs the FreeBSD DejaVu package, refreshes Fontconfig
+and fails early if no host fonts are available. This CI-only change preserves
+the lazy font catalogue and requires a fresh VM run before claiming BSD success.

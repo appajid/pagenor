@@ -3,6 +3,9 @@
 - P11.12: native Windows and Linux 0.6.0 milestone packaging, installer/CLI
   validation and GitHub preview release. Build status is recorded in the release
   workflow; [distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md).
+  Resume check: Windows remains blocked by GitHub billing. The separate FreeBSD
+  VM now installs DejaVu and checks Fontconfig before compilation, correcting
+  its missing host-font test prerequisite; the changed VM still needs a native run.
 
 - P11.11: complete the twenty UI-first October proposals through #491 and compatible
   reliability/publishing adaptations. **0.6.0**, local milestone. Preserve Pagenor
