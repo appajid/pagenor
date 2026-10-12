@@ -3,6 +3,11 @@
 Current version: **0.6.0** (P11.12), published as a desktop development preview
 at the owner's request. Published v0.3.0 remains intact.
 
+P11.13 begins the authorised next batch of 26 new proposals and six incremental
+updates, locally and with per-change validation. Published 0.6.0 remains the prior
+preview; the next completed binary milestone will use a new version.
+[Implementation queue](docs/pagenor/UPSTREAM_ADOPTION_070.md).
+
 P11.12 completes native Windows x64/x86/ARM64 MSI/portable and Linux x86_64/ARM64
 AppImage/Debian/RPM/tar/Flatpak builds. Windows installation, architecture,
 document associations/icons, installed CLI export and uninstall passed for all

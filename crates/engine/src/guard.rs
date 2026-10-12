@@ -56,8 +56,8 @@ impl Session {
                 {
                     log::error!("crash recovery save after `{id}` failed: {e}");
                 }
-                // The command never got to say that it is done.
-                self.in_undo_step = false;
+                // A continuing outer command still owns subsequent edits.
+                self.in_undo_step = undo_step;
                 log::error!("command `{id}` panicked: {msg}");
                 Err(EngineError::Internal(id.to_string(), msg))
             }
@@ -111,5 +111,24 @@ mod tests {
         assert!(panicked.is_err());
         s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
         assert_eq!(s.active().unwrap().history.undo.len(), 1);
+    }
+
+    #[test]
+    fn a_caught_nested_panic_keeps_the_outer_undo_step() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.guarded("test.outer", |s| {
+            s.in_undo_step = true;
+            assert!(s.guarded("test.inner", |_| panic!("synthetic nested failure")).is_err());
+            let made = s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]}));
+            s.in_undo_step = false;
+            made
+        })
+        .unwrap();
+        let st = s.active().unwrap();
+        assert_eq!(st.doc.spreads[0].items.len(), 1);
+        assert!(st.history.undo.is_empty(), "the continuing edit belongs to the outer command's undo step");
+        s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
+        assert_eq!(s.active().unwrap().history.undo.len(), 1, "later independent commands still record undo");
     }
 }

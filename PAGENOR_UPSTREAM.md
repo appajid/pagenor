@@ -784,3 +784,13 @@ Validation and outstanding work are tracked in
 | [#362](https://github.com/storytold/designcraft/pull/362) update | @aiongg | `0437ab27f5d3d6eb443d671d8194f93b7a741b9c` | Interpret PDF content bounds without rasterizing a 2048px preview; arbitrary clip/mask bounds remain conservative. |
 | [#421](https://github.com/storytold/designcraft/pull/421) update | @aiongg | `8f30ba1c55342caff2bdd4af76c23b3614eeb602` | Avoid nested whole-line RTL ActualText; keep per-run cluster text and decoration. PDF regressions and Poppler codepoint-retention checks pass; exact viewer spacing/mark order remains a follow-up. |
 | [#427](https://github.com/storytold/designcraft/pull/427) update | @MaridWSH (earlier @skylartaylor) | `d0120bf6a642beb92e31e026fc8a9bc64778bc13` | Preserve dash spacing in optical kerning, retaining ordinary Latin kerning. |
+
+## Next adaptation batch — P11.13 (2026-10-12)
+
+The owner authorised the selected queue through upstream #565. Per-change authors,
+pinned heads, scope and validation are in [the adaptation log](docs/pagenor/UPSTREAM_ADOPTION_070.md).
+P11.13.1 adapts the final nested-panic undo correction from #411 by @noah1400 at
+`60f463f03cbe35396e49f3601c42fdf46d662fc2`, preserving Pagenor's earlier restore
+before recovery and its command/document safeguards. Original MIT OR Apache-2.0
+licences and copyright notices remain applicable. Pending rows are provenance
+for reviewed candidates, not claims of completed implementation.
