@@ -1,7 +1,7 @@
 # Pagenor roadmap
 
 - P11.13: implement the selected 26 newer upstream proposals and six incremental
-  updates. All 32 are complete locally as **0.7.0**; all seven gates pass
+  updates. All 32 are complete as **0.7.0**; all seven gates pass
   (2,574 tests, zero failures, seven ignores; twenty WASM packages).
   Nested undo, Pathfinder, tint/Frame/Text menus, View grouping/document grid,
   Justification, Properties transforms, Tools Color Picker, curved corners, image
@@ -10,8 +10,10 @@
   parent-page text/section markers, anchored inheritance/wrap, CR normalization,
   uppercase hyphenation, continuous decorations, consumed-condition reflow, split
   input/dock release, explicit layout targets, IDML spacing, saved EOF typing,
-  native print scaling and Pagenor user guides are validated. Native Mac UI inspected;
-  Windows/Linux packages and milestone publication are in progress.
+  native print scaling and Pagenor user guides are validated. Native Mac UI was inspected.
+  Matching universal Mac, Windows x64/x86/ARM64 and Linux x86_64/ARM64 previews
+  are published. Native quality, installers, Flatpak and 20 payload checksums pass;
+  [distribution evidence](docs/pagenor/DESKTOP_RELEASE_070.md).
   [queue and per-change notes](docs/pagenor/UPSTREAM_ADOPTION_070.md).
 
 - P11.12: published native Windows and Linux **0.6.0 desktop development
@@ -20,7 +22,7 @@
   Native Mac/Windows/Linux quality and Rust 1.95 gates pass. Signing and interactive
   desktop/printer validation remain open; [distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md).
   The separate FreeBSD VM now installs DejaVu and checks Fontconfig before
-  compilation; its changed VM still needs a native run.
+  compilation; the later 0.7.0 FreeBSD VM build/test passes.
 
 - P11.11: complete the twenty UI-first October proposals through #491 and compatible
   reliability/publishing adaptations. **0.6.0**, local milestone. Preserve Pagenor

@@ -2,8 +2,9 @@
 
 Owner authorised implementation on 12 October 2026, with no routine confirmation pauses.
 Start source: `f9c469fab92f022a3bb31c7e4f8d803ecf610d73`.
-Work is local on `development/upstream-20261012`; published 0.6.0 artifacts remain intact.
-The completed batch uses version 0.7.0; platform packaging is the next milestone step.
+Work was developed on `development/upstream-20261012` and published from
+`build/pagenor-0.7.0-desktop`; 0.6.0 artifacts remain intact.
+The completed batch is published as the 0.7.0 desktop development preview.
 
 The queue is 26 selected new proposals and six incremental updates, after the review
 through #565. CJK, Italian, optional language patterns and SEA dictionary integration
@@ -277,7 +278,7 @@ Discord, unsupported package claims and agent instructions are not adopted.
 All local documentation links resolve; the README links the guide index.
 
 The complete batch's workspace version advances to 0.7.0 through cargo xtask version set.
-Full milestone validation and release builds follow; versioning alone is not a release.
+Native Mac/Windows/Linux validation, packaging and 0.7.0 preview publication are complete.
 
 ## Local milestone validation
 
@@ -285,3 +286,8 @@ All 32 selected adaptations are complete. The 0.7.0 native Mac workspace builds;
 all seven cargo xtask ci gates pass. Pinned sources and per-group validation above
 record each change. Platform packages, hosted native checks and publication are
 tracked in [desktop release notes](DESKTOP_RELEASE_070.md).
+
+The matching desktop preview is published with 22 assets; all 20 package payloads
+match their official checksums. Native platform gates, Windows installer checks,
+Linux/Flatpak execution and isolated packaged Mac GUI checks passed. Details and
+remaining distribution limits are in DESKTOP_RELEASE_070.md.

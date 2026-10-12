@@ -55,8 +55,10 @@ stable signed release. See [distribution evidence](DESKTOP_RELEASE_060.md).
 Further source checks preserve that release's artifacts; a later binary update
 requires a new version.
 
-The next completed 26-proposal/six-increment batch advances **0.6.0 → 0.7.0** on
+The completed 26-proposal/six-increment batch advances **0.6.0 → 0.7.0** on
 2026-10-12. It groups editor/UI, graphics, fonts, import/composition, reflow, blank-EOF
 typing, native printing and user guides. The native document capability advances
-separately to format 5. Published 0.6.0 artifacts remain immutable; 0.7.0 publication
-requires complete local checks plus native Mac/Windows/Linux build validation.
+separately to format 5. Published 0.6.0 artifacts remain immutable. The 0.7.0
+desktop preview is published after native Mac/Windows/Linux and Rust 1.95 gates,
+package/installer checks and all 20 payload checksums pass. Further source-only
+documentation records preserve these immutable binaries.

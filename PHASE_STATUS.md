@@ -1,6 +1,6 @@
 # Pagenor development phases
 
-Current source version: **0.7.0** (P11.13), locally validated. Published 0.6.0
+Current version: **0.7.0** (P11.13), published desktop development preview. 0.6.0
 and v0.3.0 packages remain intact.
 
 P11.13 completes all 26 new selected proposals and six incremental updates.
@@ -8,7 +8,10 @@ All seven gates pass: 2,574 tests, zero failures, seven existing ignores; twenty
 WASM packages. Native 0.7.0 Mac UI inspection covers saved EOF typing and Print
 scaling, in addition to the earlier UI/graphics/split-view checks. Native format 5
 reads prior documents; older apps reject the new capability rather than lose it.
-Windows/Linux build/install/quality gates and Mac packaging/publication are next.
+Mac/Windows/Linux quality and Rust 1.95 gates pass. All desktop packages are
+published and their 20 payload checksums verified; all three Windows installer
+checks and both Linux/Flatpak native checks passed. Signing/notarization and
+interactive Windows/Linux/printer validation remain open.
 [Implementation notes](docs/pagenor/UPSTREAM_ADOPTION_070.md) and
 [distribution tracker](docs/pagenor/DESKTOP_RELEASE_070.md).
 
@@ -70,7 +73,7 @@ Importers remain built-in Rust modules using the shared text engine. See
 PageMaker/Anu legacy-font mapping awaits the owner's font/sample; no new format
 support or phase completion is claimed.
 
-Updated: 2026-10-11. Source: Appaji Ambarisha’s `Pagenor_Development_Phases.docx`.
+Updated: 2026-10-12. Source: Appaji Ambarisha’s `Pagenor_Development_Phases.docx`.
 This tracker records verified work against the supplied roadmap. Existing features
 in `ROADMAP.md` are implementation history, not proof that a phase exit gate passes.
 

@@ -846,3 +846,8 @@ fb90a508b1ccb64ba8cea2e575e015659417aa85 is adapted to Pagenor's actual UI,
 formats, platforms, owner rights, repository and existing importer limitations.
 Development instructions are not replaced. All 32 selected updates are complete
 locally in 0.7.0; tests and native inspection are recorded in UPSTREAM_ADOPTION_070.md.
+
+The completed P11.13 batch is published as the 0.7.0 desktop development preview,
+with matching Mac/Windows/Linux packages and native quality/install/checksum
+evidence in docs/pagenor/DESKTOP_RELEASE_070.md. Tagged source remains
+76f8840071003e51418878f245e18b2230632b98; distribution-record edits change no binary.
