@@ -17,12 +17,12 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 |---|---|---|---|
 | P11.13.1 | [#411](https://github.com/storytold/designcraft/pull/411) / @noah1400 | `60f463f03cbe35396e49f3601c42fdf46d662fc2` | Complete — all seven gates passed |
 | P11.13.2 | [#524](https://github.com/storytold/designcraft/pull/524) / @moppeeer | `191594897be1c3225b5b3661b848fb97b036c6ba` | Complete — all seven gates and native UI inspection passed |
-| P11.13.3 | [#525](https://github.com/storytold/designcraft/pull/525) / @moppeeer | `60bf43b9e842ca1e8477c5e0b9b5129a281f13c1` | Pending |
-| P11.13.4 | [#527](https://github.com/storytold/designcraft/pull/527) / @moppeeer | `15d2b998f028cd6b926227f1bd5fcba99df8bda6` | Pending |
-| P11.13.5 | [#532](https://github.com/storytold/designcraft/pull/532) / @aiongg | `61504dae488c9bbc0c9b876e37174cf003c6cd2f` | Pending |
-| P11.13.6 | [#533](https://github.com/storytold/designcraft/pull/533) / @aiongg | `3f752312d6229acc6e9f36346bb69b2c77a00bf3` | Pending |
-| P11.13.7 | [#541](https://github.com/storytold/designcraft/pull/541) / @moppeeer | `65ddf1f119e84972208a661b138cccd3c6301020` | Pending |
-| P11.13.8 | [#552](https://github.com/storytold/designcraft/pull/552) / @moppeeer | `3e9881c29bb2410dcb7a46261f91c977a681b7d4` | Pending |
+| P11.13.3 | [#525](https://github.com/storytold/designcraft/pull/525) / @moppeeer | `60bf43b9e842ca1e8477c5e0b9b5129a281f13c1` | Complete — all seven gates and native UI inspection passed |
+| P11.13.4 | [#527](https://github.com/storytold/designcraft/pull/527) / @moppeeer | `15d2b998f028cd6b926227f1bd5fcba99df8bda6` | Complete — all seven gates and native UI inspection passed |
+| P11.13.5 | [#532](https://github.com/storytold/designcraft/pull/532) / @aiongg | `61504dae488c9bbc0c9b876e37174cf003c6cd2f` | Complete — all seven gates and native UI inspection passed |
+| P11.13.6 | [#533](https://github.com/storytold/designcraft/pull/533) / @aiongg | `3f752312d6229acc6e9f36346bb69b2c77a00bf3` | Complete — all seven gates and native UI inspection passed |
+| P11.13.7 | [#541](https://github.com/storytold/designcraft/pull/541) / @moppeeer | `65ddf1f119e84972208a661b138cccd3c6301020` | Complete — all seven gates and native UI inspection passed |
+| P11.13.8 | [#552](https://github.com/storytold/designcraft/pull/552) / @moppeeer | `3e9881c29bb2410dcb7a46261f91c977a681b7d4` | Complete — all seven gates and native UI inspection passed |
 | P11.13.9 | [#519](https://github.com/storytold/designcraft/pull/519) / @moppeeer | `c6d285668875179ad804eb9b3adc5ee6d1e9ab89` | Pending |
 | P11.13.10 | [#528](https://github.com/storytold/designcraft/pull/528) / @aiongg | `54b607525e1614f574778409e686dda76e2069ad` | Pending |
 | P11.13.11 | [#550](https://github.com/storytold/designcraft/pull/550) / @moppeeer | `2db2da0bbcd70548581c6fd574b57b9c2aae3a86` | Pending |
@@ -70,3 +70,33 @@ Synthetic component interaction verifies one-object hiding, all five buttons and
 Intersect geometry. The separate native QA profile's screenshot was inspected at
 1440×900; the row fits the Properties panel. Only the disposable QA app was closed.
 All seven gates pass: 2,308 tests passed, zero failed, 7 ignored; twenty WASM packages.
+
+## P11.13 — related UI group (#525, #527, #532, #533, #541, #552)
+
+Properties swatch menus now expose tint and explicit Frame/Text targets. Tint-only
+object edits preserve each swatch, and do not introduce a missing stroke. Opening
+Color Picker retains the chosen text target. Shared swatch lists and lazy fonts remain.
+
+View controls move into Screen Mode, Extras, Grids & Guides and Structure groups;
+W/Shift+W commands remain registered. Document Grid renders the same page-origin
+positions used by snapping, on the nearest spread's pasteboard band. It follows
+front/back settings, hides in preview/export, thins dense subdivisions and caps lines.
+Properties and the authenticated UI control channel use the same visibility command.
+
+Type and the Paragraph menu gain Justification. It shares the existing style controls,
+shows mixed values empty, edits only changed fields, validates finite ranges and
+minimum/desired/maximum ordering, and keeps invalid dialogs open. Pagenor's typing
+attributes and selected-text preview remain. The dialog records document and selection
+ownership, rejecting stale edits after selection changes.
+
+Properties gains rotation, shear, X/Y scale, quarter-turn and flip controls via existing
+transform commands and original drawn icons. Tools Fill/Stroke double-click opens
+Color Picker with the selection's color and current text-formatting target.
+
+Each pinned source and author is listed above. Missing optional upstream translation
+modules and Italian additions were not introduced; Pagenor's inline translation table,
+extra paragraph options and native menu behavior are retained. All seven gates pass: 2,322 tests passed, zero failed, seven ignored; twenty WASM
+packages. Native QA screenshots were inspected at 1440×900: grid/transform controls, the
+swatch menu (Frame/Text and 35% tint), and the complete Justification dialog. The
+disposable QA app was closed; the owner application/session was untouched. Both Tools
+boxes, Frame/Text targets and undo were checked by component interaction tests.

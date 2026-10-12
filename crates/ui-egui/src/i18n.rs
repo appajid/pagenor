@@ -23,6 +23,9 @@ pub const LANGUAGES: &[(&str, &str)] = &[
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 const TABLE: &[(&str, [&str; 5])] = &[
     // Menus.
+    ("Slug", ["Infobereich", "Ligne-bloc", "Indicaciones", "印刷可能領域", "辅助信息区"]),
+    ("Presentation", ["Präsentation", "Présentation", "Presentación", "プレゼンテーション", "演示文稿"]),
+    ("Extras", ["Extras", "Options supplémentaires", "Extras", "エクストラ", "附加"]),
     ("File", ["Datei", "Fichier", "Archivo", "ファイル", "文件"]),
     ("Edit", ["Bearbeiten", "Édition", "Edición", "編集", "编辑"]),
     ("Layout", ["Layout", "Page", "Maquetación", "レイアウト", "版面"]),
@@ -1254,6 +1257,10 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ["Show/Hide Baseline Grid", "Show/Hide Baseline Grid", "Show/Hide Baseline Grid", "Show/Hide Baseline Grid", "显示/隐藏基线网格"],
     ),
     (
+        "Show/Hide Document Grid",
+        ["Show/Hide Document Grid", "Show/Hide Document Grid", "Show/Hide Document Grid", "Show/Hide Document Grid", "显示/隐藏文档网格"],
+    ),
+    (
         "Show/Hide Frame Edges",
         ["Show/Hide Frame Edges", "Show/Hide Frame Edges", "Show/Hide Frame Edges", "Show/Hide Frame Edges", "显示/隐藏框架边缘"],
     ),
@@ -1970,7 +1977,7 @@ const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Indents and Spacing", ["Indents and Spacing", "Indents and Spacing", "Indents and Spacing", "Indents and Spacing", "缩进和间距"]),
     ("Hyphenation", ["Hyphenation", "Hyphenation", "Hyphenation", "Hyphenation", "断字"]),
-    ("Justification", ["Justification", "Justification", "Justification", "Justification", "两端对齐"]),
+    ("Justification", ["Blocksatzeinstellungen", "Justification", "Justificación", "両端揃え", "两端对齐"]),
     (
         "Drop Caps and Nested Styles",
         [
@@ -3074,8 +3081,11 @@ const TABLE: &[(&str, [&str; 5])] = &[
     // Paragraph Rules.
     ("Paragraph Rules…", ["Absatzlinien …", "Filets de paragraphe…", "Filetes de párrafo…", "段落境界線…", "段落线…"]),
     ("Paragraph Rules", ["Absatzlinien", "Filets de paragraphe", "Filetes de párrafo", "段落境界線", "段落线"]),
+    ("Justification…", ["Blocksatzeinstellungen …", "Justification…", "Justificación…", "両端揃え…", "两端对齐…"]),
     ("Rule Below", ["Linie unterhalb", "Filet après", "Filete después", "後境界線", "下方横线"]),
     ("Tint:", ["Farbton:", "Teinte:", "Matiz:", "濃淡:", "色调："]),
+    ("Apply To:", ["Anwenden auf:", "Appliquer à :", "Aplicar a:", "適用先:", "应用于："]),
+    ("Frame", ["Rahmen", "Bloc", "Marco", "フレーム", "框架"]),
     ("Column", ["Spalte", "Colonne", "Columna", "段", "栏"]),
     ("Swatch Options…", ["Farbfeldoptionen …", "Options de nuance…", "Opciones de muestra…", "スウォッチオプション…", "色板选项…"]),
     ("Swatch Options", ["Farbfeldoptionen", "Options de nuance", "Opciones de muestra", "スウォッチオプション", "色板选项"]),

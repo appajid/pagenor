@@ -99,6 +99,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
+    (
+        "app.justificationDialog",
+        "Justification…",
+        Some("Cmd+Alt+Shift+J"),
+        "{} — word and letter spacing, glyph scaling and composer of the selected paragraphs (type.para)",
+    ),
     ("app.paragraphRulesDialog", "Paragraph Rules…", None, "{rule?: ruleAbove|ruleBelow} — edit only changed fields of the selected paragraphs"),
     (
         "app.paragraphBordersDialog",
@@ -147,6 +153,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{alignEdges?, alignCenters?, smartDimensions?, smartSpacing?: bool, zone?: px} — what smart guides snap to and how close; returns the current values",
     ),
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
+    ("view.documentGrid", "Show/Hide Document Grid", Some("Cmd+'"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show/Hide Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
@@ -467,6 +474,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.alignRight",
             "cmd:type.justify",
             "ui:app.paragraphRulesDialog",
+            "ui:app.justificationDialog",
             "ui:app.paragraphBordersDialog",
             "ui:app.spanColumnsDialog",
             "ui:app.bulletsNumberingDialog",
@@ -480,34 +488,6 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.sizeDown",
             "-",
             "ui:view.hiddenCharacters",
-            "ui:view.taggedFrames",
-            ">Rotate Spread",
-            "ui:view.rotateSpread|90° CW|{\"angle\": 90}",
-            "ui:view.rotateSpread|90° CCW|{\"angle\": -90}",
-            "ui:view.rotateSpread|180°|{\"angle\": 180}",
-            "ui:view.rotateSpread|Clear Rotation|{\"angle\": 0}",
-            "<",
-            ">Proof Setup",
-            "ui:view.proofSetup|Working CMYK|{\"target\": \"workingCmyk\"}",
-            "ui:view.proofSetup|Internet Standard RGB (sRGB)|{\"target\": \"srgb\"}",
-            "ui:view.proofSetup|Legacy Macintosh RGB|{\"target\": \"legacyMacRgb\"}",
-            "ui:view.proofSetup|Monitor RGB|{\"target\": \"monitorRgb\"}",
-            "ui:view.proofSetup|Color Blindness – Protanopia|{\"target\": \"protanopia\"}",
-            "ui:view.proofSetup|Color Blindness – Deuteranopia|{\"target\": \"deuteranopia\"}",
-            "-",
-            "ui:view.proofSetup|Simulate Paper Color|{\"simulatePaper\": \"toggle\"}",
-            "<",
-            "ui:view.proofColors",
-            "ui:view.flattenerPreview",
-            "ui:view.tagMarkers",
-            ">Separations Preview",
-            "ui:view.separations|Off|{\"plate\": null, \"inkLimit\": null}",
-            "ui:view.separations|Cyan|{\"plate\": \"cyan\"}",
-            "ui:view.separations|Magenta|{\"plate\": \"magenta\"}",
-            "ui:view.separations|Yellow|{\"plate\": \"yellow\"}",
-            "ui:view.separations|Black|{\"plate\": \"black\"}",
-            "ui:view.separations|Ink Limit 300%|{\"inkLimit\": 300}",
-            "<",
             "-",
             ">Hyperlinks & Cross-References",
             "cmd:hyperlink.create",
@@ -699,6 +679,28 @@ pub const MENUS: &[(&str, &[&str])] = &[
     (
         "View",
         &[
+            "ui:view.overprintPreview",
+            ">Proof Setup",
+            "ui:view.proofSetup|Working CMYK|{\"target\": \"workingCmyk\"}",
+            "ui:view.proofSetup|Internet Standard RGB (sRGB)|{\"target\": \"srgb\"}",
+            "ui:view.proofSetup|Legacy Macintosh RGB|{\"target\": \"legacyMacRgb\"}",
+            "ui:view.proofSetup|Monitor RGB|{\"target\": \"monitorRgb\"}",
+            "ui:view.proofSetup|Color Blindness – Protanopia|{\"target\": \"protanopia\"}",
+            "ui:view.proofSetup|Color Blindness – Deuteranopia|{\"target\": \"deuteranopia\"}",
+            "-",
+            "ui:view.proofSetup|Simulate Paper Color|{\"simulatePaper\": \"toggle\"}",
+            "<",
+            "ui:view.proofColors",
+            ">Separations Preview",
+            "ui:view.separations|Off|{\"plate\": null, \"inkLimit\": null}",
+            "ui:view.separations|Cyan|{\"plate\": \"cyan\"}",
+            "ui:view.separations|Magenta|{\"plate\": \"magenta\"}",
+            "ui:view.separations|Yellow|{\"plate\": \"yellow\"}",
+            "ui:view.separations|Black|{\"plate\": \"black\"}",
+            "ui:view.separations|Ink Limit 300%|{\"inkLimit\": 300}",
+            "<",
+            "ui:view.flattenerPreview",
+            "-",
             "ui:view.zoomIn",
             "ui:view.zoomOut",
             "ui:view.fitPage",
@@ -707,9 +709,20 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:view.actualSize",
             "ui:view.entirePasteboard",
             "-",
-            "ui:view.overprintPreview",
-            "ui:view.togglePreview",
-            "ui:view.togglePresentation",
+            ">Rotate Spread",
+            "ui:view.rotateSpread|90° CW|{\"angle\": 90}",
+            "ui:view.rotateSpread|90° CCW|{\"angle\": -90}",
+            "ui:view.rotateSpread|180°|{\"angle\": 180}",
+            "ui:view.rotateSpread|Clear Rotation|{\"angle\": 0}",
+            "<",
+            "-",
+            ">Screen Mode",
+            "ui:view.screenMode|Normal|{\"mode\": \"normal\"}",
+            "ui:view.screenMode|Preview|{\"mode\": \"preview\"}",
+            "ui:view.screenMode|Bleed|{\"mode\": \"bleed\"}",
+            "ui:view.screenMode|Slug|{\"mode\": \"slug\"}",
+            "ui:view.screenMode|Presentation|{\"mode\": \"presentation\"}",
+            "<",
             ">Display Performance",
             "ui:view.fastDisplay",
             "ui:view.typicalDisplay",
@@ -717,18 +730,25 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             "ui:view.rulers",
+            "-",
+            ">Extras",
             "ui:view.frameEdges",
             "ui:view.textThreads",
-            "ui:view.hiddenCharacters",
-            "-",
+            "<",
             ">Grids & Guides",
             "ui:view.guides",
             "ui:view.snapToGuides",
             "ui:view.snapToDocumentGrid",
             "ui:view.smartGuides",
             "ui:view.baselineGrid",
+            "ui:view.documentGrid",
             "-",
             "ui:app.deleteAllGuides",
+            "<",
+            "-",
+            ">Structure",
+            "ui:view.taggedFrames",
+            "ui:view.tagMarkers",
             "<",
         ],
     ),
@@ -1118,6 +1138,27 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.dialog = Some(crate::dialogs::Dialog::new("ruby", json!({"text": cur.unwrap_or_default()})));
             Ok(Value::Null)
         }
+        "app.justificationDialog" => {
+            let Some(a) = app.session.execute("type.selectionAttrs", &json!({"mixed": true})).ok().filter(|a| !a.is_null()) else {
+                return Some(Err("select text or a text frame".into()));
+            };
+            let mixed: Vec<&str> = a["paraMixed"].as_array().map(|m| m.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let current: serde_json::Map<String, Value> = crate::dialogs::JUSTIFY_ATTRS
+                .iter()
+                .map(|k| (k.to_string(), if mixed.contains(k) { Value::Null } else { a["para"][*k].clone() }))
+                .collect();
+            let st = match app.session.doc() {
+                Ok(st) => st,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let selection = match serde_json::to_value(&st.selection) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            app.ui.dialog =
+                Some(crate::dialogs::Dialog::new("justification", json!({"current": current, "document": st.uid, "selection": selection})));
+            Ok(Value::Null)
+        }
         "app.paragraphRulesDialog" => {
             let Some(a) = crate::panels::text_attrs(app) else { return Some(Err("select text or a text frame".into())) };
             let st = app.session.doc().map_err(|e| e.to_string());
@@ -1360,6 +1401,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "view.snapToDocumentGrid" => flag(&mut app.ui.snap_to_document_grid),
         "view.smartGuides" => flag(&mut app.ui.smart_guides),
         "view.baselineGrid" => flag(&mut app.ui.baseline_grid),
+        "view.documentGrid" => {
+            // The grid is drawn into the canvas texture.
+            app.canvas.shown = None;
+            flag(&mut app.ui.document_grid)
+        }
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
@@ -2196,6 +2242,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.snapToDocumentGrid" => app.ui.snap_to_document_grid,
         "view.smartGuides" => app.ui.smart_guides,
         "view.baselineGrid" => app.ui.baseline_grid,
+        "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
@@ -2206,6 +2253,17 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.proofColors" => app.ui.proof_colors,
         "view.flattenerPreview" => app.ui.flattener_preview,
         "view.tagMarkers" => app.ui.tag_markers,
+        "view.screenMode" => {
+            let mode = match params.get("mode").and_then(Value::as_str) {
+                Some("normal") => crate::ScreenMode::Normal,
+                Some("preview") => crate::ScreenMode::Preview,
+                Some("bleed") => crate::ScreenMode::Bleed,
+                Some("slug") => crate::ScreenMode::Slug,
+                Some("presentation") => crate::ScreenMode::Presentation,
+                _ => return None,
+            };
+            app.ui.screen_mode == mode
+        }
         "view.rotateSpread" => match params.get("angle").and_then(Value::as_i64) {
             Some(0) => app.session.active().is_some_and(|st| st.doc.spreads.iter().all(|sp| sp.pages.first().is_none_or(|p| p.view_rotation == 0))),
             _ => return None,
@@ -2240,6 +2298,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.justificationDialog" {
+        return enabled(app, "type.para");
+    }
     if id == "app.openRecentDocument" {
         return !app.ui.recent_documents.rows(&app.session).is_empty();
     }
@@ -3087,6 +3148,43 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
 
 #[cfg(test)]
 mod tests {
+    /// The entries (command ids) of a menu bar menu, submenus included.
+    fn menu_ids(title: &str) -> Vec<&'static str> {
+        let items = MENUS.iter().find(|(t, _)| *t == title).map(|(_, items)| *items).unwrap_or_default();
+        items.iter().filter_map(|e| e.split_once(':').map(|(_, rest)| rest.split('|').next().unwrap_or(rest))).collect()
+    }
+
+    #[test]
+    fn view_items_are_in_the_view_menu_as_in_indesign() {
+        let (view, typ) = (menu_ids("View"), menu_ids("Type"));
+        for id in [
+            "view.rotateSpread",
+            "view.proofSetup",
+            "view.proofColors",
+            "view.flattenerPreview",
+            "view.separations",
+            "view.taggedFrames",
+            "view.tagMarkers",
+        ] {
+            assert!(view.contains(&id), "{id} is in View");
+            assert!(!typ.contains(&id), "{id} isn't in Type");
+        }
+        // Screen Mode and Extras are View submenus; Show Hidden Characters stays in Type.
+        assert!(view.contains(&"view.screenMode") && view.contains(&"view.frameEdges"));
+        assert!(typ.contains(&"view.hiddenCharacters") && !view.contains(&"view.hiddenCharacters"));
+        // W still toggles Normal / Preview without a menu entry.
+        assert_eq!(ui_label("view.togglePreview").and_then(|c| c.1), Some("W"));
+    }
+
+    #[test]
+    fn screen_mode_menu_checks_the_current_mode() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let mode = |app: &DesignApp, m: &str| checked(app, "view.screenMode", &json!({ "mode": m }));
+        assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(true), Some(false)));
+        app.ui.screen_mode = crate::ScreenMode::Preview;
+        assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(false), Some(true)));
+    }
+
     fn dialog_control(app: &mut crate::DesignApp, method: &str, params: Value) -> Value {
         let (request, _reply) = crate::control::ControlRequest::new(method, params);
         let crate::control::Outcome::Done(response) = crate::control::handle(app, &egui::Context::default(), &request) else {
@@ -3845,6 +3943,24 @@ mod tests {
         let bars: Vec<_> =
             (0_u8..2).map(|pane| ctx.memory(|memory| memory.area_rect(egui::Id::new(("task_bar", egui::ViewportId::ROOT, pane)))).unwrap()).collect();
         assert!(!bars[0].intersects(bars[1]), "each pane keeps its own bar: {bars:?}");
+    }
+
+    #[test]
+    fn show_document_grid_toggles_from_the_grids_and_guides_menu() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let tree = menu_tree();
+        let mut items = vec![];
+        for (_, entries) in &tree {
+            walk(entries, &mut items);
+        }
+        assert!(items.iter().any(|(label, id, _)| id == "view.documentGrid" && label == "Show/Hide Document Grid"));
+        assert_eq!(shortcut_of(&app, "view.documentGrid").as_deref(), Some("Cmd+'"));
+        assert_eq!(checked(&app, "view.documentGrid", &json!({})), Some(false));
+        assert_eq!(run_ui(&mut app, "view.documentGrid", &json!({})).unwrap().unwrap(), json!(true));
+        assert!(app.ui.document_grid);
+        assert_eq!(checked(&app, "view.documentGrid", &json!({})), Some(true));
+        run_ui(&mut app, "view.documentGrid", &json!({})).unwrap().unwrap();
+        assert!(!app.ui.document_grid);
     }
 
     #[test]

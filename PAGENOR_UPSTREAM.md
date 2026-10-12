@@ -794,3 +794,8 @@ P11.13.1 adapts the final nested-panic undo correction from #411 by @noah1400 at
 before recovery and its command/document safeguards. Original MIT OR Apache-2.0
 licences and copyright notices remain applicable. Pending rows are provenance
 for reviewed candidates, not claims of completed implementation.
+
+P11.13 adapts the related UI group #525, #527, #532, #533, #541 and #552:
+tint/Frame/Text controls, View grouping and rendered document grid, selected-paragraph
+Justification, Properties transforms, and the Tools Color Picker. Pinned heads/authors,
+Pagenor-specific adaptations and validation are in the same 0.7.0 adaptation log.

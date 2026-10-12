@@ -139,3 +139,9 @@ Open findings and their completion evidence belong in [the issue register](docs/
 All platforms retain the shared Rust core and `unsafe_code = "forbid"`.
 New platform discovery belongs behind native adapters; document font scopes,
 family/style grouping and lazy font data must remain intact. WASM remains a build gate.
+
+P11.13 progress (12 October 2026): first eight queue items are implemented locally,
+including the six related UI adaptations. The UI group passes all seven gates
+(2,322 tests, no failures, seven ignored; twenty WASM packages) and native visual
+inspection in an isolated synthetic QA profile. The rest of the queue remains in
+progress; published 0.6.0 packages and the owner's running session remain intact.

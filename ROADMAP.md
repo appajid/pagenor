@@ -2,7 +2,8 @@
 
 - P11.13: implement the selected 26 newer upstream proposals and six incremental
   updates, beginning with nested undo safety and UI controls. Local work in progress;
-  Nested undo and Properties Pathfinder are complete and validated.
+  Nested undo, Pathfinder, tint/Frame/Text menus, View grouping/document grid,
+  Justification, Properties transforms and Tools Color Picker are complete and validated.
   [queue and per-change notes](docs/pagenor/UPSTREAM_ADOPTION_070.md).
 
 - P11.12: published native Windows and Linux **0.6.0 desktop development

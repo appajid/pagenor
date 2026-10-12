@@ -351,7 +351,9 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     if bl != app.ui.baseline_grid {
         let _ = app.run("view.baselineGrid", json!({}));
     }
-    app.ui.document_grid = dg;
+    if dg != app.ui.document_grid {
+        let _ = app.run("view.documentGrid", json!({}));
+    }
     rule(ui);
     let (mut guides, mut locked, mut smart) = (app.ui.guides, app.ui.guides_locked, app.ui.smart_guides);
     section_row(ui, crate::i18n::tr(&app.ui.language, "Guides"), |ui| {
@@ -466,9 +468,60 @@ fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         set.insert("ref".into(), json!(rp));
         let _ = app.run("transform.set", Value::Object(set));
     }
+    transform_angles(app, ui, rp);
     if more_options(ui, &app.ui.language).clicked() {
         app.ui.open_panel = Some("info".into());
     }
+}
+
+/// Properties › Transform, below X/Y/W/H as in InDesign: rotation and shear angles beside the
+/// X and Y scales (totals, as Transformations are Totals), then rotate a quarter turn and flip.
+fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tv = app.session.execute("transform.info", &json!({})).ok();
+    let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
+    ui.add_space(4.0);
+    let b = block(ui, 2.0 * FIELD_H + 4.0);
+    let mut set = serde_json::Map::new();
+    let rows = [
+        [("tool-rotate", "Rotation Angle", "rotation", "°", "p_rot"), ("tool-scale", "Scale X Percentage", "scaleX", "%", "p_sx")],
+        [("tool-shear", "Shear X Angle", "shear", "°", "p_shear"), ("tool-scale", "Scale Y Percentage", "scaleY", "%", "p_sy")],
+    ];
+    for (row, cells) in rows.into_iter().enumerate() {
+        let yy = row as f32 * 25.0;
+        for (col, (icon, tip, key, suffix, id)) in cells.into_iter().enumerate() {
+            let x = if col == 0 { 40.0 } else { 120.0 };
+            let ir = sub(b, x, yy + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, t.icon);
+            ui.interact(ir, ui.id().with(id), Sense::hover()).on_hover_text(crate::i18n::tr(&lang, tip));
+            if let Some(v) = place(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H), |ui| widgets::number(ui, id, tv_get(key), suffix, 54.0, 1)) {
+                set.insert(key.into(), json!(v));
+            }
+        }
+    }
+    if !set.is_empty() {
+        set.insert("ref".into(), json!(rp));
+        let _ = app.run("transform.set", Value::Object(set));
+    }
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(36.0);
+        ui.spacing_mut().item_spacing.x = 10.0;
+        for (icon, tip, cmd, params) in [
+            ("rotate-cw", "Rotate 90° Clockwise", "transform.rotate", json!({"angle": -90})),
+            ("rotate-ccw", "Rotate 90° Counterclockwise", "transform.rotate", json!({"angle": 90})),
+            ("flip-h", "Flip Horizontal", "transform.flip", json!({"axis": "horizontal"})),
+            ("flip-v", "Flip Vertical", "transform.flip", json!({"axis": "vertical"})),
+        ] {
+            let label = crate::i18n::tr(&lang, tip);
+            let resp = icon_toggle(ui, icon, false, label);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+            if resp.clicked() {
+                let _ = app.run(cmd, params);
+            }
+        }
+    });
 }
 
 /// A stroke-type preview dropdown (light box with the line style).
@@ -595,12 +648,9 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Fill swatch"));
     if chip_double_clicked(ui, &resp) {
         egui::Popup::close_all(ui.ctx());
-        let hex = doc.resolve_color(&i.fill, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"fill","hex":hex})));
+        appearance_picker(app, ui, &doc, &i.fill, false, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.fill, |app, n| {
-            let _ = app.run("object.fill", json!({"swatch": n}));
-        });
+        swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
     }
     crate::rtl::paint(
         ui.painter(),
@@ -622,12 +672,9 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stroke swatch"));
     if chip_double_clicked(ui, &resp) {
         egui::Popup::close_all(ui.ctx());
-        let hex = doc.resolve_color(&i.stroke, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":"stroke","hex":hex})));
+        appearance_picker(app, ui, &doc, &i.stroke, true, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.stroke, |app, n| {
-            let _ = app.run("object.stroke", json!({"swatch": n}));
-        });
+        swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
     }
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         app.ui.open_panel = Some("stroke".into());
@@ -702,14 +749,89 @@ fn chip_double_clicked(ui: &Ui, resp: &egui::Response) -> bool {
             }))
 }
 
-/// Swatch list popup attached to `resp`.
-fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, on_pick: impl FnOnce(&mut DesignApp, String)) {
+/// Keep the picker on the explicit text target chosen in this popup.
+fn appearance_picker(app: &mut DesignApp, ui: &Ui, doc: &pagenor_doc::Document, swatch: &str, stroke: bool, text_frame: bool) {
+    let text = text_frame && ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new(("swatch_apply_to_text", stroke)))).unwrap_or(false);
+    let key = if stroke { "stroke" } else { "fill" };
+    let swatch = if text {
+        text_attrs(app).and_then(|a| a["chars"][key].as_str().map(str::to_string)).unwrap_or_else(|| swatch.into())
+    } else {
+        swatch.into()
+    };
+    let hex = doc.resolve_color(&swatch, 1.0).map(|color| color.to_hex()).unwrap_or_else(|| "#000000".into());
+    app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", json!({"target":key, "hex":hex, "text":text})));
+}
+
+/// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's
+/// frame or its text), the tint, then the swatches. `cur` is the frame's swatch. With `text_only`
+/// (text selected) it colours the selected text.
+fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Document, cur: &str, stroke: bool, text_frame: bool, text_only: bool) {
+    let lang = app.ui.language.clone();
+    let tr = |s: &'static str| crate::i18n::tr(&lang, s);
+    let to_text_id = egui::Id::new(("swatch_apply_to_text", stroke));
+    let to_text = text_only || text_frame && resp.ctx.data(|d| d.get_temp::<bool>(to_text_id)).unwrap_or(false);
+    // What the popup shows and changes: the frame's fill or stroke, or its text's.
+    let (key, tint_key) = if stroke { ("stroke", "strokeTint") } else { ("fill", "fillTint") };
+    let (cur, tint) = if to_text {
+        let chars = super::text_attrs(app).map(|a| a["chars"].clone()).unwrap_or_default();
+        (chars[key].as_str().unwrap_or("").to_string(), chars[tint_key].as_f64().unwrap_or(1.0))
+    } else {
+        (cur.to_string(), f64::from(super::sel_tint(app, stroke)))
+    };
     let mut picked = None;
-    egui::Popup::menu(resp).show(|ui| {
-        picked = super::swatch_list(ui, doc, cur);
+    let mut new_tint = None;
+    let mut switch = None;
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(220.0);
+        ui.set_max_width(280.0);
+        if text_frame {
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, tr("Apply To:"));
+                for (label, text) in [("Frame", false), ("Text", true)] {
+                    if ui.selectable_label(to_text == text, crate::rtl::widget(ui, tr(label))).clicked() {
+                        switch = Some(text);
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, tr("Tint:"));
+            if let Some(v) = NumField::number(if stroke { "stroke_tint" } else { "fill_tint" }, Some((tint * 100.0).round()), "%", 0)
+                .width(60.0)
+                .range(0.0, 100.0)
+                .show(ui)
+            {
+                new_tint = Some(v / 100.0);
+            }
+        });
+        ui.separator();
+        picked = super::swatch_list(ui, doc, &cur);
+        if picked.is_some() {
+            ui.close();
+        }
     });
-    if let Some(p) = picked {
-        on_pick(app, p);
+    if let Some(t) = switch {
+        resp.ctx.data_mut(|d| d.insert_temp(to_text_id, t));
+    }
+    let cmd = |app: &mut DesignApp, attrs: Value| {
+        if to_text {
+            let _ = app.run("type.char", json!({ "attrs": attrs }));
+        } else {
+            let mut p = attrs.as_object().cloned().unwrap_or_default();
+            // object.fill / object.stroke name the swatch `swatch` and the tint `tint`.
+            if let Some(v) = p.remove(key) {
+                p.insert("swatch".into(), v);
+            }
+            if let Some(v) = p.remove(tint_key) {
+                p.insert("tint".into(), v);
+            }
+            let _ = app.run(if stroke { "object.stroke" } else { "object.fill" }, Value::Object(p));
+        }
+    };
+    if let Some(n) = picked {
+        cmd(app, json!({ key: n }));
+    } else if let Some(t) = new_tint {
+        cmd(app, json!({ tint_key: t }));
     }
 }
 
@@ -976,9 +1098,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, "T", crate::theme::semibold(12.0), tc);
         }
         let resp = ui.interact(chip, ui.id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
-        swatch_menu(app, &resp, &doc, &sw, |app, n| {
-            let _ = app.run("type.char", json!({"attrs": {key: n}}));
-        });
+        swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
         if k == 0 {
             crate::rtl::paint(
                 ui.painter(),
@@ -1474,6 +1594,7 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::menus::menu_button(ui, "☰", |ui| {
                 for (label, id) in [
                     ("Paragraph Rules…", "app.paragraphRulesDialog"),
+                    ("Justification…", "app.justificationDialog"),
                     ("Paragraph Borders and Shading…", "app.paragraphBordersDialog"),
                     ("Span Columns…", "app.spanColumnsDialog"),
                     ("Bullets and Numbering…", "app.bulletsNumberingDialog"),
@@ -2465,7 +2586,7 @@ mod color_picker_tests {
         }
     }
     fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
-        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(320.0, 1400.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let id = egui::Id::new("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -2481,6 +2602,33 @@ mod color_picker_tests {
         h
     }
 
+    #[test]
+    fn transform_flips_and_rotates_from_properties() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        let xf = |h: &Harness<'_, DesignApp>| h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().xf;
+        // Flip Horizontal mirrors the frame (a negative determinant); Flip Vertical as well brings it
+        // back to a half turn, as in the tutorial's petal.
+        h.get_by_label("Flip Horizontal").click();
+        h.run_steps(3);
+        assert!(xf(&h).determinant() < 0.0, "{:?}", xf(&h));
+        h.get_by_label("Flip Vertical").click();
+        h.run_steps(3);
+        let c = xf(&h).as_coeffs();
+        assert!((c[0] + 1.0).abs() < 1e-9 && (c[3] + 1.0).abs() < 1e-9, "a half turn: {c:?}");
+        let info = h.state_mut().session.execute("transform.info", &json!({})).unwrap();
+        assert!((info["rotation"].as_f64().unwrap().abs() - 180.0).abs() < 1e-6, "{info}");
+        // A quarter turn clockwise from there.
+        h.get_by_label("Rotate 90° Clockwise").click();
+        h.run_steps(3);
+        let info = h.state_mut().session.execute("transform.info", &json!({})).unwrap();
+        assert!((info["rotation"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
+        // The angle and scale fields are there.
+        assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("90°")).is_some());
+    }
     #[test]
     fn several_shapes_show_pathfinder_and_intersect_combines_them() {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
@@ -2505,5 +2653,98 @@ mod color_picker_tests {
         assert_eq!(items.len(), 1, "one shape left");
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
+    }
+    const CYAN: &str = "C=100 M=0 Y=0 K=0";
+
+    #[test]
+    fn the_fill_menu_sets_a_tint() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.fill", json!({"swatch": CYAN, "ids": [id]})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // A frame that isn't a text frame: no Apply To.
+        assert!(h.query_by_label("Apply To:").is_none());
+        // The field on the Tint row (Opacity also reads 100%).
+        let row = h.get_by_label("Tint:").rect();
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
+            .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
+            .expect("the Tint field")
+            .click();
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("25".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let fill = h.state().session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.clone();
+        assert_eq!((fill.swatch.as_str(), fill.tint), (CYAN, 0.25), "the tint, on the same swatch");
+    }
+
+    #[test]
+    fn a_tint_on_several_objects_keeps_each_ones_swatch() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [220, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.fill", json!({"swatch": CYAN, "ids": [a]})).unwrap();
+        app.run("object.fill", json!({"swatch": "[Black]", "ids": [b]})).unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        let row = h.get_by_label("Tint:").rect();
+        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
+            .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
+            .expect("the Tint field")
+            .click();
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("25".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        let fill = |id: u64| doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.clone();
+        assert_eq!((fill(a).swatch.as_str(), fill(a).tint), (CYAN, 0.25));
+        assert_eq!((fill(b).swatch.as_str(), fill(b).tint), ("[Black]", 0.25), "the second keeps its own swatch");
+    }
+
+    #[test]
+    fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Heading"})).unwrap();
+        let (id, story) = (r["id"].as_u64().unwrap(), pagenor_doc::StoryId(r["story"].as_u64().unwrap()));
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        h.get_by_label("Text").click();
+        h.run_steps(3);
+        h.get_by_label(CYAN).click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "the text is cyan");
+        assert_eq!(doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
+        // The existing double-click picker follows the chosen text target too.
+        assert!(!egui::Popup::is_any_open(&h.ctx), "choosing a swatch closes its popup");
+        let pos = h.get_by_label("Fill swatch").rect().center();
+        h.run_steps(30);
+        for _ in 0..2 {
+            h.hover_at(pos);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            }
+            h.run_steps(1);
+        }
+        let dialog = h.state_mut().ui.dialog.as_mut().expect("colour picker");
+        assert!(dialog.b("text"));
+        dialog.fields.insert("hex".into(), json!("#123456"));
+        let result = crate::dialogs::confirm(h.state_mut()).unwrap();
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), result["swatch"].as_str());
+        assert_eq!(doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]");
     }
 }
