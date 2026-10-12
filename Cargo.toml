@@ -4,14 +4,14 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/pagenor", "apps/pagenor-cli", "xtask"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 repository = "https://github.com/appajid/pagenor"
 
 [workspace.dependencies]
-craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "c22bb1b0ce6316f84973cb69675fe7331c5886cc" }
+craft-print = { git = "https://github.com/storytold/craft-libs", version = "0.1.0", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
 # internal
 pagenor-archive = { path = "crates/archive" }
 pagenor-ai = { path = "crates/ai" }

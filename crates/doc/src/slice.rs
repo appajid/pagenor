@@ -78,9 +78,13 @@ impl Story {
         let end = at;
         // Paragraph formats of the pasted paragraphs after the first.
         let p0 = self.para_at(pos);
+        let consumed_eof = src.slice_has_eof_stage && src.text.ends_with('\n') && end < self.len();
         for (k, pf) in src.paras.iter().enumerate().skip(1) {
             if let Some(p) = self.paras.get_mut(p0 + k) {
                 *p = crate::story::ParaFormat { table: None, ..pf.clone() };
+                if consumed_eof && k + 1 == src.paras.len() {
+                    p.chars = p.eof_inherited_chars.take().unwrap_or_default();
+                }
             }
         }
         // Marker payloads in text order. Note and anchor ids belong to the destination.

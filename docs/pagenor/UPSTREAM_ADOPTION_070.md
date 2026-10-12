@@ -3,7 +3,7 @@
 Owner authorised implementation on 12 October 2026, with no routine confirmation pauses.
 Start source: `f9c469fab92f022a3bb31c7e4f8d803ecf610d73`.
 Work is local on `development/upstream-20261012`; published 0.6.0 artifacts remain intact.
-The next completed feature batch will receive a new version before packaging.
+The completed batch uses version 0.7.0; platform packaging is the next milestone step.
 
 The queue is 26 selected new proposals and six incremental updates, after the review
 through #565. CJK, Italian, optional language patterns and SEA dictionary integration
@@ -44,9 +44,9 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.27 | [#478](https://github.com/storytold/designcraft/pull/478) / @sanyamsingh001 | `8f33ef36d446af17ab01955928fee1b657c47ad4` | Complete |
 | P11.13.28 | [#468](https://github.com/storytold/designcraft/pull/468) / @soro-82 | `5f535ef60f87b03dd69a65d9e64e6322e4816331` | Complete |
 | P11.13.29 | [#473](https://github.com/storytold/designcraft/pull/473) / @MarekSpodBiedry | `11b9a0f1041593638edd238a88565c8043625331` | Complete |
-| P11.13.30 | [#542](https://github.com/storytold/designcraft/pull/542) / @sanyamsingh001 | `c08b3ddc685ece9534850884567fa3dbac6784a4` | Pending |
-| P11.13.31 | [#452](https://github.com/storytold/designcraft/pull/452) / @skylartaylor | `957890223a0c84070278557bac529d6da848ebe6` | Pending |
-| P11.13.32 | [#553](https://github.com/storytold/designcraft/pull/553) / @itrycodinganditsbad | `fb90a508b1ccb64ba8cea2e575e015659417aa85` | Pending |
+| P11.13.30 | [#542](https://github.com/storytold/designcraft/pull/542) / @sanyamsingh001 | `c08b3ddc685ece9534850884567fa3dbac6784a4` | Complete |
+| P11.13.31 | [#452](https://github.com/storytold/designcraft/pull/452) / @skylartaylor | `957890223a0c84070278557bac529d6da848ebe6` | Complete |
+| P11.13.32 | [#553](https://github.com/storytold/designcraft/pull/553) / @itrycodinganditsbad | `fb90a508b1ccb64ba8cea2e575e015659417aa85` | Complete |
 
 ## P11.13.1 — nested undo after a caught panic (#411)
 
@@ -227,3 +227,61 @@ actual Story XML as well as importing it back. Other legacy import values remain
 Focused tests and all seven gates pass: 2,383 tests, zero failures, seven ignored;
 twenty WASM packages. Native 1440×900 screenshots were inspected for split views,
 scrollbars and target dialogs. Only the independent QA process was closed.
+
+## P11.13.30 — final blank-paragraph typing (#542 incremental)
+
+The outer story's final blank paragraph stores sparse direct typing attributes and
+its separate inherited paragraph baseline. A live named character style stays on the
+real LF run. Typing, deletion, formatted paste/placement, table and marker insertion,
+font/condition operations and style changes preserve or consume those layers at the
+existing command boundaries. The composed blank line consumes its saved stage rather
+than reapplying conflicting LF overrides. Font replacement includes real separators.
+
+Pagenor retains its ordinary/cell/note pending-caret formatting, inherited unstaged LF
+metrics and pre-edit Undo/post-edit Redo policy. Pending choices now invalidate when
+commands or pointer/key actions leave their caret, preventing stale formatting from
+reviving on return. Typographic quotes and existing toggles read pending choices.
+No separate IME state or new CJK feature is introduced; the unsupported Warichu-only
+fixture is excluded under the owner's CJK deferral.
+
+Native format 5 retains the EOF capability; earlier versions still load. Supported
+IDML Story labels carry Pagenor's org.pagenor.eofTyping.v1 state with a 64 KiB witness
+budget and depth cap, rejecting stale/duplicate labels and child-story replay.
+New modern JSON-model fixtures use versioned native packages: Pagenor intentionally
+upgrades unversioned JSON as format 1, and that existing migration remains unchanged.
+The UI format dependency is test-only. No proprietary document/font fixture is used.
+
+148 focused EOF/consumer tests pass. The complete batch passes all seven gates:
+2,574 tests passed, zero failures, seven existing ignores; twenty WASM packages.
+Native QA confirms 24 pt / 36 pt final-paragraph typing survives native Save/Open
+and remains in the canvas line. Print scaling was checked with synthetic content
+and dry-run submission only. The owner app/session was left open.
+
+## P11.13.31 — shared native print update (#452 incremental)
+
+The craft-print dependency is pinned to reviewed revision d991bf6792f8ade99c51358bf3c1d902c8cd96b5.
+It preserves the printer's duplex default, reports known two-sided capability and
+supports fitting oversized sheets. Pagenor retains its PDF-box preparation and
+selected export settings; Print and file.print also expose explicit Original size /
+exact output. Unknown scaling is rejected before submission. Three focused dry-run
+or mock-boundary tests pass; no physical print job is submitted.
+
+## P11.13.32 — Pagenor user guides (#553)
+
+User guides now cover installation, Welcome/recent documents, native/import opening,
+creation, placement, PDF export, licensing and diagnostics. They describe Pagenor's
+actual Mac/Windows/Linux matrix and development-preview signing status, INDD and
+PageMaker support, .pgnr/legacy .pagenor and native format 5. Appaji Ambarisha's reserved
+branding rights remain separate from MIT/Apache source licensing. Upstream launcher,
+Discord, unsupported package claims and agent instructions are not adopted.
+All local documentation links resolve; the README links the guide index.
+
+The complete batch's workspace version advances to 0.7.0 through cargo xtask version set.
+Full milestone validation and release builds follow; versioning alone is not a release.
+
+## Local milestone validation
+
+All 32 selected adaptations are complete. The 0.7.0 native Mac workspace builds;
+all seven cargo xtask ci gates pass. Pinned sources and per-group validation above
+record each change. Platform packages, hosted native checks and publication are
+tracked in [desktop release notes](DESKTOP_RELEASE_070.md).

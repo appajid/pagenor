@@ -13,6 +13,8 @@ covering major Indic scripts and multilingual publishing.
 
 Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor).
 
+[User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
+
 ## The sample magazine
 
 Every page below was laid out by Pagenor from code (`crates/engine/src/sample.rs`) and exported

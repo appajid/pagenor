@@ -242,7 +242,8 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
             let r = t.range();
             let first = {
                 let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
-                story.delete(r.clone());
+                super::text::prepare_formatted_insert(story, r.start, &imp.story.text);
+                super::text::delete_preserving_eof(story, r.clone(), imp.story.text.is_empty());
                 story.paras.get(story.para_at(r.start)).cloned().ok_or_else(|| bad("file.place", "text insertion paragraph"))?
             };
             resolve_markdown_emphasis(&mut imp, &emphasis, &d.styles, Some(&first))?;

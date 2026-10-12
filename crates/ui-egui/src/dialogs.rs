@@ -376,7 +376,7 @@ pub fn open_print(app: &mut DesignApp) {
     let printer = p["default"].as_str().map(str::to_string).or_else(|| p["printers"][0].as_str().map(str::to_string)).unwrap_or_default();
     app.ui.dialog = Some(Dialog::new(
         "print",
-        json!({"printers": p["printers"], "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false}),
+        json!({"printers": p["printers"], "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false, "scaling": "shrinkToFit"}),
     ));
 }
 
@@ -418,6 +418,9 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             });
         }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Scaling:"));
+        combo(ui, d, "scaling", &[("shrinkToFit", "Fit oversized sheets"), ("exact", "Original size")]);
         ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
         text_field(ui, d, "copies", 50.0);
@@ -2800,7 +2803,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             let r = app.run(
                 "file.print",
                 json!({"printer": if printer.is_empty() { Value::Null } else { json!(printer) }, "copies": d.n("copies").unwrap_or(1.0).max(1.0) as u64,
-                    "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}),
+                    "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed"), "scaling": d.s("scaling")}),
             )?;
             app.status(format!("Sent {} page(s) to {}", r["pages"], r["printer"].as_str().unwrap_or("the default printer")));
             Ok(r)

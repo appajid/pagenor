@@ -82,13 +82,13 @@ fn indic_composition_keeps_consonants_vowel_signs_and_conjuncts_in_one_fallback_
                 f.over.font_family = Some("Pagenor Partial Indic".into());
                 f.over.language = Some(language.into());
             });
-            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db);
+            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db, StoryContext::Outer);
             let glyphs: Vec<_> = all_lines(&cs).iter().flat_map(|l| &l.glyphs).collect();
             assert!(!glyphs.is_empty());
             assert!(glyphs.iter().all(|g| g.face.family == "Pagenor Whole Indic"), "{text}: {glyphs:?}");
             assert!(glyphs.iter().all(|g| g.gid != 0), "{text}: {glyphs:?}");
             doc.settings.glyph_fallback = false;
-            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db);
+            let cs = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db, StoryContext::Outer);
             assert!(all_lines(&cs).iter().flat_map(|l| &l.glyphs).all(|g| g.face.family == "Pagenor Partial Indic"));
         }
     }
@@ -1539,7 +1539,8 @@ fn check_kashida_justification(db: &FontDb, require_fallback: bool) {
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 260.0, 400.0), lid, text, pf).unwrap();
     // The Arabic is drawn from a fallback font when the database has one.
     d.settings.glyph_fallback = true;
-    let composed = |d: &Document| compose_with_db(d, d.story(sid).unwrap(), &frame_specs(d, sid), &ComposeOptions::default(), db);
+    let composed =
+        |d: &Document| compose_with_db(d, d.story(sid).unwrap(), &frame_specs(d, sid), &ComposeOptions::default(), db, StoryContext::Outer);
     let first = |d: &Document| composed(d).frames[0].lines[0].clone();
     let with = first(&d);
     assert!(composed(&d).frames[0].lines.len() > 1);

@@ -1,12 +1,16 @@
 # Pagenor development phases
 
-Current version: **0.6.0** (P11.12), published as a desktop development preview
-at the owner's request. Published v0.3.0 remains intact.
+Current source version: **0.7.0** (P11.13), locally validated. Published 0.6.0
+and v0.3.0 packages remain intact.
 
-P11.13 begins the authorised next batch of 26 new proposals and six incremental
-updates, locally and with per-change validation. Published 0.6.0 remains the prior
-preview; the next completed binary milestone will use a new version.
-[Implementation queue](docs/pagenor/UPSTREAM_ADOPTION_070.md).
+P11.13 completes all 26 new selected proposals and six incremental updates.
+All seven gates pass: 2,574 tests, zero failures, seven existing ignores; twenty
+WASM packages. Native 0.7.0 Mac UI inspection covers saved EOF typing and Print
+scaling, in addition to the earlier UI/graphics/split-view checks. Native format 5
+reads prior documents; older apps reject the new capability rather than lose it.
+Windows/Linux build/install/quality gates and Mac packaging/publication are next.
+[Implementation notes](docs/pagenor/UPSTREAM_ADOPTION_070.md) and
+[distribution tracker](docs/pagenor/DESKTOP_RELEASE_070.md).
 
 P11.12 completes native Windows x64/x86/ARM64 MSI/portable and Linux x86_64/ARM64
 AppImage/Debian/RPM/tar/Flatpak builds. Windows installation, architecture,

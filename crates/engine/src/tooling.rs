@@ -100,14 +100,17 @@ impl Session {
 
     pub fn pointer(&mut self, ev: &PointerEvent, view: ViewInfo) -> Result<()> {
         let actions = self.with_ctx(view, |t, cx| t.pointer(cx, ev)).unwrap_or_default();
-        self.run_actions(actions)
+        let result = self.run_actions(actions);
+        crate::cmd::text::retain_pending_typing_format(self);
+        result
     }
 
     pub fn tool_key(&mut self, key: ToolKey, mods: Mods, view: ViewInfo) -> Result<bool> {
         let actions = self.with_ctx(view, |t, cx| t.key(cx, key, mods)).unwrap_or_default();
         let handled = !actions.is_empty();
-        self.run_actions(actions)?;
-        Ok(handled)
+        let result = self.run_actions(actions);
+        crate::cmd::text::retain_pending_typing_format(self);
+        result.map(|()| handled)
     }
 
     pub fn overlays(&mut self, view: ViewInfo) -> Vec<Overlay> {

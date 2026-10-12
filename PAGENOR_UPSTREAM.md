@@ -828,3 +828,21 @@ GREP-condition reflow, empty rich native paste, split chronological dispatch/tea
 release, explicit page/spread targets and IDML Nothing spacing. Existing Pagenor
 IME/click counts, drop caps, scoped dispatch, validation and separate master sides
 remain. Sources, tests and native inspection are recorded in the 0.7.0 log.
+
+P11.13 completes the #542 EOF incremental update by @sanyamsingh001 at
+c08b3ddc685ece9534850884567fa3dbac6784a4, retaining Pagenor's ordinary/cell/note
+pending-caret formatting, inherited LF metrics and existing Undo/Redo selection.
+Native format 5 and org.pagenor.eofTyping.v1 IDML labels preserve the root-stage
+capability. Pagenor-specific consumer, font-replacement and stale-pending guards
+are documented and tested; no deferred Warichu feature is introduced.
+
+The #452 update by @skylartaylor at 957890223a0c84070278557bac529d6da848ebe6
+updates craft-print to reviewed pinned revision d991bf6792f8ade99c51358bf3c1d902c8cd96b5.
+Pagenor retains PDF box/export handling and offers Fit oversized sheets or Original
+size; duplex defaults stay with the printer. No physical QA job was submitted.
+
+The #553 user-guide proposal by @itrycodinganditsbad at
+fb90a508b1ccb64ba8cea2e575e015659417aa85 is adapted to Pagenor's actual UI,
+formats, platforms, owner rights, repository and existing importer limitations.
+Development instructions are not replaced. All 32 selected updates are complete
+locally in 0.7.0; tests and native inspection are recorded in UPSTREAM_ADOPTION_070.md.

@@ -444,7 +444,9 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        self.guarded(id, |s| s.execute_unguarded(id, params))
+        let result = self.guarded(id, |s| s.execute_unguarded(id, params));
+        cmd::text::retain_pending_typing_format(self);
+        result
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {

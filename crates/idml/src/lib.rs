@@ -47,6 +47,7 @@
 
 mod arabic;
 mod cjk;
+mod eof_typing;
 mod export;
 mod import;
 mod names;

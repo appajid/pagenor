@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 pub use pagenor_doc::file_type::MIME;
 /// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering;
 /// format 4 retains placed-graphic clipping paths that older readers would otherwise discard.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
@@ -536,7 +536,7 @@ mod tests {
         let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let mut meta = String::new();
         archive.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 4);
+        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], VERSION);
         let back = load(&bytes).unwrap();
         let g = back.item(id).unwrap().graphic().unwrap();
         assert_eq!(g.clip.as_deref(), Some(&clip));
@@ -1025,6 +1025,7 @@ mod tests {
             style: selected,
             para: if local_clear { clear_para } else { ParaAttrs::default() },
             chars: if local_clear { clear_chars } else { CharAttrs::default() },
+            eof_inherited_chars: None,
             table: None,
         };
         let layer = d.default_layer();

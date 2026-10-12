@@ -11,13 +11,13 @@ use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "file.printers", "Printers", [], None, "{} → {printers: [names], default}", super::always, |_, _| Ok(printers())),
+        cmd!(query "file.printers", "Printers", [], None, "{} → {printers: [names], default, details: [{name, default, twoSided?: bool}]}", super::always, |_, _| Ok(printers())),
         cmd!(
             noundo "file.print",
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
+            "{printer?, copies?: 1, scaling?: shrinkToFit|exact, pages?: \"1-3,5\", spreads?, marks?, bleed?, dryRun?: bool (export and preview submission without printing)} → {printer, copies, pages, command, bytes}",
             has_doc,
             print
         ),
@@ -27,8 +27,9 @@ pub fn specs() -> Vec<CommandSpec> {
 fn printers() -> Value {
     let printers = craft_print::printers();
     let default = printers.iter().find(|p| p.default).map(|p| p.name.clone());
+    let details: Vec<_> = printers.iter().map(|p| json!({"name": p.name, "default": p.default, "twoSided": p.two_sided})).collect();
     let names: Vec<_> = printers.into_iter().map(|p| p.name).collect();
-    json!({"printers": names, "default": default})
+    json!({"printers": names, "default": default, "details": details})
 }
 
 fn print(s: &mut Session, p: &Value) -> Result<Value> {
@@ -50,8 +51,17 @@ fn print_with(
     let d = &s.doc()?.doc;
     let opts = super::export::options(p, d.page_count())?;
     let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
-    let job =
-        craft_print::Job { printer: str_param(p, "printer").map(str::to_string), copies, title: d.title.clone(), ..craft_print::Job::default() };
+    let job = craft_print::Job {
+        printer: str_param(p, "printer").map(str::to_string),
+        copies,
+        title: d.title.clone(),
+        scaling: match str_param(p, "scaling").unwrap_or("shrinkToFit") {
+            "shrinkToFit" => craft_print::Scaling::ShrinkToFit,
+            "exact" => craft_print::Scaling::Exact,
+            value => return Err(bad("file.print", format!("unknown scaling `{value}`; use shrinkToFit or exact"))),
+        },
+        ..craft_print::Job::default()
+    };
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
     let pdf = pagenor_pdf::export_pdf(&super::interchange::with_pdf_boxes(d), &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
@@ -76,13 +86,35 @@ mod tests {
         let command: Vec<&str> = r["command"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
         if craft_print::backend() == Some(craft_print::Backend::Cups) {
             assert_eq!(&command[..5], ["lp", "-d", "Office", "-n", "2"]);
-            assert!(command.contains(&"fit-to-page=false"));
+            assert!(command.contains(&"print-scaling=auto-fit"));
+            assert!(!command.iter().any(|a| a.starts_with("sides=")));
         } else {
             assert_eq!(command[0], "powershell");
         }
         assert!(r["bytes"].as_u64().unwrap() > 500);
         assert!(s.execute("file.print", &json!({"pages": "9", "dryRun": true})).is_err());
         assert!(s.execute("file.printers", &json!({})).unwrap()["printers"].is_array());
+    }
+
+    #[test]
+    fn print_exact_size_and_invalid_scaling_are_explicit() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        print_with(&mut s, &json!({"scaling": "exact"}), |_, job| {
+            assert_eq!(job.scaling, craft_print::Scaling::Exact);
+            assert_eq!(job.duplex, None);
+            Ok("synthetic exact-size job".into())
+        })
+        .unwrap();
+        let mut submitted = false;
+        assert!(
+            print_with(&mut s, &json!({"scaling": "invalid"}), |_, _| {
+                submitted = true;
+                Ok(String::new())
+            })
+            .is_err()
+        );
+        assert!(!submitted);
     }
 
     #[test]
@@ -101,6 +133,8 @@ mod tests {
             assert!(pdf.starts_with(b"%PDF-"));
             assert_eq!(job.printer.as_deref(), Some("Office (east)"));
             assert_eq!(job.copies, 2);
+            assert_eq!(job.duplex, None);
+            assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
             assert!(!job.title.is_empty());
             Ok("request id is Office-1".into())
         })

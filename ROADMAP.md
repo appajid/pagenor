@@ -1,14 +1,17 @@
 # Pagenor roadmap
 
 - P11.13: implement the selected 26 newer upstream proposals and six incremental
-  updates, beginning with nested undo safety and UI controls. Local work in progress;
+  updates. All 32 are complete locally as **0.7.0**; all seven gates pass
+  (2,574 tests, zero failures, seven ignores; twenty WASM packages).
   Nested undo, Pathfinder, tint/Frame/Text menus, View grouping/document grid,
   Justification, Properties transforms, Tools Color Picker, curved corners, image
   cropping/content transforms, saved clipping paths, color targeting/swatch validation,
   command result IDs, scoped PostScript/IDML font lookup, IDML rotation, indexed
   parent-page text/section markers, anchored inheritance/wrap, CR normalization,
   uppercase hyphenation, continuous decorations, consumed-condition reflow, split
-  input/dock release, explicit layout targets and IDML spacing are validated.
+  input/dock release, explicit layout targets, IDML spacing, saved EOF typing,
+  native print scaling and Pagenor user guides are validated. Native Mac UI inspected;
+  Windows/Linux packages and milestone publication are in progress.
   [queue and per-change notes](docs/pagenor/UPSTREAM_ADOPTION_070.md).
 
 - P11.12: published native Windows and Linux **0.6.0 desktop development

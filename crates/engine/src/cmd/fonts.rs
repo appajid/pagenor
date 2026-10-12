@@ -212,6 +212,27 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
         let ids: Vec<_> = d.stories.keys().copied().collect();
         for sid in ids {
             let Some(st) = d.story_mut(sid) else { continue };
+            if st.text.ends_with('\n') && st.paras.last().is_some_and(|p| !p.chars.is_empty() || p.eof_inherited_chars.is_some()) {
+                let fmt = super::text::story_typing_format(st, st.len(), true);
+                if let Some(pf) = st.paras.last() {
+                    let base = original_styles.resolve_para(pf).1;
+                    let effective = original_styles.resolve_char(&base, &fmt);
+                    if effective.font_family.eq_ignore_ascii_case(&family)
+                        && style.as_ref().is_none_or(|s| effective.font_style.eq_ignore_ascii_case(s))
+                    {
+                        let replacement_style = db.face(&to_family, to_style.as_deref().unwrap_or(&effective.font_style)).style.clone();
+                        if let Some(pf) = st.paras.last_mut() {
+                            pf.chars.font_family = Some(to_family.clone());
+                            pf.chars.font_style = Some(replacement_style);
+                            for attrs in pf.eof_inherited_chars.iter_mut() {
+                                swap(attrs, &family, style.as_deref(), &to_family, to_style.as_deref());
+                            }
+                        }
+                        st.rev = st.rev.wrapping_add(1);
+                        changed += 1;
+                    }
+                }
+            }
             let mut pending = vec![st];
             while let Some(st) = pending.pop() {
                 let mut ranges = Vec::new();
@@ -220,12 +241,10 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
                     let (_, base) = original_styles.resolve_para(format);
                     for (run, format) in st.runs() {
                         let start = run.start.max(paragraph.start);
-                        // An empty paragraph still uses its paragraph-break character's font.
-                        let end = if paragraph.is_empty() && run.contains(&paragraph.start) {
-                            st.text.get(start..).and_then(|tail| tail.chars().next()).map_or(start, |c| start.saturating_add(c.len_utf8()))
-                        } else {
-                            run.end.min(paragraph.end)
-                        };
+                        // The real paragraph separator also owns a font. Include its byte;
+                        // the final empty EOF has no byte and keeps its separate typing stage.
+                        let end = paragraph.end.saturating_add(usize::from(st.text.as_bytes().get(paragraph.end) == Some(&b'\n')));
+                        let end = run.end.min(end);
                         if start >= end {
                             continue;
                         }
