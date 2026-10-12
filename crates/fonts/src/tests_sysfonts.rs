@@ -859,6 +859,7 @@ fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool
             location: CatalogLocation::Native(name.into()),
             group: f.group,
             native: f.native,
+            postscript: f.postscript,
             aliases: f.aliases,
             style_aliases: f.style_aliases,
         })
@@ -1235,5 +1236,26 @@ fn font_picker_metadata_never_loads_installed_faces_and_tracks_refresh() {
     assert!(db.scan_generation() > generation);
     assert!(fonts.menu_added(FAMILY).is_none());
     assert_eq!(fonts.menu_kind(FAMILY).class, crate::FontClass::Other);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn installed_and_loaded_fonts_are_found_by_postscript_name() {
+    let dir = std::env::temp_dir().join(format!("pagenor-sysfonts-postscript-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ps.ttf"), crate::testing::font_with("Pagenor Test PS Installed", &['a']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let found = Some(("Pagenor Test PS Installed".to_string(), "Regular".to_string()));
+    // From the catalog, without loading the font; case doesn't matter.
+    assert_eq!(db.postscript_face("pagenortestpsinstalled-regular"), found);
+    assert!(!db.is_loaded("Pagenor Test PS Installed"));
+    // Bundled and added (loaded) faces.
+    assert_eq!(db.postscript_face("SourceSerif4-Semibold"), Some(("Source Serif 4".to_string(), "Semibold".to_string())));
+    db.add_font(crate::testing::font_with("Pagenor Test PS Added", &['a']).unwrap());
+    assert_eq!(db.postscript_face("PagenorTestPSAdded-Regular"), Some(("Pagenor Test PS Added".to_string(), "Regular".to_string())));
+    // A family name isn't a PostScript name.
+    assert_eq!(db.postscript_face("Source Serif 4"), None);
+    assert_eq!(db.postscript_face("NoSuchFont-Regular"), None);
     std::fs::remove_dir_all(dir).unwrap();
 }

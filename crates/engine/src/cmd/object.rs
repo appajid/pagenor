@@ -16,6 +16,17 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection, ok, point_param, rect_param, spread_param, str_param, targets};
 use crate::{Result, Session};
 
+/// `name` must be a swatch of the document: an unknown name would paint nothing. The error names
+/// the swatch it was probably meant to be (`Paper` → `[Paper]`, a different case).
+fn known_swatch(doc: &pagenor_doc::Document, name: &str, cmd: &str, key: &str) -> Result<()> {
+    if doc.swatch(name).is_some() {
+        return Ok(());
+    }
+    let bare = |n: &str| n.trim().trim_start_matches('[').trim_end_matches(']').to_lowercase();
+    let hint = doc.swatches.iter().find(|s| bare(&s.name) == bare(name)).map(|s| format!(" (did you mean `{}`?)", s.name)).unwrap_or_default();
+    Err(bad(cmd, format!("{key}: no swatch named `{name}`{hint}; create one with `swatch.create` and use its returned name")))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -33,7 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move",
             ["Object", "Transform"],
             None,
-            "{dx, dy, copy?: bool, ids?, toSpread?, content?: bool (move the placed graphic or pasted-in items inside each frame; the frame stays. Default: whether the selection is content, when neither ids nor copy is given)}",
+            "{dx, dy, copy?: bool, ids?, toSpread?, content?: bool (move the placed graphic or pasted-in items inside each frame; the frame stays. Default: whether the selection is content, when neither ids nor copy is given)} → {moved, ids: the target objects (with copy, the copies)}",
             has_selection,
             transform_move
         ),
@@ -175,10 +186,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fill",
             [],
             None,
-            "{swatch?, tint?: 0..1, ids?} — a swatch (tint 100% unless given), or a tint alone that keeps each object's swatch",
+            "{swatch?, tint?: 0..1, ids?} — a swatch (tint 100% unless given), or a tint alone that keeps each object's swatch; use an existing document swatch name, e.g. [Paper]",
             has_selection,
             |s, p| {
                 let sw = str_param(p, "swatch").map(str::to_string);
+                if let Some(name) = &sw {
+                    known_swatch(&s.doc()?.doc, name, "object.fill", "swatch")?;
+                }
                 let tint = p.get("tint").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 1.0) as f32);
                 if sw.is_none() && tint.is_none() {
                     return Err(bad("object.fill", "missing swatch"));
@@ -203,9 +217,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind:…}, cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
             has_selection,
             |s, p| {
+                for key in ["swatch", "gapSwatch"] {
+                    if let Some(name) = p.get(key).and_then(Value::as_str) {
+                        known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
+                    }
+                }
                 let p2 = p.clone();
                 // A tint alone changes no stroke into one (it would become the default 1 pt black).
-                let tint_only = p.as_object().is_some_and(|o| o.keys().all(|k| k == "tint" || k == "ids"));
+                let tint_only = p.as_object().is_some_and(|o| o.keys().all(|k| k == "tint" || k == "ids" || k == "id"));
                 set_flag(
                     s,
                     p,
@@ -573,7 +592,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); with rows/columns, a grid",
+            "{count?: 1, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); with rows/columns, a grid → {created, ids: the copies}",
             has_selection,
             step_and_repeat
         ),
@@ -1020,7 +1039,7 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
             }
             it.xf = Affine::translate(v) * it.xf;
         }
-        Ok(json!({"moved": ids.len()}))
+        Ok(json!({"moved": ids.len(), "ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
     })
 }
 
@@ -1041,7 +1060,7 @@ fn linear_inverse(m: Affine, v: Vec2) -> Vec2 {
 /// frame resize refits.
 fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
     s.edit(|doc, _| {
-        let mut moved = 0;
+        let mut moved = Vec::new();
         for id in ids {
             let loc = doc.find(*id).ok_or(pagenor_doc::DocError::NoItem(*id))?;
             let parent = doc.parent_xf(&loc);
@@ -1061,9 +1080,9 @@ fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
                 }
                 _ => it.xf = Affine::translate(linear_inverse(parent, d)) * it.xf,
             }
-            moved += 1;
+            moved.push(id.0);
         }
-        Ok(json!({"moved": moved}))
+        Ok(json!({"moved": moved.len(), "ids": moved}))
     })
 }
 
@@ -2561,7 +2580,8 @@ fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         *sel = Selection::items(all.clone());
-        Ok(json!({"created": all.len() - ids.len()}))
+        let copies: Vec<u64> = all.iter().skip(ids.len()).map(|i| i.0).collect();
+        Ok(json!({"created": copies.len(), "ids": copies}))
     })
 }
 
@@ -2599,7 +2619,7 @@ mod scale_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [100, 100, 200, 150]})).unwrap();
         let id = ItemId(r["id"].as_u64().unwrap());
-        s.execute("object.stroke", &json!({"weight": 4, "swatch": "Black"})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 4, "swatch": "[Black]"})).unwrap();
         let weight = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().stroke.weight;
         let bounds = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().bounds();
         s.execute("transform.scale", &json!({"sx": 2.0})).unwrap();
@@ -3349,6 +3369,66 @@ mod blend_mode_tests {
 }
 
 #[cfg(test)]
+mod copy_ids_tests {
+    use serde_json::json;
+
+    #[test]
+    fn copies_report_their_ids() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let ids = |r: &serde_json::Value| r["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect::<Vec<_>>();
+        let selected = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        // Moving reports what moved; copying reports the copies, which are selected.
+        assert_eq!(ids(&s.execute("transform.move", &json!({"dx": 5, "dy": 0, "ids": [a]})).unwrap()), [a]);
+        let r = s.execute("transform.move", &json!({"dx": 100, "dy": 0, "copy": true, "ids": [a]})).unwrap();
+        let copy = ids(&r);
+        assert!(copy.len() == 1 && copy[0] != a && s.doc().unwrap().doc.item(pagenor_doc::ItemId(copy[0])).is_some(), "{r}");
+        assert_eq!(selected(&s), copy);
+        // Edit › Duplicate.
+        let r = s.execute("edit.duplicate", &json!({})).unwrap();
+        let dup = ids(&r);
+        assert!(dup.len() == 1 && dup[0] != copy[0], "{r}");
+        assert_eq!(selected(&s), dup);
+        // Step and Repeat: every copy.
+        let r = s.execute("edit.stepAndRepeat", &json!({"count": 3, "dx": 0, "dy": 60, "ids": [a]})).unwrap();
+        assert_eq!((r["created"].as_u64(), ids(&r).len()), (Some(3), 3), "{r}");
+        assert!(ids(&r).iter().all(|i| s.doc().unwrap().doc.item(pagenor_doc::ItemId(*i)).is_some()));
+    }
+}
+
+#[cfg(test)]
+mod swatch_name_tests {
+    use serde_json::json;
+
+    #[test]
+    fn fills_and_strokes_must_name_a_swatch_and_change_nothing_otherwise() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].clone();
+        for (cmd, params, hint) in [
+            ("object.fill", json!({"swatch": "Paper", "ids": [id]}), Some("[Paper]")),
+            ("object.fill", json!({"swatch": "[black]", "ids": [id]}), Some("[Black]")),
+            ("object.fill", json!({"swatch": "Missing Ink", "ids": [id]}), None),
+            ("object.stroke", json!({"swatch": "#ff0000", "weight": 4, "ids": [id]}), None),
+            ("object.stroke", json!({"gapSwatch": "paper", "ids": [id]}), Some("[Paper]")),
+        ] {
+            let before = s.doc().unwrap().doc.clone();
+            let e = s.execute(cmd, &params).unwrap_err().to_string();
+            assert!(e.contains("no swatch named") && e.contains("swatch.create"), "{cmd}: {e}");
+            if let Some(h) = hint {
+                assert!(e.contains(&format!("did you mean `{h}`")), "{cmd}: {e}");
+            }
+            assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{cmd}: nothing changed");
+        }
+        // Real names, [None] included, still work.
+        for sw in ["[Paper]", "[None]", "C=100 M=0 Y=0 K=0"] {
+            s.execute("object.fill", &json!({"swatch": sw, "ids": [id]})).unwrap();
+            s.execute("object.stroke", &json!({"swatch": sw, "ids": [id]})).unwrap();
+        }
+    }
+}
+#[cfg(test)]
 mod content_transform_tests {
     use serde_json::json;
 
@@ -3553,7 +3633,8 @@ mod content_move_tests {
         let (mut s, f) = placed();
         let (frame0, g0) = boxes(&s, f);
         s.execute("selection.set", &json!({"ids": [f.0], "content": true})).unwrap();
-        s.execute("transform.move", &json!({"dx": 10, "dy": -5})).unwrap();
+        let moved = s.execute("transform.move", &json!({"dx": 10, "dy": -5})).unwrap();
+        assert_eq!(moved["ids"], json!([f.0]));
         let (frame1, g1) = boxes(&s, f);
         assert!(near(frame1, frame0), "the frame stays");
         assert!(near(g1, g0 + Vec2::new(10.0, -5.0)), "{g1:?}");

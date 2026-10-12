@@ -805,3 +805,9 @@ image fitting, content transforms and saved clipping paths). Pagenor retains its
 placement validation/PDF crop/wrap metadata, adds finite-transform guards, corrects
 the native content outline found during QA, and records clipping capability as native
 format 4. Pinned authors/heads and measured checks are in UPSTREAM_ADOPTION_070.md.
+
+P11.13 adapts #551, #520, #521, #548 and #560 for table text colors, validated
+swatches, command result IDs, scoped/lazy SVG PostScript lookup and IDML family/style
+preservation. Pagenor's caret formatting, font activation epochs, document precedence,
+variable SVG CSS and small-table catalogue scan remain. Sources and checks are in
+the pinned 0.7.0 adaptation log; no private font or new font asset is committed.

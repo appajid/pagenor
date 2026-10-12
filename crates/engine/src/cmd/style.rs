@@ -181,8 +181,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Color",
             [],
             None,
-            "{color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255), target?: fill|stroke, text?: bool, ids?} — an unnamed colour (not in the Swatches panel until Add to Swatches) on the selection; `text`: on the selected text, or the text of the selected frames (Formatting Affects Text)",
-            |s| super::has_text(s).or_else(|_| super::has_selection(s)),
+            "{color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255), target?: fill|stroke, text?: bool, ids?} — an unnamed colour (not in the Swatches panel until Add to Swatches) on the selection; without ids, selected text or table-cell text takes the colour; `text`: on the selected text, or the text of the selected frames (Formatting Affects Text)",
+            has_color_target,
             apply_color
         ),
         cmd!(
@@ -1044,10 +1044,19 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn has_color_target(s: &Session) -> std::result::Result<(), String> {
+    super::has_selection(s).or_else(|e| match s.active() {
+        Some(d) if d.selection.text.is_some() || d.selection.cells.is_some() => Ok(()),
+        _ => Err(e),
+    })
+}
+
 fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
     let color = p.get("color").and_then(parse_color).ok_or_else(|| bad("object.color", "missing or bad color"))?;
     let stroke = str_param(p, "target") == Some("stroke");
-    let text = p.get("text").and_then(Value::as_bool).unwrap_or(false) || s.doc()?.selection.text.is_some();
+    let selection = &s.doc()?.selection;
+    let explicit = p.get("ids").is_some() || p.get("id").is_some();
+    let text = p.get("text").and_then(Value::as_bool).unwrap_or(false) || (!explicit && (selection.text.is_some() || selection.cells.is_some()));
     let (ids, texts) = if text { (vec![], super::text::format_targets_pub(s)) } else { (super::targets(s, p)?, vec![]) };
     // A caret: the colour is for the next typing (once the swatch exists).
     let caret = matches!(texts.as_slice(), [t] if t.range.is_empty());
@@ -1803,5 +1812,54 @@ mod swatch_options_tests {
         let r = s.execute("swatch.options", &json!({"name": "C=0 M=0 Y=0 K=50", "to": "Warm Gray"})).unwrap();
         assert_eq!(r["name"], "Warm Gray");
         assert!(s.doc().unwrap().doc.swatch("Warm Gray").unwrap().named);
+    }
+}
+
+#[cfg(test)]
+mod color_target_tests {
+    use crate::Session;
+    use serde_json::{Value, json};
+    fn table() -> (Session, Value, Value, Value) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect":[72,72,400,400],"content":"text","text":""})).unwrap();
+        s.execute("text.select", &json!({"story":f["story"],"anchor":0})).unwrap();
+        let t = s.execute("table.insert", &json!({"rows":2,"cols":2})).unwrap();
+        s.execute("table.setCell", &json!({"row":0,"col":0,"text":"Selected"})).unwrap();
+        s.execute("table.setCell", &json!({"row":0,"col":1,"text":"Untouched"})).unwrap();
+        s.execute("table.select", &json!({"rows":[0,1],"cols":[0,0]})).unwrap();
+        (s, f["id"].clone(), f["story"].clone(), t["table"].clone())
+    }
+    #[test]
+    fn unnamed_colour_reaches_selected_table_text_and_empty_cells_with_one_undo() {
+        let (mut s, frame, story, table) = table();
+        assert!((crate::find_command("object.color").unwrap().enabled)(&s).is_ok());
+        let before = s.doc().unwrap().doc.clone();
+        let name = s.execute("object.color", &json!({"color":"#456daf"})).unwrap()["swatch"].as_str().unwrap().to_owned();
+        let d = &s.doc().unwrap().doc;
+        let t = &d.story(pagenor_doc::StoryId(story.as_u64().unwrap())).unwrap().tables[&table.as_u64().unwrap()];
+        for row in [0, 1] {
+            assert_eq!(t.cell(row, 0).unwrap().text.format_after(0).over.fill.as_deref(), Some(name.as_str()));
+        }
+        assert_ne!(t.cell(0, 1).unwrap().text.format_after(0).over.fill.as_deref(), Some(name.as_str()));
+        assert_eq!(d.item(pagenor_doc::ItemId(frame.as_u64().unwrap())).unwrap().fill.swatch, "[None]");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        s.execute("object.color", &json!({"color":"#123456","target":"stroke"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let t = &d.story(pagenor_doc::StoryId(story.as_u64().unwrap())).unwrap().tables[&table.as_u64().unwrap()];
+        assert!(t.cell(1, 0).unwrap().text.format_after(0).over.stroke.is_some());
+    }
+    #[test]
+    fn explicit_objects_override_an_active_cell_or_text_selection() {
+        let (mut s, frame, story, table) = table();
+        let before = s.doc().unwrap().doc.story(pagenor_doc::StoryId(story.as_u64().unwrap())).unwrap().tables[&table.as_u64().unwrap()].clone();
+        let name = s.execute("object.color", &json!({"id":frame,"color":"#abcdef"})).unwrap()["swatch"].clone();
+        assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(frame.as_u64().unwrap())).unwrap().fill.swatch, name.as_str().unwrap());
+        assert_eq!(s.doc().unwrap().doc.story(pagenor_doc::StoryId(story.as_u64().unwrap())).unwrap().tables[&table.as_u64().unwrap()], before);
+        s.execute("text.select", &json!({"story":story,"anchor":0,"focus":0})).unwrap();
+        let name = s.execute("object.color", &json!({"ids":[frame],"color":"#654321"})).unwrap()["swatch"].clone();
+        assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(frame.as_u64().unwrap())).unwrap().fill.swatch, name.as_str().unwrap());
     }
 }

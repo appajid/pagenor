@@ -27,11 +27,11 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.10 | [#528](https://github.com/storytold/designcraft/pull/528) / @aiongg | `54b607525e1614f574778409e686dda76e2069ad` | Complete — all seven gates and native graphics inspection passed |
 | P11.13.11 | [#550](https://github.com/storytold/designcraft/pull/550) / @moppeeer | `2db2da0bbcd70548581c6fd574b57b9c2aae3a86` | Complete — all seven gates and native graphics inspection passed |
 | P11.13.12 | [#561](https://github.com/storytold/designcraft/pull/561) / @aiongg | `e111bb74f76a438f7cf3fa488c4e1cc8421bf599` | Complete — all seven gates and native graphics inspection passed |
-| P11.13.13 | [#551](https://github.com/storytold/designcraft/pull/551) / @moppeeer | `ce9b269df28bb94b124419af54b4969ce687600c` | Pending |
-| P11.13.14 | [#520](https://github.com/storytold/designcraft/pull/520) / @moppeeer | `23bafc9e53a0c29a25230e0a23246d9de380244e` | Pending |
-| P11.13.15 | [#521](https://github.com/storytold/designcraft/pull/521) / @moppeeer | `db63e203188c06bd7c6452b86e7b0dc63b70e820` | Pending |
-| P11.13.16 | [#548](https://github.com/storytold/designcraft/pull/548) / @itrycodinganditsbad | `7968afa39f88471796771a50bc0e770a1c7ed94e` | Pending |
-| P11.13.17 | [#560](https://github.com/storytold/designcraft/pull/560) / @aiongg | `9061475831df145f5d57577b6ae6c09b91a755b9` | Pending |
+| P11.13.13 | [#551](https://github.com/storytold/designcraft/pull/551) / @moppeeer | `ce9b269df28bb94b124419af54b4969ce687600c` | Complete — all seven gates passed |
+| P11.13.14 | [#520](https://github.com/storytold/designcraft/pull/520) / @moppeeer | `23bafc9e53a0c29a25230e0a23246d9de380244e` | Complete — all seven gates passed |
+| P11.13.15 | [#521](https://github.com/storytold/designcraft/pull/521) / @moppeeer | `db63e203188c06bd7c6452b86e7b0dc63b70e820` | Complete — all seven gates passed |
+| P11.13.16 | [#548](https://github.com/storytold/designcraft/pull/548) / @itrycodinganditsbad | `7968afa39f88471796771a50bc0e770a1c7ed94e` | Complete — all seven gates passed |
+| P11.13.17 | [#560](https://github.com/storytold/designcraft/pull/560) / @aiongg | `9061475831df145f5d57577b6ae6c09b91a755b9` | Complete — all seven gates passed |
 | P11.13.18 | [#529](https://github.com/storytold/designcraft/pull/529) / @aiongg | `a8fc6a521999ee7688675acb5167a006fdb3eb2a` | Pending |
 | P11.13.19 | [#523](https://github.com/storytold/designcraft/pull/523) / @seanth | `5898c084b6d5d65d98e177c44dc6a2db23b27647` | Pending |
 | P11.13.20 | [#559](https://github.com/storytold/designcraft/pull/559) / @aiongg | `406f1b3d267fa17617a96d75324d0d709a875361` | Pending |
@@ -135,3 +135,30 @@ axis-aligned bounds twice. Canvas now composes frame and graphic matrices first,
 then measures the final bounds. Its painted-output regression fails before the fix
 (600×600 pt outline for upright 400×200 pt content), passes afterwards, and the corrected
 native screenshots were inspected. This is a Pagenor integration correction for #550.
+
+## P11.13 — colors, command results and font lookup (#551, #520, #521, #548, #560)
+
+Unnamed colors apply to selected table-cell text, including empty cells, while explicit
+object IDs retain frame targeting. Existing caret typing, explicit Formatting Affects
+Text, swatch reuse and one-step undo remain. Both focused target regressions pass.
+Fill/stroke/gap-stroke names are checked against document swatches before mutation;
+unknown names get bracket/case hints and leave the document untouched. Tint-only
+edits remain supported, including explicit single IDs. The focused validation passes.
+Moves, copies and Step and Repeat return their object IDs; Pagenor's content-move
+branch also returns its targets, preserving nested movement logic. Copy-ID tests pass.
+
+SVGs resolve static/default PostScript names in family-list order, honoring document
+font scopes and exact face style. The catalogue reads only existing small name tables;
+PostScript lookup does not load an installed test face. Retained metadata includes the
+new string in its size budget. Native activation eligibility remains checked. Existing
+SVG variable-font CSS handling is retained; base names are not incorrectly assigned to
+named instances. Synthetic PostScript and two-document/scope-closure tests pass.
+
+Exact font-family spaces are preserved in IDML and remain distinct when a font has that
+name. Only missing names use trimmed lookup, then existing suffix/prefix/alias rules.
+Composite-font references and document precedence remain. FontStyle Nothing/$ID/Nothing
+inherits rather than inventing a style. The focused IDML import/export test passes.
+All seven gates pass: 2,345 tests passed, zero failed, seven ignored; twenty WASM
+packages. Existing synthetic resize fixtures now name [Black]/[None], and the old UI
+format-target fixture creates Cyan before applying it, so validation checks real inks.
+No font file is added, no UI subsystem is replaced, and the owner session is untouched.

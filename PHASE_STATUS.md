@@ -151,3 +151,9 @@ pass with 2,337 tests, no failures and seven ignored; twenty WASM packages. Nati
 inspection verifies content transforms, tight selection bounds and normal/inverted
 saved masks. Native format 4 retains clipping paths and reads prior formats. Twelve
 queue items are now complete; color/font and remaining publishing work continues.
+
+P11.13 color/font group (#551, #520, #521, #548, #560): all seven gates passed,
+2,345 tests/zero failures/seven ignored, twenty WASM packages. Seventeen queue items
+are complete. Table-cell text color, validated swatches, returned object IDs, scoped/lazy
+PostScript SVG lookup and exact IDML family/inherited-style handling are recorded in
+UPSTREAM_ADOPTION_070.md; the remaining publishing/reliability work continues.

@@ -3685,6 +3685,7 @@ mod tests {
         };
         let frame_fill = |app: &crate::DesignApp| app.session.active().unwrap().doc.item(pagenor_doc::ItemId(fid)).unwrap().fill.swatch.clone();
         assert!(!crate::panels::colors_affect_text(&app));
+        app.run("swatch.create", json!({"name": "Cyan", "color": {"c": 100, "m": 0, "y": 0, "k": 0}})).unwrap();
         crate::panels::apply_swatch(&mut app, false, "Cyan", None).unwrap();
         assert_eq!(frame_fill(&app), "Cyan");
         assert_eq!(text_fill(&app), None);

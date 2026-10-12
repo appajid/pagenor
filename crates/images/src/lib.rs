@@ -71,26 +71,33 @@ fn svg_options(fonts: ScopedFonts<'_>) -> usvg::Options<'_> {
     let loaded_fallback = usvg::FontResolver::default_fallback_selector();
     let font_resolver = usvg::FontResolver {
         select_font: Box::new(move |font, db| {
-            // Resolve aliases and case through Pagenor before fontdb's exact-name query.
-            let names: Vec<String> = font
-                .families()
-                .iter()
-                .map(|family| {
-                    let name = match family {
-                        usvg::FontFamily::Named(name) => name.as_str(),
-                        usvg::FontFamily::Monospace => "JetBrains Mono",
-                        usvg::FontFamily::SansSerif => "Source Sans 3",
-                        _ => "Source Serif 4",
-                    };
-                    let name = fonts.canonical_family(name).unwrap_or_else(|| name.to_string());
-                    load_family(db, &fonts, &name);
-                    name
-                })
-                .chain(std::iter::once("Source Serif 4".to_string()))
-                .collect();
-            let families: Vec<_> = names.iter().map(|name| usvg::fontdb::Family::Name(name)).collect();
+            // Respect family-list order; a PostScript name already selects a face's style.
+            for family in font.families() {
+                let name = match family {
+                    usvg::FontFamily::Named(name) => name.as_str(),
+                    usvg::FontFamily::Monospace => "JetBrains Mono",
+                    usvg::FontFamily::SansSerif => "Source Sans 3",
+                    _ => "Source Serif 4",
+                };
+                if let Some(canonical) = fonts.canonical_family(name) {
+                    load_family(db, &fonts, &canonical);
+                    if let Some(id) = db.query(&usvg::fontdb::Query {
+                        families: &[usvg::fontdb::Family::Name(&canonical)],
+                        weight: usvg::fontdb::Weight(font.weight()),
+                        stretch: font.stretch().into(),
+                        style: font.style().into(),
+                    }) {
+                        return Some(id);
+                    }
+                } else if let Some((family, style)) = fonts.postscript_face(name)
+                    && let Some(id) = add_face(db, fonts.face(&family, &style))
+                {
+                    return Some(id);
+                }
+            }
+            load_family(db, &fonts, "Source Serif 4");
             db.query(&usvg::fontdb::Query {
-                families: &families,
+                families: &[usvg::fontdb::Family::Name("Source Serif 4")],
                 weight: usvg::fontdb::Weight(font.weight()),
                 stretch: font.stretch().into(),
                 style: font.style().into(),
@@ -365,8 +372,12 @@ mod tests {
         assert_ne!(first[0].1, global[0].1);
         assert_ne!(second[0].1, global[0].1);
         assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), first);
+        let ps = text_svg("SourceSans3-Regular", "A");
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), first);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(two.scope)).unwrap()), second);
         fonts.close_scope(one.scope);
         assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), global);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), global);
         std::fs::remove_dir_all(folder).unwrap();
     }
 
@@ -406,6 +417,45 @@ mod tests {
         assert_eq!(db.faces().count(), 1);
         let tree = svg_tree_with_fonts(&text_svg("Pagenor SVG Collection Two", "A"), fonts.scoped(0)).unwrap();
         assert_eq!(glyph_families(&tree)[0].0, "Pagenor SVG Collection Two");
+    }
+
+    /// The PostScript name of the face that sets the text of `svg` (one face for all of it).
+    fn text_face(svg_attrs: &str) -> String {
+        let svg =
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{svg_attrs}>ab</text></svg>"#);
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        let mut faces = Vec::new();
+        for n in tree.root().children() {
+            if let usvg::Node::Text(t) = n {
+                for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
+                    faces.extend(tree.fontdb().face(g.font).map(|f| f.post_script_name.clone()));
+                }
+            }
+        }
+        faces.dedup();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        faces.remove(0)
+    }
+
+    #[test]
+    fn svg_text_finds_fonts_by_postscript_name() {
+        // Bundled, as Illustrator's SVG export names it; any case.
+        assert_eq!(text_face(r#" font-family="'SourceSerif4-Semibold'""#), "SourceSerif4-Semibold");
+        assert_eq!(text_face(r#" font-family="sourceserif4-semibold""#), "SourceSerif4-Semibold");
+        // A shared font (as an installed one would be).
+        let font = pagenor_fonts::testing::font_with("Pagenor Test SVG PostScript", &['a', 'b']).unwrap();
+        pagenor_fonts::FontDb::global().add_font(font);
+        assert_eq!(text_face(r#" font-family="PagenorTestSVGPostScript-Regular""#), "PagenorTestSVGPostScript-Regular");
+        // The name picks that face: font-weight and font-style don't change it.
+        assert_eq!(text_face(r#" font-family="SourceSerif4-Semibold" font-weight="bold" font-style="italic""#), "SourceSerif4-Semibold");
+        // A family listed before it still comes first; one after it is a fallback.
+        assert_eq!(text_face(r#" font-family="'Source Sans 3', SourceSerif4-Bold""#), "SourceSans3-Regular");
+        assert_eq!(text_face(r#" font-family="NoSuch-Font, SourceSerif4-Bold, 'Source Sans 3'""#), "SourceSerif4-Bold");
+        // Family names work as before.
+        assert_eq!(text_face(r#" font-family="'Source Serif 4'" font-weight="bold""#), "SourceSerif4-Bold");
+        // An unknown name falls back as before (the serif default).
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), text_face(r#" font-family="No Such Font""#));
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), "SourceSerif4-Regular");
     }
 
     /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.

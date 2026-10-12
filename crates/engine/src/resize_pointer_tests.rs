@@ -34,7 +34,7 @@ mod resize_scale_strokes_tests {
         s.execute("file.new", &json!({"pages": 1})).unwrap();
         let moving =
             ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 150], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
-        s.execute("object.stroke", &json!({"ids": [moving.0], "weight": 4, "swatch": "Black", "align": "center"})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [moving.0], "weight": 4, "swatch": "[Black]", "align": "center"})).unwrap();
         let mut references = Vec::new();
         for (x, size) in [(300.0, 3.0), (400.0, 8.0)] {
             if size == 8.0 && !reachable {
@@ -44,7 +44,7 @@ mod resize_scale_strokes_tests {
             let id = ItemId(
                 s.execute("frame.create", &json!({"rect": [x, 300.0, x + w, 300.0 + h], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap(),
             );
-            s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "None", "weight": 0})).unwrap();
+            s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[None]", "weight": 0})).unwrap();
             references.push(id);
         }
         s.execute("selection.set", &json!({"ids": [moving.0]})).unwrap();
@@ -200,7 +200,7 @@ mod scaled_resize_pointer_tests {
         );
         s.execute(
             "object.stroke",
-            &json!({"ids": [id.0], "swatch": if stroke { "[Black]" } else { "None" }, "weight": if stroke { 4 } else { 0 }, "align": align}),
+            &json!({"ids": [id.0], "swatch": if stroke { "[Black]" } else { "[None]" }, "weight": if stroke { 4 } else { 0 }, "align": align}),
         )
         .unwrap();
         if created != bounds {
@@ -1168,7 +1168,7 @@ mod scaled_resize_pointer_tests {
                                         .as_u64()
                                         .unwrap(),
                                 );
-                                s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "None", "weight": 0})).unwrap();
+                                s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[None]", "weight": 0})).unwrap();
                                 (vec![id], vec![id])
                             } else {
                                 let a_bounds =
@@ -1265,7 +1265,7 @@ mod scaled_resize_pointer_tests {
         let moving = ItemId(
             s.execute("frame.create", &json!({"rect": [100,100,200,150], "content": "text", "caret": false})).unwrap()["id"].as_u64().unwrap(),
         );
-        s.execute("object.stroke", &json!({"ids": [moving.0], "swatch": "Black", "weight": 4, "align": "center"})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [moving.0], "swatch": "[Black]", "weight": 4, "align": "center"})).unwrap();
         let reference = frame(&mut s, Rect::new(300.0, 300.0, 303.0, 380.0), false, "center");
         s.execute("selection.set", &json!({"ids": [moving.0]})).unwrap();
         s.execute("prefs.set", &json!({"scaleStrokes": true})).unwrap();
@@ -1396,7 +1396,7 @@ mod scaled_resize_pointer_tests {
         s.execute("file.new", &json!({"pages": 1})).unwrap();
         let moving = frame(&mut s, Rect::new(0.0, 0.0, 100.0, 50.0), true, "center");
         let reference = frame(&mut s, Rect::new(400.0, 300.0, 454.0, 380.0), false, "center");
-        s.execute("object.fill", &json!({"ids": [moving.0, reference.0], "swatch": "None"})).unwrap();
+        s.execute("object.fill", &json!({"ids": [moving.0, reference.0], "swatch": "[None]"})).unwrap();
         let original_xf = Affine::new([2.0, 0.0, 0.0, 2.0, 100.0, 100.0]);
         s.edit(|doc, _| {
             doc.item_mut(moving).unwrap().xf = original_xf;
@@ -1493,7 +1493,7 @@ mod scaled_resize_pointer_tests {
         s.execute("file.new", &json!({"pages": 1})).unwrap();
         let moving = frame(&mut s, Rect::new(0.0, 0.0, 100.0, 50.0), true, "center");
         let reference = frame(&mut s, Rect::new(400.0, 300.0, 454.0, 380.0), false, "center");
-        s.execute("object.fill", &json!({"ids": [moving.0, reference.0], "swatch": "None"})).unwrap();
+        s.execute("object.fill", &json!({"ids": [moving.0, reference.0], "swatch": "[None]"})).unwrap();
         let original_xf = Affine::new([2.0, 0.0, 0.0, 2.0, 100.0, 100.0]);
         s.edit(|doc, _| {
             doc.item_mut(moving).unwrap().xf = original_xf;
@@ -1689,7 +1689,7 @@ mod scaled_resize_pointer_tests {
         s.execute(
             "object.stroke",
             &json!({
-                "ids": [id.0], "swatch": if matches!(stroke, R7aTextStroke::None) { "None" } else { "Black" },
+                "ids": [id.0], "swatch": if matches!(stroke, R7aTextStroke::None) { "[None]" } else { "[Black]" },
                 "weight": stroke.weight(), "align": if matches!(stroke, R7aTextStroke::Inside) { "inside" } else { "center" }
             }),
         )
@@ -2232,7 +2232,7 @@ mod scaled_resize_pointer_tests {
             let reference = if *length == 0.0 {
                 // frame.create cannot create a zero side; a public no-stroke line can.
                 let id = ItemId(s.execute("line.create", &json!({"a": [x,300.0], "b": [x,380.0]})).unwrap()["id"].as_u64().unwrap());
-                s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "None", "weight": 0})).unwrap();
+                s.execute("object.stroke", &json!({"ids": [id.0], "swatch": "[None]", "weight": 0})).unwrap();
                 id
             } else {
                 let (w, h) = if case.side.horizontal { (*length, 80.0) } else { (80.0, *length) };

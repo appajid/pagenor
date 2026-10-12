@@ -4,7 +4,8 @@
   updates, beginning with nested undo safety and UI controls. Local work in progress;
   Nested undo, Pathfinder, tint/Frame/Text menus, View grouping/document grid,
   Justification, Properties transforms, Tools Color Picker, curved corners, image
-  cropping/content transforms and saved clipping paths are complete and validated.
+  cropping/content transforms, saved clipping paths, color targeting/swatch validation,
+  command result IDs and scoped PostScript/IDML font lookup are complete and validated.
   [queue and per-change notes](docs/pagenor/UPSTREAM_ADOPTION_070.md).
 
 - P11.12: published native Windows and Linux **0.6.0 desktop development

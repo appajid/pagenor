@@ -1216,7 +1216,7 @@ impl<'r> Importer<'r> {
                 .map(|family| self.composite_names.get(&family).cloned().unwrap_or(family)),
             ..Default::default()
         };
-        a.font_style = e.prop("FontStyle");
+        a.font_style = e.prop("FontStyle").filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
         a.size = e.num("PointSize");
         a.leading = e.prop("Leading").and_then(|l| names::leading_in(l.trim()));
         // Automatic kerning may carry an inactive numeric value (including the

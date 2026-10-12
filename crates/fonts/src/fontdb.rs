@@ -187,6 +187,7 @@ pub struct FontFace {
     em: std::sync::OnceLock<(f64, f64)>,
     /// The font menu group and native family name, read on first use.
     group: std::sync::OnceLock<(FontGroup, Option<String>)>,
+    postscript: std::sync::OnceLock<Option<String>>,
     family_aliases: Vec<String>,
     style_aliases: Vec<String>,
 }
@@ -353,6 +354,10 @@ impl FontFace {
         let (g, n) = self.group.get_or_init(|| self.skrifa().map(|f| crate::group::classify(&f, &self.family)).unwrap_or_default());
         (*g, n.as_deref())
     }
+    /// The PostScript name of a static/default face, cached on first use.
+    pub fn postscript_name(&self) -> Option<&str> {
+        self.postscript.get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| default_postscript_name(&f)) }).as_deref()
+    }
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
         self.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()).unwrap_or(0)
@@ -404,6 +409,7 @@ struct CatalogEntry {
     /// The font menu group and native family name, read by the scan.
     group: FontGroup,
     native: Option<String>,
+    postscript: Option<String>,
     aliases: Arc<[String]>,
     style_aliases: Arc<[String]>,
     added: Option<std::time::SystemTime>,
@@ -418,6 +424,7 @@ struct ScannedFace {
     kind: crate::kind::FaceKind,
     group: FontGroup,
     native: Option<String>,
+    postscript: Option<String>,
     aliases: Arc<[String]>,
     style_aliases: Arc<[String]>,
 }
@@ -643,6 +650,15 @@ fn has_face(faces: &[Arc<FontFace>], family: &str, style: &str) -> bool {
     faces.iter().any(|f| same_family(&f.family, family) && f.style.eq_ignore_ascii_case(style))
 }
 
+/// PostScript names identify static/default faces. Named instances keep their existing
+/// coordinate handling; do not alias a base font's name to a different variation.
+fn default_postscript_name(font: &skrifa::FontRef<'_>) -> Option<String> {
+    if !font.named_instances().is_empty() {
+        return None;
+    }
+    name(font, &[StringId::POSTSCRIPT_NAME])
+}
+
 fn face_names(f: &skrifa::FontRef<'_>) -> Option<(String, String)> {
     let family = name(f, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME])?;
     let style = name(f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]).unwrap_or_else(|| "Regular".into());
@@ -720,7 +736,9 @@ fn read_file_face_names(path: &std::path::Path) -> std::io::Result<(Vec<ScannedF
                 if f.named_instances().len() > MAX_FACES as usize {
                     return None;
                 }
-                let base_bytes = family.len().checked_add(native.as_ref().map_or(0, String::len))?;
+                let postscript = default_postscript_name(&f);
+                let base_bytes =
+                    family.len().checked_add(native.as_ref().map_or(0, String::len))?.checked_add(postscript.as_ref().map_or(0, String::len))?;
                 let mut styles = Vec::new();
                 let mut name_bytes = 0usize;
                 for instance in f.named_instances().iter() {
@@ -743,6 +761,7 @@ fn read_file_face_names(path: &std::path::Path) -> std::io::Result<(Vec<ScannedF
                         .into_iter()
                         .map(|style| ScannedFace {
                             family: family.clone(),
+                            postscript: postscript.clone(),
                             style,
                             group,
                             kind,
@@ -778,7 +797,12 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
     // Bound the expanded representation before cloning it into retained scan snapshots.
     const MAX_NATIVE_FACES: usize = 1024;
     const MAX_NATIVE_NAMES_BYTES: usize = 4 << 20;
-    let base_bytes = family.len().checked_add(native.as_ref().map_or(0, String::len)).ok_or("Native metadata name size overflow")?;
+    let postscript = default_postscript_name(&font);
+    let base_bytes = family
+        .len()
+        .checked_add(native.as_ref().map_or(0, String::len))
+        .and_then(|n| n.checked_add(postscript.as_ref().map_or(0, String::len)))
+        .ok_or("Native metadata name size overflow")?;
     if font.named_instances().len() > MAX_NATIVE_FACES {
         return Err("Native metadata exceeds the face/name limit".into());
     }
@@ -809,6 +833,7 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
         .into_iter()
         .map(|style| ScannedFace {
             family: family.clone(),
+            postscript: postscript.clone(),
             style,
             group,
             kind,
@@ -980,6 +1005,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         family_aliases,
         style_aliases,
         group: std::sync::OnceLock::new(),
+        postscript: std::sync::OnceLock::new(),
     })
 }
 
@@ -1008,6 +1034,13 @@ fn without_format_suffix(family: &str) -> Option<&str> {
     let (base, suffix) = family.trim_end().strip_suffix(')')?.rsplit_once('(')?;
     let base = base.trim_end();
     (!base.is_empty() && FORMATS.iter().any(|f| f.eq_ignore_ascii_case(suffix.trim()))).then_some(base)
+}
+
+/// The names `family` is looked up under when no font has it as written: without surrounding
+/// spaces, then without a format suffix (see [`without_format_suffix`]).
+fn alternate_names(family: &str) -> impl Iterator<Item = &str> {
+    let trimmed = family.trim();
+    (trimmed != family && !trimmed.is_empty()).then_some(trimmed).into_iter().chain(without_format_suffix(trimmed))
 }
 
 /// The named style part of a style with axis settings (`Bold {wght:650}` → `Bold`).
@@ -1463,6 +1496,7 @@ impl FontDb {
                         location: CatalogLocation::File(path.clone()),
                         group: f.group,
                         native: f.native,
+                        postscript: f.postscript,
                         aliases: f.aliases,
                         style_aliases: f.style_aliases,
                     }));
@@ -1502,6 +1536,7 @@ impl FontDb {
                         location: location.clone(),
                         group: f.group,
                         native: f.native,
+                        postscript: f.postscript,
                         aliases: f.aliases,
                         style_aliases: f.style_aliases,
                     }));
@@ -1764,6 +1799,11 @@ impl FontDb {
         self.scoped(0).face(family, style)
     }
 
+    /// Resolve a shared PostScript face name without loading installed font data.
+    pub fn postscript_face(&self, name: &str) -> Option<(String, String)> {
+        self.scoped(0).postscript_face(name)
+    }
+
     /// Is `family` among the shared fonts (loaded, or installed on the system)?
     pub fn has_family(&self, family: &str) -> bool {
         self.scoped(0).has_family(family)
@@ -2017,7 +2057,9 @@ impl ScopedFonts<'_> {
     /// Resolve localized and legacy family names without confusing replacement fonts with
     /// installed originals. Document-local aliases take precedence over shared fonts.
     pub fn canonical_family(&self, family: &str) -> Option<String> {
-        self.exact_canonical_family(family).or_else(|| plain_family(family).and_then(|base| self.exact_canonical_family(base)))
+        self.exact_canonical_family(family)
+            .or_else(|| alternate_names(family).find_map(|name| self.exact_canonical_family(name)))
+            .or_else(|| plain_family(family).and_then(|base| self.exact_canonical_family(base)))
     }
 
     fn exact_canonical_family(&self, family: &str) -> Option<String> {
@@ -2302,6 +2344,22 @@ impl ScopedFonts<'_> {
             .or_else(|| self.find(FALLBACK_FAMILY, "Regular", false))
             .or_else(|| self.db.read_faces().first().cloned())
             .unwrap_or_else(last_resort_face)
+    }
+
+    /// Resolve document-local, eligible loaded, then installed PostScript names.
+    /// Catalogue entries already carry these names; lookup does not load font files.
+    pub fn postscript_face(&self, name: &str) -> Option<(String, String)> {
+        let matches = |ps: Option<&str>| ps.is_some_and(|ps| ps.eq_ignore_ascii_case(name));
+        if let Some(f) =
+            self.own().iter().chain(self.db.read_faces().iter().filter(|f| self.db.current_face(f))).find(|f| matches(f.postscript_name()))
+        {
+            return Some((f.family.clone(), f.style.clone()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(f) = self.db.read_catalog().iter().find(|f| matches(f.postscript.as_deref())) {
+            return Some((f.family.clone(), f.style.clone()));
+        }
+        None
     }
 
     /// Is `family` available (the document's, loaded, or installed on the system)?
