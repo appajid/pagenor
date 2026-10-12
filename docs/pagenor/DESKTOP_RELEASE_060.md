@@ -76,3 +76,13 @@ failures exposed a fontless VM: Fontconfig was present but had no system faces.
 The VM preparation now installs the FreeBSD DejaVu package, refreshes Fontconfig
 and fails early if no host fonts are available. This CI-only change preserves
 the lazy font catalogue and requires a fresh VM run before claiming BSD success.
+
+The owner made the repository public on 2026-10-12; native desktop jobs now run.
+The hosted Mac gate exposed an older OpenSSL rejecting the Windows-only
+`-http_server_binmode` option. The test fixture now requests that option only on
+Windows, retaining byte equality and untrusted-certificate checks on every host.
+All seven local gates pass (2,306 tests, seven ignored; twenty WASM packages).
+This test-only follow-up changes no production binaries; hosted revalidation
+will follow the release run. The separate system LibreSSL was also checked and
+does not support the fixture's loopback address syntax; this fixture requires
+OpenSSL, as used by CI and the local build host.

@@ -2330,9 +2330,13 @@ fn phase3_fetches_https_images() {
     let accept = format!("127.0.0.1:{port}");
     let err_path = dir.join("server.err");
     let err_file = std::fs::File::create(&err_path).expect("server log");
-    let server = std::process::Command::new("openssl")
-        // Text mode treats the PNG signature's 0x1a as EOF on Windows.
-        .args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW", "-http_server_binmode"])
+    let mut server = std::process::Command::new("openssl");
+    server.args(["s_server", "-accept", &accept, "-cert", "cert.pem", "-key", "key.pem", "-WWW"]);
+    // Windows text mode treats the PNG signature's 0x1a as EOF. Unix reads
+    // binary bytes already; older Mac OpenSSL/LibreSSL lack this option.
+    #[cfg(windows)]
+    server.arg("-http_server_binmode");
+    let server = server
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

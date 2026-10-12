@@ -6,6 +6,9 @@
   Resume check: Windows remains blocked by GitHub billing. The separate FreeBSD
   VM now installs DejaVu and checks Fontconfig before compilation, correcting
   its missing host-font test prerequisite; the changed VM still needs a native run.
+  Public-repository desktop jobs now run. A test-only follow-up restricts the
+  HTTPS server's binary-file flag to Windows for older Mac OpenSSL compatibility;
+  all seven local gates pass, with hosted revalidation pending.
 
 - P11.11: complete the twenty UI-first October proposals through #491 and compatible
   reliability/publishing adaptations. **0.6.0**, local milestone. Preserve Pagenor
