@@ -864,3 +864,18 @@ Pagenor's bounded decoder/run mapping, threading and image import are independen
 implementation copied or linked. The source URI/hash, licence, executed tests and
 private Type 1 font recovery and remaining platform/typography checks are in docs/pagenor/PAGEMAKER_LEGACY_BYTES.md.
 Owner fonts/documents and extracted reference subsets are excluded from Git.
+
+
+## Complete PageMaker source assessment — P11.15 (2026-10-13)
+
+Local Pagenor 0.7.1 independently extends its bounded Rust import. The external
+MPL-2.0 libpagemaker 0.0.4 V2 patch traverses all referenced PAGE containers,
+reports single-sided source page count, keeps source text as marked ASCII hex
+through the UTF-8 drawing interface and accepts absent bitmap continuation.
+The original archive URI/hash and verified licence remain as in P11.14; the
+corresponding V2 archive/patch/COPYING/build instructions accompany the local
+helper. No foreign implementation is linked/copied into Rust, no GPL source is
+used and unsafe_code remains forbidden. Proprietary fonts/documents stay out of
+Git and release assets. Counts/terminal-byte/native/gate evidence and current
+limits are in docs/pagenor/PAGEMAKER_COMPLETE_IMPORT_071.md. The earlier five-page
+copy is explicitly superseded as a partial import; the owner confirms 28 pages.

@@ -197,3 +197,19 @@ image payloads and helper item order are retained. Exact layout/metrics, missing
 and native Windows/Linux helper execution remain open.
 Local 0.7.0 work, preserving the current session and published releases;
 [notes](docs/pagenor/PAGEMAKER_LEGACY_BYTES.md).
+
+
+P11.15 (13 October 2026), local 0.7.1: the owner confirms the original P65 has
+28 pages, so the earlier five-page record is partial. Read all referenced page
+containers and verify source/emitted counts; expose sourcePages/pageCountVerified.
+V2 hex transport restores the original terminal 0xE8 vowel byte lost through the
+helper's UTF-8 interface. Accept absent bitmap continuation and bounded 16 MiB
+graphic events, while retaining existing stream/pixel/text limits. Preserve one
+zero-height source text frame unchanged, with layout/native-reopen regressions.
+The new copy has 28 pages, 169 frames, 110 stories, 53 embedded TIFFs and twenty-two
+private source font families. Source hash, image payload hashes and helper item
+order are verified. All seven gates pass: 2,586 tests/zero failures/seven ignored;
+twenty WASM packages. All 28 native pages render; first/last and the corrected
+contents line are inspected. Existing documents/fonts/app sessions remain intact.
+Native Windows/Linux helper execution and public release remain pending;
+[notes](docs/pagenor/PAGEMAKER_COMPLETE_IMPORT_071.md).

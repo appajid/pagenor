@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P11.15: local **0.7.1** fixes the owner-confirmed 28-page PageMaker import.
+  All referenced page containers are recovered; source/imported counts are checked.
+  UTF-8-safe V2 transport restores terminal legacy vowel bytes, including 0xE8.
+  28 pages, 169 frames, 110 stories and 53 TIFF placements are retained, with 22
+  private source font families. All seven gates pass: 2,586 tests, zero failures,
+  seven ignores; twenty WASM packages. Exact typography/layout and native
+  Windows/Linux helper execution remain open.
+  [Cause, provenance and validation](docs/pagenor/PAGEMAKER_COMPLETE_IMPORT_071.md).
+
 - P11.14: preserve high legacy PageMaker text bytes through an explicit byte-helper
   profile and bounded Rust decoding. Owner confirms Anu 7. Character-loss recovery
   is tested; original Type 1 document-scoped fonts now render text with owner-reported

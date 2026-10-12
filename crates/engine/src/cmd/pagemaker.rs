@@ -33,6 +33,8 @@ const MAX_EVENTS: usize = 200_000;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FRAMES: usize = 10_000;
 #[cfg(not(target_arch = "wasm32"))]
+const MAX_GRAPHIC_EVENT: usize = 16 * 1024 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
 const WARNING: &str = "Experimental PageMaker import: pages and editable text frames are recovered through the optional pmd2raw helper. Legacy font codes are retained; install the original fonts. Unicode conversion, exact original flow order, layers, master items and exact typography are not yet preserved. Embedded raster images and shared stories are recovered when exposed by the helper. Verify every page before publishing and save as .pgnr.";
 
 pub fn is_name(name: &str) -> bool {
@@ -66,21 +68,25 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         let title = std::path::Path::new(name).file_stem().and_then(|n| n.to_str()).unwrap_or("PageMaker document");
         let recover = p.get("recoverRepeatedStories").and_then(Value::as_bool).unwrap_or(true);
         let (mut d, mut warnings, frames) = parse(&raw, title, recover)?;
+        let source_pages = source_page_count(&raw)?;
         let (fonts, faces, font_warnings) = path.map_or((None, 0, Vec::new()), |path| super::file::load_document_fonts(&mut d, path));
         warnings.extend(font_warnings);
-        if byte_output {
+        if byte_output != 0 {
             // Wait only for the initial metadata scan, not a rescan or full font loads.
             // A partial catalogue can make the first import infer a different sole style.
             let _ = pagenor_fonts::FontDb::global().scan_report();
         }
         let db = pagenor_fonts::FontDb::global().scoped(d.font_scope);
         resolve_single_styles(&mut d, |family| db.styles(family))?;
-        if byte_output {
+        if byte_output != 0 {
             let mut byte_faces = BTreeMap::new();
             resolve_legacy_bytes(&mut d, |family, style, byte| {
                 let face = byte_faces.entry((family.to_string(), style.to_string())).or_insert_with(|| db.face(family, style));
                 legacy_char(byte, |c| face.covers(c))
             })?;
+            if byte_output == 1 {
+                warnings.push("The older raw-byte helper may lose terminal bytes during its UTF-8 drawing-string conversion. Use the V2 hex helper for source-byte fidelity.".into());
+            }
             warnings.push("PageMaker 8-bit text bytes preserved. Font character maps select ordinary or private glyph slots; this is not Telugu Unicode conversion. Confirm the original legacy font version and every page.".into());
         } else {
             warnings.push("The standard pmd2raw helper may discard bytes 128–255 on platforms with signed char. Use Pagenor's byte-preserving helper for legacy fonts; changing fonts cannot restore discarded characters.".into());
@@ -91,7 +97,9 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
         let mut st = DocState::new(d, None);
         st.fonts = fonts;
         let index = s.add_document(st);
-        Ok(json!({"index":index,"pages":pages,"textFrames":frames,"images":images,"documentFonts":faces,"importWarnings":warnings}))
+        Ok(
+            json!({"index":index,"pages":pages,"sourcePages":source_pages,"pageCountVerified":source_pages.is_some(),"converterProfile":match byte_output { 2 => "hex-v2", 1 => "raw-byte-v1", _ => "utf8" },"textFrames":frames,"images":images,"documentFonts":faces,"importWarnings":warnings}),
+        )
     }
 }
 
@@ -171,14 +179,25 @@ fn resolve_single_styles(d: &mut Document, mut styles: impl FnMut(&str) -> Vec<S
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn event_limit(line: &[u8]) -> usize {
+    let start = line.iter().take_while(|b| **b == b' ').count();
+    if line.get(start..).is_some_and(|event| event.starts_with(b"drawGraphicObject (")) { MAX_GRAPHIC_EVENT } else { 1024 * 1024 }
+}
+
 /// The byte helper uses the original library compiled with unsigned char. Only
 /// insertText payloads are 8-bit data; event structure and attributes remain strict
 /// UTF-8. Carry bytes in U+F000..F0FF until document-scoped fonts are available.
 #[cfg(not(target_arch = "wasm32"))]
 fn byte_trace(output: &[u8]) -> Result<String> {
+    decode_byte_trace(output, false)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_byte_trace(output: &[u8], hex_mode: bool) -> Result<String> {
     let mut raw = String::new();
     for (index, line) in output.split(|b| *b == b'\n').enumerate() {
-        if index >= MAX_EVENTS || line.len() > 1024 * 1024 {
+        if index >= MAX_EVENTS || line.len() > event_limit(line) {
             return Err(bad("file.open", "PageMaker event budget exceeded"));
         }
         let start = line.iter().take_while(|b| **b == b' ').count();
@@ -189,6 +208,25 @@ fn byte_trace(output: &[u8]) -> Result<String> {
                     .map_err(|_| bad("file.open", "invalid PageMaker indent"))?,
             );
             raw.push_str("insertText (");
+            let decoded;
+            let text = if hex_mode {
+                let hex = text.strip_prefix(b"@PAGENOR-BYTES-V2@").ok_or_else(|| bad("file.open", "missing PageMaker byte transport marker"))?;
+                if hex.len() % 2 != 0 || !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return Err(bad("file.open", "invalid PageMaker source hex bytes"));
+                }
+                decoded = hex
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| {
+                        let value = std::str::from_utf8(pair).map_err(|_| bad("file.open", "invalid PageMaker source hex bytes"))?;
+                        u8::from_str_radix(value, 16).map_err(|_| bad("file.open", "invalid PageMaker source hex bytes"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                decoded.as_slice()
+            } else {
+                text
+            };
             for &b in text {
                 if b < 0x20 || b == 0x7f {
                     return Err(bad("file.open", "unsupported PageMaker control byte"));
@@ -271,9 +309,14 @@ mod native {
 
     use super::*;
 
-    fn helper() -> (std::ffi::OsString, bool) {
+    fn helper() -> (std::ffi::OsString, u8) {
         if let Some(path) = std::env::var_os("PAGENOR_PAGEMAKER_CONVERTER") {
-            return (path, std::env::var_os("PAGENOR_PAGEMAKER_BYTE_OUTPUT").is_some_and(|v| v == "1"));
+            let mode = match std::env::var("PAGENOR_PAGEMAKER_BYTE_OUTPUT").as_deref() {
+                Ok("1") => 1,
+                Ok("2") => 2,
+                _ => 0,
+            };
+            return (path, mode);
         }
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let data = if cfg!(target_os = "macos") {
@@ -286,20 +329,21 @@ mod native {
                 .or_else(|| home.map(|p| p.join(".local/share")))
                 .map(|p| p.join("pagenor"))
         };
-        if let Some(path) = data
-            .filter(|p| p.is_absolute())
-            .map(|p| p.join("helpers").join(if cfg!(target_os = "windows") { "pmd2raw-byte-v1.exe" } else { "pmd2raw-byte-v1" }))
-            && path.is_file()
-        {
-            return (path.into(), true);
+        if let Some(data) = data.filter(|p| p.is_absolute()) {
+            for (name, mode) in [("pmd2raw-byte-v2", 2), ("pmd2raw-byte-v1", 1)] {
+                let path = data.join("helpers").join(if cfg!(target_os = "windows") { format!("{name}.exe") } else { name.into() });
+                if path.is_file() {
+                    return (path.into(), mode);
+                }
+            }
         }
         #[cfg(target_os = "macos")]
         for path in ["/opt/homebrew/bin/pmd2raw", "/usr/local/bin/pmd2raw"] {
             if std::path::Path::new(path).is_file() {
-                return (path.into(), false);
+                return (path.into(), 0);
             }
         }
-        (if cfg!(target_os = "windows") { "pmd2raw.exe".into() } else { "pmd2raw".into() }, false)
+        (if cfg!(target_os = "windows") { "pmd2raw.exe".into() } else { "pmd2raw".into() }, 0)
     }
 
     fn read_pipe(reader: impl Read, limit: usize, exceeded: &AtomicBool) -> std::io::Result<Vec<u8>> {
@@ -311,7 +355,7 @@ mod native {
         Ok(bytes)
     }
 
-    pub(super) fn convert(bytes: &[u8]) -> Result<(String, bool)> {
+    pub(super) fn convert(bytes: &[u8]) -> Result<(String, u8)> {
         let (helper, byte_output) = helper();
         let mut input = tempfile::NamedTempFile::new().map_err(|e| bad("file.open", e.to_string()))?;
         input.write_all(bytes).map_err(|e| bad("file.open", e.to_string()))?;
@@ -365,7 +409,9 @@ mod native {
             if !diagnostics.is_empty() {
                 return Err(bad("file.open", format!("PageMaker helper reported: {}", String::from_utf8_lossy(&diagnostics))));
             }
-            let raw = if byte_output {
+            let raw = if byte_output == 2 {
+                decode_byte_trace(&output, true)?
+            } else if byte_output == 1 {
                 byte_trace(&output)?
             } else {
                 String::from_utf8(output).map_err(|_| {
@@ -564,6 +610,17 @@ fn character(a: &BTreeMap<&str, &str>, colors: &mut BTreeSet<String>) -> Result<
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn source_page_count(raw: &str) -> Result<Option<usize>> {
+    let Some(line) = raw.lines().map(str::trim_start).find(|line| line.starts_with("startPage(")) else {
+        return Ok(None);
+    };
+    attrs(line)?
+        .get("pagenor:source-page-count")
+        .map(|value| value.parse::<usize>().map_err(|_| bad("file.open", "invalid PageMaker source page count")))
+        .transpose()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>, usize)> {
     if raw.len() > MAX_BYTES {
         return Err(bad("file.open", "PageMaker event stream exceeds 64 MiB"));
@@ -574,10 +631,12 @@ fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>
     let mut span: Option<(usize, CharAttrs)> = None;
     let mut colors = BTreeSet::new();
     let (mut graphics, mut pixel_budget, mut source_ids) = (0usize, 0u64, false);
+    let mut source_pages = None;
+    let mut zero_frames = 0usize;
     let (mut started, mut ended, mut in_page) = (false, false, false);
     let (mut count, mut skipped) = (0usize, BTreeMap::<String, usize>::new());
     for (line_no, line) in raw.lines().enumerate() {
-        if line_no >= MAX_EVENTS || line.len() > 1024 * 1024 {
+        if line_no >= MAX_EVENTS || line.len() > event_limit(line.as_bytes()) {
             return Err(bad("file.open", "PageMaker event budget exceeded"));
         }
         let indent = line.bytes().take_while(|c| *c == b' ').count();
@@ -604,6 +663,13 @@ fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>
             "endDocument" if started && !in_page => ended = true,
             e if e.starts_with("startPage(") && started && !in_page => {
                 let a = attrs(e)?;
+                if let Some(value) = a.get("pagenor:source-page-count") {
+                    let expected = value.parse::<usize>().map_err(|_| bad("file.open", "invalid PageMaker source page count"))?;
+                    if expected == 0 || expected > 1000 || source_pages.is_some_and(|n| n != expected) {
+                        return Err(bad("file.open", "conflicting or out-of-range PageMaker source page count"));
+                    }
+                    source_pages = Some(expected);
+                }
                 let w = required(&a, "svg:width")?;
                 let h = required(&a, "svg:height")?;
                 if w <= 0. || h <= 0. || pages.len() >= 1000 {
@@ -620,8 +686,11 @@ fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>
                 }
                 let a = attrs(e)?;
                 let (x, y, w, h) = (required(&a, "svg:x")?, required(&a, "svg:y")?, required(&a, "svg:width")?, required(&a, "svg:height")?);
-                if w <= 0. || h <= 0. {
-                    return Err(bad("file.open", "invalid PageMaker frame dimensions"));
+                if w < 0. || h < 0. {
+                    return Err(bad("file.open", "negative PageMaker frame dimensions"));
+                }
+                if w == 0. || h == 0. {
+                    zero_frames += 1;
                 }
                 let source_story = a
                     .get("pagenor:story-id")
@@ -703,6 +772,11 @@ fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>
     if !ended || in_page || frame.is_some() || para.is_some() || span.is_some() || pages.is_empty() {
         return Err(bad("file.open", "incomplete PageMaker conversion"));
     }
+    if let Some(expected) = source_pages
+        && pages.len() != expected
+    {
+        return Err(bad("file.open", format!("incomplete PageMaker conversion: source has {expected} pages, converter emitted {}", pages.len())));
+    }
     let (width, height, _) = pages.first().ok_or_else(|| bad("file.open", "no PageMaker pages"))?;
     if pages.iter().any(|(w, h, _)| (w - width).abs() > 0.01 || (h - height).abs() > 0.01) {
         return Err(bad("file.open", "mixed PageMaker page sizes are not yet supported"));
@@ -776,6 +850,14 @@ fn parse(raw: &str, title: &str, recover: bool) -> Result<(Document, Vec<String>
         }
     }
     let mut warnings = vec![WARNING.into()];
+    if zero_frames != 0 {
+        warnings.push(format!("PageMaker: {zero_frames} zero-sized text frame(s) retained unchanged; inspect their overset text."));
+    }
+    warnings.push(if let Some(expected) = source_pages {
+        format!("PageMaker page count checked: {expected} source pages and {expected} imported pages.")
+    } else {
+        "PageMaker helper does not declare a source page count; imported page completeness is unverified.".into()
+    });
     if recover {
         warnings.extend(if source_ids { recover_source_stories(&mut d, groups)? } else { recover_repeated_stories(&mut d)? });
     }
@@ -795,6 +877,54 @@ mod tests {
         let origin = item.xf * pagenor_geom::Point::new(72., 144.);
         assert!((origin.x - 324.).abs() < 1e-6 && (origin.y - 108.).abs() < 1e-6);
         assert!(parse(&EVENTS.replace("rotate: 0.0000in", "rotate: 90pt"), "bad unit", true).is_err());
+    }
+
+    #[test]
+    fn v2_hex_transport_preserves_terminal_vowel_and_all_high_bytes() {
+        let (before, after) = EVENTS.split_once("a (b) తెలుగు").unwrap();
+        let mut bytes = (128..=255).collect::<Vec<u8>>();
+        bytes.extend_from_slice(b"LO_\xa8\x81O>\xe8");
+        let encoded = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let raw = format!("{before}@PAGENOR-BYTES-V2@{encoded}{after}").replace("insertText (z)", "insertText (@PAGENOR-BYTES-V2@7a)");
+        let normalized = decode_byte_trace(raw.as_bytes(), true).unwrap();
+        let (mut d, _, _) = parse(&normalized, "terminal vowel", true).unwrap();
+        resolve_legacy_bytes(&mut d, |_, _, b| legacy_char(b, |c| (0xf000..=0xf0ff).contains(&u32::from(c)))).unwrap();
+        let story = d.stories.values().next().unwrap();
+        assert_eq!(story.text.chars().take(bytes.len()).map(|c| (u32::from(c) - 0xf000) as u8).collect::<Vec<_>>(), bytes);
+        assert!(story.text.contains("\u{f03e}\u{f0e8}"));
+        let reopened = crate::cmd::from_bytes(&crate::cmd::to_bytes(&d).unwrap()).unwrap();
+        assert_eq!(reopened.story(story.id).unwrap().text, story.text);
+        for text in ["@PAGENOR-BYTES-V2@a", "@PAGENOR-BYTES-V2@zz", "unmarked source", "@PAGENOR-BYTES-V2@00"] {
+            assert!(decode_byte_trace(format!("insertText ({text})\n").as_bytes(), true).is_err());
+        }
+    }
+    #[test]
+    fn zero_sized_source_text_frames_preserve_geometry_and_text_without_layout_crash() {
+        for (old, new) in [("svg:height: 3in", "svg:height: 0in"), ("svg:width: 4in", "svg:width: 0in")] {
+            let (d, warnings, count) = parse(&EVENTS.replace(old, new), "zero-sized source", true).unwrap();
+            assert_eq!(count, 1);
+            assert!(warnings.iter().any(|w| w.contains("zero-sized text frame(s) retained unchanged")));
+            let item = &d.spreads[0].items[0];
+            assert!(item.bounds().width() == 0. || item.bounds().height() == 0.);
+            let reopened = crate::cmd::from_bytes(&crate::cmd::to_bytes(&d).unwrap()).unwrap();
+            let mut session = Session::new();
+            session.add_document(DocState::new(reopened, None));
+            assert_eq!(session.execute("document.inspect", &json!({})).unwrap()["pageCount"], 1);
+            assert_eq!(session.doc().unwrap().doc.stories.values().next().unwrap().text, "a (b) తెలుగు\u{2028}\t z\n");
+        }
+    }
+
+    #[test]
+    fn source_page_count_verifies_complete_conversion_and_refuses_partial_results() {
+        let complete = EVENTS.replace("startPage(svg:", "startPage(pagenor:source-page-count: 1, svg:");
+        let (_, warnings, _) = parse(&complete, "count checked", true).unwrap();
+        assert!(warnings.iter().any(|w| w.contains("1 source pages and 1 imported pages")));
+        let error = parse(&complete.replace("source-page-count: 1", "source-page-count: 28"), "partial", true).err().unwrap();
+        assert!(error.to_string().contains("source has 28 pages, converter emitted 1"));
+        for value in ["0", "1001", "-1", "not a count"] {
+            assert!(parse(&complete.replace("source-page-count: 1", &format!("source-page-count: {value}")), "bad count", true).is_err());
+        }
+        assert!(parse(EVENTS, "legacy helper", true).unwrap().1.iter().any(|w| w.contains("completeness is unverified")));
     }
 
     #[test]
@@ -1001,6 +1131,18 @@ mod tests {
         assert_eq!(pagenor_images::decode_rgba_limited(&asset.data, 1).unwrap().get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert!(pagenor_images::decode_rgba_limited(&asset.data, 0).is_none());
     }
+    #[test]
+    fn large_bounded_embedded_graphic_is_not_rejected_as_a_text_event() {
+        let mut bytes = tiny_bmp();
+        bytes.resize(2 * 1024 * 1024, 0);
+        let raw = EVENTS.replace("  endPage", &format!("{}  endPage", image_events(&bytes)));
+        let (d, _, _) = parse(&raw, "large embedded stream", true).unwrap();
+        assert_eq!(d.assets.values().next().unwrap().data.len(), bytes.len());
+        assert!(byte_trace(raw.replace("a (b) తెలుగు", "plain").as_bytes()).is_ok());
+        assert!(parse(&format!("    drawGraphicObject ({}", "x".repeat(MAX_GRAPHIC_EVENT)), "too large", true).is_err());
+        assert_eq!(event_limit(b"          insertText (not an image)"), 1024 * 1024);
+    }
+
     #[test]
     fn corrupt_or_oversized_embedded_rasters_fail_without_silent_omission() {
         let good = EVENTS.replace("  endPage", &format!("{}  endPage", image_events(&tiny_bmp())));

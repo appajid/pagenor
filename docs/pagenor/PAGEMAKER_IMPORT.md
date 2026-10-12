@@ -133,3 +133,15 @@ and the reopened native copy agree: five pages, five linked frames, one
 match installed fonts; original pagination remains incomplete.
 The original source hash remains unchanged. Existing owner sessions and the
 first test session, which subsequently received user input, are left open.
+
+
+## P11.15 update — local 0.7.1
+
+The V2 helper reads every referenced page container and uses lossless printable
+source-byte hex transport. Source page count is checked against emitted pages
+when declared; otherwise completeness remains explicitly unverified. `file.open`
+returns `sourcePages`, `pageCountVerified` and `converterProfile` with its imported
+page count. The owner-confirmed Nov 1-28.p65 now retains all **28 pages**, 169 text
+frames, 110 distinct stories and 53 embedded TIFF placements; the earlier five-page
+copy was partial. See [complete-import notes](PAGEMAKER_COMPLETE_IMPORT_071.md) for
+terminal vowel preservation, bounds, optional bitmap continuation and validation.
