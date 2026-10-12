@@ -273,6 +273,29 @@ fn parse_affine(s: Option<&str>) -> Affine {
     }
 }
 
+/// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
+/// screen (IDML y points down, so `0 1 -1 0` is one clockwise turn). The spread's items and
+/// pages stay in unrotated spread coordinates, so only the rotation part is read. Anything other
+/// than an exact quarter turn (identity, scale, other angles, malformed numbers) is no rotation.
+fn spread_view_rotation(s: Option<&str>) -> u8 {
+    let parsed: std::result::Result<Vec<f64>, _> = s.unwrap_or("").split_whitespace().take(7).map(str::parse::<f64>).collect();
+    let Some([a, b, c, d, tx, ty]) = parsed.ok().and_then(|v| <[f64; 6]>::try_from(v).ok()) else { return 0 };
+    if ![a, b, c, d, tx, ty].iter().all(|n| n.is_finite()) {
+        return 0;
+    }
+    let is = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    let quarter = |m: [f64; 4]| is(a, m[0]) && is(b, m[1]) && is(c, m[2]) && is(d, m[3]);
+    if quarter([0.0, 1.0, -1.0, 0.0]) {
+        1
+    } else if quarter([-1.0, 0.0, 0.0, -1.0]) {
+        2
+    } else if quarter([0.0, -1.0, 1.0, 0.0]) {
+        3
+    } else {
+        0
+    }
+}
+
 fn parse_point(s: Option<&str>) -> Option<Point> {
     let v = nums(s?);
     (v.len() >= 2).then(|| Point::new(v[0], v[1]))
@@ -1965,20 +1988,32 @@ impl<'r> Importer<'r> {
                     "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
                         if let Some(item) = self.item(c, pagenor_geom::Affine::IDENTITY) {
                             use pagenor_doc::anchored::AnchorAlign as A;
-                            let set = c.find("AnchoredObjectSetting");
-                            let get = |k: &str| set.and_then(|s| s.num(k)).unwrap_or(0.0);
-                            let position = match set.and_then(|s| s.get("AnchoredPosition")) {
-                                Some("AboveLine") => pagenor_doc::AnchorPosition::AboveLine {
-                                    align: match set.and_then(|s| s.get("HorizontalAlignment")) {
-                                        Some("CenterAlign") => A::Center,
-                                        Some("RightAlign") => A::Right,
+                            let levels: Vec<&El> = std::iter::once(c).chain(self.object_style_chain(c)).collect();
+                            let s = |k: &str| {
+                                let value = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
+                                value.unwrap_or(match k {
+                                    "AnchoredPosition" => "InlinePosition",
+                                    "AnchorPoint" => "BottomRightAnchor",
+                                    "HorizontalAlignment" => "LeftAlign",
+                                    "HorizontalReferencePoint" => "TextFrame",
+                                    "VerticalAlignment" => "BottomAlign",
+                                    "VerticalReferencePoint" => "LineBaseline",
+                                    "PinPosition" => "true",
+                                    _ => "",
+                                })
+                            };
+                            let get = |k: &str| s(k).trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+                            let position = match s("AnchoredPosition") {
+                                "AboveLine" => pagenor_doc::AnchorPosition::AboveLine {
+                                    align: match s("HorizontalAlignment") {
+                                        "CenterAlign" => A::Center,
+                                        "RightAlign" => A::Right,
                                         _ => A::Left,
                                     },
                                     space_before: get("AnchorSpaceAbove"),
                                     space_after: get("AnchorYoffset"),
                                 },
-                                Some("Anchored") => {
-                                    let s = |k: &str| set.and_then(|x| x.get(k)).unwrap_or("");
+                                "Anchored" => {
                                     let col = match s("HorizontalAlignment") {
                                         "CenterAlign" => 1,
                                         "RightAlign" => 2,
@@ -1992,7 +2027,8 @@ impl<'r> Importer<'r> {
                                     pagenor_doc::AnchorPosition::Custom {
                                         x_relative: names::anchor_rel_in(s("HorizontalReferencePoint")),
                                         y_relative: names::anchor_rel_in(s("VerticalReferencePoint")),
-                                        x_offset: get("AnchorXoffset"),
+                                        // IDML measures a left-aligned object's X offset leftwards.
+                                        x_offset: if col == 0 { 0.0 - get("AnchorXoffset") } else { get("AnchorXoffset") },
                                         y_offset: get("AnchorYoffset"),
                                         object_point: names::anchor_in(s("AnchorPoint")),
                                         ref_point: row * 3 + col,
@@ -2039,6 +2075,7 @@ impl<'r> Importer<'r> {
         let shift = Affine::translate((-min_x, -min_y));
         let show = e.get("ShowMasterItems") != Some("false");
         let first_abs: usize = self.spreads.iter().map(|s| s.pages.len()).sum();
+        let view_rotation = if master { 0 } else { spread_view_rotation(e.get("ItemTransform")) };
         let mut out_pages = Vec::new();
         for (i, (r, p)) in pages.iter().enumerate() {
             let pid = PageId(self.alloc());
@@ -2074,7 +2111,7 @@ impl<'r> Importer<'r> {
                 show_parent_items: show,
                 liquid: Default::default(),
                 transition: None,
-                view_rotation: 0,
+                view_rotation: if i == 0 { view_rotation } else { 0 },
             });
         }
         let overrides: Vec<Vec<String>> =
@@ -2118,7 +2155,7 @@ impl<'r> Importer<'r> {
         })
     }
 
-    /// An item's applied object style and the styles it is based on, nearest first.
+    /// Applied and based-on object styles, then [None], nearest first and cycle-safe.
     fn object_style_chain(&self, e: &El) -> Vec<&El> {
         let mut chain: Vec<&El> = Vec::new();
         let mut os = e.get("AppliedObjectStyle").map(str::to_string);

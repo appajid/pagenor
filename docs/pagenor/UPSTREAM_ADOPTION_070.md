@@ -32,11 +32,11 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.15 | [#521](https://github.com/storytold/designcraft/pull/521) / @moppeeer | `db63e203188c06bd7c6452b86e7b0dc63b70e820` | Complete — all seven gates passed |
 | P11.13.16 | [#548](https://github.com/storytold/designcraft/pull/548) / @itrycodinganditsbad | `7968afa39f88471796771a50bc0e770a1c7ed94e` | Complete — all seven gates passed |
 | P11.13.17 | [#560](https://github.com/storytold/designcraft/pull/560) / @aiongg | `9061475831df145f5d57577b6ae6c09b91a755b9` | Complete — all seven gates passed |
-| P11.13.18 | [#529](https://github.com/storytold/designcraft/pull/529) / @aiongg | `a8fc6a521999ee7688675acb5167a006fdb3eb2a` | Pending |
-| P11.13.19 | [#523](https://github.com/storytold/designcraft/pull/523) / @seanth | `5898c084b6d5d65d98e177c44dc6a2db23b27647` | Pending |
-| P11.13.20 | [#559](https://github.com/storytold/designcraft/pull/559) / @aiongg | `406f1b3d267fa17617a96d75324d0d709a875361` | Pending |
-| P11.13.21 | [#562](https://github.com/storytold/designcraft/pull/562) / @aiongg | `ab231cde62348a3aa428286e2bad88476b58ccb9` | Pending |
-| P11.13.22 | [#563](https://github.com/storytold/designcraft/pull/563) / @aiongg | `6e9517b053d053a460691b7f4bd0754d3816828b` | Pending |
+| P11.13.18 | [#529](https://github.com/storytold/designcraft/pull/529) / @aiongg | `a8fc6a521999ee7688675acb5167a006fdb3eb2a` | Complete |
+| P11.13.19 | [#523](https://github.com/storytold/designcraft/pull/523) / @seanth | `5898c084b6d5d65d98e177c44dc6a2db23b27647` | Complete |
+| P11.13.20 | [#559](https://github.com/storytold/designcraft/pull/559) / @aiongg | `406f1b3d267fa17617a96d75324d0d709a875361` | Complete |
+| P11.13.21 | [#562](https://github.com/storytold/designcraft/pull/562) / @aiongg | `ab231cde62348a3aa428286e2bad88476b58ccb9` | Complete |
+| P11.13.22 | [#563](https://github.com/storytold/designcraft/pull/563) / @aiongg | `6e9517b053d053a460691b7f4bd0754d3816828b` | Complete |
 | P11.13.23 | [#522](https://github.com/storytold/designcraft/pull/522) / @moppeeer | `95a5317b0ba95403c9e505f9e4baa6b78279d79c` | Pending |
 | P11.13.24 | [#538](https://github.com/storytold/designcraft/pull/538) / @moppeeer | `a01bfcde7611da3622a9ec6a5cb1d6cfe11d648f` | Pending |
 | P11.13.25 | [#539](https://github.com/storytold/designcraft/pull/539) / @moppeeer | `1e34026a791390908adb4e3b561860eecb4c5851` | Pending |
@@ -162,3 +162,25 @@ All seven gates pass: 2,345 tests passed, zero failed, seven ignored; twenty WAS
 packages. Existing synthetic resize fixtures now name [Black]/[None], and the old UI
 format-target fixture creates Cyan before applying it, so validation checks real inks.
 No font file is added, no UI subsystem is replaced, and the owner session is untouched.
+
+## P11.13 — import and anchored composition group (#529, #523, #559, #562, #563)
+
+IDML spread rotations accept only finite quarter-turn transforms and round-trip without
+rotating page/item geometry. Parent-page text caches use absolute page indices, so
+restarted numbering cannot share the wrong running header. Section markers resolve
+from the actual section, including zero-width blank markers, and edits invalidate text.
+Pagenor's PPTX, PDF and rendering paths use the same indexed cache.
+
+Anchored settings inherit per attribute through the existing bounded object-style
+chain; left-aligned IDML X offsets change sign at the import/export boundary. Existing
+anchored text frames, groups, footnotes and baseline rules remain supported.
+
+Anchored wrapping reuses Pagenor's contour/side and nested graphic wrap geometry.
+Own-story wraps start after the anchor's line; other stories share spread obstacles.
+Four bounded settling passes and independent neighbor compositions prevent cycles.
+The cache holds neighbor story/item allocations and invalidates when an anchor moves;
+renderer damage includes affected neighbor frames. Synthetic regressions cover
+geometry, ignore-wrap, movement, same-story settling and mutually wrapping stories.
+
+Validation: focused rotation, parent-page cache, section-marker and anchored tests
+passed. All seven gates pass: 2,359 tests, zero failures, seven ignored; twenty WASM packages.

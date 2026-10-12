@@ -811,3 +811,9 @@ swatches, command result IDs, scoped/lazy SVG PostScript lookup and IDML family/
 preservation. Pagenor's caret formatting, font activation epochs, document precedence,
 variable SVG CSS and small-table catalogue scan remain. Sources and checks are in
 the pinned 0.7.0 adaptation log; no private font or new font asset is committed.
+
+P11.13 adapts #529, #523, #559, #562 and #563 (IDML spread rotations, absolute-page
+parent text, section markers, inherited anchored settings and anchored wrap). Existing
+rich contour/side/nested-graphic geometry and anchored text/group handling remain;
+cache, export and repaint paths share the new behavior. Pinned authors/heads and
+all-seven-gate validation are in the 0.7.0 adaptation log.

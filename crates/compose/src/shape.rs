@@ -165,6 +165,7 @@ fn shaping_key(p: &CharProps) -> CharProps {
 #[derive(Clone, Debug, Default)]
 pub struct SubstCtx {
     pub page_name: Option<String>,
+    /// The section marker text of the page being composed (`None` on parent pages: "Section").
     pub section_marker: Option<String>,
     /// Text variable values by index (on the page being composed).
     pub vars: Arc<Vec<String>>,
@@ -796,7 +797,13 @@ fn shape_run_raw(
                     } else {
                         sub.page_name.clone().unwrap_or_else(|| "#".into())
                     };
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.vertical);
+                    if s.is_empty() {
+                        let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);
+                        g.adv = 0.0;
+                        out.push(g);
+                    } else {
+                        shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.vertical);
+                    }
                 }
                 pagenor_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);

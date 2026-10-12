@@ -23,6 +23,7 @@ mod ruby;
 pub mod shape;
 pub mod table;
 pub mod vars;
+pub mod wrap;
 pub mod xref;
 
 use std::collections::HashMap;
@@ -302,6 +303,8 @@ pub struct Exclusion {
     pub side: WrapSide,
     /// Contour wrap: the outline the text follows (None wraps around `rect`).
     pub contour: Option<Contour>,
+    /// Own-story anchored objects wrap only lines starting after their anchor byte.
+    pub after: Option<usize>,
 }
 
 /// An object outline for contour wrap: closed polylines in the frame's inner space and the
@@ -402,13 +405,13 @@ pub fn exclusion(other: &pagenor_doc::Item, xf: pagenor_geom::Affine, inv: pagen
     if let Some(custom) = other.wrap.path.as_ref().and_then(|p| Contour::of(&p.to_bezpath(), inv * xf, 0.0)) {
         let rect = custom.bounds();
         let contour = matches!(other.wrap.mode, WrapMode::BoundingBox | WrapMode::Contour).then_some(custom);
-        return Exclusion { rect, mode: other.wrap.mode, side, contour };
+        return Exclusion { rect, mode: other.wrap.mode, side, contour, after: None };
     }
     let contour = (other.wrap.mode == WrapMode::Contour && other.shape != pagenor_doc::Shape::Group)
         .then(|| contour_path(other))
         .and_then(|path| Contour::of(&path, inv * xf, other.wrap.offsets[0]));
     let rect = contour.as_ref().map_or_else(|| inv.transform_rect_bbox(r), Contour::bounds);
-    Exclusion { rect, mode: other.wrap.mode, side, contour }
+    Exclusion { rect, mode: other.wrap.mode, side, contour, after: None }
 }
 
 /// The outline a contour wrap follows, in the item's inner space. Graphic frames follow their contour type; detected edges, alpha channels and image paths need
@@ -440,6 +443,8 @@ pub struct FrameSpec {
     pub vertical: bool,
     pub exclusions: Vec<Exclusion>,
     pub page_name: Option<String>,
+    /// Marker text of the section the frame's page is in (None on parent pages).
+    pub section_marker: Option<String>,
     /// Absolute document page the frame is on (None on parent pages).
     pub page: Option<usize>,
     /// Baseline grid in inner space: (first grid line y, increment).
@@ -466,11 +471,18 @@ impl FrameSpec {
     }
 }
 
+/// The marker text of the section absolute page `abs` is in (empty when it has none).
+pub fn section_marker(doc: &Document, abs: usize) -> String {
+    doc.section_of(abs).map(|s| s.marker.clone()).unwrap_or_default()
+}
+
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
+    /// Section marker text when the story is composed for a specific page (parent items).
+    pub section_marker: Option<String>,
     /// Absolute page for text variables when composed for a specific page (parent items).
     pub page: Option<usize>,
     /// Running-header index (needed when the story contains running-header variables).
@@ -553,6 +565,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             }
             _ => (None, None, false),
         };
+        let section_marker = page.map(|abs| section_marker(doc, abs));
         // The page under the frame and its margins, in inner space (bounding boxes).
         let page_rect = match (spread_ref, spread) {
             (_, Some(sp)) => sp
@@ -611,6 +624,7 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
             vertical,
             exclusions: if tf.options.path.is_some() { vec![] } else { exclusions },
             page_name,
+            section_marker,
             page,
             grid,
             left_page,
@@ -620,13 +634,12 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     out
 }
 
-/// Compose a story of `doc` through its frames.
+/// Compose a story of `doc` through its frames, with the text wrap of page items and of anchored
+/// objects ([`wrap`]).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
-    let specs = frame_specs(doc, sid);
-    match doc.story(sid) {
-        Some(st) => compose(doc, st, &specs, opts),
-        None => ComposedStory { story: sid, ..Default::default() },
-    }
+    let others: Vec<ComposedStory> =
+        wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
+    wrap::compose_among(doc, sid, opts, &others.iter().collect::<Vec<_>>())
 }
 
 const DEFAULT_TAB: f64 = 36.0;
@@ -798,7 +811,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         };
         let mut sub = SubstCtx {
             page_name: opts.page_name.clone().or_else(|| cur_frame.and_then(|f| f.page_name.clone())),
-            section_marker: None,
+            section_marker: opts.section_marker.clone().or_else(|| cur_frame.and_then(|f| f.section_marker.clone())),
             vars: var_values,
             hidden_conditions: doc.conditions.iter().filter(|c| !c.visible).map(|c| c.name.clone()).collect(),
             vertical: cur_frame.is_some_and(|f| f.vertical),
@@ -1227,7 +1240,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     if !f.exclusions.is_empty() {
                         let jump = cur.jump(f, lead, asc, tops);
                         for tries in 0..=4000 {
-                            let Some((nb, segs)) = wrap_slots(f, col, baseline, asc, desc, jump, base_size, rtl) else {
+                            let Some((nb, segs)) =
+                                wrap_slots(f, col, baseline, asc, desc, jump, base_size, rtl, glyphs.get(s).map_or(prange.start, |g| g.byte))
+                            else {
                                 baseline = baseline.max(col.y1) + 1.0;
                                 break;
                             };
@@ -1469,6 +1484,22 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 {
                     begin_at(&mut cur, start);
                     col_first_line = line_no;
+                    g0 += b.next;
+                    carry.clear();
+                    moved = true;
+                    break;
+                }
+                // An own-story anchored object anchored in this line wraps the lines after it,
+                // which were broken without it: break them again.
+                if k + 1 < breaks.len()
+                    && f.exclusions.iter().any(|ex| {
+                        ex.after.is_some_and(|a| (range_start..range_end).contains(&a))
+                            && ex.rect.x0 < col.x1
+                            && ex.rect.x1 > col.x0
+                            && ex.rect.y1 > baseline
+                            && ex.rect.y0 < col.y1
+                    })
+                {
                     g0 += b.next;
                     carry.clear();
                     moved = true;
@@ -2475,7 +2506,18 @@ const JUMP_EPS: f64 = 1e-6;
 /// A line under a Jump Object wrap moves below it as `jump` says. Other wraps are rectangles, so the
 /// free space only grows where one in the line's band ends: the search jumps from one such bottom
 /// edge to the next, and a line that clears a wrap has its top exactly on the wrap's bottom.
-fn wrap_slots(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump: Jump, size: f64, rtl: bool) -> Option<(f64, Vec<(f64, f64)>)> {
+#[allow(clippy::too_many_arguments)]
+fn wrap_slots(
+    f: &FrameSpec,
+    col: Rect,
+    baseline: f64,
+    asc: f64,
+    desc: f64,
+    jump: Jump,
+    size: f64,
+    rtl: bool,
+    line_start: usize,
+) -> Option<(f64, Vec<(f64, f64)>)> {
     let top = jump.top.max(0.0);
     let mut b = baseline;
     // Each step passes at least one wrap; the cap bounds hostile geometry.
@@ -2483,7 +2525,7 @@ fn wrap_slots(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump
         let jumped = f
             .exclusions
             .iter()
-            .filter(|e| e.mode == WrapMode::JumpObject)
+            .filter(|e| e.mode == WrapMode::JumpObject && e.after.is_none_or(|a| a < line_start))
             .map(|e| e.rect)
             .filter(|r| r.x0 < col.x1 && r.x1 > col.x0 && b > r.y0 + JUMP_EPS && b - top < r.y1 - JUMP_EPS)
             .fold(f64::NEG_INFINITY, |m, r| m.max(r.y1));
@@ -2494,7 +2536,7 @@ fn wrap_slots(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump
             } else {
                 jumped + top
             }
-        } else if let slots = free_slots(f, col, b - asc, b + desc, size, rtl)
+        } else if let slots = free_slots(f, col, b - asc, b + desc, size, rtl, line_start)
             && !slots.is_empty()
         {
             return Some((b, slots));
@@ -2503,7 +2545,7 @@ fn wrap_slots(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump
             let edge = f
                 .exclusions
                 .iter()
-                .filter(|e| e.mode != WrapMode::JumpObject)
+                .filter(|e| e.mode != WrapMode::JumpObject && e.after.is_none_or(|a| a < line_start))
                 .map(|e| e.rect)
                 .filter(|r| r.y0 < y1 && r.y1 > y0)
                 .fold(f64::INFINITY, |m, r| m.min(r.y1));
@@ -2520,9 +2562,9 @@ fn wrap_slots(f: &FrameSpec, col: Rect, baseline: f64, asc: f64, desc: f64, jump
 /// right to left for right-to-left paragraphs); empty if the band is blocked. A line beside an
 /// object that lets text through on both sides has a segment on each side. Segments narrower than
 /// 1.5 em of `size` are skipped (the model has no minimum segment width).
-fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64, rtl: bool) -> Vec<(f64, f64)> {
+fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, size: f64, rtl: bool, line_start: usize) -> Vec<(f64, f64)> {
     let mut free = vec![(col.x0, col.x1)];
-    for ex in &f.exclusions {
+    for ex in f.exclusions.iter().filter(|e| e.after.is_none_or(|a| a < line_start)) {
         let r = ex.rect;
         let overlaps_band = r.y0 < y1 && r.y1 > y0;
         let blocked = match ex.mode {
@@ -2592,7 +2634,7 @@ fn estimate_slots(
     let mut b = first;
     let mut jump = jump;
     for _ in 0..n {
-        match wrap_slots(f, col, b, size * 0.8, size * 0.25, jump, size, rtl) {
+        match wrap_slots(f, col, b, size * 0.8, size * 0.25, jump, size, rtl, glyphs.first().map_or(0, |g| g.byte)) {
             Some((nb, slots)) => {
                 b = nb;
                 v.extend(slots);

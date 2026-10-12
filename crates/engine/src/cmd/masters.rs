@@ -235,7 +235,7 @@ mod tests {
         for abs in 0..6 {
             let (_, pi) = native.parent_page_for(abs).unwrap();
             let item = native.item(ItemId(numbers["items"][pi].as_u64().unwrap())).unwrap();
-            let composed = s.cache.get(&native, item.text_frame().unwrap().story, Some(&native.page_name(abs)));
+            let composed = s.cache.get(&native, item.text_frame().unwrap().story, Some(abs));
             assert!(!composed.is_overset());
             let text: String =
                 composed.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter_map(|g| g.generated_text.as_deref()).collect();

@@ -157,3 +157,9 @@ P11.13 color/font group (#551, #520, #521, #548, #560): all seven gates passed,
 are complete. Table-cell text color, validated swatches, returned object IDs, scoped/lazy
 PostScript SVG lookup and exact IDML family/inherited-style handling are recorded in
 UPSTREAM_ADOPTION_070.md; the remaining publishing/reliability work continues.
+
+P11.13 import/composition group (#529, #523, #559, #562, #563): all seven gates
+pass, 2,359 tests/zero failures/seven ignored; twenty WASM packages. Twenty-two
+queue items are complete. Pagenor retains rich contour/side/graphic wrapping and
+its anchored text/group support; synthetic wrap/cycle/cache/damage regressions pass.
+Owner's running document session remains untouched.

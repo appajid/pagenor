@@ -92,6 +92,14 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&pagenor_compos
         if a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
         }
+        // Its anchored objects' text wrap reflows the other stories on its spreads.
+        for d in [old, new] {
+            for other in pagenor_compose::wrap::wrapped_by(d, sid) {
+                for f in d.story(other).map(|s| s.frames.clone()).unwrap_or_default() {
+                    out.push(frame_area(d, f)?);
+                }
+            }
+        }
         // Only the frames whose composition changed, when the previous composition is known.
         if let (Some(c), Some(_), Some(_)) = (cache, a, b)
             && let Some(prev) = c.composed_for(old, sid)
@@ -250,6 +258,25 @@ mod tests {
             }
         }
         img.pixels.iter().zip(&full.pixels).filter(|(a, b)| a.abs_diff(**b) > 2).count()
+    }
+
+    #[test]
+    fn editing_a_wrapping_anchored_object_damages_the_text_it_wraps() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "Anchor", ParaFormat::default()).unwrap();
+        let (_, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 600.0), lid, "Wrapped", ParaFormat::default()).unwrap();
+        let mut it = pagenor_doc::Item::new(
+            pagenor_doc::ItemId(d.alloc()),
+            lid,
+            pagenor_doc::Shape::Rectangle,
+            pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        it.wrap.mode = pagenor_doc::WrapMode::BoundingBox;
+        let old = d.clone();
+        d.story_mut(a).unwrap().insert_object(0, pagenor_doc::AnchoredObject::new(it, Default::default()));
+        let dmg = damage(&old, &d).unwrap();
+        assert!(dmg.iter().any(|(_, r)| r.contains(pagenor_geom::Point::new(400.0, 500.0))));
     }
 
     #[test]
