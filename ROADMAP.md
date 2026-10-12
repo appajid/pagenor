@@ -6,7 +6,8 @@
   Justification, Properties transforms, Tools Color Picker, curved corners, image
   cropping/content transforms, saved clipping paths, color targeting/swatch validation,
   command result IDs, scoped PostScript/IDML font lookup, IDML rotation, indexed
-  parent-page text/section markers, anchored inheritance and text wrap are validated.
+  parent-page text/section markers, anchored inheritance/wrap, CR normalization,
+  uppercase hyphenation and continuous decorations are validated.
   [queue and per-change notes](docs/pagenor/UPSTREAM_ADOPTION_070.md).
 
 - P11.12: published native Windows and Linux **0.6.0 desktop development

@@ -163,3 +163,9 @@ pass, 2,359 tests/zero failures/seven ignored; twenty WASM packages. Twenty-two
 queue items are complete. Pagenor retains rich contour/side/graphic wrapping and
 its anchored text/group support; synthetic wrap/cycle/cache/damage regressions pass.
 Owner's running document session remains untouched.
+
+P11.13 paragraph/decoration group (#522, #538, #539): all seven gates passed,
+2,361 tests, zero failures, seven ignored; twenty WASM packages. Twenty-five queue
+items are complete. Scripts/notes/cells share line-ending normalization; capitalized
+settings control uppercase hyphenation; native underline pixels are continuous.
+A section-marker edit regression additionally covers neighbor anchored-wrap caches.

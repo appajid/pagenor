@@ -817,3 +817,8 @@ parent text, section markers, inherited anchored settings and anchored wrap). Ex
 rich contour/side/nested-graphic geometry and anchored text/group handling remain;
 cache, export and repaint paths share the new behavior. Pinned authors/heads and
 all-seven-gate validation are in the 0.7.0 adaptation log.
+
+P11.13 adapts #522, #538 and #539 (CR-normalized text commands, uppercase
+hyphenation and continuous underline/strike geometry). Pagenor's decoration metrics
+and writing directions remain; a neighbor marker/cache regression extends #563.
+Pinned provenance and all-seven-gate validation are in UPSTREAM_ADOPTION_070.md.

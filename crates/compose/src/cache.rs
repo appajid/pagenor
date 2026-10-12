@@ -49,7 +49,12 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
-    doc.sections.len().hash(&mut h);
+    format!("{:?}", doc.sections).hash(&mut h);
+    format!("{:?}", doc.conditions).hash(&mut h);
+    format!("{:?}", doc.layers).hash(&mut h);
+    format!("{:?}", doc.settings).hash(&mut h);
+    format!("{:?}", doc.footnote_options).hash(&mut h);
+    doc.hyphenation_exceptions.hash(&mut h);
     h.finish()
 }
 
@@ -80,6 +85,11 @@ impl Cache {
                 keep_items.extend(k);
                 keep_stories.push(ns.clone());
             }
+        }
+        if !neighbours.is_empty() {
+            // A neighbour's anchor can move when its marker/variables or global composition
+            // settings change, without editing its story or frame allocations.
+            sig.push(doc_signature(doc) as usize);
         }
         let key = (sid, page, !neighbours.is_empty());
         // The key holds the page's index, which a renumbering doesn't change: its name (section

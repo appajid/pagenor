@@ -37,9 +37,9 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.20 | [#559](https://github.com/storytold/designcraft/pull/559) / @aiongg | `406f1b3d267fa17617a96d75324d0d709a875361` | Complete |
 | P11.13.21 | [#562](https://github.com/storytold/designcraft/pull/562) / @aiongg | `ab231cde62348a3aa428286e2bad88476b58ccb9` | Complete |
 | P11.13.22 | [#563](https://github.com/storytold/designcraft/pull/563) / @aiongg | `6e9517b053d053a460691b7f4bd0754d3816828b` | Complete |
-| P11.13.23 | [#522](https://github.com/storytold/designcraft/pull/522) / @moppeeer | `95a5317b0ba95403c9e505f9e4baa6b78279d79c` | Pending |
-| P11.13.24 | [#538](https://github.com/storytold/designcraft/pull/538) / @moppeeer | `a01bfcde7611da3622a9ec6a5cb1d6cfe11d648f` | Pending |
-| P11.13.25 | [#539](https://github.com/storytold/designcraft/pull/539) / @moppeeer | `1e34026a791390908adb4e3b561860eecb4c5851` | Pending |
+| P11.13.23 | [#522](https://github.com/storytold/designcraft/pull/522) / @moppeeer | `95a5317b0ba95403c9e505f9e4baa6b78279d79c` | Complete |
+| P11.13.24 | [#538](https://github.com/storytold/designcraft/pull/538) / @moppeeer | `a01bfcde7611da3622a9ec6a5cb1d6cfe11d648f` | Complete |
+| P11.13.25 | [#539](https://github.com/storytold/designcraft/pull/539) / @moppeeer | `1e34026a791390908adb4e3b561860eecb4c5851` | Complete |
 | P11.13.26 | [#459](https://github.com/storytold/designcraft/pull/459) / @sanyamsingh001 | `1c7f7ac13212488ba1ff999967cb518fd4b7fdd8` | Pending |
 | P11.13.27 | [#478](https://github.com/storytold/designcraft/pull/478) / @sanyamsingh001 | `8f33ef36d446af17ab01955928fee1b657c47ad4` | Pending |
 | P11.13.28 | [#468](https://github.com/storytold/designcraft/pull/468) / @soro-82 | `5f535ef60f87b03dd69a65d9e64e6322e4816331` | Pending |
@@ -184,3 +184,20 @@ geometry, ignore-wrap, movement, same-story settling and mutually wrapping stori
 
 Validation: focused rotation, parent-page cache, section-marker and anchored tests
 passed. All seven gates pass: 2,359 tests, zero failures, seven ignored; twenty WASM packages.
+
+## P11.13 — paragraph input and decoration group (#522, #538, #539)
+
+All text-bearing editing commands now share the existing CR/CRLF-to-LF helper,
+including story replacement, editorial notes, footnotes/endnotes, cells and path text.
+The scripts regression verifies paragraph counts and note text after replacement.
+Uppercase words use the existing language hyphenator when capitalized-word
+hyphenation is enabled; disabling it still leaves those words intact.
+
+The existing native decoration renderer now merges each continuous underline or
+strike independently, preserving Pagenor's rule metrics and allowing either writing
+direction. A fractional-zoom pixel test checks the underline has no lighter seams.
+Anchored wrap also tracks global marker/settings/visibility dependencies, covered
+by a neighbor section-marker edit regression. No new font or asset is introduced.
+
+Focused line-ending and uppercase tests passed. All seven gates pass: 2,361 tests,
+zero failures, seven ignored; twenty WASM packages.

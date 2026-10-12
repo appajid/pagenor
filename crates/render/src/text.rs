@@ -116,15 +116,35 @@ fn union(r: Option<Rect>, b: Rect) -> Option<Rect> {
 
 fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> LineGlyphs {
     let mut runs: Vec<(u32, BezPath)> = Vec::new();
-    let mut decos = Vec::new();
+    let mut underlines: Vec<(String, f32, Rect)> = Vec::new();
+    let mut strikes: Vec<(String, f32, Rect)> = Vec::new();
     let mut glyphs = 0;
     for g in &l.glyphs {
         if !g.visible {
             continue;
         }
         let style = &cs.styles[g.style as usize];
-        for (rule, r) in style.rules(g.x, g.x + g.adv, l.baseline) {
-            decos.push((rule.color.clone(), rule.tint, r));
+        for (on, rule, bars) in [(style.underline, &style.underline_rule, &mut underlines), (style.strikethrough, &style.strike_rule, &mut strikes)] {
+            if !on {
+                continue;
+            }
+            let r = Rect::new(g.x, l.baseline + rule.offset, g.x + g.adv, l.baseline + rule.offset + rule.weight);
+            // One bar per continuous stretch avoids anti-aliased seams at fractional scales.
+            // Keep the two decorations independent and merge in either writing direction.
+            match bars.last_mut() {
+                Some((color, tint, last))
+                    if *color == rule.color
+                        && *tint == rule.tint
+                        && (last.y0 - r.y0).abs() < 1e-6
+                        && (last.y1 - r.y1).abs() < 1e-6
+                        && r.x0 <= last.x1 + 1e-6
+                        && r.x1 >= last.x0 - 1e-6 =>
+                {
+                    last.x0 = last.x0.min(r.x0);
+                    last.x1 = last.x1.max(r.x1);
+                }
+                _ => bars.push((rule.color.clone(), rule.tint, r)),
+            }
         }
         let outline = db.outline(&g.face, g.gid);
         if outline.elements().is_empty() {
@@ -149,6 +169,7 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
         }
         glyphs += 1;
     }
+    let decos: Vec<_> = underlines.into_iter().chain(strikes).collect();
     let mut bounds = None;
     for (si, bp) in &runs {
         let st = &cs.styles[*si as usize];

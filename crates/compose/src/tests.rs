@@ -4836,3 +4836,21 @@ fn mutually_wrapping_anchored_stories_do_not_cycle() {
         assert_eq!(line_layout(&cs), line_layout(&compose_story(&d, sid, &Default::default())));
     }
 }
+
+#[test]
+fn anchored_wrap_cache_tracks_neighbor_section_marker_edits() {
+    let text = format!("{} Anchor", pagenor_doc::story::SECTION_MARKER);
+    let (mut d, a, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 500.0), ParaAttrs::default());
+    let (_, b) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 500.0), d.default_layer(), &[LOREM; 4].join(" "), ParaFormat::default())
+        .unwrap();
+    anchor_box(&mut d, a, text.len(), 330.0, 0.0, true, WrapMode::BoundingBox);
+    d.sections[0].marker = "Short".into();
+    let cache = Cache::new();
+    let before = cache.get(&d, b, None);
+    d.sections[0].marker = [LOREM; 2].join(" ");
+    let after = cache.get(&d, b, None);
+    assert!(!std::sync::Arc::ptr_eq(&before, &after));
+    assert_ne!(line_layout(&before), line_layout(&after));
+    assert_eq!(line_layout(&after), line_layout(&compose_story(&d, b, &Default::default())));
+}
