@@ -176,7 +176,12 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
         return Some((be(18), be(14)));
     }
-    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+        .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster.
@@ -184,7 +189,115 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
-    Some(image::load_from_memory(bytes).ok()?.to_rgba8())
+    image::load_from_memory(bytes).ok().map(|image| image.to_rgba8()).or_else(|| palette_tiff(bytes, 4_000_000))
+}
+
+/// Decode a bounded raster from an untrusted import. Header dimensions and decoder
+/// allocations are limited before pixel decoding; PSD/SVG/PDF are not accepted.
+pub fn decode_rgba_limited(bytes: &[u8], max_pixels: u64) -> Option<image::RgbaImage> {
+    let (w, h) = pixel_size(bytes)?;
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > max_pixels || max_pixels > 4_000_000 {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(w);
+    limits.max_image_height = Some(h);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok().map(|image| image.to_rgba8()).or_else(|| palette_tiff(bytes, max_pixels))
+}
+
+/// The locked TIFF decoder rejects RGBPalette. Decode single-channel 8-bit indices
+/// through a private grayscale view, then apply the original 16-bit RGB ColorMap.
+/// Original asset bytes stay unchanged; only the temporary interpretation tag changes.
+fn palette_tiff(bytes: &[u8], max_pixels: u64) -> Option<image::RgbaImage> {
+    use tiff::tags::Tag;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    let offset = palette_tag_offset(bytes)?;
+    let mut original = tiff_decoder(bytes)?;
+    let (w, h) = original.dimensions().ok()?;
+    let count = u64::from(w) * u64::from(h);
+    if count == 0
+        || count > max_pixels
+        || count > 4_000_000
+        || original.get_tag_u16_vec(Tag::BitsPerSample).ok()? != [8]
+        || original.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok()?.unwrap_or(1) != 1
+        || original.find_tag_unsigned::<u16>(Tag::SampleFormat).ok()?.unwrap_or(1) != 1
+        || original.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok()?.unwrap_or(1) != 1
+    {
+        return None;
+    }
+    let colors = original.get_tag_u16_vec(Tag::ColorMap).ok()?;
+    if colors.len() != 768 {
+        return None;
+    }
+    let mut gray = bytes.to_vec();
+    let value = if bytes.starts_with(b"II") { 1u16.to_le_bytes() } else { 1u16.to_be_bytes() };
+    gray.get_mut(offset..offset.checked_add(2)?)?.copy_from_slice(&value);
+    let mut limits = tiff::decoder::Limits::default();
+    limits.decoding_buffer_size = 4_000_000;
+    limits.intermediate_buffer_size = 16 * 1024 * 1024;
+    limits.ifd_value_size = 1024 * 1024;
+    let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(&gray)).ok()?.with_limits(limits);
+    let tiff::decoder::DecodingResult::U8(indices) = decoder.read_image().ok()? else {
+        return None;
+    };
+    let count = usize::try_from(count).ok()?;
+    if indices.len() != count {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(count.checked_mul(4)?);
+    for index in indices {
+        let index = usize::from(index);
+        for plane in [0, 256, 512] {
+            let color = u32::from(*colors.get(index + plane)?);
+            rgba.push(((color * 255 + 32_767) / 65_535) as u8);
+        }
+        rgba.push(255);
+    }
+    image::RgbaImage::from_raw(w, h, rgba)
+}
+
+/// Locate one unambiguous classic-TIFF inline SHORT RGBPalette tag. Avoid changing
+/// any offsets, strips, palette entries, optional metadata or other source bytes.
+fn palette_tag_offset(bytes: &[u8]) -> Option<usize> {
+    let little = if bytes.starts_with(b"II*\0") {
+        true
+    } else if bytes.starts_with(b"MM\0*") {
+        false
+    } else {
+        return None;
+    };
+    let short = |at: usize| -> Option<u16> {
+        let value = bytes.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if little { u16::from_le_bytes(value) } else { u16::from_be_bytes(value) })
+    };
+    let long = |at: usize| -> Option<u32> {
+        let value = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(if little { u32::from_le_bytes(value) } else { u32::from_be_bytes(value) })
+    };
+    let ifd = usize::try_from(long(4)?).ok()?;
+    let entries = usize::from(short(ifd)?);
+    if entries > 4096 {
+        return None;
+    }
+    let start = ifd.checked_add(2)?;
+    let end = start.checked_add(entries.checked_mul(12)?)?;
+    bytes.get(start..end)?;
+    let mut found = None;
+    for i in 0..entries {
+        let at = start.checked_add(i.checked_mul(12)?)?;
+        if short(at)? == 262 {
+            if found.is_some() || short(at + 2)? != 3 || long(at + 4)? != 1 || short(at + 8)? != 3 {
+                return None;
+            }
+            found = Some(at + 8);
+        }
+    }
+    found
 }
 
 /// A CMYK raster's ink values, 8 bits per ink (0 = no ink, 255 = solid), as PDF's DeviceCMYK
@@ -527,6 +640,33 @@ mod tests {
         assert_eq!(decode_cmyk_tiff(&rgb), None);
         assert!(!is_cmyk_tiff(b"II*\0"), "truncated");
         assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
+    }
+
+    #[test]
+    fn indexed_tiff_palette_keeps_original_bytes_and_renders_exact_colors_with_limits() {
+        use tiff::encoder::colortype::Gray8;
+        use tiff::tags::Tag;
+        let mut bytes = Vec::new();
+        let mut colors = vec![0u16; 768];
+        colors[0] = 65_535;
+        colors[257] = 65_535;
+        colors[514] = 65_535;
+        let mut encoder = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut bytes)).unwrap();
+        let mut image = encoder.new_image::<Gray8>(3, 1).unwrap();
+        image.encoder().write_tag(Tag::PhotometricInterpretation, 3u16).unwrap();
+        image.encoder().write_tag(Tag::ColorMap, colors.as_slice()).unwrap();
+        image.write_data(&[0, 1, 2]).unwrap();
+        let original = bytes.clone();
+        assert_eq!(pixel_size(&bytes), Some((3, 1)));
+        let rgba = decode_rgba_limited(&bytes, 3).unwrap();
+        assert_eq!(rgba.as_raw(), &[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
+        assert_eq!(decode_rgba(&bytes).unwrap(), rgba);
+        assert_eq!(bytes, original);
+        assert!(decode_rgba_limited(&bytes, 2).is_none());
+        assert!(decode_rgba_limited(&bytes[..bytes.len() / 2], 3).is_none());
+        let offset = palette_tag_offset(&bytes).unwrap();
+        bytes[offset - 4..offset].copy_from_slice(&2u32.to_le_bytes());
+        assert!(palette_tiff(&bytes, 3).is_none(), "ambiguous/non-inline interpretation is refused");
     }
 
     #[test]

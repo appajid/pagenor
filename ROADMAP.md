@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P11.14: preserve high legacy PageMaker text bytes through an explicit byte-helper
+  profile and bounded Rust decoding. Owner confirms Anu 7. Character-loss recovery
+  is tested; original Type 1 document-scoped fonts now render text with owner-reported
+  99% accuracy. Four source-story groups flow once through 31 frames; all five
+  embedded TIFFs render and retain original bytes, including indexed TIFF. All seven
+  gates pass (2,582 tests, zero failures, seven ignores). Local **0.7.0** work; exact
+  layout/metrics and native Windows/Linux helper execution remain open.
+  [Cause, provenance and validation](docs/pagenor/PAGEMAKER_LEGACY_BYTES.md).
+
 - P11.13: implement the selected 26 newer upstream proposals and six incremental
   updates. All 32 are complete as **0.7.0**; all seven gates pass
   (2,574 tests, zero failures, seven ignores; twenty WASM packages).

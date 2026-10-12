@@ -21,7 +21,9 @@ The existing Apscribe build at `/Users/appajiambarishadarbha/apscribe` uses
 the same Homebrew libpagemaker 0.0.4 backend (confirmed through its build
 metadata and PageMaker QA notes). Pagenor reuses that installed backend
 through its command-line helper; the Apscribe/Scribus GPL importer is not
-copied into the MIT/Apache Rust codebase. No C++ implementation was read.
+copied into the MIT/Apache Rust codebase. No C++ implementation was read for this
+initial P11.10 implementation; P11.14 later inspected verified MPL-2.0 helper source
+and adds an external byte/source-story profile, described in its separate notes.
 Apscribe's notes already establish editable-text native round-trip tests for
 `.p65` and `.pm7`, while recording its own graphics/style/layout limitations.
 
@@ -49,19 +51,24 @@ Legacy Telugu text is retained as the characters emitted by the helper with
 its original font names. **No ASCII-to-Unicode mapping is guessed.** Correct
 appearance requires the matching original fonts; an unrelated Unicode font
 cannot turn legacy codes into Telugu. Unicode conversion requires a verified
-mapping/reference document for each encoding. The helper's diagnostic stream
-is not a byte-preserving source-text interchange.
+mapping/reference document for each encoding. The stock helper's diagnostic stream
+is not a byte-preserving source-text interchange. In particular, its signed-char
+build can omit bytes 128–255; see the explicit byte-preserving helper profile and
+current Anu 7 validation in [P11.14](PAGEMAKER_LEGACY_BYTES.md).
 
-The helper repeats some full shared stories in every page frame. Identical
-stories of at least 2,048 bytes, with identical formatting and frame widths
-on at least three different pages, are recovered as one threaded story.
-This inference is disclosed in import warnings; `file.open` with
-`recoverRepeatedStories:false` retains the separate copies. Short running
-heads, two-page copies, same-page duplicates and differing formatting are
-not merged. Other original threading, layer separation/order, images, master-page structure,
-page settings, colour management and exact typography are not recovered.
-Graphics are omitted and counted by event type in import warnings; rotated
-frames lose rotation and are counted explicitly. Mixed page sizes and
+P11.14's separate helper exposes original text-block IDs, so identical stories
+with the same ID flow once through linked columns/pages. Distinct IDs remain
+independent. Original chain pointers are not exposed: page/left-column/vertical
+order is inferred and disclosed. The stock helper retains the previous conservative
+inference for long, identical, equally formatted stories on at least three distinct
+pages. `recoverRepeatedStories:false` keeps separate copies in either mode.
+
+Embedded raster images exposed by the helper are retained as native assets/graphic
+frames with geometry, rotation and relative paint order. Classic single-channel
+8-bit palette TIFFs use bounded index/ColorMap rendering while retaining the
+original embedded TIFF bytes. Other unsupported graphic
+events are counted in warnings. Layers, masters, original crop/wrap/page settings,
+colour management and exact typography remain incomplete. Mixed page sizes and
 unrecognised nested/text structures are refused rather than silently flattened.
 Every successful import shows an experimental-subset warning, including when
 no graphics were reported. Check all pages, overset text and fonts before use. Import warnings remain

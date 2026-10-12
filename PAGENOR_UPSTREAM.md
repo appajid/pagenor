@@ -851,3 +851,16 @@ The completed P11.13 batch is published as the 0.7.0 desktop development preview
 with matching Mac/Windows/Linux packages and native quality/install/checksum
 evidence in docs/pagenor/DESKTOP_RELEASE_070.md. Tagged source remains
 76f8840071003e51418878f245e18b2230632b98; distribution-record edits change no binary.
+
+
+## Local PageMaker byte correction — P11.14 (2026-10-13)
+
+No upstream application PR is copied for this fix. The external libpagemaker 0.0.4
+MPL-2.0 source was inspected after licence verification to identify a signed-char
+control filter. An unmodified build with unsigned char supplies the explicit byte
+profile. A separate MPL helper patch emits existing source text-block IDs for
+column recovery; its corresponding source and notice accompany the local helper.
+Pagenor's bounded decoder/run mapping, threading and image import are independent Rust, with no foreign
+implementation copied or linked. The source URI/hash, licence, executed tests and
+private Type 1 font recovery and remaining platform/typography checks are in docs/pagenor/PAGEMAKER_LEGACY_BYTES.md.
+Owner fonts/documents and extracted reference subsets are excluded from Git.

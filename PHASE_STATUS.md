@@ -182,3 +182,18 @@ P11.13 incremental UI/reflow group (#459, #478, #468, #473): all seven gates pas
 items are complete. Native split-pane/scrollbar and layout-target screenshots were
 inspected. Left/right masters remain independent by default; existing IME, clipboard,
 validation and shutdown paths remain. Only synthetic QA documents were used.
+
+
+P11.14 (13 October 2026): PageMaker high-byte loss reproduced in all three helper
+outputs. Unmodified MPL-2.0 libpagemaker built with unsigned char recovers 25,865
+source bytes. Rust decoding and native round-trip regressions pass. Anu 7 source/font
+version is owner-confirmed. Original Type 1 encoding/outlines in twelve private
+document-scoped fonts now display text with owner-reported 99% accuracy.
+Four shared-story groups now flow once through 31 frames on five recovered pages.
+All five embedded TIFFs render (including palette TIFF) and survive native reopen.
+All seven gates pass: 2,582 tests/zero failures/seven ignored, twenty WASM packages.
+Separate genuine-file round trip and native visual inspection pass; original text/runs,
+image payloads and helper item order are retained. Exact layout/metrics, missing fonts
+and native Windows/Linux helper execution remain open.
+Local 0.7.0 work, preserving the current session and published releases;
+[notes](docs/pagenor/PAGEMAKER_LEGACY_BYTES.md).
