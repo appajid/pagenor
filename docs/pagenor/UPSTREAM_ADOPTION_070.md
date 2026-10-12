@@ -16,7 +16,7 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | Task | PR / source author | Inspected source head | Status |
 |---|---|---|---|
 | P11.13.1 | [#411](https://github.com/storytold/designcraft/pull/411) / @noah1400 | `60f463f03cbe35396e49f3601c42fdf46d662fc2` | Complete — all seven gates passed |
-| P11.13.2 | [#524](https://github.com/storytold/designcraft/pull/524) / @moppeeer | `191594897be1c3225b5b3661b848fb97b036c6ba` | Pending |
+| P11.13.2 | [#524](https://github.com/storytold/designcraft/pull/524) / @moppeeer | `191594897be1c3225b5b3661b848fb97b036c6ba` | Complete — all seven gates and native UI inspection passed |
 | P11.13.3 | [#525](https://github.com/storytold/designcraft/pull/525) / @moppeeer | `60bf43b9e842ca1e8477c5e0b9b5129a281f13c1` | Pending |
 | P11.13.4 | [#527](https://github.com/storytold/designcraft/pull/527) / @moppeeer | `15d2b998f028cd6b926227f1bd5fcba99df8bda6` | Pending |
 | P11.13.5 | [#532](https://github.com/storytold/designcraft/pull/532) / @aiongg | `61504dae488c9bbc0c9b876e37174cf003c6cd2f` | Pending |
@@ -58,3 +58,15 @@ still restore false, allowing later independent commands to record their own und
 The new synthetic regression fails before the fix, then checks the continuing frame
 edit is owned by the outer step and a later independent frame edit records undo.
 All seven gates pass: 2,307 tests passed, 0 failed, 7 ignored; twenty WASM packages. No working recovery or command-dispatch subsystem is replaced.
+
+## P11.13.2 — Properties Pathfinder and accessibility (#524)
+
+Properties now shows five original vector Pathfinder controls for multiple selected
+objects, using the existing object.pathfinder command. Sections and icon buttons
+expose their names and actual enabled/selected state to accessibility. Existing
+menu tests distinguish command rows from identically named panel toggles.
+
+Synthetic component interaction verifies one-object hiding, all five buttons and
+Intersect geometry. The separate native QA profile's screenshot was inspected at
+1440×900; the row fits the Properties panel. Only the disposable QA app was closed.
+All seven gates pass: 2,308 tests passed, zero failed, 7 ignored; twenty WASM packages.

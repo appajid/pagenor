@@ -2789,10 +2789,11 @@ mod tests {
         xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
     }
 
-    /// A menu row: its label, then its shortcut if it has one.
+    /// A menu row, excluding the named toggle buttons in the Properties panel.
     fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
         h.query_by(move |n| {
             n.role() == egui::accesskit::Role::Button
+                && n.toggled().is_none()
                 && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
         })
     }
