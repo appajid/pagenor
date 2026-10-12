@@ -1373,7 +1373,7 @@ impl<'a> Ex<'a> {
         n!(space_before, "SpaceBefore");
         n!(space_after, "SpaceAfter");
         if let Some(v) = a.same_para_style_spacing {
-            el.set("SameParaStyleSpacing", v.map(num).unwrap_or_else(|| "Ignore".into()));
+            el.set("SameParaStyleSpacing", v.map(num).unwrap_or_else(|| "Nothing".into()));
         }
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");

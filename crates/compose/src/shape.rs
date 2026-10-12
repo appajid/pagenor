@@ -256,6 +256,52 @@ impl StyleTable<'_> {
     }
 }
 
+pub(crate) struct StyledSegment<'run, 'overlay> {
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) overlay: Option<&'overlay str>,
+    pub(crate) format: &'run pagenor_doc::CharFormat,
+}
+
+// Shared with the condition-consumer check: later covering overlays win as a whole.
+pub(crate) fn style_segments<'run, 'overlay>(
+    runs: impl Iterator<Item = (std::ops::Range<usize>, &'run pagenor_doc::CharFormat)>,
+    range: std::ops::Range<usize>,
+    overlays: &'overlay [(std::ops::Range<usize>, String)],
+) -> Vec<StyledSegment<'run, 'overlay>> {
+    let mut segments = Vec::new();
+    for (rr, fmt) in runs {
+        let a = rr.start.max(range.start);
+        let b = rr.end.min(range.end);
+        if a >= b {
+            continue;
+        }
+        if overlays.is_empty() {
+            segments.push(StyledSegment { range: a..b, overlay: None, format: fmt });
+            continue;
+        }
+        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
+        cuts.push(a);
+        cuts.push(b);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
+            segments.push(StyledSegment { range: w[0]..w[1], overlay: top, format: fmt });
+        }
+    }
+    segments
+}
+
+// A nested / GREP character style sits under the run's own style and overrides.
+pub(crate) fn overlay_base<'a>(styles: &Styles, para_chars: &'a CharProps, overlay: Option<&str>) -> std::borrow::Cow<'a, CharProps> {
+    match overlay {
+        Some(style) => {
+            std::borrow::Cow::Owned(styles.resolve_char(para_chars, &pagenor_doc::CharFormat { style: style.to_string(), over: Default::default() }))
+        }
+        None => std::borrow::Cow::Borrowed(para_chars),
+    }
+}
+
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
 pub(crate) fn shape_para(
@@ -284,41 +330,14 @@ pub(crate) fn shape_para(
     if drop.0 > range.start && !drop.1.is_empty() && drop.1 != pagenor_doc::NO_CHAR_STYLE {
         overlays.push((range.start..drop.0, drop.1.to_string()));
     }
-    // Each run, cut where nested / GREP styles start and end.
-    let mut segments: Vec<(usize, usize, Option<&str>, &pagenor_doc::CharFormat)> = Vec::new();
-    for (rr, fmt) in story.runs() {
-        let a = rr.start.max(range.start);
-        let b = rr.end.min(range.end);
-        if a >= b {
-            continue;
-        }
-        if overlays.is_empty() {
-            segments.push((a, b, None, fmt));
-            continue;
-        }
-        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
-        cuts.push(a);
-        cuts.push(b);
-        cuts.sort_unstable();
-        cuts.dedup();
-        for w in cuts.windows(2) {
-            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
-            segments.push((w[0], w[1], top, fmt));
-        }
-    }
+    let segments = style_segments(story.runs(), range.clone(), &overlays);
     // Resolve every segment, then shape runs of segments that differ only in how they are
     // painted as one piece, so kerning, ligatures and joining work across a colour change.
     let mut resolved = Vec::new();
-    for (a, b, overlay, fmt) in segments {
-        // A nested / GREP character style sits under the run's own style and overrides.
-        let base;
-        let para_chars = match overlay {
-            Some(st) => {
-                base = styles.resolve_char(para_chars, &pagenor_doc::CharFormat { style: st.to_string(), over: Default::default() });
-                &base
-            }
-            None => para_chars,
-        };
+    for StyledSegment { range, overlay, format: fmt } in segments {
+        let (a, b) = (range.start, range.end);
+        let base = overlay_base(styles, para_chars, overlay);
+        let para_chars = base.as_ref();
         let props = styles.resolve_char(para_chars, fmt);
         if let Some(font) = styles.composite_font(&props.font_family) {
             let mut start = a;

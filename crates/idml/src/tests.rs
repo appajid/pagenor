@@ -114,7 +114,18 @@ fn same_para_style_spacing_imports_and_round_trips() {
     assert_eq!(st.paras[0].para.same_para_style_spacing, Some(Some(0.0)));
     // Ignore is an explicit "off", not an unset value.
     assert_eq!(st.paras[1].para.same_para_style_spacing, Some(None));
-    let back = import_idml(&export_idml(&d)).unwrap();
+    let bytes = export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut xml = String::new();
+    for i in 0..zip.len() {
+        let mut file = zip.by_index(i).unwrap();
+        if file.name().starts_with("Stories/") {
+            std::io::Read::read_to_string(&mut file, &mut xml).unwrap();
+        }
+    }
+    assert!(xml.contains(r#"SameParaStyleSpacing="Nothing""#));
+    assert!(!xml.contains(r#"SameParaStyleSpacing="Ignore""#));
+    let back = import_idml(&bytes).unwrap();
     let b = back.stories.values().find(|s| s.text.contains("Gap")).unwrap();
     assert_eq!(b.paras[0].para.same_para_style_spacing, Some(Some(0.0)));
     assert_eq!(b.paras[1].para.same_para_style_spacing, Some(None));

@@ -231,7 +231,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     let all: Vec<usize> = pages.clone().unwrap_or_else(|| (0..d.page_count()).collect());
                     for abs in all {
                         let Some((si, pi)) = d.page_loc(abs) else { continue };
-                        let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi];
+                        let Some(pg) = d.spreads.get_mut(si).and_then(|sp| std::sync::Arc::make_mut(sp).pages.get_mut(pi)) else { continue };
                         if p.get("margins").is_some() || p.get("columns").is_some() || p.get("gutter").is_some() {
                             pg.inherit_parent_settings = false;
                         }

@@ -169,3 +169,9 @@ P11.13 paragraph/decoration group (#522, #538, #539): all seven gates passed,
 items are complete. Scripts/notes/cells share line-ending normalization; capitalized
 settings control uppercase hyphenation; native underline pixels are continuous.
 A section-marker edit regression additionally covers neighbor anchored-wrap caches.
+
+P11.13 incremental UI/reflow group (#459, #478, #468, #473): all seven gates pass,
+2,383 tests/zero failures/seven ignored; twenty WASM packages. Twenty-nine queue
+items are complete. Native split-pane/scrollbar and layout-target screenshots were
+inspected. Left/right masters remain independent by default; existing IME, clipboard,
+validation and shutdown paths remain. Only synthetic QA documents were used.

@@ -46,6 +46,44 @@ use crate::parabox::ParaBox;
 use crate::shape::{Glyph, StyleTable, SubstCtx};
 pub use crate::table::{PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_cell, hit_cell_with};
 
+/// Character-style overlays for a complete paragraph, in application order (later wins).
+/// Returned byte ranges are relative to `text`.
+pub fn paragraph_style_overlays(text: &str, nested: &[pagenor_doc::NestedStyle], grep: &[pagenor_doc::GrepStyle]) -> Vec<(Range<usize>, String)> {
+    overlay::overlays(text, 0..text.len(), nested, grep, 0)
+}
+
+/// Compare condition visibility on a complete paragraph, including its overset text.
+/// Run ranges are paragraph-relative. Invalid/incomplete coverage conservatively differs.
+/// Requires already-matched story formatting and style definitions. Callers separately
+/// retain layout-dependent line/note and style-definition dependencies.
+pub fn paragraph_conditions_same<'a>(
+    before: &Document,
+    after: &Document,
+    text: &str,
+    para: &ParaProps,
+    base: &pagenor_doc::CharProps,
+    runs: impl Iterator<Item = (Range<usize>, &'a pagenor_doc::CharFormat)>,
+) -> bool {
+    let drop_end = if para.drop_cap_lines > 1 { text.char_indices().nth(para.drop_cap_chars as usize).map_or(text.len(), |(i, _)| i) } else { 0 };
+    let mut overlays = overlay::overlays(text, 0..text.len(), &para.nested_styles, &para.grep_styles, drop_end);
+    if drop_end > 0 && !para.drop_cap_style.is_empty() && para.drop_cap_style != pagenor_doc::NO_CHAR_STYLE {
+        overlays.push((0..drop_end, para.drop_cap_style.clone()));
+    }
+    let mut end = 0;
+    for segment in shape::style_segments(runs, 0..text.len(), &overlays) {
+        if segment.range.start != end || !text.is_char_boundary(segment.range.start) || !text.is_char_boundary(segment.range.end) {
+            return false;
+        }
+        end = segment.range.end;
+        let base = shape::overlay_base(&before.styles, base, segment.overlay);
+        let chars = before.styles.resolve_char(base.as_ref(), segment.format);
+        if chars.change != pagenor_doc::ChangeMark::Deleted && before.conditions_hide(&chars.conditions) != after.conditions_hide(&chars.conditions) {
+            return false;
+        }
+    }
+    end == text.len()
+}
+
 /// Character appearance shared by many glyphs (indexed from [`PlacedGlyph::style`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunStyle {

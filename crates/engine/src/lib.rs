@@ -646,6 +646,7 @@ fn reflow_adds_pages(old: &Document, new: &Document, sid: StoryId, was: &Compose
     // It fitted: the command made it overset.
     was.overset_at.is_none()
         || story_edited(a, b, was.overset_at != now.overset_at)
+        || !reflow_formats_same(old, new, a, b, &old.footnote_options.ref_char_style, 0)
         || b.frames.iter().any(|id| match (old.item(*id), new.item(*id)) {
             (Some(before), Some(after)) => {
                 before.path != after.path
@@ -677,6 +678,122 @@ fn story_edited(was: &Story, now: &Story, refit: bool) -> bool {
         });
     }
     a != b && (refit || texts[0] != texts[1])
+}
+
+fn reflow_composite_same(a: &pagenor_doc::Styles, b: &pagenor_doc::Styles, chars: &pagenor_doc::CharProps) -> bool {
+    a.composite_font(&chars.font_family) == b.composite_font(&chars.font_family)
+}
+
+// Resolve formatting used or referenced by the primary story, including its invisible tail.
+// Walk paragraph/run boundaries together; an unused definition must not resume page generation.
+// Story comparison has already checked matching text, run lengths and child structure.
+fn reflow_formats_same(
+    before: &Document,
+    after: &Document,
+    story: &pagenor_doc::Story,
+    current: &pagenor_doc::Story,
+    note_style: &str,
+    depth: usize,
+) -> bool {
+    let (a, b) = (&before.styles, &after.styles);
+    if Arc::ptr_eq(a, b) && std::ptr::eq(story, current) && before.conditions == after.conditions {
+        return true;
+    }
+    if depth >= 64 {
+        return false;
+    }
+    // A condition-bank edit can change visibility while style/story Arcs stay shared.
+    // Compare effective consumers only after the conservative format/dependency checks.
+    let condition_bank_changed = before.conditions != after.conditions;
+    let conditions_same = |chars: &pagenor_doc::CharProps| before.conditions_hide(&chars.conditions) == after.conditions_hide(&chars.conditions);
+    let mut runs = story.runs().zip(current.runs()).peekable();
+    for ((range, para), current_para) in story.para_ranges().into_iter().zip(&story.paras).zip(&current.paras) {
+        let old = a.resolve_para(para);
+        let new = b.resolve_para(current_para);
+        if old != new || !reflow_composite_same(a, b, &old.1) {
+            return false;
+        }
+        // These rules inject character styles without recording them in the story's runs.
+        // Compare their resolved dependencies even in paragraphs not reached by composition.
+        let mut may_change_visibility = !conditions_same(&old.1);
+        if range.is_empty() && may_change_visibility {
+            return false;
+        }
+        let mut condition_runs = Vec::new();
+        for name in old
+            .0
+            .nested_styles
+            .iter()
+            .map(|rule| rule.style.as_str())
+            .chain(old.0.grep_styles.iter().map(|rule| rule.style.as_str()))
+            .chain(old.0.nested_line_styles.iter().map(|rule| rule.style.as_str()))
+            .chain((old.0.drop_cap_lines > 1).then_some(old.0.drop_cap_style.as_str()))
+            .chain((!story.notes.is_empty()).then_some(note_style))
+            .filter(|name| !name.is_empty() && *name != pagenor_doc::NO_CHAR_STYLE)
+        {
+            // Referenced definitions can change without being renamed. Their override
+            // masks must remain equal even when plain-base defaults hide a layered change.
+            if a.char_style_attrs(name) != b.char_style_attrs(name) {
+                return false;
+            }
+            let format = pagenor_doc::CharFormat { style: name.into(), ..Default::default() };
+            let chars = a.resolve_char(&old.1, &format);
+            if chars != b.resolve_char(&old.1, &format) || !reflow_composite_same(a, b, &chars) {
+                return false;
+            }
+            if !conditions_same(&chars) {
+                // Line ranges depend on layout; note markers also inject their style separately.
+                if old.0.nested_line_styles.iter().any(|rule| rule.style == name)
+                    || (old.0.drop_cap_lines > 1 && old.0.drop_cap_style == name)
+                    || (!story.notes.is_empty() && name == note_style)
+                {
+                    return false;
+                }
+                may_change_visibility = true;
+            }
+        }
+        while let Some(((run, format), (_, current_format))) = runs.peek() {
+            if run.start > range.end {
+                break;
+            }
+            // Equal plain-base properties do not prove equal behavior over overlays or
+            // at a staged blank EOF, where the run's direct overrides are not consumed.
+            if a.char_style_attrs(&format.style) != b.char_style_attrs(&current_format.style) {
+                return false;
+            }
+            let chars = a.resolve_char(&old.1, format);
+            if chars != b.resolve_char(&new.1, current_format) || !reflow_composite_same(a, b, &chars) {
+                return false;
+            }
+            let visibility_changed = !conditions_same(&chars);
+            if range.is_empty() && visibility_changed {
+                return false;
+            }
+            may_change_visibility |= visibility_changed;
+            if condition_bank_changed && run.end > range.start && run.start < range.end {
+                condition_runs.push((run.start.max(range.start) - range.start..run.end.min(range.end) - range.start, *format));
+            }
+            if run.end > range.end {
+                break;
+            }
+            runs.next();
+        }
+        if may_change_visibility && !range.is_empty() {
+            let Some(paragraph) = story.text.get(range.clone()) else { return false };
+            // Whole-paragraph consumers use shaping's winner plus the run's own style/overrides.
+            if !compose::paragraph_conditions_same(before, after, paragraph, &old.0, &old.1, condition_runs.into_iter()) {
+                return false;
+            }
+        }
+    }
+    story.tables.values().zip(current.tables.values()).all(|(old, new)| {
+        old.cells.iter().zip(&new.cells).all(|(old, new)| reflow_formats_same(before, after, &old.text, &new.text, note_style, depth + 1))
+    }) && story
+        .notes
+        .iter()
+        .chain(&story.endnotes)
+        .zip(current.notes.iter().chain(&current.endnotes))
+        .all(|(old, new)| reflow_formats_same(before, after, &old.text, &new.text, note_style, depth + 1))
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {

@@ -205,3 +205,60 @@ fn reflow_off_preserves_removal_and_does_not_resume_on_primary_edits() {
         s.doc().unwrap().doc.check().unwrap();
     }
 }
+
+#[test]
+fn unused_or_shadowed_grep_conditions_preserve_deleted_primary_pages() {
+    for shadowed in [false, true] {
+        let (mut s, sid, _) = primary_chain();
+        s.execute("condition.new", &json!({"name": "Dormant", "visible": true})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Conditional", "chars": {"conditions": ["Dormant"]}})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Clear", "chars": {"conditions": []}})).unwrap();
+        let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": len})).unwrap();
+        let rules = if shadowed {
+            json!([{"style": "Conditional", "pattern": ".+"}, {"style": "Clear", "pattern": ".+"}])
+        } else {
+            json!([{"style": "Conditional", "pattern": "ZZZ_NEVER_PRESENT"}])
+        };
+        s.execute("type.para", &json!({"attrs": {"grepStyles": rules}})).unwrap();
+        let last = *s.doc().unwrap().doc.story(sid).unwrap().frames.last().unwrap();
+        remove(&mut s, last, Removal::Page);
+        let before = s.doc().unwrap().doc.clone();
+        let reference = compose::compose_story(&before, sid, &Default::default());
+        assert!(reference.is_overset());
+        s.execute("condition.options", &json!({"name": "Dormant", "visible": false})).unwrap();
+        let after = s.doc().unwrap().doc.clone();
+        assert_eq!(after.page_count(), before.page_count(), "shadowed: {shadowed}");
+        assert_eq!(after.story(sid).unwrap().frames, before.story(sid).unwrap().frames);
+        let current = compose::compose_story(&after, sid, &Default::default());
+        assert_eq!(format!("{reference:?}"), format!("{current:?}"));
+        after.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+    }
+}
+
+#[test]
+fn used_condition_in_overset_tail_resumes_primary_growth() {
+    let (mut s, sid, _) = primary_chain();
+    s.execute("condition.new", &json!({"name": "Printed tail", "visible": false})).unwrap();
+    let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+    let start = len - 200;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": start, "focus": len})).unwrap();
+    s.execute("condition.apply", &json!({"name": "Printed tail", "only": true})).unwrap();
+    let last = *s.doc().unwrap().doc.story(sid).unwrap().frames.last().unwrap();
+    remove(&mut s, last, Removal::Page);
+    let before = s.doc().unwrap().doc.clone();
+    assert!(s.cache.get(&before, sid, None).overset_at.is_some_and(|at| at < start));
+    s.execute("condition.options", &json!({"name": "Printed tail", "visible": true})).unwrap();
+    let after = s.doc().unwrap().doc.clone();
+    assert!(after.page_count() > before.page_count());
+    assert!(!s.cache.get(&after, sid, None).is_overset());
+    after.check().unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &after));
+}

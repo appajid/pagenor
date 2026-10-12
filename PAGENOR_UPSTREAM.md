@@ -822,3 +822,9 @@ P11.13 adapts #522, #538 and #539 (CR-normalized text commands, uppercase
 hyphenation and continuous underline/strike geometry). Pagenor's decoration metrics
 and writing directions remain; a neighbor marker/cache regression extends #563.
 Pinned provenance and all-seven-gate validation are in UPSTREAM_ADOPTION_070.md.
+
+P11.13 adapts the pinned incremental deltas of #459, #478, #468 and #473: consumed
+GREP-condition reflow, empty rich native paste, split chronological dispatch/tear
+release, explicit page/spread targets and IDML Nothing spacing. Existing Pagenor
+IME/click counts, drop caps, scoped dispatch, validation and separate master sides
+remain. Sources, tests and native inspection are recorded in the 0.7.0 log.

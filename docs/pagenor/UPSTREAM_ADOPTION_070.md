@@ -40,10 +40,10 @@ scoped/lazy fonts, inline Indic input, .pgnr/legacy documents and branding remai
 | P11.13.23 | [#522](https://github.com/storytold/designcraft/pull/522) / @moppeeer | `95a5317b0ba95403c9e505f9e4baa6b78279d79c` | Complete |
 | P11.13.24 | [#538](https://github.com/storytold/designcraft/pull/538) / @moppeeer | `a01bfcde7611da3622a9ec6a5cb1d6cfe11d648f` | Complete |
 | P11.13.25 | [#539](https://github.com/storytold/designcraft/pull/539) / @moppeeer | `1e34026a791390908adb4e3b561860eecb4c5851` | Complete |
-| P11.13.26 | [#459](https://github.com/storytold/designcraft/pull/459) / @sanyamsingh001 | `1c7f7ac13212488ba1ff999967cb518fd4b7fdd8` | Pending |
-| P11.13.27 | [#478](https://github.com/storytold/designcraft/pull/478) / @sanyamsingh001 | `8f33ef36d446af17ab01955928fee1b657c47ad4` | Pending |
-| P11.13.28 | [#468](https://github.com/storytold/designcraft/pull/468) / @soro-82 | `5f535ef60f87b03dd69a65d9e64e6322e4816331` | Pending |
-| P11.13.29 | [#473](https://github.com/storytold/designcraft/pull/473) / @MarekSpodBiedry | `11b9a0f1041593638edd238a88565c8043625331` | Pending |
+| P11.13.26 | [#459](https://github.com/storytold/designcraft/pull/459) / @sanyamsingh001 | `1c7f7ac13212488ba1ff999967cb518fd4b7fdd8` | Complete |
+| P11.13.27 | [#478](https://github.com/storytold/designcraft/pull/478) / @sanyamsingh001 | `8f33ef36d446af17ab01955928fee1b657c47ad4` | Complete |
+| P11.13.28 | [#468](https://github.com/storytold/designcraft/pull/468) / @soro-82 | `5f535ef60f87b03dd69a65d9e64e6322e4816331` | Complete |
+| P11.13.29 | [#473](https://github.com/storytold/designcraft/pull/473) / @MarekSpodBiedry | `11b9a0f1041593638edd238a88565c8043625331` | Complete |
 | P11.13.30 | [#542](https://github.com/storytold/designcraft/pull/542) / @sanyamsingh001 | `c08b3ddc685ece9534850884567fa3dbac6784a4` | Pending |
 | P11.13.31 | [#452](https://github.com/storytold/designcraft/pull/452) / @skylartaylor | `957890223a0c84070278557bac529d6da848ebe6` | Pending |
 | P11.13.32 | [#553](https://github.com/storytold/designcraft/pull/553) / @itrycodinganditsbad | `fb90a508b1ccb64ba8cea2e575e015659417aa85` | Pending |
@@ -201,3 +201,29 @@ by a neighbor section-marker edit regression. No new font or asset is introduced
 
 Focused line-ending and uppercase tests passed. All seven gates pass: 2,361 tests,
 zero failures, seven ignored; twenty WASM packages.
+
+## P11.13 — incremental reflow and UI group (#459, #478, #468, #473)
+
+The existing explicit-deletion reflow guard now distinguishes consumed condition
+visibility from unused or fully overridden GREP references, including overset text.
+It shares segment resolution with contextual shaping and preserves drop caps.
+Unused/shadowed conditions retain deleted pages; a printed overset condition can
+resume primary growth. Both behaviors preserve undo/redo in synthetic regressions.
+Native empty clipboard completions are delivered only for a usable retained rich
+payload, after current input, preserving Pagenor's clipboard markers and shutdown.
+
+Split views dispatch one chronological input stream before either view paints.
+Pagenor's IME, triple-click, Alt-hand, ruler-origin, menu and scrollbar paths remain;
+focused canvas geometry also follows the active pane. Flyouts retain press origin
+through release and cancel tearing on Escape. Split/paste/click/tear/IME tests pass.
+
+Guide and margin dialogs show captured page/master descriptions and page/spread
+choices, plus all-document margins. Existing unit capture, finite/count validation
+and error retention remain. Left/right master defaults stay independent; whole-master
+spread changes require the explicit choice. Tests cover units and all target paths.
+The existing explicit spacing-off export now writes IDML Nothing; the test inspects
+actual Story XML as well as importing it back. Other legacy import values remain.
+
+Focused tests and all seven gates pass: 2,383 tests, zero failures, seven ignored;
+twenty WASM packages. Native 1440×900 screenshots were inspected for split views,
+scrollbars and target dialogs. Only the independent QA process was closed.
