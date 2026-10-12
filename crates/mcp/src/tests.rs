@@ -583,3 +583,16 @@ fn invalid_replies_drop_the_connection_without_replay() {
         server.join().unwrap();
     }
 }
+
+#[test]
+fn headless_triple_click_selects_the_composed_line() {
+    let mut b = Headless::with_document();
+    b.session.execute("frame.create", &json!({"content":"text","rect":[72,72,500,200],"text":"First line\nSecond line"})).unwrap();
+    let mut s = Server::new(Box::new(b));
+    for kind in ["tripleclick", "triclick"] {
+        let r = ok(&mut s, "pointer", json!({"tool":"type", "events":[{"kind":kind,"x":90,"y":80}]}));
+        let selection = &r["selection"]["text"];
+        assert_eq!(selection["anchor"], 0, "{r}");
+        assert_eq!(selection["focus"], 10, "{r}");
+    }
+}

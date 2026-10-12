@@ -69,7 +69,17 @@ fn fetch_followed(url: &str, redirects: u8) -> Result<Vec<u8>, String> {
 fn fetch_curl(url: &str) -> Result<Vec<u8>, String> {
     use std::process::{Command, Stdio};
     let cap = MAX_IMAGE_FILE_BYTES.to_string();
-    let mut child = Command::new("curl")
+    let mut command = Command::new("curl");
+    // The localhost fixture's trust root must work with OpenSSL, GnuTLS and Schannel.
+    // This override exists only in unit-test binaries; production uses curl's normal trust store.
+    #[cfg(test)]
+    if let Some(cert) = std::env::var_os("PAGENOR_TEST_HTTPS_CERT") {
+        command.arg("--cacert").arg(cert).arg("--show-error");
+    }
+    let stderr = Stdio::null();
+    #[cfg(test)]
+    let stderr = if std::env::var_os("PAGENOR_TEST_HTTPS_CERT").is_some() { Stdio::inherit() } else { stderr };
+    let mut child = command
         .args([
             "--proto",
             "=http,https",
@@ -91,7 +101,7 @@ fn fetch_curl(url: &str) -> Result<Vec<u8>, String> {
             url,
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .map_err(|err| format!("https fetch failed: {err}"))?;
     let Some(stdout) = child.stdout.take() else {

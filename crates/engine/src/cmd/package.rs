@@ -193,7 +193,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy, an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
             has_doc,
             package
         ),
@@ -301,13 +301,13 @@ fn plan_links(d: &Document, dir: &Path, only: Option<&[AssetId]>) -> (Document, 
     let mut out = d.clone();
     let mut taken = Vec::new();
     let mut written = Vec::new();
-    let mut ids: Vec<AssetId> = d.assets.keys().copied().collect();
-    ids.sort_by_key(|i| i.0);
+    // Only files something places; the saved document leaves the others out.
+    let ids = d.used_assets();
     for id in ids {
         if only.is_some_and(|o| !o.contains(&id)) {
             continue;
         }
-        let a = &d.assets[&id];
+        let Some(a) = d.assets.get(&id) else { continue };
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
         let mut na = (**a).clone();
@@ -404,9 +404,16 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     // transaction across the entire folder if a later storage operation fails.
     let doc_path = package_output_path(&dir, &title, pagenor_doc::file_type::EXTENSION)?;
     let native_bytes = super::to_bytes(&packed)?;
-    let idml = p.get("idml").and_then(Value::as_bool).unwrap_or(true).then(|| pagenor_idml::export_idml(&packed));
+    let idml = p
+        .get("idml")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+        .then(|| pagenor_idml::export_idml_with(&packed, &pagenor_idml::ExportOptions { embed_images: false }));
     let pdf = if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
-        Some(pagenor_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?)
+        Some(
+            pagenor_pdf::export_pdf(&super::interchange::with_pdf_boxes(&packed), &s.cache, &Default::default())
+                .map_err(|e| EngineError::Other(e.to_string()))?,
+        )
     } else {
         None
     };
@@ -502,6 +509,64 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocated_packages_rebind_embedded_image_links_on_open() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-relocation-{}-{nonce}", std::process::id()));
+        let original = dir.join("original");
+        let moved = dir.join("moved");
+        let png = pagenor_render::Rendered { width: 4, height: 3, pixels: [30, 90, 180, 255].repeat(12) }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "OwnedPackage", "width": 72, "height": 72})).unwrap();
+        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "owned.png", "x": 5, "y": 5, "width": 16})).unwrap();
+        s.execute("file.package", &json!({"dir": original.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        let expected = std::path::absolute(moved.join("Links").join("owned.png")).unwrap();
+        for (command, extension) in [("file.open", "pgnr"), ("file.openIdml", "idml")] {
+            let mut opened = Session::new();
+            opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
+            let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
+            assert_eq!(*asset.data, png, "{extension}: the packaged pixels");
+            assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
+            let links = opened.execute("links.list", &json!({})).unwrap();
+            assert_eq!(links[0]["status"], "ok", "{extension}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The package's IDML links its images to the files in the package's Links folder and embeds
+    /// no copies of them.
+    #[test]
+    fn package_idml_links_the_links_folder_and_embeds_nothing() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("pagenor-package-idml-links-{}-{nonce}", std::process::id()));
+        let png = pagenor_render::Rendered { width: 4, height: 3, pixels: [30, 90, 180, 255].repeat(12) }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "LinkedPackage", "width": 72, "height": 72})).unwrap();
+        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "my photo.png", "x": 5, "y": 5, "width": 16})).unwrap();
+        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
+        let idml = std::fs::read(dir.join("LinkedPackage.idml")).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(idml.as_slice())).unwrap();
+        let mut spreads = String::new();
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).unwrap();
+            if f.name().starts_with("Spreads/") {
+                std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
+            }
+        }
+        let linked = dir.join("Links").join("my photo.png");
+        let path = linked.to_string_lossy().replace('\\', "/");
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        let uri = format!("file:{}", path.replace(' ', "%20"));
+        assert!(spreads.contains(&format!(r#"LinkResourceURI="{uri}""#)), "{spreads}");
+        assert!(!spreads.contains("<Contents") && !spreads.contains(r#"StoredState="Embedded""#), "no image is embedded");
+        let back = pagenor_idml::import_idml_with(&idml, &|_| None).unwrap();
+        let asset = back.assets.values().next().unwrap();
+        assert!(asset.data.is_empty(), "no image is embedded");
+        assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()).canonicalize().unwrap(), linked.canonicalize().unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn package_writes_document_links_and_report() {
@@ -818,10 +883,29 @@ mod tests {
                     name: format!("asset-{i}"),
                     mime: "application/octet-stream".into(),
                     link: None,
-                    data: Arc::new(vec![1]),
+                    data: Arc::new((i as u32).to_le_bytes().to_vec()),
                     pixels: None,
+                    ..Default::default()
                 }),
             );
+            // Used, distinct assets exceed the archive limit even after save compaction.
+            let item_id = pagenor_doc::ItemId(d.alloc());
+            let mut item = pagenor_doc::Item::new(
+                item_id,
+                d.default_layer(),
+                pagenor_doc::Shape::Rectangle,
+                pagenor_geom::shapes::rectangle(pagenor_geom::Rect::new(0.0, 0.0, 1.0, 1.0)),
+            );
+            item.content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+                asset: id,
+                size: (1.0, 1.0),
+                xf: pagenor_geom::Affine::IDENTITY,
+                auto_fit: Default::default(),
+                fit_align: 0,
+                crop: [0.0; 4],
+                wrap: Default::default(),
+            });
+            d.insert_item(pagenor_doc::SpreadRef::Doc(0), item, None).unwrap();
         }
         let before = s.doc().unwrap().doc.clone();
         assert!(s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).is_err());

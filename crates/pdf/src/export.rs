@@ -73,8 +73,10 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
             }
             seen_spreads.push(si);
             let first = doc.first_page_of_spread(si);
-            let (l, _) = sp.pages.first().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
-            let (_, r) = sp.pages.last().map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            // The outer edges by position: a right-to-left spread lists its right page first.
+            let outer = sp.outer_page_indices();
+            let (l, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let (_, r) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
             (sp.bounds(), l, r, names.join("–"))
         } else {
@@ -415,7 +417,7 @@ pub(crate) struct Exporter<'a> {
     drawing_items: Vec<pagenor_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
     /// Placed PDFs (embedded as vector pages).
-    pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
+    pdfs: HashMap<AssetId, Option<(krilla::pdf::PdfDocument, usize)>>,
     /// The PDF version written; placed PDFs must not be newer.
     version: PdfVersion,
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
@@ -968,22 +970,43 @@ impl Exporter<'_> {
     }
 
     /// A swatch fill (solid or gradient) in the item's inner space. `None` for [None]/unknown.
-    fn fill_paint(&self, fill: &pagenor_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
+    fn fill_paint(&mut self, fill: &pagenor_doc::Fill, bounds: Rect) -> Option<krilla::paint::Paint> {
         let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
         if let Some(g) = pagenor_color::swatch::resolve_gradient(&self.doc.swatches, swatch) {
+            let kind = g.kind;
+            let expanded = g.expanded_stops();
+            // A PDF shading needs one colour space. Midpoint expansion can introduce RGB even
+            // when every authored stop is CMYK/Gray; PDF/A can also change the output space.
+            let components = |c: &Color| match c {
+                Color::Cmyk { .. } if !self.rgb_only => 4,
+                Color::Gray { .. } => 1,
+                _ => 3,
+            };
+            let mixed = expanded.first().is_some_and(|(_, first, _)| expanded.iter().any(|(_, c, _)| components(c) != components(first)));
+            if mixed {
+                self.warn(format!("gradient '{swatch}': mixed color spaces converted to RGB (colour appearance and separations may change)"));
+            }
             let mut stops: Vec<Stop> = Vec::new();
             let mut last = 0.0f32;
-            for (o, c, a) in g.expanded_stops() {
+            for (o, c, a) in expanded {
                 let o = o.clamp(last, 1.0);
                 last = o;
-                stops.push(Stop { offset: norm(o), color: device(&c, self.rgb_only), opacity: norm(a) });
+                let color = if mixed && !matches!(c, Color::Rgb { .. }) {
+                    let [r, g, b] = c.to_rgb();
+                    rgb::Color::new(q(r), q(g), q(b)).into()
+                } else {
+                    // Preserve RGB values, including already-interpolated display RGB, and
+                    // leave every homogeneous gradient on its existing device-space path.
+                    device(&c, self.rgb_only)
+                };
+                stops.push(Stop { offset: norm(o), color, opacity: norm(a) });
             }
             if stops.is_empty() {
                 return None;
             }
             let c = bounds.center();
             let v = fill.gradient_vector;
-            return Some(match g.kind {
+            return Some(match kind {
                 GradientKind::Radial => {
                     let (c, r) = match v {
                         Some([x0, y0, x1, y1]) => (pagenor_geom::Point::new(x0, y0), Vec2::new(x1 - x0, y1 - y0).hypot()),
@@ -1058,15 +1081,17 @@ impl Exporter<'_> {
             s.set_fill(None);
             return;
         }
+        // Viewers expand dashes too: a degenerate pattern draws solid, as on screen.
+        let length = pagenor_doc::path_length_bound(bp);
         let dash = match &kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
+            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
                 let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                 if pat.len() % 2 == 1 {
                     pat.extend(pat.clone());
                 }
                 Some(StrokeDash { array: pat, offset: 0.0 })
             }
-            StrokeType::Dotted => {
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
                 cap = krilla::paint::LineCap::Round;
                 Some(StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 })
             }
@@ -1144,7 +1169,8 @@ impl Exporter<'_> {
     /// VectorCraft and most tools write 1.7. PDF 1.7 changed nothing in how a page draws, so a 1.7
     /// file goes in as 1.6 (its header relabelled, as `qpdf --force-version=1.6` does). A newer
     /// file is left out and the export fails naming it ([`Exporter::check_placed_versions`]).
-    fn placed_pdf(&mut self, asset: &pagenor_doc::Asset) -> Option<krilla::pdf::PdfDocument> {
+    /// Returns the document with its page count.
+    fn placed_pdf(&mut self, asset: &pagenor_doc::Asset) -> Option<(krilla::pdf::PdfDocument, usize)> {
         use hayro_syntax::PdfVersion as V;
         let Ok(pdf) = krilla::pdf::Pdf::new(asset.data.clone()) else {
             self.warn(format!("{}: can't read the placed PDF", asset.name));
@@ -1159,7 +1185,8 @@ impl Exporter<'_> {
         };
         let have = pdf.version();
         if have <= max {
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         if have == V::Pdf17
             && max == V::Pdf16
@@ -1168,7 +1195,8 @@ impl Exporter<'_> {
             && pdf.version() <= max
         {
             self.warn(format!("{}: a PDF 1.7 placed in a PDF 1.6 file, embedded as PDF 1.6", asset.name));
-            return Some(krilla::pdf::PdfDocument::new(Arc::new(pdf)));
+            let pages = pdf.pages().len();
+            return Some((krilla::pdf::PdfDocument::new(Arc::new(pdf)), pages));
         }
         let v = match have {
             V::Pdf17 => "PDF 1.7",
@@ -1226,7 +1254,12 @@ impl Exporter<'_> {
             _ => lossless(&data, fmt, self.interpolate),
         };
         if img.is_none() {
-            self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            if data.is_empty() {
+                let at = asset.link.as_deref().map(|link| format!(" ({link})")).unwrap_or_default();
+                self.warn(format!("image `{}` is missing{at} and was skipped", asset.name));
+            } else {
+                self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
+            }
         }
         self.images.insert(id, img.clone());
         img
@@ -1261,7 +1294,11 @@ impl Exporter<'_> {
         if let Some(asset) = doc.assets.get(&g.asset)
             && asset.data.starts_with(b"%PDF")
         {
-            let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
+            // Cropped to a box: the whole page, placed so that the box spans graphic space.
+            let shown = asset.shown_box();
+            let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+            let Some(size) = Size::from_wh(page_w.max(1e-3) as f32, page_h.max(1e-3) as f32) else { return };
             let placed = match self.pdfs.get(&g.asset) {
                 Some(p) => p.clone(),
                 None => {
@@ -1270,10 +1307,26 @@ impl Exporter<'_> {
                     p
                 }
             };
-            if let Some(placed) = placed {
-                s.push_transform(&tf(g.xf));
-                s.draw_pdf_page(&placed, size, asset.page as usize);
-                s.pop();
+            match placed {
+                // krilla would fail the whole export at the end on a page the PDF doesn't have.
+                Some((_, pages)) if asset.page as usize >= pages => {
+                    self.warn(format!("{}: the placed PDF has no page {}", asset.name, u64::from(asset.page) + 1));
+                }
+                Some((placed, _)) => {
+                    s.push_transform(&tf(g.xf));
+                    let clip = shown.and_then(|_| to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1)));
+                    if let Some(clip) = &clip {
+                        s.push_clip_path(clip, &FillRule::NonZero);
+                    }
+                    s.push_transform(&tf(Affine::translate((-l * page_w, -t * page_h))));
+                    s.draw_pdf_page(&placed, size, asset.page as usize);
+                    s.pop();
+                    if clip.is_some() {
+                        s.pop();
+                    }
+                    s.pop();
+                }
+                None => {}
             }
             return;
         }
@@ -1282,7 +1335,13 @@ impl Exporter<'_> {
             && pagenor_images::is_svg(&asset.data)
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-            let tree = self.svgs.entry(g.asset).or_insert_with(|| pagenor_images::svg_tree(&asset.data).map(Arc::new)).clone();
+            let tree = self
+                .svgs
+                .entry(g.asset)
+                .or_insert_with(|| {
+                    pagenor_images::svg_tree_with_fonts(&asset.data, pagenor_fonts::FontDb::global().scoped(self.doc.font_scope)).map(Arc::new)
+                })
+                .clone();
             match tree {
                 Some(tree) => {
                     use krilla_svg::SurfaceExt;
@@ -1421,6 +1480,7 @@ mod eps_tests {
                 data: Arc::new(eps),
                 pixels: Some((2, 1)),
                 page: 0,
+                ..Default::default()
             }),
         );
         let mut item = Item::new(
@@ -1436,6 +1496,7 @@ mod eps_tests {
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         doc.insert_item(pagenor_doc::SpreadRef::Doc(0), item, None).unwrap();
         for standard in [Standard::None, Standard::PdfX4] {

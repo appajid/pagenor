@@ -86,7 +86,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Paragraph Style…",
             [],
             None,
-            "{name, basedOn?, nextStyle?, para?: {…}, chars?: {…}, fromSelection?: bool}",
+            "{name, basedOn?, nextStyle?, para?: {… startAt?: null = continue numbering}, chars?: {…}, fromSelection?: bool}",
             has_doc,
             create_para
         ),
@@ -95,7 +95,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {…}, chars?: {…}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {… ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering}, chars?: {…}}",
             has_doc,
             edit_para
         ),
@@ -193,6 +193,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{swatch?: name (default: the selection's fill), target?: fill|stroke, name?: new name} — makes an unnamed colour a swatch",
             has_doc,
             add_to_swatches
+        ),
+        cmd!(
+            "swatch.options",
+            "Swatch Options…",
+            [],
+            None,
+            "{name, to?: new name, nameWithValue?: bool, color?: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b]|{gray}(0..100), spot?: bool, tint?: 0–1 (tint swatches), base?: colour swatch (tint swatches)} → {name} — every use follows a rename; [None], [Registration], [Black] and [Paper] keep their names",
+            has_doc,
+            swatch_options
         ),
         cmd!("swatch.addUnnamed", "Add Unnamed Colors", [], None, "{} — every unnamed colour used becomes a swatch", has_doc, |s, _| {
             s.edit(|d, _| {
@@ -426,9 +435,20 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// In a style, `startAt: null` is Continue from Previous Number: it is stored as an explicit
+/// "continue" so it also overrides a Start At the style would inherit.
+fn continue_numbering(p: Option<&Value>, para: &mut ParaAttrs) {
+    let explicit =
+        p.and_then(Value::as_object).is_some_and(|o| o.iter().any(|(k, v)| v.is_null() && k.replace('_', "").eq_ignore_ascii_case("startAt")));
+    if explicit {
+        para.start_at = Some(None);
+    }
+}
+
 fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Paragraph Style 1").to_string();
-    let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
+    let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &pagenor_doc::ParaProps::default()))?;
+    continue_numbering(p.get("para"), &mut para);
     let mut chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     if p.get("fromSelection").and_then(Value::as_bool).unwrap_or(false)
         && let Ok(cur) = s.execute("type.selectionAttrs", &json!({}))
@@ -445,6 +465,7 @@ fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
             chars = full;
         }
     }
+    super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.create")?;
     let based_on = str_param(p, "basedOn").map(str::to_string);
     let next = str_param(p, "nextStyle").map(str::to_string);
     s.edit(|d, _| {
@@ -470,8 +491,8 @@ fn CharProps_to_attrs(p: &pagenor_doc::CharProps) -> CharAttrs {
 
 fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.edit", "missing name"))?.to_string();
-    let para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json(k, v))?;
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.edit")?;
     let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
     if based.as_ref().is_some_and(|v| !v.is_null() && !v.is_string()) {
@@ -493,6 +514,9 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         {
             return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
         }
+        let (current, _) = d.styles.resolve_para_style(&name);
+        let mut para: ParaAttrs = attrs(p.get("para"), |a: &mut ParaAttrs, k, v| a.set_json_over(k, v, &current))?;
+        continue_numbering(p.get("para"), &mut para);
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
@@ -599,7 +623,7 @@ fn rename_style(d: &mut pagenor_doc::Document, para: bool, from: &str, to: &str)
                     rename_char_refs(&mut f.para, from, to);
                 }
             }
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         });
     }
 }
@@ -656,6 +680,7 @@ fn delete_para(s: &mut Session, p: &Value) -> Result<Value> {
 fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Character Style 1").to_string();
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.character.create")?;
     // Based on [None] is based on nothing.
     let based_on = str_param(p, "basedOn").filter(|b| *b != pagenor_doc::NO_CHAR_STYLE).map(str::to_string);
     s.edit(|d, _| {
@@ -676,6 +701,7 @@ fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("style.character.edit", "[None] can't be edited"));
     }
     let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.character.edit")?;
     // `null` unsets an attribute (the style no longer sets it).
     let unset: Vec<String> = p
         .get("chars")
@@ -759,13 +785,7 @@ fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
     let c = p.get("color").ok_or_else(|| bad("swatch.create", "missing color"))?;
     let color = parse_color(c).ok_or_else(|| bad("swatch.create", "bad color"))?;
     let spot = p.get("spot").and_then(Value::as_bool).unwrap_or(false);
-    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| match color {
-        pagenor_color::Color::Cmyk { c, m, y, k } => pagenor_color::swatch::cmyk_name(c, m, y, k),
-        other => {
-            let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
-        }
-    });
+    let name = str_param(p, "name").map(str::to_string).unwrap_or_else(|| value_name(color));
     s.edit(|d, _| {
         let name = Styles::unique_name(|n| d.swatch(n).is_some(), &name);
         d.swatches.push(Swatch {
@@ -783,13 +803,29 @@ pub fn parse_color(v: &Value) -> Option<pagenor_color::Color> {
     use pagenor_color::Color;
     match v {
         Value::String(s) => Color::from_hex(s),
+        // Choose one scale for the complete colour. A small channel remains a small
+        // percentage/byte component when another channel establishes those units.
         Value::Array(a) if a.len() >= 3 => {
-            let f = |i: usize| a[i].as_f64().map(|x| if x > 1.0 { x / 255.0 } else { x } as f32);
-            Some(Color::rgb(f(0)?, f(1)?, f(2)?))
+            let v = [a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?];
+            let scale = if v.iter().any(|&x| x > 1.0) { 255.0 } else { 1.0 };
+            if !v.iter().all(|x| x.is_finite() && (0.0..=scale).contains(x)) {
+                return None;
+            }
+            Some(Color::rgb((v[0] / scale) as f32, (v[1] / scale) as f32, (v[2] / scale) as f32))
         }
         Value::Object(o) => {
-            let g = |k: &str| o.get(k).and_then(Value::as_f64).map(|x| if x > 1.0 { x / 100.0 } else { x } as f32);
-            Some(Color::cmyk(g("c")?, g("m")?, g("y")?, g("k")?))
+            let g = |k: &str| o.get(k).and_then(Value::as_f64);
+            if o.contains_key("gray") {
+                let gray = g("gray")?;
+                let scale = if gray > 1.0 { 100.0 } else { 1.0 };
+                return (gray.is_finite() && (0.0..=scale).contains(&gray)).then(|| Color::gray((gray / scale) as f32));
+            }
+            let v = [g("c")?, g("m")?, g("y")?, g("k")?];
+            let scale = if v.iter().any(|&x| x > 1.0) { 100.0 } else { 1.0 };
+            if !v.iter().all(|x| x.is_finite() && (0.0..=scale).contains(x)) {
+                return None;
+            }
+            Some(Color::cmyk((v[0] / scale) as f32, (v[1] / scale) as f32, (v[2] / scale) as f32, (v[3] / scale) as f32))
         }
         _ => None,
     }
@@ -855,13 +891,7 @@ fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The swatch name of a colour value ("C=… M=… Y=… K=…" / "R=… G=… B=…").
 fn value_name(color: pagenor_color::Color) -> String {
-    match color {
-        pagenor_color::Color::Cmyk { c, m, y, k } => pagenor_color::swatch::cmyk_name(c, m, y, k),
-        other => {
-            let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
-        }
-    }
+    pagenor_color::swatch::value_name(color)
 }
 
 fn load_swatches(s: &mut Session, p: &Value) -> Result<Value> {
@@ -902,8 +932,16 @@ fn save_swatches(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = pagenor_color::ase::write(&chosen);
     match str_param(p, "path") {
         Some(path) => {
-            std::fs::write(path, &bytes).map_err(|e| bad("swatch.save", format!("{path}: {e}")))?;
-            Ok(json!({"path": path, "bytes": bytes.len()}))
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                crate::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| bad("swatch.save", format!("{path}: {e}")))?;
+                Ok(json!({"path": path, "bytes": bytes.len()}))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = path;
+                Err(bad("swatch.save", "no file system on the web; omit path to retrieve the bytes"))
+            }
         }
         None => Ok(json!({"base64": super::file::base64_encode(&bytes)})),
     }
@@ -1086,42 +1124,276 @@ fn add_to_swatches(s: &mut Session, p: &Value) -> Result<Value> {
         let w = d.swatches.iter_mut().find(|w| w.name == name).ok_or_else(|| bad("swatch.addToSwatches", format!("no swatch `{name}`")))?;
         w.name = new.clone();
         w.named = true;
-        for g in &mut d.color_groups {
-            for w in &mut g.swatches {
-                if *w == name {
-                    *w = new.clone();
-                }
-            }
-        }
-        // Everything using the colour follows the rename.
-        for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
-            let sp = std::sync::Arc::make_mut(sp);
-            for top in &mut sp.items {
-                rename_in(std::sync::Arc::make_mut(top), &name, &new);
-            }
-        }
+        d.rename_swatch_refs(&name, &new);
         Ok(json!({"name": new}))
     })
 }
 
-/// Point fills and strokes of an item (and its children) at a renamed swatch.
-fn rename_in(it: &mut pagenor_doc::Item, from: &str, to: &str) {
-    if it.fill.swatch == from {
-        it.fill.swatch = to.to_string();
-    }
-    if it.stroke.swatch == from {
-        it.stroke.swatch = to.to_string();
-    }
-    if let Some(kids) = it.children_mut() {
-        for k in kids {
-            rename_in(std::sync::Arc::make_mut(k), from, to);
+/// Swatch Options: rename, Name with Color Value, colour type and value, a tint swatch's tint
+/// and base — one undo step. Every use of the swatch follows a rename.
+fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "swatch.options";
+    let name = str_param(p, "name").ok_or_else(|| bad(ID, "missing name"))?.to_string();
+    let to = str_param(p, "to").map(|n| n.trim().to_string());
+    let with_value = p.get("nameWithValue").and_then(Value::as_bool);
+    let color = match p.get("color") {
+        Some(c) => Some(parse_color(c).ok_or_else(|| bad(ID, "bad color"))?),
+        None => None,
+    };
+    let spot = p.get("spot").and_then(Value::as_bool);
+    let tint = match p.get("tint") {
+        Some(v) => Some(v.as_f64().filter(|t| t.is_finite() && (0.0..=1.0).contains(t)).ok_or_else(|| bad(ID, "tint is 0–1"))? as f32),
+        None => None,
+    };
+    let base = str_param(p, "base").map(str::to_string);
+    s.edit(|d, _| {
+        let w = d.swatch(&name).cloned().ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
+        let mut w2 = w.clone();
+        if w.locked {
+            if to.as_ref().is_some_and(|t| *t != name) || with_value == Some(true) {
+                return Err(bad(ID, format!("`{name}` can't be renamed")));
+            }
+            match (&mut w2.value, color) {
+                (_, None) => {}
+                (SwatchValue::Paper { color: c }, Some(new)) => *c = new,
+                _ => return Err(bad(ID, format!("`{name}` can't be edited"))),
+            }
+            if spot.is_some() || tint.is_some() || base.is_some() {
+                return Err(bad(ID, format!("`{name}` can't be edited")));
+            }
+        } else {
+            match &mut w2.value {
+                SwatchValue::Color { color: c, color_type } => {
+                    if let Some(new) = color {
+                        *c = new;
+                    }
+                    if let Some(sp) = spot {
+                        *color_type = if sp { pagenor_color::ColorType::Spot } else { pagenor_color::ColorType::Process };
+                    }
+                    if tint.is_some() || base.is_some() {
+                        return Err(bad(ID, "only tint swatches have a tint"));
+                    }
+                }
+                SwatchValue::Tint { base: b, tint: t } => {
+                    if color.is_some() || spot.is_some() {
+                        return Err(bad(ID, "a tint swatch takes its colour from its base"));
+                    }
+                    if let Some(v) = tint {
+                        *t = v;
+                    }
+                    if let Some(nb) = &base {
+                        if !d.swatch(nb).is_some_and(|x| matches!(x.value, SwatchValue::Color { .. })) || *nb == name {
+                            return Err(bad(ID, format!("`{nb}` isn't a colour swatch")));
+                        }
+                        *b = nb.clone();
+                    }
+                }
+                _ => {
+                    if color.is_some() || spot.is_some() || tint.is_some() || base.is_some() {
+                        return Err(bad(ID, format!("`{name}` only takes a name here")));
+                    }
+                }
+            }
+            // Name with Color Value: the name is the colour's values and tracks later edits.
+            let auto = with_value.unwrap_or(!w.named && to.as_ref().is_none_or(|t| *t == name));
+            let derived = match (&w2.value, auto) {
+                (SwatchValue::Color { color, .. }, true) => Some(value_name(*color)),
+                _ => None,
+            };
+            match derived {
+                Some(n) => {
+                    w2.name = n;
+                    w2.named = false;
+                }
+                None => {
+                    if let Some(t) = &to {
+                        if t.is_empty() {
+                            return Err(bad(ID, "a swatch needs a name"));
+                        }
+                        w2.name = t.clone();
+                    }
+                    if with_value == Some(false) || w2.name != name {
+                        w2.named = true;
+                    }
+                }
+            }
+            if w2.name != name && d.swatch(&w2.name).is_some() {
+                return Err(bad(ID, format!("a swatch named `{}` exists", w2.name)));
+            }
         }
-    }
+        let new = w2.name.clone();
+        let slot = d.swatches.iter_mut().find(|x| x.name == name).ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
+        *slot = w2;
+        d.rename_swatch_refs(&name, &new);
+        Ok(json!({"name": new}))
+    })
 }
 
 #[cfg(test)]
 mod color_tests {
+    #[test]
+    fn percent_components_at_most_one_stay_percent() {
+        use pagenor_color::Color;
+        // {"c": 0.7, ..., "y": 12.2} is a pale cream (C 0.7 %, Y 12.2 %), not C 70 %.
+        let Some(Color::Cmyk { c, m, y, k }) = parse_color(&json!({"c": 0.7, "m": 0, "y": 12.2, "k": 0})) else { panic!("not CMYK") };
+        assert!((c - 0.007).abs() < 1e-6 && m == 0.0 && (y - 0.122).abs() < 1e-6 && k == 0.0, "got {c} {m} {y} {k}");
+        // Fractions (every component within 0..1) keep working.
+        let Some(Color::Cmyk { c, k, .. }) = parse_color(&json!({"c": 0.5, "m": 0, "y": 0, "k": 1})) else { panic!("not CMYK") };
+        assert!((c - 0.5).abs() < 1e-6 && (k - 1.0).abs() < 1e-6);
+        // RGB arrays follow the same rule: [1, 128, 255] is 0..255.
+        let Some(Color::Rgb { r, g, b }) = parse_color(&json!([1, 128, 255])) else { panic!("not RGB") };
+        assert!((r - 1.0 / 255.0).abs() < 1e-6 && (g - 128.0 / 255.0).abs() < 1e-6 && (b - 1.0).abs() < 1e-6);
+    }
+
     use super::*;
+
+    fn fill_session() -> Session {
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let frame = session.execute("frame.create", &json!({"rect": [0, 0, 200, 100], "content": "text", "text": "Hi"})).unwrap();
+        session.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 2})).unwrap();
+        session.execute("style.paragraph.create", &json!({"name": "Existing"})).unwrap();
+        session.execute("style.character.create", &json!({"name": "Existing"})).unwrap();
+        session.execute("type.char", &json!({"size": 18})).unwrap();
+        session.execute("edit.undo", &json!({})).unwrap();
+        session
+    }
+
+    fn assert_fill_rejected(session: &mut Session, command: &str, params: Value) {
+        let before = session.doc().unwrap().clone();
+        let journal = session.journal.clone();
+        let fill = params
+            .pointer("/chars/fill")
+            .or_else(|| params.pointer("/attrs/fill"))
+            .or_else(|| params.get("fill"))
+            .and_then(Value::as_str)
+            .unwrap_or("Missing Ink");
+
+        let result = session.execute(command, &params);
+
+        match result {
+            Err(crate::EngineError::BadParams { cmd, msg }) => {
+                assert_eq!(cmd, command);
+                assert!(msg.contains(fill), "{msg}");
+                assert!(msg.contains("swatch.create") && msg.contains("returned name"), "{msg}");
+            }
+            other => panic!("expected BadParams for {command}, got {other:?}"),
+        }
+        let after = session.doc().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&before.doc, &after.doc));
+        assert_eq!(before.selection, after.selection);
+        assert_eq!(before.revision, after.revision);
+        assert_eq!(format!("{:?}", before.history), format!("{:?}", after.history));
+        assert_eq!(journal, session.journal);
+    }
+
+    #[test]
+    fn char_fill_rejects_unknown_flat_and_nested_names_when_formatting() {
+        for fill in ["Missing Ink", "#ff0000", "[black]", " [Black]"] {
+            for params in [json!({"fill": fill, "size": 24}), json!({"attrs": {"fill": fill, "size": 24}})] {
+                let mut session = fill_session();
+                assert_fill_rejected(&mut session, "type.char", params);
+            }
+        }
+    }
+
+    #[test]
+    fn char_fill_rejects_unknown_names_when_creating_or_editing_styles() {
+        for command in ["style.paragraph.create", "style.paragraph.edit", "style.character.create", "style.character.edit"] {
+            for fill in ["Missing Ink", "#ff0000"] {
+                let mut session = fill_session();
+                session.execute("style.paragraph.apply", &json!({"name": "Existing"})).unwrap();
+                session.execute("style.character.apply", &json!({"name": "Existing"})).unwrap();
+                assert_fill_rejected(&mut session, command, json!({"name": "Existing", "rename": "Renamed", "chars": {"fill": fill, "size": 24}}));
+            }
+        }
+    }
+
+    #[test]
+    fn char_fill_rejects_inherited_unknown_name_when_creating_from_selection() {
+        let mut session = fill_session();
+        session
+            .edit(|document, selection| {
+                let selected = selection.text.unwrap();
+                document.story_mut(selected.story).unwrap().format_chars(selected.range(), |format| format.over.fill = Some("Missing Ink".into()));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_fill_rejected(&mut session, "style.paragraph.create", json!({"name": "Inherited", "fromSelection": true}));
+    }
+
+    #[test]
+    fn char_fill_accepts_valid_override_when_selection_has_unknown_name() {
+        let mut session = fill_session();
+        session
+            .edit(|document, selection| {
+                let selected = selection.text.unwrap();
+                document.story_mut(selected.story).unwrap().format_chars(selected.range(), |format| format.over.fill = Some("Missing Ink".into()));
+                Ok(())
+            })
+            .unwrap();
+
+        session.execute("style.paragraph.create", &json!({"name": "Override", "fromSelection": true, "chars": {"fill": "[Paper]"}})).unwrap();
+
+        assert_eq!(session.doc().unwrap().doc.styles.para("Override").unwrap().chars.fill.as_deref(), Some("[Paper]"));
+    }
+
+    #[test]
+    fn char_fill_rejects_unknown_name_when_changing_text_even_without_output() {
+        for (find, change) in [("Hi", "Bye"), ("Hi", ""), ("Absent", "Bye")] {
+            for fill in ["Missing Ink", "#ff0000"] {
+                let mut session = fill_session();
+                assert_fill_rejected(&mut session, "find.change", json!({"find": find, "change": change, "attrs": {"fill": fill}}));
+            }
+        }
+    }
+
+    #[test]
+    fn char_fill_preserves_exact_registered_names_when_used_at_all_boundaries() {
+        for fill in ["Brand Ink", "#ff0000", "[None]", "[Black]"] {
+            let mut session = fill_session();
+            if !fill.starts_with('[') {
+                let created = session.execute("swatch.create", &json!({"name": fill, "color": "#108080"})).unwrap();
+                assert_eq!(created["name"], fill);
+            }
+            for params in [json!({"fill": fill}), json!({"attrs": {"fill": fill}})] {
+                session.execute("type.char", &params).unwrap();
+                assert_eq!(session.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fill"], fill);
+            }
+            for kind in ["paragraph", "character"] {
+                session.execute(&format!("style.{kind}.create"), &json!({"name": "Colored", "chars": {"fill": fill}})).unwrap();
+                session.execute(&format!("style.{kind}.edit"), &json!({"name": "Existing", "chars": {"fill": fill}})).unwrap();
+                let document = &session.doc().unwrap().doc;
+                for name in ["Colored", "Existing"] {
+                    let attrs = if kind == "paragraph" {
+                        &document.styles.para(name).unwrap().chars
+                    } else {
+                        &document.styles.char_style(name).unwrap().chars
+                    };
+                    assert_eq!(attrs.fill.as_deref(), Some(fill));
+                }
+            }
+            assert_eq!(session.execute("find.change", &json!({"find": "Hi", "change": "Bye", "attrs": {"fill": fill}})).unwrap()["count"], 1);
+            let selected = session.doc().unwrap().selection.text.unwrap();
+            let story = session.doc().unwrap().doc.story(selected.story).unwrap();
+            assert_eq!(story.text, "Bye");
+            assert_eq!(story.format_after(0).over.fill.as_deref(), Some(fill));
+        }
+    }
+
+    #[test]
+    fn char_fill_accepts_omitted_and_null_attributes_when_used_at_all_boundaries() {
+        for chars in [json!({"size": 18}), json!({"fill": null})] {
+            let mut session = fill_session();
+            session.execute("type.char", &json!({"attrs": chars})).unwrap();
+            for kind in ["paragraph", "character"] {
+                session.execute(&format!("style.{kind}.create"), &json!({"name": "Nullable", "chars": chars})).unwrap();
+                session.execute(&format!("style.{kind}.edit"), &json!({"name": "Existing", "chars": chars})).unwrap();
+            }
+            assert_eq!(session.execute("find.change", &json!({"find": "Hi", "change": "Bye", "attrs": chars})).unwrap()["count"], 1);
+        }
+    }
 
     #[test]
     fn style_groups_rename_every_use() {
@@ -1199,6 +1471,24 @@ mod color_tests {
         assert!(s.execute("style.character.edit", &json!({"name": "Strong", "rename": "  "})).is_err());
         assert!(s.execute("style.character.edit", &json!({"name": "[None]", "chars": {"size": 9}})).is_err());
         assert!(s.doc().unwrap().doc.styles.char_style("[None]").unwrap().chars.is_empty());
+    }
+
+    #[test]
+    fn continue_numbering_in_a_style_overrides_an_inherited_start_at() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Steps", "para": {"listType": "numbers", "startAt": 5}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "More Steps", "basedOn": "Steps"})).unwrap();
+        let start = |s: &Session, name: &str| s.doc().unwrap().doc.styles.resolve_para_style(name).0.start_at;
+        assert_eq!(start(&s, "More Steps"), Some(5), "inherited");
+        s.execute("style.paragraph.edit", &json!({"name": "More Steps", "para": {"startAt": null}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("More Steps").unwrap().para.start_at, Some(None));
+        assert_eq!(start(&s, "More Steps"), None, "continues");
+        assert_eq!(start(&s, "Steps"), Some(5), "the parent keeps its Start At");
+        s.execute("style.paragraph.edit", &json!({"name": "Steps", "para": {"startAt": null}})).unwrap();
+        assert_eq!(start(&s, "Steps"), None);
+        s.execute("style.paragraph.create", &json!({"name": "Fresh", "basedOn": "More Steps", "para": {"start_at": null}})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.styles.para("Fresh").unwrap().para.start_at, Some(None));
     }
 
     #[test]
@@ -1399,5 +1689,119 @@ mod cjk_tests {
         let restored = s.cache.get(&s.doc().unwrap().doc, sid, None);
         assert_eq!(old.frames[0].lines[0].end_x, restored.frames[0].lines[0].end_x);
         assert!(s.execute("style.compositeFont.set", &definition(-1.0)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod swatch_options_tests {
+    use pagenor_color::SwatchValue;
+    use pagenor_doc::{ItemId, StoryId};
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A document whose frame, text, styles, tint swatch and colour group all use "Brand".
+    fn brand_doc() -> (Session, u64, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Brand", "color": {"c": 0, "m": 80, "y": 100, "k": 0}})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Other", "color": "#108080"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+        let (id, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("object.fill", &json!({"swatch": "Brand", "ids": [id]})).unwrap();
+        s.execute("object.stroke", &json!({"swatch": "Brand", "ids": [id]})).unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 3})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Brand"}})).unwrap();
+        s.execute("swatch.newColorGroup", &json!({"name": "Brand Colors", "swatches": ["Brand"]})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Accent"})).unwrap();
+        s.edit(|d, _| {
+            d.swatches.push(pagenor_color::Swatch {
+                name: "Brand 50%".into(),
+                value: SwatchValue::Tint { base: "Brand".into(), tint: 0.5 },
+                locked: false,
+                named: true,
+                hidden: false,
+            });
+            let st = d.styles_mut();
+            if let Some(p) = st.para_mut(pagenor_doc::BASIC_PARAGRAPH) {
+                p.chars.underline_color = Some("Brand".into());
+                p.para.shading_color = Some("Brand".into());
+            }
+            if let Some(c) = st.char_style_mut("Accent") {
+                c.chars.fill = Some("Brand".into());
+            }
+            Ok(())
+        })
+        .unwrap();
+        (s, id, sid)
+    }
+
+    fn uses(s: &Session, id: u64, sid: u64, name: &str) -> Vec<bool> {
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(ItemId(id)).unwrap();
+        let story = d.story(StoryId(sid)).unwrap();
+        let basic = d.styles.para(pagenor_doc::BASIC_PARAGRAPH).unwrap();
+        vec![
+            it.fill.swatch == name,
+            it.stroke.swatch == name,
+            story.chars.iter().any(|r| r.format.over.fill.as_deref() == Some(name)),
+            basic.chars.underline_color.as_deref() == Some(name),
+            basic.para.shading_color.as_deref() == Some(name),
+            d.styles.char_style("Accent").unwrap().chars.fill.as_deref() == Some(name),
+            matches!(&d.swatch("Brand 50%").unwrap().value, SwatchValue::Tint { base, .. } if base == name),
+            d.color_groups[0].swatches == [name],
+        ]
+    }
+
+    #[test]
+    fn renaming_a_swatch_renames_every_use_in_one_undo_step() {
+        let (mut s, id, sid) = brand_doc();
+        assert!(uses(&s, id, sid, "Brand").iter().all(|u| *u));
+        let r = s.execute("swatch.options", &json!({"name": "Brand", "to": "Signal Orange", "spot": true})).unwrap();
+        assert_eq!(r["name"], "Signal Orange");
+        let d = &s.doc().unwrap().doc;
+        assert!(d.swatch("Brand").is_none());
+        assert!(matches!(d.swatch("Signal Orange").unwrap().value, SwatchValue::Color { color_type: pagenor_color::ColorType::Spot, .. }));
+        assert_eq!(uses(&s, id, sid, "Signal Orange"), vec![true; 8]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.swatch("Brand").is_some());
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 8]);
+    }
+
+    #[test]
+    fn bad_swatch_renames_change_nothing() {
+        let (mut s, id, sid) = brand_doc();
+        let before = s.doc().unwrap().doc.clone();
+        for p in [
+            json!({"name": "Brand", "to": "Other"}),
+            json!({"name": "Brand", "to": "  "}),
+            json!({"name": "Brand", "to": "[Paper]"}),
+            json!({"name": "[Black]", "to": "Ink"}),
+            json!({"name": "[Registration]", "to": "Reg"}),
+            json!({"name": "[None]", "to": "Nothing"}),
+            json!({"name": "[Black]", "color": "#ff0000"}),
+            json!({"name": "Brand 50%", "color": "#ff0000"}),
+            json!({"name": "Missing", "to": "X"}),
+        ] {
+            assert!(s.execute("swatch.options", &p).is_err(), "{p}");
+        }
+        assert_eq!(s.doc().unwrap().doc.swatches, before.swatches);
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 8]);
+        // [Paper]'s colour can change; its name can't.
+        s.execute("swatch.options", &json!({"name": "[Paper]", "to": "[Paper]", "color": "#fff8e0"})).unwrap();
+    }
+
+    #[test]
+    fn name_with_color_value_tracks_the_colour() {
+        let (mut s, id, sid) = brand_doc();
+        let r = s.execute("swatch.options", &json!({"name": "Brand", "nameWithValue": true, "color": {"c": 10, "m": 20, "y": 30, "k": 40}})).unwrap();
+        assert_eq!(r["name"], "C=10 M=20 Y=30 K=40");
+        assert_eq!(uses(&s, id, sid, "C=10 M=20 Y=30 K=40"), vec![true; 8]);
+        // Later colour edits keep the name in step until the swatch is named by hand.
+        let r = s.execute("swatch.options", &json!({"name": "C=10 M=20 Y=30 K=40", "color": {"c": 0, "m": 0, "y": 0, "k": 50}})).unwrap();
+        assert_eq!(r["name"], "C=0 M=0 Y=0 K=50");
+        let r = s.execute("swatch.options", &json!({"name": "C=0 M=0 Y=0 K=50", "to": "Warm Gray"})).unwrap();
+        assert_eq!(r["name"], "Warm Gray");
+        assert!(s.doc().unwrap().doc.swatch("Warm Gray").unwrap().named);
     }
 }

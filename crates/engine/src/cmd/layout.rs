@@ -4,10 +4,18 @@ use pagenor_doc::{LAYER_COLORS, Layer, LayerId, Margins, SpreadId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
-use crate::Result;
+use crate::{Result, Session};
+
+/// A start page number parameter: a whole number in 1..=[`pagenor_doc::MAX_PAGE_NUMBER`].
+fn start_number(cmd: &str, key: &str, v: &Value) -> Result<u32> {
+    v.as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| (1..=pagenor_doc::MAX_PAGE_NUMBER).contains(n))
+        .ok_or_else(|| bad(cmd, format!("`{key}` must be a whole number from 1 to {}", pagenor_doc::MAX_PAGE_NUMBER)))
+}
 
 /// Each page's margin box, by spread and page id.
-fn margin_boxes(d: &pagenor_doc::Document) -> Vec<(pagenor_doc::SpreadRef, pagenor_doc::PageId, pagenor_geom::Rect)> {
+pub(super) fn margin_boxes(d: &pagenor_doc::Document) -> Vec<(pagenor_doc::SpreadRef, pagenor_doc::PageId, pagenor_geom::Rect)> {
     d.spread_refs()
         .filter_map(|r| d.spread(r).map(|sp| (r, sp)))
         .flat_map(|(r, sp)| sp.pages.iter().map(move |pg| (r, pg.id, pg.margin_rect())))
@@ -16,7 +24,7 @@ fn margin_boxes(d: &pagenor_doc::Document) -> Vec<(pagenor_doc::SpreadRef, pagen
 
 /// Layout Adjustment: objects on each page move and resize from its old margin box to its new
 /// one (content keeps its size; frames that auto-fit refit).
-fn adjust_layout(d: &mut pagenor_doc::Document, before: &[(pagenor_doc::SpreadRef, pagenor_doc::PageId, pagenor_geom::Rect)]) {
+pub(super) fn adjust_layout(d: &mut pagenor_doc::Document, before: &[(pagenor_doc::SpreadRef, pagenor_doc::PageId, pagenor_geom::Rect)]) {
     use pagenor_geom::Affine;
     let after = margin_boxes(d);
     for (r, pid, old) in before {
@@ -50,6 +58,9 @@ fn adjust_layout(d: &mut pagenor_doc::Document, before: &[(pagenor_doc::SpreadRe
             } else {
                 let inner = it.xf.inverse() * m * it.xf;
                 it.path.transform(inner);
+                if let Some(w) = &mut it.wrap.path {
+                    w.transform(inner);
+                }
                 let ib = it.inner_bounds();
                 if let pagenor_doc::Content::Graphic(g) = &mut it.content {
                     // Content keeps its size but moves with the frame; auto-fit refits.
@@ -89,7 +100,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let st = s.doc()?;
                 let n = st.doc.page_count();
                 let after = p.get("after").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(n - 1);
-                let parent = parent_ref(&st.doc, p.get("parent")).unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
+                let parent = parent_ref(&st.doc, p.get("parent")).unwrap_or_else(|| st.doc.default_parent());
                 s.edit(|d, _| {
                     let ids = d.insert_pages(Some(after), count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
@@ -152,34 +163,48 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(
             "layout.pages.applyParent",
-            "Apply Parent to Pages…",
+            "Apply Master to Pages…",
             ["Layout", "Pages"],
             None,
-            "{pages: [index], parent: \"A\"|null}",
+            "{pages?: [index] (default all), parent: \"A\"|null, setDefault?: false}",
             has_doc,
             |s, p| {
-                let pages: Vec<usize> = p
-                    .get("pages")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect())
-                    .unwrap_or_default();
-                let parent = parent_ref(&s.doc()?.doc, p.get("parent")).unwrap_or(None);
+                let d = &s.doc()?.doc;
+                let pages = super::masters::document_pages(d, p.get("pages"))?;
+                let parent = super::masters::parent_id(d, p.get("parent"), true)?;
+                let set_default = p.get("setDefault").and_then(Value::as_bool).unwrap_or(false);
+                if set_default && (parent.is_none() || pages.len() != d.page_count() || !(0..d.page_count()).all(|i| pages.contains(&i))) {
+                    return Err(bad("layout.pages.applyParent", "a default master must apply to every page"));
+                }
                 s.edit(|d, _| {
                     d.apply_parent(&pages, parent)?;
+                    if set_default {
+                        d.settings.default_parent = parent;
+                    }
                     ok()
                 })
             }
         ),
-        cmd!("layout.parents.new", "New Parent…", ["Layout", "Pages"], None, "{prefix?, name?: \"Parent\"}", has_doc, |s, p| {
-            let name = str_param(p, "name").unwrap_or("Parent").to_string();
+        cmd!("layout.parents.new", "New Master…", ["Layout", "Pages"], None, "{prefix?, name?: \"Master\", applyAll?: false}", has_doc, |s, p| {
+            let name = str_param(p, "name").unwrap_or("Master").to_string();
             s.edit(|d, _| {
                 let prefix = str_param(p, "prefix").map(str::to_string).unwrap_or_else(|| d.next_parent_prefix());
+                if prefix.trim().is_empty()
+                    || name.trim().is_empty()
+                    || d.parents.iter().any(|sp| sp.parent.as_ref().is_some_and(|i| i.prefix == prefix))
+                {
+                    return Err(bad("layout.parents.new", "use a unique, non-empty prefix and a non-empty name"));
+                }
                 let m = d.page(0).map(|p| (p.columns.count, p.columns.gutter, p.margins)).unwrap_or((1, 12.0, Margins::uniform(36.0)));
                 let id = d.add_parent(&prefix, &name, m.0, m.1, m.2);
+                if p.get("applyAll").and_then(Value::as_bool).unwrap_or(false) {
+                    d.apply_parent(&(0..d.page_count()).collect::<Vec<_>>(), Some(id))?;
+                    d.settings.default_parent = Some(id);
+                }
                 Ok(json!({"id": id.0, "prefix": prefix}))
             })
         }),
-        cmd!(noundo "layout.parents.edit", "Edit Parents", [], None, "{on: bool} — show parent spreads on the canvas", has_doc, |s, p| {
+        cmd!(noundo "layout.parents.edit", "Edit Masters", [], None, "{on: bool} — show parent spreads on the canvas", has_doc, |s, p| {
             let st = s.doc_mut()?;
             st.editing_parents = p.get("on").and_then(Value::as_bool).unwrap_or(!st.editing_parents);
             st.selection = Default::default();
@@ -191,9 +216,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "Margins and Columns…",
             ["Layout"],
             None,
-            "{pages?: [index] (default all), margins?: number|{top,bottom,inside,outside}, columns?, gutter?, adjustLayout?: bool (objects follow the margins)}",
+            "{parent?: master prefix, side?: all|left|right|single (master only), pages?: [index] (default all), margins?: number|{top,bottom,inside,outside}, columns?, gutter?, adjustLayout?: bool (objects follow the margins)}",
             has_doc,
             |s, p| {
+                if p.get("parent").is_some() {
+                    return super::masters::settings(s, p);
+                }
                 let pages: Option<Vec<usize>> =
                     p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect());
                 let p = p.clone();
@@ -204,6 +232,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     for abs in all {
                         let Some((si, pi)) = d.page_loc(abs) else { continue };
                         let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi];
+                        if p.get("margins").is_some() || p.get("columns").is_some() || p.get("gutter").is_some() {
+                            pg.inherit_parent_settings = false;
+                        }
                         match p.get("margins") {
                             Some(Value::Number(n)) => pg.margins = Margins::uniform(n.as_f64().unwrap_or(36.0)),
                             Some(v @ Value::Object(_)) => {
@@ -249,6 +280,24 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                 };
                 let (bleed, slug) = (edges("bleed"), edges("slug"));
+                for k in ["width", "height"] {
+                    if let Some(v) = p.get(k)
+                        && !v.as_f64().is_some_and(|x| x > 0.0 && x <= 15552.0)
+                    {
+                        return Err(bad("layout.documentSetup", format!("{k}: page size out of range (0 < size ≤ 216 in)")));
+                    }
+                }
+                let margins: Option<Margins> = match p.get("margins") {
+                    None => None,
+                    Some(Value::Number(n)) => n.as_f64().map(Margins::uniform),
+                    Some(v) => serde_json::from_value(v.clone()).ok(),
+                };
+                if margins.is_some_and(|m| ![m.top, m.bottom, m.inside, m.outside].iter().all(|v| v.is_finite() && (0.0..=15552.0).contains(v))) {
+                    return Err(bad("layout.documentSetup", "margins: 0 to 216 in"));
+                }
+                if p.get("margins").is_some() && margins.is_none() {
+                    return Err(bad("layout.documentSetup", "margins: a number or {top, bottom, inside, outside}"));
+                }
                 let intent: Option<pagenor_doc::Intent> = p.get("intent").and_then(|v| serde_json::from_value(v.clone()).ok());
                 let pages = p.get("pages").and_then(Value::as_u64).map(|n| n.clamp(1, 9999) as usize);
                 let adjust = p.get("adjustLayout").and_then(Value::as_bool).unwrap_or(false);
@@ -259,6 +308,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     if let Some(b) = p.get("binding").and_then(Value::as_str) {
                         d.settings.right_to_left_binding = b == "rightToLeft";
+                        d.order_parent_pages();
                     }
                     if let Some(b) = bleed {
                         d.settings.bleed = b;
@@ -269,7 +319,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(i) = intent {
                         d.settings.intent = i;
                     }
-                    if let Some(n) = p.get("startPage").and_then(Value::as_u64) {
+                    if let Some(n) = p.get("startPage").map(|v| start_number("layout.documentSetup", "startPage", v)).transpose()? {
                         if !d.sections.iter().any(|x| x.start == 0) {
                             d.sections.insert(
                                 0,
@@ -284,14 +334,14 @@ pub fn specs() -> Vec<CommandSpec> {
                             );
                         }
                         if let Some(first) = d.sections.iter_mut().find(|x| x.start == 0) {
-                            first.start_number = Some(n.max(1) as u32);
+                            first.start_number = Some(n);
                         }
                     }
                     // Number of Pages: add at the end (with the last page's parent) or remove from the end.
                     if let Some(n) = pages {
                         let have = d.page_count();
                         if n > have {
-                            let parent = d.page_loc(have - 1).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
+                            let parent = d.default_parent();
                             d.insert_pages(Some(have - 1), n - have, parent)?;
                         } else if n < have {
                             d.delete_pages(&(n..have).collect::<Vec<_>>())?;
@@ -321,6 +371,13 @@ pub fn specs() -> Vec<CommandSpec> {
                                 pg.height = d.settings.page_height;
                             }
                             sp.relayout();
+                        }
+                    }
+                    if let Some(m) = margins {
+                        for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+                            for pg in &mut std::sync::Arc::make_mut(sp).pages {
+                                pg.margins = m;
+                            }
                         }
                     }
                     d.repaginate();
@@ -385,19 +442,28 @@ pub fn specs() -> Vec<CommandSpec> {
             "Numbering & Section Options…",
             ["Layout"],
             None,
-            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters, prefix?, includePrefix?, marker?, remove?: bool}",
+            "{page (1-based; starts a section there), startNumber?: n|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, prefix? (up to 8 characters; no + or comma), includePrefix?, marker?, remove?: bool}",
             has_doc,
             |s, p| {
-                let page = p.get("page").and_then(Value::as_u64).ok_or_else(|| bad("layout.section", "missing page"))? as usize;
+                let page = p
+                    .get("page")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| bad("layout.section", "invalid or missing page"))?;
                 let n = s.doc()?.doc.page_count();
                 if page == 0 || page > n {
                     return Err(bad("layout.section", format!("no page {page}")));
                 }
                 let start = page - 1;
+                if let Some(prefix) = p.get("prefix").and_then(Value::as_str)
+                    && (prefix.chars().count() > 8 || prefix.contains(['+', ',']))
+                {
+                    return Err(bad("layout.section", "section prefix: up to 8 characters, without + or ,"));
+                }
                 let p = p.clone();
                 s.edit(|d, _| {
-                    d.sections.retain(|x| x.start != start || start == 0);
                     if p.get("remove").and_then(Value::as_bool).unwrap_or(false) && start != 0 {
+                        d.sections.retain(|x| x.start != start);
                         return ok();
                     }
                     let mut sec = d.sections.iter().find(|x| x.start == start).cloned().unwrap_or(pagenor_doc::Section {
@@ -410,11 +476,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     });
                     match p.get("startNumber") {
                         Some(Value::Null) => sec.start_number = None,
-                        Some(v) => sec.start_number = v.as_u64().map(|v| v.max(1) as u32),
+                        Some(v) => sec.start_number = Some(start_number("layout.section", "startNumber", v)?),
                         None => {}
                     }
                     if let Some(v) = p.get("style") {
-                        sec.style = serde_json::from_value(v.clone()).map_err(|e| bad("layout.section", e.to_string()))?;
+                        sec.style = match serde_json::from_value(v.clone()) {
+                            Ok(pagenor_doc::NumberStyle::Symbols) => return Err(bad("layout.section", "symbols don't number pages")),
+                            Ok(style) => style,
+                            Err(e) => return Err(bad("layout.section", e.to_string())),
+                        };
                     }
                     if let Some(v) = p.get("prefix").and_then(Value::as_str) {
                         sec.prefix = v.into();
@@ -432,13 +502,95 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
+        cmd!(
+            "layout.numberingSection",
+            "Apply Numbering & Section Options",
+            [],
+            None,
+            "{section: {page, startNumber?, style?, prefix?, marker?, includePrefix?, remove?}, chapter: {style?, source?, start?}} — apply both parts atomically in one undo step",
+            has_doc,
+            |s, p| {
+                let section =
+                    p.get("section").filter(|v| v.is_object()).ok_or_else(|| bad("layout.numberingSection", "section must be an object"))?;
+                let chapter =
+                    p.get("chapter").filter(|v| v.is_object()).ok_or_else(|| bad("layout.numberingSection", "chapter must be an object"))?;
+                // Prepare with the existing commands in an isolated session. Nothing
+                // touches the live document/history/journal until both parts succeed.
+                let mut prepared = Session::new();
+                prepared.prefs.smart_text_reflow = false;
+                prepared.add_document(s.doc()?.clone());
+                prepared.execute("layout.section", section)?;
+                prepared.execute("layout.chapterNumbering", chapter)?;
+                let result = prepared.doc()?.doc.clone();
+                s.edit(|d, _| {
+                    *d = (*result).clone();
+                    ok()
+                })?;
+                chapter_numbering(s)
+            }
+        ),
+        cmd!(
+            "layout.chapterNumbering",
+            "Document Chapter Numbering",
+            [],
+            None,
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, start?: n (Start Chapter Numbering at), source?: automatic|userDefined|sameAsPrevious} → {chapterNumber, label, style, source, book: the open book holding the document, or null}; no parameters reports the setting",
+            has_doc,
+            |s, p| {
+                let fields = p.as_object().ok_or_else(|| bad("layout.chapterNumbering", "parameters must be an object"))?;
+                if fields.is_empty() {
+                    return chapter_numbering(s);
+                }
+                let style = match p.get("style") {
+                    Some(v) => match serde_json::from_value::<pagenor_doc::NumberStyle>(v.clone()) {
+                        Ok(pagenor_doc::NumberStyle::Symbols) | Err(_) => {
+                            return Err(bad("layout.chapterNumbering", format!("unknown chapter style {v}")));
+                        }
+                        Ok(style) => Some(style),
+                    },
+                    None => None,
+                };
+                let mut source = match p.get("source") {
+                    Some(v) => Some(
+                        serde_json::from_value::<pagenor_doc::ChapterSource>(v.clone())
+                            .map_err(|_| bad("layout.chapterNumbering", format!("unknown chapter number source {v}")))?,
+                    ),
+                    None => None,
+                };
+                let start = match p.get("start") {
+                    Some(v) => Some(
+                        v.as_u64()
+                            .filter(|n| (1..=MAX_CHAPTER).contains(n))
+                            .ok_or_else(|| bad("layout.chapterNumbering", format!("start: 1 to {MAX_CHAPTER}")))? as u32,
+                    ),
+                    None => None,
+                };
+                // A start number alone means Start Chapter Numbering at.
+                if start.is_some() && source.is_none() {
+                    source = Some(pagenor_doc::ChapterSource::UserDefined);
+                }
+                s.edit(|d, _| {
+                    if let Some(style) = style {
+                        d.settings.chapter_style = style;
+                    }
+                    if let Some(source) = source {
+                        d.settings.chapter_source = source;
+                    }
+                    if let Some(n) = start {
+                        d.settings.chapter_number = n;
+                    }
+                    ok()
+                })?;
+                chapter_numbering(s)
+            }
+        ),
         cmd!("layer.move", "Move Layer", [], None, "{id, to: index (0 = top/frontmost)}", has_doc, |s, p| {
-            let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
-            let to = p.get("to").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("layer.move", "missing id"))?);
+            let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layer.move", "missing to"))?;
             s.edit(|d, _| {
                 let i = d.layers.iter().position(|l| l.id == id).ok_or_else(|| bad("layer.move", "no such layer"))?;
+                let to = usize::try_from(to).ok().filter(|t| *t < d.layers.len()).ok_or_else(|| bad("layer.move", "to out of range"))?;
                 let l = d.layers.remove(i);
-                let to = to.min(d.layers.len());
                 d.layers.insert(to, l);
                 ok()
             })
@@ -475,29 +627,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.doc_mut()?.active_layer = r;
             Ok(json!({"id": r.0}))
         }),
-        cmd!("layer.set", "Layer Options…", [], None, "{id, name?, visible?, locked?, printable?, color?: [r,g,b]}", has_doc, |s, p| {
-            let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
-            let p = p.clone();
-            s.edit(|d, _| {
-                let l = d.layer_mut(id).ok_or_else(|| bad("layer.set", "no such layer"))?;
-                if let Some(v) = p.get("name").and_then(Value::as_str) {
-                    l.name = v.into();
-                }
-                if let Some(v) = p.get("visible").and_then(Value::as_bool) {
-                    l.visible = v;
-                }
-                if let Some(v) = p.get("locked").and_then(Value::as_bool) {
-                    l.locked = v;
-                }
-                if let Some(v) = p.get("printable").and_then(Value::as_bool) {
-                    l.printable = v;
-                }
-                if let Some(c) = p.get("color").and_then(|c| serde_json::from_value(c.clone()).ok()) {
-                    l.color = c;
-                }
-                ok()
-            })
-        }),
+        cmd!(
+            "layer.set",
+            "Layer Options…",
+            [],
+            None,
+            "{id, name?, color?: [r,g,b] | layer colour name (\"Light Blue\", \"Red\", …), visible?, locked?, printable?, showGuides?, suppressWrapWhenHidden?} — names are unique and not empty",
+            has_doc,
+            set_layer
+        ),
         cmd!("layer.delete", "Delete Layer", [], None, "{id}", has_doc, |s, p| {
             let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
             s.edit(|d, sel| {
@@ -705,12 +843,168 @@ fn document_setup(d: &pagenor_doc::Document) -> Value {
     let st = &d.settings;
     let start = d.sections.iter().find(|x| x.start == 0).and_then(|x| x.start_number).unwrap_or(1);
     json!({"width": st.page_width, "height": st.page_height, "pages": d.page_count(), "startPage": start, "facingPages": st.facing_pages,
-        "binding": if st.right_to_left_binding { "rightToLeft" } else { "leftToRight" }, "intent": st.intent, "bleed": st.bleed, "slug": st.slug})
+        "binding": if st.right_to_left_binding { "rightToLeft" } else { "leftToRight" }, "intent": st.intent, "bleed": st.bleed, "slug": st.slug,
+        "margins": d.page(0).map(|p| p.margins), "primaryTextFrame": st.primary_text_frame})
+}
+
+/// The largest chapter number (as for page numbers).
+const MAX_CHAPTER: u64 = 99_999;
+
+/// The active document's chapter numbering, and the open book that holds it.
+pub fn chapter_numbering(s: &Session) -> Result<Value> {
+    let st = s.doc()?;
+    let set = &st.doc.settings;
+    let book = s
+        .book
+        .as_ref()
+        .filter(|b| st.path.as_deref().is_some_and(|p| b.documents.iter().any(|d| super::book::document_path(d) == super::book::document_path(p))))
+        .map(|b| std::path::Path::new(&b.path).file_stem().map_or_else(|| b.path.clone(), |n| n.to_string_lossy().to_string()));
+    Ok(
+        json!({"chapterNumber": set.chapter_number.clamp(1, 99_999), "label": st.doc.chapter_label(), "style": set.chapter_style, "source": set.chapter_source, "book": book}),
+    )
+}
+
+/// Layer Options: every field in one undo step; a bad name or colour changes nothing.
+fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layer.set";
+    let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad(ID, "missing id"))?);
+    let name = match p.get("name") {
+        Some(v) => Some(v.as_str().map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(ID, "a layer needs a name"))?.to_string()),
+        None => None,
+    };
+    let color: Option<[u8; 3]> = match p.get("color") {
+        None => None,
+        Some(Value::String(n)) => Some(
+            LAYER_COLORS
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(n))
+                .map(|(_, c)| *c)
+                .ok_or_else(|| bad(ID, format!("unknown layer colour `{n}`")))?,
+        ),
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad(ID, "color is [r,g,b] (0–255) or a layer colour name"))?),
+    };
+    let flag = |k: &str| match p.get(k) {
+        None => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| bad(ID, format!("`{k}` is true or false"))),
+    };
+    let (visible, locked, printable) = (flag("visible")?, flag("locked")?, flag("printable")?);
+    let (guides, wrap) = (flag("showGuides")?, flag("suppressWrapWhenHidden")?);
+    s.edit(|d, _| {
+        if let Some(n) = &name
+            && d.layers.iter().any(|l| l.id != id && l.name == *n)
+        {
+            return Err(bad(ID, format!("a layer named `{n}` exists")));
+        }
+        let l = d.layer_mut(id).ok_or_else(|| bad(ID, "no such layer"))?;
+        if let Some(n) = name {
+            l.name = n;
+        }
+        if let Some(c) = color {
+            l.color = c;
+        }
+        for (slot, v) in [
+            (&mut l.visible, visible),
+            (&mut l.locked, locked),
+            (&mut l.printable, printable),
+            (&mut l.show_guides, guides),
+            (&mut l.suppress_wrap_when_hidden, wrap),
+        ] {
+            if let Some(v) = v {
+                *slot = v;
+            }
+        }
+        ok()
+    })
 }
 
 #[cfg(test)]
 mod setup_tests {
+    #[test]
+    fn document_setup_sets_every_pages_margins_in_one_step() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 3, "margins": 36})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text"})).unwrap();
+        let r = s.execute("layout.documentSetup", &json!({})).unwrap();
+        assert_eq!(r["margins"], json!({"top": 36.0, "bottom": 36.0, "inside": 36.0, "outside": 36.0}));
+        let m = json!({"top": 72, "bottom": 54, "inside": 72, "outside": 72});
+        let r = s.execute("layout.documentSetup", &json!({"margins": m, "bleed": 9, "adjustLayout": true})).unwrap();
+        assert_eq!(r["margins"]["bottom"], 54.0);
+        let d = &s.doc().unwrap().doc;
+        assert!(
+            d.spreads.iter().chain(&d.parents).flat_map(|sp| &sp.pages).all(|pg| pg.margins.top == 72.0 && pg.margins.bottom == 54.0),
+            "every page and parent page"
+        );
+        let b = d.item(pagenor_doc::ItemId(f["id"].as_u64().unwrap())).unwrap().bounds();
+        assert!((b.y0 - 72.0).abs() < 1e-6, "Adjust Layout: the frame follows the margins ({b:?})");
+        // One step: undo brings back the margins and the bleed.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let r = s.execute("layout.documentSetup", &json!({})).unwrap();
+        assert_eq!((r["margins"]["top"].clone(), r["bleed"][0].clone()), (json!(36.0), json!(0.0)));
+        for bad in [
+            json!({"width": 0}),
+            json!({"height": -5}),
+            json!({"width": 1e9}),
+            json!({"width": "wide"}),
+            json!({"margins": -1}),
+            json!({"margins": {"top": 1}}),
+        ] {
+            assert!(s.execute("layout.documentSetup", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(s.execute("layout.documentSetup", &json!({})).unwrap()["width"], 612.0, "refused values change nothing");
+    }
+
     use serde_json::json;
+
+    #[test]
+    fn numbering_queries_and_refused_changes_preserve_history_and_sections() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        s.execute(
+            "layout.section",
+            &json!({"page": 2, "startNumber": 4, "style": "upperRoman", "prefix": "A-", "includePrefix": true, "marker": "Appendix"}),
+        )
+        .unwrap();
+        s.execute("layout.section", &json!({"page": 2, "prefix": "తెలుగు"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.page_name(1), "తెలుగుIV");
+        let history = s.doc().unwrap().history.undo.len();
+        let revision = s.doc().unwrap().revision;
+        s.execute("layout.chapterNumbering", &json!({})).unwrap();
+        for params in [
+            json!({"page": 2, "style": "symbols"}),
+            json!({"page": 2, "startNumber": u64::MAX}),
+            json!({"page": 2, "prefix": "తెలుగుతెలుగుతెలుగు"}),
+            json!({"page": u64::MAX}),
+        ] {
+            assert!(s.execute("layout.section", &params).is_err());
+        }
+        for params in [json!(null), json!([]), json!({"start": u64::MAX}), json!({"style": "arabicFourDigits", "source": "bad"})] {
+            assert!(s.execute("layout.chapterNumbering", &params).is_err());
+        }
+        assert!(std::sync::Arc::ptr_eq(&d, &s.doc().unwrap().doc));
+        assert_eq!(s.doc().unwrap().revision, revision);
+        assert_eq!(s.doc().unwrap().history.undo.len(), history);
+    }
+
+    #[test]
+    fn chapter_numbering_sets_style_and_start() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("layout.chapterNumbering", &json!({})).unwrap();
+        assert_eq!(r, json!({"chapterNumber": 1, "label": "1", "style": "arabic", "source": "automatic", "book": null}));
+        let r = s.execute("layout.chapterNumbering", &json!({"start": 4, "style": "upperRoman"})).unwrap();
+        assert_eq!((&r["label"], &r["source"]), (&json!("IV"), &json!("userDefined")), "a start number means Start Chapter Numbering at");
+        s.execute("variables.define", &json!({"name": "Chapter", "type": "chapterNumber"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let chapter = d.variable("Chapter").unwrap();
+        assert_eq!(d.variable_value(chapter, Some(0)).as_deref(), Some("IV"), "the Chapter Number variable uses the style");
+        for bad in [json!({"style": "symbols"}), json!({"start": 0}), json!({"start": 100_000}), json!({"source": "nextBook"})] {
+            assert!(s.execute("layout.chapterNumbering", &bad).is_err(), "{bad}");
+        }
+        s.execute("layout.chapterNumbering", &json!({"source": "sameAsPrevious"})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("layout.chapterNumbering", &json!({})).unwrap()["source"], "userDefined", "undoable");
+    }
 
     #[test]
     fn document_setup_pages_start_bleed_slug() {
@@ -760,6 +1054,38 @@ mod setup_tests {
         assert_eq!(d.spreads[1].pages.iter().map(|p| (p.side, p.x)).collect::<Vec<_>>(), vec![(Left, 0.0), (Right, w)]);
     }
 
+    /// Bound right to left, a parent spread lists its right page first; each document page still
+    /// shows the parent page on its own side, at its own position, also after an IDML round trip.
+    #[test]
+    fn right_to_left_binding_shows_the_parent_page_of_the_same_side() {
+        use pagenor_doc::PageSide::{Left, Right};
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 4})).unwrap();
+        s.execute("layout.documentSetup", &json!({"binding": "rightToLeft"})).unwrap();
+        let w = s.doc().unwrap().doc.settings.page_width;
+        let parent = json!({"kind": "parent", "index": 0});
+        for (rect, text) in [(json!([72, 36, 200, 60]), "left head"), (json!([w + 72.0, 36, w + 200.0, 60]), "right head")] {
+            s.execute("frame.create", &json!({"spread": parent, "rect": rect, "content": "text", "text": text})).unwrap();
+        }
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.parents[0].pages.iter().map(|p| (p.side, p.x)).collect::<Vec<_>>(), vec![(Right, w), (Left, 0.0)]);
+        let docs = [(*d).clone(), pagenor_idml::import_idml(&pagenor_idml::export_idml(&d)).unwrap()];
+        for d in docs {
+            let mut s = crate::Session::new();
+            s.add_document(crate::DocState::new(d, None));
+            for (page, side, text) in [(0, Left, "left head"), (1, Right, "right head"), (2, Left, "left head"), (3, Right, "right head")] {
+                let r = s.execute("layout.overrideParentItems", &json!({"page": page})).unwrap();
+                let d = &s.doc().unwrap().doc;
+                let ids = r["ids"].as_array().unwrap();
+                assert_eq!(ids.len(), 1, "page {}", page + 1);
+                let it = d.item(pagenor_doc::ItemId(ids[0].as_u64().unwrap())).unwrap();
+                let story = d.story(it.text_frame().unwrap().story).unwrap();
+                assert_eq!((d.page(page).unwrap().side, story.text.trim_end()), (side, text), "page {}", page + 1);
+                assert_eq!(d.page_of_item(it.id), Some(page), "page {}", page + 1);
+            }
+        }
+    }
+
     /// Multi-column frames filled the left column first in a right-to-left document (#100):
     /// stories made in a right-to-left-bound document start their columns on the right.
     #[test]
@@ -793,6 +1119,22 @@ mod setup_tests {
 #[cfg(test)]
 mod layer_tests {
     use serde_json::json;
+
+    #[test]
+    fn layer_move_reorders_and_rejects_bad_input() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let l1 = s.doc().unwrap().doc.layers[0].id.0;
+        let l2 = s.execute("layer.new", &json!({})).unwrap()["id"].as_u64().unwrap();
+        let order = |s: &crate::Session| s.doc().unwrap().doc.layers.iter().map(|l| l.id.0).collect::<Vec<_>>();
+        assert_eq!(order(&s), [l2, l1]);
+        for bad in [json!({"id": l1, "to": 2}), json!({"id": 999, "to": 0}), json!({"id": l1}), json!({"to": 0})] {
+            assert!(s.execute("layer.move", &bad).is_err(), "{bad}");
+            assert_eq!(order(&s), [l2, l1]);
+        }
+        s.execute("layer.move", &json!({"id": l1, "to": 0})).unwrap();
+        assert_eq!(order(&s), [l1, l2]);
+    }
 
     #[test]
     fn merge_delete_unused_hide_and_lock_others() {
@@ -881,6 +1223,23 @@ mod page_numbering_view_tests {
     use crate::Session;
 
     #[test]
+    fn section_start_numbers_are_bounded() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        for n in [json!(0), json!(100_000), json!(u32::MAX), json!(u64::from(u32::MAX) + 2), json!(-1), json!(2.5), json!("7")] {
+            let e = s.execute("layout.section", &json!({"page": 1, "startNumber": n})).unwrap_err().to_string();
+            assert!(e.contains("startNumber"), "{n}: {e}");
+            assert!(s.execute("layout.documentSetup", &json!({"startPage": n, "width": 400})).is_err(), "{n}");
+            assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+            assert!(s.doc().unwrap().history.undo.is_empty());
+        }
+        assert_eq!((0..2).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2"]);
+        let r = s.execute("layout.section", &json!({"page": 1, "startNumber": 99_999})).unwrap();
+        assert_eq!(r["names"], json!(["99999", "100000"]));
+    }
+
+    #[test]
     fn section_and_absolute_page_numbering_view() {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 4})).unwrap();
@@ -894,6 +1253,20 @@ mod page_numbering_view_tests {
         assert_eq!((0..4).map(|i| s.page_label(i)).collect::<Vec<_>>(), ["1", "2", "3", "4"]);
         assert_eq!(s.resolve_page("1"), Some(0));
         assert_eq!(s.resolve_page("9"), None);
+    }
+
+    #[test]
+    fn section_prefixes_are_short_and_avoid_plus_and_comma() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 2})).unwrap();
+        for prefix in ["A-", "Appendix", "§ 1"] {
+            s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).unwrap();
+        }
+        for prefix in ["Appendix1", "A+", "1,2"] {
+            assert!(s.execute("layout.section", &json!({"page": 2, "prefix": prefix})).is_err(), "{prefix}");
+        }
+        assert!(s.execute("layout.section", &json!({"page": 2, "style": "symbols"})).is_err());
+        assert_eq!(s.doc().unwrap().doc.sections.iter().find(|x| x.start == 1).unwrap().prefix, "§ 1", "a refused prefix changes nothing");
     }
 }
 
@@ -919,5 +1292,43 @@ mod adjust_tests {
         s.execute("layout.marginsAndColumns", &json!({"margins": 36})).unwrap();
         let b2 = s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap().bounds();
         assert_eq!(b, b2);
+    }
+}
+
+#[cfg(test)]
+mod layer_options_tests {
+    use serde_json::json;
+
+    #[test]
+    fn layer_set_sets_every_field_and_rejects_bad_names() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let id = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let all = json!({"id": id, "name": "  Artwork ", "color": "Gold", "visible": false, "locked": true, "printable": false,
+            "showGuides": false, "suppressWrapWhenHidden": true});
+        s.execute("layer.set", &all).unwrap();
+        let l = s.doc().unwrap().doc.layer(pagenor_doc::LayerId(id)).cloned().unwrap();
+        assert_eq!(l.name, "Artwork");
+        assert_eq!(l.color, [255, 153, 0]);
+        assert!(!l.visible && l.locked && !l.printable && !l.show_guides && l.suppress_wrap_when_hidden);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.layer(pagenor_doc::LayerId(id)).unwrap().name, "Art", "one undo step");
+        let first_name = s.doc().unwrap().doc.layers.iter().find(|l| l.id.0 == first).unwrap().name.clone();
+        let before = s.doc().unwrap().doc.layers.clone();
+        for p in [
+            json!({"id": id, "name": ""}),
+            json!({"id": id, "name": "   "}),
+            json!({"id": id, "name": first_name}),
+            json!({"id": id, "name": "Fine", "color": "Plaid"}),
+            json!({"id": id, "color": [300, 0, 0]}),
+            json!({"id": id, "visible": "yes"}),
+            json!({"id": 999_999, "name": "Ghost"}),
+        ] {
+            assert!(s.execute("layer.set", &p).is_err(), "{p}");
+        }
+        assert_eq!(s.doc().unwrap().doc.layers, before);
+        // Keeping its own name is fine.
+        s.execute("layer.set", &json!({"id": id, "name": "Art", "color": [1, 2, 3]})).unwrap();
     }
 }

@@ -1,0 +1,13 @@
+Pagenor installer artwork and metadata
+
+Pagenor names, logo and symbol: Copyright (c) Appaji Ambarisha.
+Branding rights reserved. Use/distribution with Pagenor is authorised under
+assets/brand/LICENSE.txt. This does not grant a general trademark licence.
+
+Inter glyph outlines: Copyright (c) the Inter Project Authors,
+SIL Open Font License 1.1; see assets/fonts/OFL-Inter.txt.
+
+Installer generator and Finder layout approach: adapted from @XusBadia’s
+upstream PR #131, under the repository’s MIT OR Apache-2.0 licences.
+New layout code/geometry: Pagenor contributors, MIT OR Apache-2.0.
+LittleCMS built-in sRGB profile: “No copyright, use freely”.

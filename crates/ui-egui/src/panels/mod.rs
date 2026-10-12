@@ -1,6 +1,9 @@
 //! Panels and shared panel helpers.
 
+pub mod cell_stroke;
 pub mod conditions;
+mod font_menu;
+pub use font_menu::{FontPick, SAMPLES as FONT_SAMPLES, font_menu_body};
 pub mod datamerge;
 pub mod glyphs;
 pub mod interactive;
@@ -12,6 +15,7 @@ pub mod properties;
 pub mod styles;
 pub mod swatches;
 pub mod table;
+pub mod tabs;
 
 use egui::vec2;
 use pagenor_doc::{Content, StrokeAlign, WrapMode};
@@ -43,6 +47,9 @@ pub struct SelInfo {
     /// Uniform corner (shape, size) — the first corner.
     pub corner: (pagenor_geom::corners::CornerShape, f64),
     pub wrap_invert: bool,
+    /// Text wrap side and contour type ids (`bothSides`, `sameAsClipping`, …).
+    pub wrap_side: String,
+    pub wrap_contour: String,
     pub locked: bool,
 }
 
@@ -109,7 +116,12 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let sp = d.spread(loc.spread)?;
     let pi = sp.page_at_x(b.center().x).unwrap_or(0);
     let px = sp.pages.get(pi).map(|p| p.x).unwrap_or(0.0);
-    let wrap = match first.wrap.mode {
+    // With the graphic selected (Direct Selection), the Text Wrap panel shows its own wrap.
+    let tw = match (&first.content, st.selection.content) {
+        (Content::Graphic(g), true) => &g.wrap,
+        _ => &first.wrap,
+    };
+    let wrap = match tw.mode {
         WrapMode::None => "none",
         WrapMode::BoundingBox => "boundingBox",
         WrapMode::Contour => "contour",
@@ -135,7 +147,9 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
             .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| v.as_str().map(str::to_string)))
             .unwrap_or_else(|| "solid".into()),
         corner: (first.corners.corners[0].shape, first.corners.corners[0].size),
-        wrap_invert: first.wrap.invert,
+        wrap_invert: tw.invert,
+        wrap_side: serde_json::to_value(tw.side).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        wrap_contour: serde_json::to_value(tw.contour).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         locked: first.locked,
     })
 }
@@ -196,27 +210,65 @@ const SWATCH_MENU_ROW_H: f32 = 22.0;
 
 /// One swatch-menu row: a chip and the swatch name; the whole row is clickable (the chip included).
 /// `name == current` highlights it. Returns true when the row was clicked.
-pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &pagenor_doc::Document, name: &str, current: &str) -> bool {
+/// Where a swatch row's name starts, after its chip.
+const SWATCH_MENU_TEXT_X: f32 = 28.0;
+
+fn swatch_menu_font() -> egui::FontId {
+    egui::FontId::proportional(12.5)
+}
+
+/// One swatch in a swatch list, `width` wide: the swatch under the pointer is highlighted (white
+/// on blue, like a menu), the current one shaded.
+pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &pagenor_doc::Document, name: &str, current: &str, width: f32) -> bool {
     let t = Tokens::get(ui.ctx());
-    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SWATCH_MENU_ROW_H), egui::Sense::click());
+    let (row, resp) = ui.allocate_exact_size(vec2(width, SWATCH_MENU_ROW_H), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, name == current, name));
-    if name == current {
-        ui.painter().rect_filled(row, 0.0, t.row_selected);
-    } else if resp.hovered() {
-        ui.painter().rect_filled(row, 0.0, t.hover);
+    let hovered = resp.hovered();
+    if hovered {
+        ui.painter().rect_filled(row, 2.0, t.accent_strong);
+    } else if name == current {
+        ui.painter().rect_filled(row, 2.0, t.row_selected);
     }
     let (c, g) = crate::widgets::swatch_colors(doc, name, 1.0);
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0, 3.0), vec2(16.0, 16.0));
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
+    // A name too long for the list is cut at the row's end.
+    let text = ui.painter().with_clip_rect(ui.clip_rect().intersect(row.shrink2(vec2(2.0, 0.0))));
     crate::rtl::paint(
-        ui.painter(),
-        row.min + vec2(28.0, SWATCH_MENU_ROW_H / 2.0),
+        &text,
+        row.min + vec2(SWATCH_MENU_TEXT_X, SWATCH_MENU_ROW_H / 2.0),
         egui::Align2::LEFT_CENTER,
         name,
-        egui::FontId::proportional(12.5),
-        t.text,
+        swatch_menu_font(),
+        if hovered { egui::Color32::WHITE } else { t.text },
     );
     resp.clicked()
+}
+
+/// The list in a swatch popup → the swatch picked. It is as wide as its longest name (within
+/// limits), and its rows stop short of the scroll bar that floats over the list's edge.
+pub fn swatch_list(ui: &mut egui::Ui, doc: &pagenor_doc::Document, current: &str) -> Option<String> {
+    let font = swatch_menu_font();
+    let widest = doc
+        .swatches
+        .iter()
+        .map(|sw| ui.painter().layout_no_wrap(sw.name.clone(), font.clone(), egui::Color32::PLACEHOLDER).size().x)
+        .fold(0.0, f32::max);
+    let scroll = &ui.spacing().scroll;
+    let bar = scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin;
+    let width = (SWATCH_MENU_TEXT_X + widest + 10.0 + bar).clamp(200.0, 360.0);
+    ui.set_min_width(width);
+    ui.set_max_width(width);
+    let mut picked = None;
+    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+        for sw in &doc.swatches {
+            if swatch_menu_row(ui, doc, &sw.name, current, width - bar) {
+                picked = Some(sw.name.clone());
+                ui.close();
+            }
+        }
+    });
+    picked
 }
 
 /// A swatch dropdown showing a chip and name; `on_pick` gets the chosen swatch name.
@@ -240,182 +292,12 @@ pub fn swatch_picker(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, current: 
             Tokens::get(ui.ctx()).icon,
         );
         egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(200.0);
-            ui.set_max_width(280.0);
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for sw in &doc.swatches {
-                    if swatch_menu_row(ui, &doc, &sw.name, &cur) {
-                        picked = Some(sw.name.clone());
-                        ui.close();
-                    }
-                }
-            });
+            picked = swatch_list(ui, &doc, &cur);
         });
     });
     if let Some(p) = picked {
         on_pick(app, p);
     }
-}
-
-/// A five-pointed star (filled, or outlined).
-fn paint_star(p: &egui::Painter, c: egui::Pos2, r: f32, filled: bool, color: egui::Color32) {
-    let pt = |i: usize, rad: f32| {
-        let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
-        c + egui::vec2(a.cos(), a.sin()) * rad
-    };
-    let outline: Vec<egui::Pos2> = (0..10).map(|i| pt(i, if i % 2 == 0 { r } else { r * 0.42 })).collect();
-    if filled {
-        // The inner pentagon and the five points (each convex).
-        let inner: Vec<egui::Pos2> = (0..5).map(|i| outline[2 * i + 1]).collect();
-        p.add(egui::Shape::convex_polygon(inner, color, egui::Stroke::NONE));
-        for i in 0..5 {
-            p.add(egui::Shape::convex_polygon(vec![outline[(2 * i + 9) % 10], outline[2 * i], outline[2 * i + 1]], color, egui::Stroke::NONE));
-        }
-    } else {
-        p.add(egui::Shape::closed_line(outline, egui::Stroke::new(1.0, color)));
-    }
-}
-
-/// The font menu's state while it is open: the search, Show Favorites Only, the match ↑/↓ highlight
-/// and the frame it was last shown (a menu not shown the frame before has just opened).
-#[derive(Clone, Default)]
-struct FontMenuState {
-    query: String,
-    only_favs: bool,
-    highlight: Option<usize>,
-    frame: Option<u64>,
-}
-
-/// The Font menu, inside any font field's popup or combo box: a search field (it has the keyboard
-/// while the menu is open, and starts empty each time it opens), favourites (★, Show Favorites
-/// Only), and each family's name with a sample in that family, the script groups apart. ↑/↓ move
-/// through the matches and Return picks one. Returns the family picked and closes the menu; the
-/// search, Favorites and the stars keep it open (the popup closes on a click outside only).
-pub fn font_menu_body(app: &mut DesignApp, ui: &mut egui::Ui, menu: &[pagenor_fonts::FamilyInfo], current: &str, width: f32) -> Option<String> {
-    let (fonts, scope) = (fonts(app), font_scope(app));
-    let english = app.session.prefs.show_font_names_in_english;
-    let mut favs = app.session.prefs.favorite_fonts.clone();
-    let mut pick = None;
-    let mut favs_changed = false;
-    let state_id = egui::Id::new("font_menu_state");
-    let mut st: FontMenuState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
-    let frame = ui.ctx().cumulative_frame_nr();
-    if st.frame.is_none_or(|f| f.saturating_add(1) < frame) {
-        st.query.clear();
-        st.highlight = None;
-    }
-    st.frame = Some(frame);
-    let t = crate::theme::Tokens::get(ui.ctx());
-    ui.set_width(width.max(300.0));
-    let search = ui
-        .horizontal(|ui| {
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut st.query)
-                    .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search fonts")))
-                    .desired_width(200.0)
-                    // Return picks the highlighted match instead of leaving the field.
-                    .return_key(None),
-            );
-            ui.toggle_value(&mut st.only_favs, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Favorites"))).on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show Favorites Only"));
-            });
-            search
-        })
-        .inner;
-    // Typing always goes to the search, never to the document under the menu.
-    if !search.has_focus() {
-        search.request_focus();
-    }
-    let q = st.query.to_lowercase();
-    let shown: Vec<&pagenor_fonts::FamilyInfo> = menu.iter().filter(|f| f.matches(&q) && (!st.only_favs || favs.contains(&f.family))).collect();
-    if search.changed() {
-        st.highlight = if q.is_empty() { None } else { Some(0) };
-    }
-    let (down, up, enter) = ui.input(|i| (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::Enter)));
-    let last = shown.len().checked_sub(1);
-    st.highlight = match (st.highlight, last) {
-        (_, None) => None,
-        (None, Some(_)) if down => Some(0),
-        (Some(h), Some(l)) if down => Some((h + 1).min(l)),
-        (Some(h), Some(l)) if up => Some(h.saturating_sub(1).min(l)),
-        (h, Some(l)) => h.map(|h| h.min(l)),
-    };
-    if enter && let Some(f) = st.highlight.and_then(|h| shown.get(h)) {
-        pick = Some(f.family.clone());
-    }
-    let ppp = ui.ctx().pixels_per_point();
-    egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
-        let mut group = None;
-        for (k, info) in shown.iter().enumerate() {
-            // A separator between the Western fonts and each CJK language's.
-            if group.is_some_and(|g| g != info.group) {
-                ui.separator();
-            }
-            group = Some(info.group);
-            let f = &info.family;
-            let label = info.label(english);
-            let (row, mut resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
-            let highlighted = st.highlight == Some(k);
-            if highlighted && (down || up) {
-                ui.scroll_to_rect(row, None);
-            }
-            if !ui.is_rect_visible(row) {
-                continue;
-            }
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, f == current, label));
-            if label != f {
-                resp = resp.on_hover_text(f);
-            }
-            if f == current {
-                ui.painter().rect_filled(row, 0.0, t.row_selected);
-            } else if highlighted || resp.hovered() {
-                ui.painter().rect_filled(row, 0.0, t.hover);
-            }
-            // Favourite star.
-            let star = egui::Rect::from_min_size(row.min + egui::vec2(2.0, 4.0), egui::vec2(16.0, 16.0));
-            let fav = favs.contains(f);
-            let sr = ui.interact(star, ui.id().with(("fav", f)), egui::Sense::click());
-            paint_star(ui.painter(), star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
-            if sr.clicked() {
-                if fav {
-                    favs.retain(|x| x != f);
-                } else {
-                    favs.push(f.clone());
-                }
-                favs_changed = true;
-            }
-            ui.painter().text(row.min + egui::vec2(22.0, 12.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.0), t.text);
-            // The name in its own face (rendered once per family and scale).
-            let key = egui::Id::new(("font_preview", f, scope, (ppp * 100.0) as u32, t.text.to_array()));
-            let tex: Option<egui::TextureHandle> = ui.data(|d| d.get_temp(key));
-            let tex = tex.unwrap_or_else(|| {
-                let img = pagenor_render::glyphs::text_line(&fonts, f, "Regular", "Sample", (18.0 * ppp) as u32, t.text.to_array());
-                let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-                let h = ui.ctx().load_texture(format!("font_preview_{f}"), ci, egui::TextureOptions::LINEAR);
-                ui.data_mut(|d| d.insert_temp(key, h.clone()));
-                h
-            });
-            let size = tex.size_vec2() / ppp;
-            let at = egui::pos2(row.max.x - size.x - 4.0, row.center().y - size.y / 2.0);
-            ui.painter().image(
-                tex.id(),
-                egui::Rect::from_min_size(at, size),
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-            if resp.clicked() && !sr.clicked() {
-                pick = Some(f.clone());
-            }
-        }
-    });
-    ui.data_mut(|d| d.insert_temp(state_id, st));
-    if favs_changed {
-        let _ = app.run("prefs.set", json!({ "favoriteFonts": favs }));
-    }
-    if pick.is_some() {
-        ui.close();
-    }
-    pick
 }
 
 /// A font family combo box showing `current` by its menu name, with [`font_menu_body`] as its menu.
@@ -426,39 +308,52 @@ pub fn font_combo(
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     current: &str,
     width: f32,
-) -> Option<String> {
+) -> Option<FontPick> {
     let menu = font_menu(app);
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, &menu, current) };
-    egui::ComboBox::from_id_salt(id_salt)
-        .selected_text(shown)
-        .width(width)
-        .height(440.0)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show_ui(ui, |ui| font_menu_body(app, ui, &menu, current, width))
-        .inner
-        .flatten()
+    // The menu owns its scroll area. Nesting it in ComboBox's implicit scroll area
+    // leaves a filtered one-row popup clipped when a family expands again.
+    let field = ui.push_id(id_salt, |ui| crate::widgets::dropdown(ui, &shown, width)).inner;
+    font_popup(app, &field, &menu, current)
 }
 
 /// [`font_menu_body`] in a popup under `field` (a font field the caller draws). Returns the family
 /// picked.
-pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[pagenor_fonts::FamilyInfo], current: &str) -> Option<String> {
+pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[pagenor_fonts::FamilyInfo], current: &str) -> Option<FontPick> {
+    // Screen readers (and tests) see the field as the combo box it looks like.
+    field.widget_info(|| {
+        let mut info = egui::WidgetInfo::new(egui::WidgetType::ComboBox);
+        info.current_text_value = Some(if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) });
+        info
+    });
     egui::Popup::menu(field)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| font_menu_body(app, ui, menu, current, field.rect.width()))
         .and_then(|r| r.inner)
 }
 
-/// Set the text's font to `family`, in its Regular style (else its first).
+/// Resolve the chosen style, or the family's regular/first available style.
+pub fn pick_style(app: &DesignApp, pick: &FontPick) -> String {
+    if let Some(style) = &pick.style {
+        return style.clone();
+    }
+    let styles = fonts(app).styles(&pick.family);
+    if styles.iter().any(|s| s == "Regular") { "Regular".into() } else { styles.first().cloned().unwrap_or_default() }
+}
+/// Apply both family and style as one reversible text edit.
+pub fn apply_font(app: &mut DesignApp, pick: &FontPick) {
+    let style = pick_style(app, pick);
+    let _ = app.run("type.char", json!({"attrs":{"fontFamily":pick.family,"fontStyle":style}}));
+}
+/// Apply a family using its regular or first available style.
 pub fn apply_font_family(app: &mut DesignApp, family: &str) {
-    let styles = fonts(app).styles(family);
-    let style = if styles.iter().any(|s| s == "Regular") { "Regular".to_string() } else { styles.first().cloned().unwrap_or_default() };
-    let _ = app.run("type.char", json!({"attrs": {"fontFamily": family, "fontStyle": style}}));
+    apply_font(app, &FontPick { family: family.into(), style: None });
 }
 
 /// The text's font family field: [`font_combo`], applied to the text.
 pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, width: f32) {
     if let Some(f) = font_combo(app, ui, "font_family", current, width) {
-        apply_font_family(app, &f);
+        apply_font(app, &f);
     }
 }
 
@@ -541,12 +436,43 @@ mod font_menu_ui_tests {
 
     use crate::test_window::{self, Window, click_at};
 
+    #[test]
+    fn links_selection_shows_stored_color_mode_and_profile() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let png = pagenor_render::Rendered { width: 1, height: 1, pixels: vec![200, 100, 50, 255] }.to_png();
+        app.run("file.place", json!({"base64":pagenor_engine::cmd::base64_encode(&png),"name":"Color Test.png"})).unwrap();
+        app.run("window.panel.activate", json!({"panel":"links"})).unwrap();
+        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        h.get_by_label("Color Test.png").click();
+        h.run_steps(6);
+        assert!(h.get_by_label("Color Mode: RGB").rect().is_positive());
+        assert!(h.get_by_label("ICC Profile: Not embedded").rect().is_positive());
+        assert!(h.get_by_label("Stored image metadata; imported previews may differ from the original.").rect().is_positive());
+        let doc = h.state().app.session.active().unwrap().doc.clone();
+        h.run_steps(6);
+        assert!(std::sync::Arc::ptr_eq(&doc, &h.state().app.session.active().unwrap().doc));
+    }
+
     /// The Type tool's selection over a new text frame's text, with the Control bar on. Returns the
     /// story.
     fn typing() -> (Harness<'static, Window>, u64) {
+        typing_in("Advanced")
+    }
+
+    /// [`typing`] in the workspace `name`.
+    fn typing_in(name: &str) -> (Harness<'static, Window>, u64) {
+        typing_on(name, vec2(1440.0, 900.0), false)
+    }
+
+    /// [`typing_in`] a window of `size`, with the macOS window chrome (the native menu bar and the
+    /// title bar inside the window) when `mac`.
+    fn typing_on(name: &str, size: egui::Vec2, mac: bool) -> (Harness<'static, Window>, u64) {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
-        app.ui.control_bar = true;
-        let mut h = test_window::open(app, vec2(1440.0, 900.0));
+        app.run("window.workspace", json!({ "name": name })).unwrap();
+        app.native_menu = mac;
+        app.integrated_titlebar = mac;
+        let mut h = test_window::open(app, size);
         let app = &mut h.state_mut().app;
         let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello", "caret": true})).unwrap();
         app.run("tool.select", json!({"tool": "type"})).unwrap();
@@ -561,7 +487,7 @@ mod font_menu_ui_tests {
 
     /// The Control bar's font field, showing `family`.
     fn field(h: &Harness<'static, Window>, family: &str) -> egui::Rect {
-        h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some(family)).rect()
+        fields(h, family)[0]
     }
 
     /// The text in the focused search field.
@@ -573,6 +499,155 @@ mod font_menu_ui_tests {
         h.state_mut().app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["fontFamily"].as_str().unwrap().to_string()
     }
 
+    /// Run the menu until the filters' font kinds are read (it says Loading fonts… meanwhile).
+    fn settle(h: &mut Harness<'static, Window>) {
+        for _ in 0..3000 {
+            if h.query_by_label("Loading fonts…").is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.run_steps(1);
+        }
+        panic!("the font kinds were never read");
+    }
+
+    /// Open the Control bar's font menu (showing `family`) and search for `query`.
+    fn open_menu(h: &mut Harness<'static, Window>, family: &str, query: &str) {
+        let at = field(h, family);
+        click_at(h, at.center());
+        if !query.is_empty() {
+            h.event(egui::Event::Text(query.into()));
+        }
+        h.run_steps(4);
+    }
+
+    #[test]
+    fn a_family_opens_to_its_styles_and_a_style_is_picked() {
+        let (mut h, _) = typing();
+        let serif = pagenor_fonts::DEFAULT_FAMILY;
+        open_menu(&mut h, serif, "serif 4");
+        // The arrow before the name opens the family; the menu stays open.
+        {
+            let at = h.get_by_label("Show Styles").rect().center();
+            click_at(&mut h, at);
+        }
+        assert!(h.query_by_label("Bold Italic").is_some(), "its styles are listed");
+        {
+            let at = h.get_by_label("Bold Italic").rect().center();
+            click_at(&mut h, at);
+        }
+        let attrs = h.state_mut().app.run("type.selectionAttrs", json!({})).unwrap();
+        assert_eq!((attrs["chars"]["fontFamily"].as_str(), attrs["chars"]["fontStyle"].as_str()), (Some(serif), Some("Bold Italic")));
+        assert!(!h.ctx.text_edit_focused(), "picking closes the menu");
+    }
+
+    #[test]
+    fn picked_fonts_come_first_as_recently_used() {
+        let (mut h, _) = typing();
+        open_menu(&mut h, pagenor_fonts::DEFAULT_FAMILY, "source sans");
+        {
+            let at = h.get_by_label("Source Sans 3").rect().center();
+            click_at(&mut h, at);
+        }
+        assert_eq!(h.state().app.session.prefs.recent_fonts, ["Source Sans 3"]);
+        // Reopened without a search: Source Sans 3 is listed at the top, and again in its place (on
+        // screen too when few fonts are installed).
+        open_menu(&mut h, "Source Sans 3", "");
+        let recent =
+            h.query_all_by_label("Source Sans 3").map(|n| n.rect()).min_by(|a, b| a.min.y.total_cmp(&b.min.y)).expect("Source Sans 3 is listed");
+        let search = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).rect();
+        assert!(recent.min.y > search.max.y && recent.min.y - search.max.y < 80.0, "the first row, under the filters: {recent:?} vs {search:?}");
+    }
+
+    #[test]
+    fn the_class_filter_and_similar_fonts_narrow_the_list() {
+        let (mut h, _) = typing();
+        open_menu(&mut h, pagenor_fonts::DEFAULT_FAMILY, "");
+        {
+            let at = h.get_by(|n| n.label().is_some_and(|l| l.starts_with("All Classes"))).rect().center();
+            click_at(&mut h, at);
+        }
+        {
+            let at = h.get_by_label("Monospaced").rect().center();
+            click_at(&mut h, at);
+        }
+        settle(&mut h);
+        assert!(h.query_by_label("JetBrains Mono").is_some(), "a monospaced family is listed");
+        assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_none(), "a serif isn't");
+        // Back to all classes, then fonts like the serif: it leads, other serifs follow, no sans.
+        {
+            let at = h.get_by(|n| n.label().is_some_and(|l| l.starts_with("Monospaced ▾"))).rect().center();
+            click_at(&mut h, at);
+        }
+        {
+            let at = h.get_by_label("All Classes").rect().center();
+            click_at(&mut h, at);
+        }
+        h.event(egui::Event::Text("serif 4".into()));
+        h.run_steps(4);
+        let row = h.get_by_label(pagenor_fonts::DEFAULT_FAMILY).rect();
+        h.hover_at(row.center());
+        h.run_steps(2);
+        {
+            let at = h.get_by_label("Show Similar Fonts").rect().center();
+            click_at(&mut h, at);
+        }
+        assert!(h.query_by_label(&format!("Similar to {}", pagenor_fonts::DEFAULT_FAMILY)).is_some());
+        assert!(h.query_by_label("Source Sans 3").is_none() && h.query_by_label("JetBrains Mono").is_none(), "other classes aren't similar");
+        assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_some());
+    }
+
+    #[test]
+    fn every_font_field_reports_as_a_combo_box_showing_the_family() {
+        let (h, _) = typing();
+        let shown = fields(&h, pagenor_fonts::DEFAULT_FAMILY);
+        // The Control bar's, and the hand-drawn ones (Properties, the Contextual Task Bar).
+        assert!(shown.len() >= 2, "{shown:?}");
+    }
+
+    #[test]
+    fn return_and_escape_in_a_dialogs_font_menu_stay_in_the_menu() {
+        let paragraph = json!({"name": pagenor_doc::BASIC_PARAGRAPH, "section": "chars"});
+        for (what, id, seed, shown) in [
+            ("Paragraph Style Options", "paragraphStyleOptions", paragraph, pagenor_fonts::DEFAULT_FAMILY),
+            ("Find/Replace Font", "findFont", json!({}), pagenor_fonts::FALLBACK_FAMILY),
+        ] {
+            let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let mut h = test_window::open(app, vec2(1440.0, 900.0));
+            h.state_mut().app.ui.dialog = Some(crate::dialogs::Dialog::new(id, seed));
+            h.run_steps(12);
+            let dialog = |h: &Harness<'static, Window>| h.state().app.ui.dialog.as_ref().map(|d| d.id.clone());
+            let combo = |h: &Harness<'static, Window>, family: &str| {
+                let candidates = fields(h, family);
+                if what == "Paragraph Style Options" {
+                    let label = h.get_by_label("Font Family:").rect();
+                    candidates.iter().find(|r| (r.center().y - label.center().y).abs() < 4.0).unwrap().center()
+                } else {
+                    candidates[0].center()
+                }
+            };
+            let at = combo(&h, shown);
+            click_at(&mut h, at);
+            assert!(h.ctx.text_edit_focused(), "{what}: the menu opens with its search focused");
+            h.event(egui::Event::Text("source sans 3".into()));
+            h.run_steps(4);
+            h.key_press(egui::Key::ArrowDown);
+            h.run_steps(2);
+            h.key_press(egui::Key::Enter);
+            h.run_steps(4);
+            assert_eq!(dialog(&h).as_deref(), Some(id), "{what}: Return picked in the menu and left the dialog open");
+            assert!(!h.ctx.text_edit_focused(), "{what}: the menu closed");
+            let at = combo(&h, "Source Sans 3");
+            click_at(&mut h, at);
+            assert!(h.ctx.text_edit_focused(), "{what}: the menu opened again");
+            h.key_press(egui::Key::Escape);
+            h.run_steps(4);
+            assert!(!h.ctx.text_edit_focused(), "{what}: Escape closed the menu");
+            assert_eq!(dialog(&h).as_deref(), Some(id), "{what}: Escape in the menu left the dialog open");
+        }
+    }
+
     #[test]
     fn typing_in_the_font_menu_searches_and_never_reaches_the_story() {
         let (mut h, story) = typing();
@@ -580,9 +655,9 @@ mod font_menu_ui_tests {
         let at = field(&h, pagenor_fonts::DEFAULT_FAMILY);
         click_at(&mut h, at.center());
         assert!(h.ctx.text_edit_focused(), "the search field takes the keyboard when the menu opens");
-        h.event(egui::Event::Text("source sans".into()));
+        h.event(egui::Event::Text("source sans 3".into()));
         h.run_steps(4);
-        assert_eq!(search(&h), "source sans");
+        assert_eq!(search(&h), "source sans 3");
         assert_eq!(story_text(&mut h, story), before, "the typing went to the search, not the story");
         assert!(h.query_by_label("Source Sans 3").is_some(), "a match is listed");
         assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_none(), "families that don't match aren't");
@@ -619,5 +694,197 @@ mod font_menu_ui_tests {
         assert!(!h.ctx.text_edit_focused(), "the menu closed");
         assert_eq!(story_text(&mut h, story), before);
         assert!(h.state().app.session.active().unwrap().selection.text.is_some(), "the text is still selected");
+    }
+
+    /// The font fields showing `family`, left to right and top to bottom.
+    fn fields(h: &Harness<'static, Window>, family: &str) -> Vec<egui::Rect> {
+        let mut r: Vec<egui::Rect> =
+            h.query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some(family)).map(|n| n.rect()).collect();
+        r.sort_by(|a, b| a.min.x.total_cmp(&b.min.x).then(a.min.y.total_cmp(&b.min.y)));
+        r
+    }
+
+    /// Opens the font menu of the field at `at`, clicks its search field, types, checks the menu
+    /// stays open and lists only the matches, then picks the first with ↓ and Return.
+    fn search_in_menu(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) {
+        click_at(h, at.center());
+        let field = h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).map(|n| n.rect());
+        let field = field.unwrap_or_else(|| panic!("{what}: the menu opens with the search field focused"));
+        click_at(h, field.center());
+        assert!(h.ctx.text_edit_focused(), "{what}: a click on the search field keeps the menu open");
+        // Other Source Sans families can be installed on the host. Select the bundled
+        // family explicitly while still checking case-insensitive keyboard search.
+        h.event(egui::Event::Text("SOURCE SANS 3".into()));
+        h.run_steps(4);
+        assert_eq!(search(h), "SOURCE SANS 3", "{what}: the typing went to the search");
+        assert!(h.query_by_label("Source Sans 3").is_some(), "{what}: a match is listed");
+        assert!(h.query_by_label(pagenor_fonts::DEFAULT_FAMILY).is_none(), "{what}: families that don't match aren't");
+        h.key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(4);
+        assert!(!h.ctx.text_edit_focused(), "{what}: the menu closed");
+    }
+
+    /// Every font field over selected text (Control bar, Contextual Task Bar, Properties ›
+    /// Character, Character panel) searches, in the workspaces that show them and in a small
+    /// window with the macOS window chrome.
+    #[test]
+    fn every_font_field_searches_in_every_workspace() {
+        for (name, size, mac, panel) in [
+            ("Advanced", vec2(1440.0, 900.0), false, None),
+            ("Printing and Proofing", vec2(1440.0, 900.0), false, None),
+            ("Essentials", vec2(1440.0, 900.0), false, Some("character")),
+            ("Printing and Proofing", vec2(900.0, 560.0), true, None),
+        ] {
+            let (mut h, story) = typing_on(name, size, mac);
+            if panel.is_some() {
+                h.state_mut().app.ui.open_panel = panel.map(str::to_string);
+                h.run_steps(4);
+            }
+            let name = &format!("{name} {size:?} {panel:?}");
+            let before = story_text(&mut h, story);
+            let count = fields(&h, pagenor_fonts::DEFAULT_FAMILY).len();
+            assert_eq!(count, 3, "{name}: the font fields are shown");
+            for k in 0..count {
+                h.state_mut().app.run("type.char", json!({"attrs": {"fontFamily": pagenor_fonts::DEFAULT_FAMILY}})).unwrap();
+                h.run_steps(4);
+                let at = fields(&h, pagenor_fonts::DEFAULT_FAMILY)[k];
+                search_in_menu(&mut h, at, &format!("{name}, field {k}"));
+                assert_eq!(family(&mut h), "Source Sans 3", "{name}, field {k}");
+                assert_eq!(story_text(&mut h, story), before, "{name}, field {k}");
+            }
+        }
+    }
+
+    /// The font fields away from the text: the Glyphs panel, Paragraph Style Options › Basic
+    /// Character Formats and Find/Replace Font's Replace With.
+    #[test]
+    fn font_fields_in_panels_and_dialogs_search() {
+        let paragraph = json!({"name": pagenor_doc::BASIC_PARAGRAPH, "section": "chars"});
+        for (what, panel, dialog, shown) in [
+            ("Glyphs", Some("glyphs"), None, pagenor_fonts::DEFAULT_FAMILY),
+            ("Paragraph Style Options", None, Some(("paragraphStyleOptions", paragraph)), pagenor_fonts::DEFAULT_FAMILY),
+            ("Find/Replace Font", None, Some(("findFont", json!({}))), pagenor_fonts::FALLBACK_FAMILY),
+        ] {
+            let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let mut h = test_window::open(app, vec2(1440.0, 900.0));
+            let dialog_id = dialog.as_ref().map(|(id, _)| id.to_string());
+            h.state_mut().app.ui.open_panel = panel.map(str::to_string);
+            h.state_mut().app.ui.dialog = dialog.map(|(id, fields)| crate::dialogs::Dialog::new(id, fields));
+            // Modal sizing must settle before reading the field's pointer coordinates.
+            h.run_steps(12);
+            let candidates = fields(&h, shown);
+            let at = if what == "Paragraph Style Options" {
+                let label = h.get_by_label("Font Family:").rect();
+                *candidates.iter().find(|r| (r.center().y - label.center().y).abs() < 4.0).expect("the dialog's font field")
+            } else {
+                *candidates.first().unwrap_or_else(|| panic!("{what}: the font field is shown"))
+            };
+            search_in_menu(&mut h, at, what);
+            assert_eq!(h.state().app.ui.dialog.as_ref().map(|d| d.id.clone()), dialog_id, "{what}: Return in the menu leaves the dialog open");
+            assert!(!fields(&h, "Source Sans 3").is_empty(), "{what}: the field shows the family picked");
+            // Escape closes the menu only.
+            let candidates = fields(&h, "Source Sans 3");
+            let at = if what == "Paragraph Style Options" {
+                let label = h.get_by_label("Font Family:").rect();
+                *candidates.iter().find(|r| (r.center().y - label.center().y).abs() < 4.0).unwrap()
+            } else {
+                candidates[0]
+            };
+            click_at(&mut h, at.center());
+            assert!(h.ctx.text_edit_focused(), "{what}: the menu opened");
+            h.key_press(egui::Key::Escape);
+            h.run_steps(4);
+            assert!(!h.ctx.text_edit_focused(), "{what}: Escape closed the menu");
+            assert_eq!(h.state().app.ui.dialog.as_ref().map(|d| d.id.clone()), dialog_id, "{what}: Escape in the menu leaves the dialog open");
+        }
+    }
+}
+
+#[cfg(test)]
+mod swatch_list_tests {
+    use super::*;
+
+    fn rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<(egui::Rect, egui::Color32)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match s {
+                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        shapes.iter().for_each(|s| walk(&s.shape, &mut out));
+        out
+    }
+
+    fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match s {
+                egui::Shape::Text(t) => out.push((t.galley.job.text.clone(), t.visual_bounding_rect())),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        shapes.iter().for_each(|s| walk(&s.shape, &mut out));
+        out
+    }
+
+    #[test]
+    fn the_swatch_under_the_pointer_is_highlighted_and_names_clear_the_scroll_bar() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({})).unwrap();
+        // A long name, as process swatches have.
+        app.run("swatch.create", serde_json::json!({"name": "C=15 M=100 Y=100 K=0 Long Name", "color": {"c": 15, "m": 100, "y": 100, "k": 0}}))
+            .unwrap();
+        let long = "C=15 M=100 Y=100 K=0 Long Name";
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "");
+        let tokens = Tokens::for_brightness(crate::theme::Brightness::MediumDark);
+        crate::theme::apply(&ctx, &tokens);
+        let mut time = 0.0;
+        let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
+            time += 0.1;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 700.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| swatch_picker(app, ui, "list", Some("[Black]".into()), |_, _| {}));
+            out.textures_delta.clear();
+            out.shapes
+        };
+        frame(&mut app, vec![]);
+        let chip = egui::pos2(17.0, 17.0);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(chip),
+                    egui::Event::PointerButton { pos: chip, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() },
+                ],
+            );
+        }
+        let shapes = frame(&mut app, vec![]);
+        let (_, name) = texts(&shapes).into_iter().find(|(t, _)| t == "[Registration]").expect("the list is open");
+        let pointer = name.center();
+        frame(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+        let shapes = frame(&mut app, vec![]);
+        let all = rects(&shapes);
+        let (row, _) = *all.iter().find(|(r, c)| *c == tokens.accent_strong && r.contains(pointer)).expect("the hovered row is highlighted");
+        let (list, _) = *all
+            .iter()
+            .filter(|(r, c)| *c == tokens.panel && r.contains_rect(row))
+            .min_by(|a, b| a.0.area().total_cmp(&b.0.area()))
+            .expect("the popup");
+        let scroll = ctx.global_style().spacing.scroll;
+        assert!(row.right() + scroll.bar_width <= list.right(), "rows {row:?} stop short of the scroll bar in {list:?}");
+        let (_, long_rect) = texts(&shapes).into_iter().find(|(t, _)| t == long).unwrap();
+        assert!(long_rect.right() <= row.right(), "the longest name {long_rect:?} fits its row {row:?}");
+        assert!(texts(&shapes).iter().any(|(t, r)| t == "[Black]" && r.right() <= row.right()));
     }
 }

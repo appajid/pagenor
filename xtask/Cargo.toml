@@ -14,3 +14,6 @@ workspace = true
 serde_json = { workspace = true }
 resvg = { workspace = true }
 usvg = { version = "0.47", features = ["system-fonts"], default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }

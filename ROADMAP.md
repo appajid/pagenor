@@ -1,5 +1,216 @@
 # Pagenor roadmap
 
+- P11.12: published native Windows and Linux **0.6.0 desktop development
+  preview**, with matching universal Mac packages. All three Windows installer/
+  association/icon/export/uninstall checks and both Linux/Flatpak CLI checks pass.
+  Native Mac/Windows/Linux quality and Rust 1.95 gates pass. Signing and interactive
+  desktop/printer validation remain open; [distribution notes](docs/pagenor/DESKTOP_RELEASE_060.md).
+  The separate FreeBSD VM now installs DejaVu and checks Fontconfig before
+  compilation; its changed VM still needs a native run.
+
+- P11.11: complete the twenty UI-first October proposals through #491 and compatible
+  reliability/publishing adaptations. **0.6.0**, local milestone. Preserve Pagenor
+  fonts, recovery, inline IME, master workflow and branding; broader import/titlebar
+  proposals remain open; native desktop distribution is recorded in P11.12.
+  [Implementation notes](docs/pagenor/UPSTREAM_ADOPTION_20261012.md).
+
+- P11.10: Add an experimental optional-helper PageMaker 6.5/7 text-recovery
+  import through File → Open and document drops. Ramsha retains five pages
+  and five editable frames; a PMD sample retains nine pages and 31 frames.
+  Graphics, threading, layers and exact legacy typography remain incomplete.
+  Local **0.5.2** preview. [Scope and validation](docs/pagenor/PAGEMAKER_IMPORT.md).
+
+- P11.9: Add stored image colour mode to Links and selected-link ICC profile
+  details, with header-only metadata queries and bounded profile inspection.
+  Imported preview metadata is identified as such; vector/mixed or unavailable
+  information is not guessed. Local **0.5.2** addition.
+  [Notes](docs/pagenor/LINKS_COLOR_INFO.md).
+
+- P11.8: Make the bottom-bar Preflight indicator/count clickable and open the
+  live issue panel from Window → Output → Preflight. Existing issue clicks
+  select the frame and page; shared UI regressions cover both access routes.
+  Local **0.5.2** correction. [Notes](docs/pagenor/PREFLIGHT_STATUS.md).
+
+- P11.7: Correct INDD raster-image detection and layer order/empty-layer
+  retention; preserve multi-column count/gutter. Portfolio validation retains
+  22 pages, 57 image placements, six user layers and exact used story text;
+  typography/master/effect fidelity remains incomplete. All seven gates pass:
+  1,902 tests, six existing ignores and 20 WASM packages. Windows/Linux crate
+  cross-checks pass. Local **0.5.2** correction.
+  [Evidence and limits](docs/pagenor/INDD_PORTFOLIO.md).
+
+- P11.6: Recover every INDD story/style leaf and mixed-encoding text segment;
+  correct canonical font-style precedence, paragraph spacing, left-justified
+  last lines and sequential page labels. Owner-file text/native/PDF checks pass
+  without missing glyphs; exact source pagination remains incomplete (31 versus
+  33 populated frames). All seven gates pass: 1,898 tests, six existing ignores
+  and 20 WASM packages. Local **0.5.2** correction; current session preserved.
+  [Evidence and limits](docs/pagenor/INDD_RECOVERY.md).
+
+- P11.5: Improve IDML/INDD Indic import preservation: language-name mapping,
+  whole-cluster fallback, bounded strict UTF-16 decoding across chunks and correct
+  source style-run offsets. Native save/reopen and PDF regressions are included;
+  real-file compatibility remains a separate corpus gate. All seven gates pass:
+  1,889 tests, six existing ignores and 20 WASM packages; real installed Telugu
+  font renders and exact PDF extraction pass. Local 0.5.2 correction.
+  [Scope and validation](docs/pagenor/INDIC_IMPORTS.md).
+
+- P11.4: Add independent one/two-column right panel toolbar toggling, a pinned
+  switch, saved preferences/workspaces and shared dock support. **0.5.2**, local
+  development. All seven local gates pass (1,878 tests; 20 WASM packages);
+  inspected UI renders and a separate macOS build preserve the running session.
+  [Notes](docs/pagenor/RIGHT_TOOLBAR_COLUMNS.md).
+- P11.3: Master Pages controls, live left/right previews, repeating header/footer
+  and numbering frames, inherited guides/snapping, shared margins/columns and
+  persistent default masters. **0.5.2**, local development.
+  [Usage and evidence](docs/pagenor/MASTER_PAGES.md).
+
+- P11.2: Restore Welcome after document-window Close and widen the right panel
+  icon bar. Retain unsaved-close questions, recovery and explicit Quit. Local
+  **0.5.1** maintenance correction; validation recorded in
+  [Welcome notes](docs/pagenor/WELCOME_RECENT_DOCUMENTS.md).
+
+- P11.1: Improve canvas scrollbars, Arrow table/cell selection and edge formatting,
+  functional panel groups, closable vertical panel stacks and status-bar controls.
+  All seven checks pass: 1,863 tests passed, 6 ignored; 20 WASM packages and
+  12 packaging contracts. **0.5.1**, local development. [Behaviour and evidence](docs/pagenor/EDITOR_USABILITY.md).
+
+- P11: Complete all 47 selected non-CJK upstream proposals and #295/#298 prerequisites.
+  Shared editor panels, paragraph/table formatting, effects/wraps, asset handling,
+  PDF/IDML, graphics startup and printing are adapted under existing Pagenor safeguards.
+  All seven `cargo xtask ci` gates pass: 1,856 tests passed, 6 ignored, no failures; 20 WASM packages. The 12 packaging contracts, ShellCheck and actionlint pass. The local macOS app is built and inspected separately. Windows/Linux native GUI and printing execution, signed/notarized distribution and GitHub publication remain milestone work.
+  **0.5.0**, local only. [Per-change notes](docs/pagenor/UPSTREAM_EDITOR_ADOPTION.md).
+
+- P00.9: Inspect all 71 upstream v0.6.0 release changes; 45 already covered,
+  7 adapted here, 16 pending, 3 deferred/out of scope. Scoped SVG fonts and
+  vector PDF agree; PDF export/CLI reliability and RISC-V packaging advance.
+  All seven gates pass: 1,548 tests, 3 ignored; 20 WASM packages; 12 packaging
+  contracts. **0.4.0**, local only; native Windows/Linux/RISC-V remain milestone
+  checks. [Decisions and remaining work](docs/pagenor/UPSTREAM_060_AUDIT.md).
+
+- P10.3: Adapt upstream #131 installer layout with owner Pagenor artwork,
+  reproducible HiDPI background and separate app/document icons. Version hold
+  lifted by the owner; local feature checkpoint advances to **0.4.0**.
+  All seven gates pass: 1,536 tests, 3 ignored; 20 WASM packages. Nine
+  packaging contracts and byte-for-byte installer regeneration pass. Native Mac
+  installer/version evidence is recorded in the release adaptation report.
+  No GitHub publication. [Installer](packaging/macos/dmg/README.md).
+
+- P07.5: Adapt #347 explicit triple-click APIs and Select Line, retaining richer
+  canvas multi-click behavior and quick input. Final integration of #341–347
+  passes all seven gates: 1,536 tests, 3 ignored; 20 WASM packages. Word/line
+  renders inspected. **0.3.0**, local only. [Details](docs/pagenor/MULTICLICK_SELECTION.md).
+
+- P07.4: Adapt #346 checked start-page bounds and iterative/saturating page
+  numbering. Retain preflighted book pagination; protect loaded page labels.
+  Final #341–347 integration passes: 1,536 tests, 3 ignored; all seven gates including labels.
+  **0.3.0**, local only.
+
+- P09.15: Adapt #345 draggable ruler zero point and double-click reset, per-pane
+  drag state and plain-click preservation. Inspected renders and all seven gates
+  pass: 1,528 tests, 3 ignored; 20 WASM packages. **0.3.0**, local only.
+
+- P09.14: Adapt #344 shared swatch-list hover/width and Glyphs scroll-bar clearance.
+  Two UI regressions, inspected renders and all seven gates pass: 1,526 tests,
+  3 ignored; 20 WASM packages. **0.3.0**, local only.
+
+- P07.3: Adapt upstream #343 with Tabs commands, floating ruler and Paragraph
+  Style Options controls, shared writer validation and file-load repair. All
+  seven gates pass: 1,524 tests, 3 ignored; 20 WASM packages; rendered UI
+  inspected. Version **0.3.0**, local only. [Details](docs/pagenor/TAB_STOPS.md).
+
+- P09.13: Adapt upstream #342 Numbering & Section Options with side actions and
+  atomic one-step undo. All seven gates pass: 1,510 tests, 3 ignored; 20 WASM
+  packages. Rendered UI inspected; version remains **0.3.0**, work stays local.
+  [Details](docs/pagenor/NUMBERING_SECTION_OPTIONS.md).
+
+- P07.2: Adapt upstream #341 with document/book chapter style and source, formatted
+  variables/cross-references, section-prefix rules and safe open-document updates.
+  All seven gates pass: 1,507 tests, 3 ignored; 20 WASM packages. Version remains
+  **0.3.0**; changes stay local. IDML chapter mapping and native Windows/Linux
+  execution remain separate. [Details](docs/pagenor/CHAPTER_NUMBERING.md).
+
+- P09.12: Adapt open upstream #325 with Recent/Saved/Print/Web/Mobile New Document
+  tabs, preset cards, detailed page settings, linked margins/bleed/slug and saved
+  engine presets. Preserve existing Welcome recents and dialog behavior. Bound
+  preset settings and retain failed Create details; order Save Preset above its
+  modal parent. All seven gates pass: 1,500 tests, 3 ignored; 20 WASM packages.
+  Native A4 creation/Save and Recent recall after restart pass. Version remains
+  **0.3.0**; changes stay local. Native Windows/Linux execution remains pending.
+  [Behavior and validation](docs/pagenor/NEW_DOCUMENT_PRESETS.md).
+
+- P02.12: Preserve macOS Finder tags, binary extended attributes, Unix ownership/
+  mode and extended ACLs before replacing an existing saved document. Linux
+  copies visible xattrs (including POSIX ACLs); Windows keeps the portable path
+  with extended metadata pending. Bounded metadata copying fails before commit,
+  preserving previous bytes. Mac regressions cover tags, ACLs, differing groups
+  and metadata failure/retry. All seven gates pass (1,488 tests, 3 ignored;
+  20 WASM packages). Native Cmd+S retains exact metadata while saving the edit;
+  writer-only Windows/Linux strict Clippy passes. Evidence is recorded in
+  [save metadata](docs/pagenor/NATIVE_SAVE_METADATA.md). Version stays **0.3.0**,
+  and all changes remain local. Native Windows/Linux validation remains open.
+
+- P02.11: Stage, sync and replace native Save/Save As/Save a Copy outputs instead
+  of truncating the previous file. Five regressions verify partial failure/retry,
+  unpublished new saves, file links/modes, read-only command/recovery integrity
+  and Copy state. Native read-only Save preserves exact bytes and dirty state;
+  retry saves the latest edit and clears the stale error. All seven gates pass:
+  1,484 tests, 3 ignored; 20 WASM packages. Version remains **0.3.0**; changes stay
+  local. Extended metadata and native Windows/Linux validation remain open.
+  [Behavior and validation](docs/pagenor/NATIVE_SAVE_SAFETY.md).
+
+- P02.10: Recognize Quit during canvas composition, including the macOS native
+  key-release fallback when AppKit consumes key-down. Final delivered text is
+  committed once before save/recovery, and duplicate Quit preserves save choices.
+  Three regressions (one failing before), all seven gates (1,479 tests, 3 ignored;
+  20 WASM packages), native first Cmd+Q, Cancel/resumed typing and Save/Quit pass.
+  Native Windows/Linux and broader input-method coverage remain milestone checks.
+  Installed local app remains **0.3.0**, retaining its separate icons.
+  [Behavior and validation](docs/pagenor/QUIT_SHORTCUTS.md).
+
+- P02.9: Stop canvas input after approved desktop closing and deactivate macOS
+  native input while retaining its window through event-loop teardown (PG-0215).
+  A quit regression fails before the correction; both new shutdown regressions
+  and all seven gates pass: 1,476 tests, 3 ignored; 20 WASM packages.
+  Native save prompt, cancellation/resumed typing and saved-window Close with
+  unfinished ABC-India dead-key input pass. Native Windows/Linux execution and
+  the separate Cmd+Q composition observation remain further coverage.
+  The installed local app stays **0.3.0**, with its existing separate icons.
+  [Behavior and validation](docs/pagenor/NATIVE_INPUT_SHUTDOWN.md).
+
+- P09.11: Add one shared font-size preset list to the top bar, right-side
+  Character panel, Properties typography and floating text bar, retaining custom
+  sizes. Use the supplied document SVG for separate macOS/Windows/Linux file
+  icons. Fix corrupted small macOS app icons in the portable ICNS packer, with
+  a failing-before/passing-after native decoder regression. All seven local gates
+  pass: 1,474 tests, 3 ignored; 20 WASM packages. Eight packaging contracts pass.
+  Version stays **0.3.0**; changes stay local. Native Windows/Linux icon display
+  remains a milestone check.
+  [Behavior and validation](docs/pagenor/FONT_SIZE_DOCUMENT_ICONS.md).
+
+- P02.8: Remove the separate composition preview box. Unfinished OS text now
+  sits in the actual paragraph flow at its selected font/size, with contextual
+  shaping, wrapping and a matching visual caret. A cached copy-on-write document
+  uses the existing insertion command without changing live save/undo/recovery.
+  Two new regressions and all seven gates pass: 1,473 tests, 3 ignored;
+  20 WASM packages. The owner confirmed physical VariType text stays inline
+  in the rebuilt Mac bundle. The launcher no longer mistakes icon readers for
+  running executables. Native Windows/Linux/browser execution remains pending.
+  Version stays **0.3.0**; changes stay local.
+  [Input behavior and evidence](docs/pagenor/KEYBOARD_INPUT.md).
+
+- P02.7: Enable the canvas's OS text-input service and handle composition/commits
+  through existing editing commands, preserving styles, font scopes, undo and
+  recovery. Preedit remains ephemeral and uses the existing document renderer.
+  Keyboard layouts are not language-filtered; composition and Option/AltGr text
+  retain input ownership. Nine new regressions and all seven local gates pass:
+  1,471 tests, 3 ignored; 20 WASM packages. The macOS bundle was built/launched,
+  and continuous Varitype Telugu typing was observed after correcting a
+  reproduced per-paint focus-reset failure. Native Windows/Linux/browser checks
+  remain separate.
+  Version stays **0.3.0**; changes stay local.
+  [Input behavior and evidence](docs/pagenor/KEYBOARD_INPUT.md).
+
 - P10.4: GitHub packaging contracts reproduced a runner-only assertion failure:
   Actions warnings are on stdout, local warnings on stderr. The same AppImage
   contract now checks both routes and stale-update removal in both environments.
@@ -34,6 +245,44 @@
   All seven gates pass: 1,308 tests, 3 ignored; 20 WASM packages.
   [Per-item audit](docs/pagenor/UPSTREAM_040_AUDIT.md) and
   [version policy](docs/pagenor/VERSIONING.md).
+
+- P09.10: Welcome moves About below the large right-side image and removes its
+  surrounding card. Recent documents use matching 120 × 150 tiles with first-page
+  previews, a bounded local PNG cache and a single background rendering worker.
+  Existing importer/font scopes and page rendering remain. Four new regressions
+  and all seven local gates pass: 1,462 tests, 3 ignored; 20 WASM packages. Native
+  macOS thumbnails and About interaction were inspected. Native Windows/Linux
+  execution remains separate. Version stays **0.3.0**; changes stay local.
+  [Behavior and limits](docs/pagenor/WELCOME_RECENT_DOCUMENTS.md).
+
+- P09.9: Welcome adds bounded, persisted Recent Documents beneath presets and
+  File → Open Recent, including the native macOS menu. Home retains open
+  documents and hides editor tools/panels until a document opens or is created.
+  Quit asks Save/Don't Save/Cancel for every modified or never-saved document;
+  cancelled/failed saves stop quitting and existing recovery guards remain.
+  Eleven new regressions and all seven local gates pass: 1,458 tests, 3 ignored;
+  20 WASM packages. Native macOS Welcome, restart persistence, restored editor
+  controls and the native recent-file menu were inspected. Windows/Linux native
+  execution remains separate. Version stays **0.3.0**; changes stay local.
+  [Behavior](docs/pagenor/WELCOME_RECENT_DOCUMENTS.md).
+- P09.8: Fixed canvas clicks/drags delivered between paints, restoring Type-tool
+  frame drawing, caret placement and manual text threading. Four UI regressions
+  and all seven local gates pass: 1,447 tests, 3 ignored; 20 WASM packages.
+  Native macOS drawing, clipboard paste, out-port loading, page navigation,
+  continuation-frame creation and `.pgnr` saving pass in the rebuilt development
+  app. Version stays 0.3.0; native Windows/Linux checks remain separate.
+  [Cause, verification and manual steps](docs/pagenor/MANUAL_TEXT_FLOW.md).
+
+- P09.7: Adapted 23 new upstream proposals: eight UI improvements, six compatibility
+  fixes and nine multipage/composition changes. Quick Apply, compact controls, A6,
+  scrolling dialogs, Paragraph Rules and safe Windows caption actions accompany
+  scoped Smart Text Reflow, spanning bands, tabs/page breaks, column rules and table
+  style/fitting corrections. Font scopes/lazy discovery, `.pgnr`, recovery and version
+  **0.3.0** remain. All seven local gates pass: 1,443 tests, 3 ignored; 20 WASM
+  packages. Inspected CPU UI and pointer/undo/import regressions pass; native
+  Windows/Linux execution remains a milestone check. The local macOS development
+  app build, plist and ad-hoc signature verification pass. No publication.
+  [Scope, provenance and evidence](docs/pagenor/UPSTREAM_EDITOR_PUBLISHING.md).
 
 - P09.6: Completed ten selected UI proposals sequentially: PDF export options,
   clickable swatches/colour pickers, canvas context actions, paragraph rules,

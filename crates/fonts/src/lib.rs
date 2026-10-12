@@ -9,6 +9,7 @@
 
 mod fontdb;
 mod group;
+mod kind;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,6 +31,7 @@ pub use fontdb::{
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
 use harfrust::{Direction, Language, ShapeOptions, Tag, UnicodeBuffer};
+pub use kind::{FaceKind, FontClass, FontFormat, classify, panose_distance};
 pub use kurbo::BezPath;
 use skrifa::MetadataProvider;
 use skrifa::instance::Size;
@@ -88,6 +90,14 @@ pub struct ShapedGlyph {
     pub safe_tatweel_before: bool,
     /// Direction used for shaping, including Unicode mirroring.
     pub rtl: bool,
+}
+
+/// Unscaled line metrics at a collection index: units per em, ascent, descent and line gap.
+/// UI fallbacks use these to share the primary interface face's baseline.
+pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
+    let f = skrifa::FontRef::from_index(data, index).ok()?;
+    let m = f.metrics(Size::unscaled(), skrifa::instance::LocationRef::default());
+    Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
 }
 
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
@@ -452,6 +462,32 @@ mod tests {
         assert!(!db.styles(&fam).iter().any(|s| s.contains('{')), "instances aren't listed");
         let static_face = db.face(DEFAULT_FAMILY, "Regular {wght:700}");
         assert_eq!(static_face.style, "Regular", "static fonts ignore axis settings");
+    }
+
+    #[test]
+    fn an_exact_family_name_wins_over_the_name_without_its_format_suffix() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("Pagenor Test Suffix (OTF)", &['a']).unwrap());
+        assert_eq!(db.face("Pagenor Test Suffix (OTF)", "Regular").family, "Pagenor Test Suffix (OTF)");
+        assert_eq!(db.face(&format!("{DEFAULT_FAMILY} (TT)"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} (T1)")));
+        assert!(!db.has_family(&format!("{DEFAULT_FAMILY} (Bold)")));
+        assert!(!db.has_family("Pagenor Test Suffix"));
+    }
+
+    /// IDML files from InDesign can name a family with its `$ID/` prefix (`$ID/Arial`).
+    #[test]
+    fn an_indesign_id_prefix_names_the_plain_family() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let prefixed = format!("$ID/{DEFAULT_FAMILY}");
+        assert_eq!(db.face(&prefixed, "Bold").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&prefixed));
+        assert_eq!(db.styles(&prefixed), db.styles(DEFAULT_FAMILY));
+        assert!(db.has_family(&format!("$ID/{DEFAULT_FAMILY} (OTF)")));
+        assert!(!db.has_family("$ID/"));
+        assert!(!db.has_family("$ID/DC No Such Family"));
     }
 
     #[test]

@@ -86,6 +86,7 @@ done
 
 for f in bin/pagenor bin/pagenor-cli "share/applications/$APP_ID.desktop" \
   "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/icons/hicolor/scalable/apps/$APP_ID.svg" \
+  "share/icons/hicolor/256x256/mimetypes/$APP_ID.document.png" "share/icons/hicolor/scalable/mimetypes/$APP_ID.document.svg" \
   share/doc/pagenor/LICENSE-MIT share/doc/pagenor/LICENSE-APACHE; do
   if [ ! -e "$STAGE/$f" ]; then echo "error: $f is missing from the package" >&2; exit 1; fi
 done

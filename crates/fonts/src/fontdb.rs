@@ -280,6 +280,12 @@ impl FontFace {
         matches!(norm(self.family.trim_start_matches('.')).as_str(), "lastresort")
     }
 
+    /// Whether every visible character of a shaping cluster has a real glyph. Joiners and
+    /// variation selectors are shaping instructions, not standalone glyph requirements.
+    pub fn covers_cluster(&self, text: &str) -> bool {
+        text.chars().filter(|&c| needs_glyph(c)).all(|c| self.covers(c))
+    }
+
     /// Does the face map `c` to a real glyph?
     pub fn covers(&self, c: char) -> bool {
         if self.is_placeholder() {
@@ -393,12 +399,14 @@ impl CatalogLocation {
 struct CatalogEntry {
     family: String,
     style: String,
+    kind: crate::kind::FaceKind,
     location: CatalogLocation,
     /// The font menu group and native family name, read by the scan.
     group: FontGroup,
     native: Option<String>,
     aliases: Arc<[String]>,
     style_aliases: Arc<[String]>,
+    added: Option<std::time::SystemTime>,
 }
 
 /// What the scan reads of one face in a font file: its names and font menu group.
@@ -407,6 +415,7 @@ struct CatalogEntry {
 struct ScannedFace {
     family: String,
     style: String,
+    kind: crate::kind::FaceKind,
     group: FontGroup,
     native: Option<String>,
     aliases: Arc<[String]>,
@@ -459,7 +468,7 @@ pub struct FontDb {
 #[derive(Default)]
 struct SysFallback {
     enabled: bool,
-    misses: std::collections::HashSet<char>,
+    misses: std::collections::HashSet<String>,
     /// CJK chain families already looked up in the catalog (loaded, or not installed).
     chain_tried: std::collections::HashSet<&'static str>,
 }
@@ -690,11 +699,15 @@ fn read_file_face_names(path: &std::path::Path) -> std::io::Result<(Vec<ScannedF
                 // A font holding just these tables, to read them as the font itself would.
                 let mut found = vec![table(b"name", MAX_NAME_TABLE)?];
                 found.extend(table(b"OS/2", MAX_SMALL_TABLE));
+                found.extend(table(b"post", MAX_SMALL_TABLE));
                 found.extend(table(b"meta", MAX_SMALL_TABLE));
                 found.extend(table(b"fvar", MAX_NAME_TABLE));
                 let font = crate::group::sfnt(found.clone())?;
                 let f = skrifa::FontRef::new(&font).ok()?;
                 let (family, style) = face_names(&f)?;
+                let mut kind = crate::kind::read_kind(&f, &family);
+                let tags: Vec<[u8; 4]> = records.as_chunks::<16>().0.iter().filter_map(|r| r.get(..4)?.try_into().ok()).collect();
+                kind.format = crate::kind::format_from_tags(&tags);
                 let family_aliases: Arc<[String]> = aliases(&f, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]).into();
                 let (group, native) = match crate::group::declared_group(&f) {
                     Some(g) => (g, crate::group::classify(&f, &family).1),
@@ -732,6 +745,7 @@ fn read_file_face_names(path: &std::path::Path) -> std::io::Result<(Vec<ScannedF
                             family: family.clone(),
                             style,
                             group,
+                            kind,
                             native: native.clone(),
                             aliases: family_aliases.clone(),
                             style_aliases: style_aliases.clone(),
@@ -758,6 +772,7 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
     let font = skrifa::FontRef::new(data).map_err(|e| format!("Native metadata is not readable SFNT: {e}"))?;
     let (family, style) = face_names(&font).ok_or("Native font has no usable family/style name")?;
     let (group, native) = crate::group::classify(&font, &family);
+    let kind = crate::kind::read_kind(&font, &family);
     let family_aliases: Arc<[String]> = aliases(&font, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]).into();
     // A name table may be small while thousands of instances alias its longest name.
     // Bound the expanded representation before cloning it into retained scan snapshots.
@@ -796,6 +811,7 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
             family: family.clone(),
             style,
             group,
+            kind,
             native: native.clone(),
             aliases: family_aliases.clone(),
             style_aliases: style_aliases.clone(),
@@ -983,6 +999,15 @@ fn typo_ascent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Optio
         v += mvar.metric_delta(skrifa::raw::tables::mvar::tags::HASC, location.coords()).map_or(0.0, |d| d.to_f64());
     }
     plausible(Some(v), upem)
+}
+
+/// `family` without the font-format suffix layout apps append when a family is installed in
+/// several formats (`Minion Pro (OTF)` → `Minion Pro`), if it has one.
+fn without_format_suffix(family: &str) -> Option<&str> {
+    const FORMATS: [&str; 6] = ["OTF", "TT", "TTF", "TTC", "OTC", "T1"];
+    let (base, suffix) = family.trim_end().strip_suffix(')')?.rsplit_once('(')?;
+    let base = base.trim_end();
+    (!base.is_empty() && FORMATS.iter().any(|f| f.eq_ignore_ascii_case(suffix.trim()))).then_some(base)
 }
 
 /// The named style part of a style with axis settings (`Bold {wght:650}` → `Bold`).
@@ -1245,6 +1270,15 @@ impl FontDb {
         });
     }
 
+    /// Whether the initial installed-font catalogue is ready, without waiting for its worker.
+    /// Web builds have no system catalogue.
+    pub fn system_fonts_cataloged(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return true;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cataloged.get().is_some()
+    }
+
     /// Catalog the installed fonts on a background thread, so the first lookup by family name
     /// (opening a file, the font menus) doesn't wait for the scan. A no-op once they are
     /// cataloged, and on wasm.
@@ -1289,7 +1323,7 @@ impl FontDb {
         }
     }
 
-    /// Changes when a completed installed-font scan replaces the catalogue. Reading it never waits
+    /// Changes when the installed catalogue or in-memory/document font availability changes. Reading it never waits
     /// for the worker; hosts can invalidate composition/render caches without dirtying documents.
     pub fn scan_generation(&self) -> u64 {
         self.scan_generation.load(Ordering::Acquire)
@@ -1424,6 +1458,8 @@ impl FontDb {
                     found.extend(faces.into_iter().map(|f| CatalogEntry {
                         family: f.family,
                         style: f.style,
+                        kind: f.kind,
+                        added: std::fs::metadata(&path).ok().and_then(|m| m.created().or_else(|_| m.modified()).ok()),
                         location: CatalogLocation::File(path.clone()),
                         group: f.group,
                         native: f.native,
@@ -1461,6 +1497,8 @@ impl FontDb {
                     found.extend(faces.into_iter().map(|f| CatalogEntry {
                         family: f.family,
                         style: f.style,
+                        kind: f.kind,
+                        added: None,
                         location: location.clone(),
                         group: f.group,
                         native: f.native,
@@ -1716,7 +1754,9 @@ impl FontDb {
     /// Close a document's font scope: its fonts are no longer found (in it or anywhere). Their
     /// files stay read, for the document opening again.
     pub fn close_scope(&self, scope: u32) {
-        self.scopes.write().unwrap_or_else(|e| e.into_inner()).remove(&scope);
+        if self.scopes.write().unwrap_or_else(|e| e.into_inner()).remove(&scope).is_some() {
+            self.scan_generation.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// The shared fonts' face for `family` + `style` (see [`ScopedFonts::face`]).
@@ -1844,20 +1884,25 @@ impl FontDb {
         self.scoped(0).fallback_for(c, exclude, language)
     }
 
-    /// Load a system font covering `c` (preferred fallback families first, then any cataloged
-    /// file under 40 MB). Returns true if one was loaded. Misses are remembered.
+    /// Load a system face covering an entire cluster (preferred families first, then any
+    /// cataloged file under 40 MB). Do not retain files that cover only part of the cluster.
+    /// Small misses are remembered within a bounded cache, invalidated on font refresh.
     #[cfg(not(target_arch = "wasm32"))]
-    fn system_fallback(&self, c: char) -> bool {
-        if c.is_control() || c.is_whitespace() {
+    fn system_fallback(&self, text: &str, exclude: u32) -> bool {
+        if !text.chars().any(needs_glyph) {
             return false;
         }
         {
             let sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
-            if !sys.enabled || sys.misses.contains(&c) {
+            if !sys.enabled || sys.misses.contains(text) {
                 return false;
             }
         }
-        let covered = |db: &FontDb| db.read_faces().iter().any(|f| db.current_face(f) && f.covers(c));
+        let covered = |db: &FontDb| db.read_faces().iter().any(|f| f.id != exclude && db.current_face(f) && f.covers_cluster(text));
+        let covers = |font: skrifa::FontRef<'_>| {
+            let cmap = font.charmap();
+            text.chars().filter(|&c| needs_glyph(c)).all(|c| cmap.map(c).is_some_and(|g| g.to_u32() != 0))
+        };
         self.ensure_catalog();
         let generation = self.scan_generation();
         let cataloged: Vec<String> = self.read_catalog().iter().map(|e| e.family.clone()).collect();
@@ -1876,9 +1921,7 @@ impl FontDb {
             if let CatalogLocation::Native(name) = location {
                 let Some(epoch) = self.native_available.read().unwrap_or_else(|e| e.into_inner()).get(name).copied() else { continue };
                 let Ok(data) = crate::platform::native_font_data(name) else { continue };
-                let hit = enumerate_faces(&data)
-                    .iter()
-                    .any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
+                let hit = enumerate_faces(&data).iter().any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(covers));
                 if hit && self.insert_faces(self.new_faces_with_epoch(data, FontSource::Native(name.clone()), epoch)) > 0 && covered(self) {
                     return true;
                 }
@@ -1898,16 +1941,15 @@ impl FontDb {
                 continue;
             }
             let Ok((data, epoch)) = self.read_installed(&p) else { continue };
-            let hit =
-                enumerate_faces(&data).iter().any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
+            let hit = enumerate_faces(&data).iter().any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(covers));
             if hit && self.insert_faces(self.new_faces_with_epoch(data, FontSource::Installed(p), epoch)) > 0 && covered(self) {
                 return true;
             }
         }
         // A rescan may have supplied a font while this lookup examined older paths.
         let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
-        if generation == self.scan_generation() {
-            sys.misses.insert(c);
+        if generation == self.scan_generation() && text.len() <= 256 && sys.misses.len() < 1024 {
+            sys.misses.insert(text.into());
         }
         false
     }
@@ -1975,6 +2017,10 @@ impl ScopedFonts<'_> {
     /// Resolve localized and legacy family names without confusing replacement fonts with
     /// installed originals. Document-local aliases take precedence over shared fonts.
     pub fn canonical_family(&self, family: &str) -> Option<String> {
+        self.exact_canonical_family(family).or_else(|| plain_family(family).and_then(|base| self.exact_canonical_family(base)))
+    }
+
+    fn exact_canonical_family(&self, family: &str) -> Option<String> {
         let matches = |f: &&Arc<FontFace>| same_family(&f.family, family) || f.family_aliases.iter().any(|alias| same_family(alias, family));
         if let Some(face) = self.own().iter().find(matches) {
             return Some(face.family.clone());
@@ -2078,6 +2124,37 @@ impl ScopedFonts<'_> {
             }
         }
         out
+    }
+
+    /// Classification and format from small catalogue tables; does not resolve/load an installed face.
+    pub fn menu_kind(&self, family: &str) -> crate::kind::FaceKind {
+        let canonical = self.canonical_family(family);
+        let family = canonical.as_deref().unwrap_or(family);
+        if let Some(face) =
+            self.own().iter().chain(self.db.read_faces().iter().filter(Self::shared_menu_face)).find(|f| same_family(&f.family, family))
+        {
+            return face.skrifa().map(|f| crate::kind::read_kind(&f, family)).unwrap_or_default();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(entry) = self.db.read_catalog().iter().find(|c| same_family(&c.family, family)) {
+            return entry.kind;
+        }
+        crate::kind::FaceKind::default()
+    }
+    /// File creation/modification date from the last scan, unavailable for pathless faces.
+    pub fn menu_added(&self, family: &str) -> Option<std::time::SystemTime> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(face) = self.own().iter().find(|f| same_family(&f.family, family)) {
+                return std::fs::metadata(face.source.path()?).ok().and_then(|m| m.created().or_else(|_| m.modified()).ok());
+            }
+            return self.db.read_catalog().iter().find(|c| same_family(&c.family, family)).and_then(|c| c.added);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = family;
+            None
+        }
     }
 
     /// Selectable style names for `family` (Regular first, then by weight). Retained installed
@@ -2185,7 +2262,16 @@ impl ScopedFonts<'_> {
         let canonical = self.canonical_family(family);
         let family = canonical.as_deref().unwrap_or(family);
         if let Some(f) = self.find(family, style, true) {
-            return f;
+            // Legacy subfamily aliases (e.g. Light named Regular) must not hide an
+            // installed face whose actual style name is the requested one.
+            let prefer = norm(&f.style) == norm(style) || style.contains('{') || matches!(f.source, FontSource::Document(_));
+            #[cfg(not(target_arch = "wasm32"))]
+            let catalogued_exact = self.db.read_catalog().iter().any(|c| same_family(&c.family, family) && norm(&c.style) == norm(style));
+            #[cfg(target_arch = "wasm32")]
+            let catalogued_exact = false;
+            if prefer || !catalogued_exact {
+                return f;
+            }
         }
         let closest = self.find(family, style, false);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2294,7 +2380,12 @@ impl ScopedFonts<'_> {
             return None;
         }
         let ns = norm(style);
-        if let Some(f) = cands.iter().find(|f| norm(&f.style) == ns || (f.coords.is_empty() && f.style_aliases.iter().any(|alias| norm(alias) == ns)))
+        // Preserve document-font precedence; within each scope prefer canonical style
+        // names before aliases shared by several weights of the same family.
+        if let Some(f) = cands
+            .iter()
+            .filter(|f| norm(&f.style) == ns || (f.coords.is_empty() && f.style_aliases.iter().any(|alias| norm(alias) == ns)))
+            .min_by_key(|f| (!matches!(f.source, FontSource::Document(_)), norm(&f.style) != ns))
         {
             return Some((*f).clone());
         }
@@ -2327,8 +2418,28 @@ impl ScopedFonts<'_> {
             return Some(f);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.db.system_fallback(c) {
+        if self.db.system_fallback(c.encode_utf8(&mut [0; 4]), exclude) {
             return self.loaded_fallback(c, exclude);
+        }
+        None
+    }
+
+    /// Find one fallback face covering a whole shaping cluster, including its vowel signs and
+    /// viramas. This prevents character fallback from breaking Indic conjuncts. Document fonts
+    /// remain scoped; native font bytes are loaded only when no loaded face covers the cluster.
+    pub fn fallback_for_cluster(&self, text: &str, exclude: u32, language: Option<&str>) -> Option<Arc<FontFace>> {
+        let first = text.chars().find(|&c| needs_glyph(c))?;
+        if let Some(chain) = cjk_chain(first, language)
+            && let Some(f) = chain.iter().filter_map(|family| self.chain_face(family, first, exclude)).find(|f| f.covers_cluster(text))
+        {
+            return Some(f);
+        }
+        if let Some(f) = self.loaded_cluster_fallback(text, exclude) {
+            return Some(f);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.db.system_fallback(text, exclude) {
+            return self.loaded_cluster_fallback(text, exclude);
         }
         None
     }
@@ -2358,6 +2469,17 @@ impl ScopedFonts<'_> {
         order.sort_by_key(|f| (!same_family(&f.family, FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
         order.into_iter().find(|f| f.covers(c)).cloned()
     }
+
+    fn loaded_cluster_fallback(&self, text: &str, exclude: u32) -> Option<Arc<FontFace>> {
+        let faces = self.db.read_faces();
+        let mut order: Vec<&Arc<FontFace>> = faces.iter().chain(self.own().iter()).filter(|f| f.id != exclude && self.db.current_face(f)).collect();
+        order.sort_by_key(|f| (!same_family(&f.family, FALLBACK_FAMILY), f.italic, (f.weight - 400.0).abs() as i32));
+        order.into_iter().find(|f| f.covers_cluster(text)).cloned()
+    }
+}
+
+fn needs_glyph(c: char) -> bool {
+    !c.is_control() && !c.is_whitespace() && !matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2419,3 +2541,12 @@ mod tests_docfonts;
 #[cfg(test)]
 #[path = "tests_vertical.rs"]
 mod tests_vertical;
+
+#[cfg(test)]
+#[path = "tests_indic.rs"]
+mod tests_indic;
+
+fn plain_family(family: &str) -> Option<&str> {
+    let unprefixed = family.trim_start().strip_prefix("$ID/").map(str::trim).filter(|f| !f.is_empty());
+    without_format_suffix(unprefixed.unwrap_or(family)).or(unprefixed)
+}

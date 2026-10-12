@@ -63,6 +63,9 @@ pub fn command(app: &mut DesignApp, id: &str, p: &Value) -> Result<Value, String
     match id {
         "window.ai" => {
             app.ui.ai.open = p["open"].as_bool().unwrap_or(true);
+            if !app.ui.ai.open && app.ui.docking.as_ref().is_some_and(|layout| layout.contains(&"ai".to_owned())) {
+                app.run("window.panel.close", json!({"panel":"ai"}))?;
+            }
             Ok(json!(app.ui.ai))
         }
         "window.ai.layout" => {
@@ -111,29 +114,17 @@ fn action(app: &mut DesignApp, id: &str, p: Value) {
         app.ai.notice = e;
     }
 }
-pub fn docked(app: &mut DesignApp, ui: &mut egui::Ui) {
-    if !app.ui.ai.open || app.ui.ai.floating {
-        return;
+pub fn docked(app: &mut DesignApp, _ui: &mut egui::Ui) {
+    // The assistant participates in the same vertical dock as the other panels.
+    // Preserve the older independent floating-window preference and geometry.
+    let present = app.ui.docking.as_ref().is_some_and(|layout| layout.contains(&"ai".to_owned()));
+    if app.ui.ai.open && !app.ui.ai.floating && !present {
+        action(app, "window.panel.activate", json!({"panel":"ai"}));
+    } else if present && app.ui.ai.floating {
+        action(app, "window.panel.close", json!({"panel":"ai"}));
+    } else if present {
+        app.ui.ai.open = true;
     }
-    let t = Tokens::get(ui.ctx());
-    egui::Panel::right("ai_assistant_dock")
-        .default_size(app.ui.ai.size[0])
-        .size_range(320.0..=620.0)
-        .resizable(true)
-        .frame(egui::Frame::NONE.fill(t.panel).inner_margin(10))
-        .show(ui, |ui| {
-            app.ui.ai.size[0] = ui.available_width();
-            ui.horizontal(|ui| {
-                ui.heading("AI Assistant");
-                if ui.small_button("Float").clicked() {
-                    action(app, "window.ai.layout", json!({"floating":true}));
-                }
-                if ui.small_button("Close").clicked() {
-                    action(app, "window.ai", json!({"open":false}));
-                }
-            });
-            body(app, ui);
-        });
 }
 pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
     if !app.ui.ai.open || !app.ui.ai.floating {
@@ -162,7 +153,7 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
         action(app, "window.ai", json!({"open":false}));
     }
 }
-fn body(app: &mut DesignApp, ui: &mut egui::Ui) {
+pub(crate) fn body(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let running = busy(app);
     ui.horizontal(|ui| {

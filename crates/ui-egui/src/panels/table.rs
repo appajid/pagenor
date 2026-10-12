@@ -13,7 +13,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Ok(info) = app.session.execute("table.get", &json!({})) else {
         ui.label(crate::rtl::widget(
             ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Place the insertion point in a table, or create one.")).color(t.text_dim),
+            egui::RichText::new(crate::i18n::tr(
+                &app.ui.language,
+                "Select cells with the Arrow tool, place the insertion point in a table, or create one.",
+            ))
+            .color(t.text_dim),
         ));
         ui.add_space(6.0);
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Create Table…"))).clicked() {
@@ -31,6 +35,26 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let run = |app: &mut DesignApp, id: &str, p: Value| {
         let _ = app.run(id, p);
     };
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Select"));
+        for (label, what) in [("Table", "table"), ("Row", "row"), ("Column", "column")] {
+            if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
+                run(app, "table.select", json!({"what": what}));
+            }
+        }
+    });
+    divider(ui);
+    caption(ui, crate::i18n::tr(&app.ui.language, "Cell Borders"));
+    super::cell_stroke::panel(app, ui);
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Cell Fill"));
+        super::swatch_picker(app, ui, "tp_fill", cell["fill"].as_str().map(str::to_owned), |app, color| {
+            if let Err(error) = app.run("table.setCell", json!({"fill": color})) {
+                app.status(format!("Table: {error}"));
+            }
+        });
+    });
+    divider(ui);
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Cell Type"));
         if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Graphic…"))).clicked()
@@ -69,18 +93,32 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         for (label, kind, names, cur) in [("Table Style", "table", tnames, tcur), ("Cell Style", "cell", cnames, ccur)] {
             ui.horizontal(|ui| {
                 caption(ui, crate::i18n::tr(&app.ui.language, label));
-                egui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
+                let combo = egui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
-                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "table": tid}));
+                            let params = if kind == "cell" {
+                                json!({"name": n, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]})
+                            } else {
+                                json!({"name": n, "table": tid})
+                            };
+                            run(app, &format!("style.{kind}.apply"), params);
                         }
                     }
                 });
-                if crate::icons::button(ui, "plus", 20.0, false, &format!("New {label}")).clicked() {
+                combo.response.widget_info(|| {
+                    let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), crate::i18n::tr(&app.ui.language, label));
+                    info.current_text_value = Some(cur.clone());
+                    info
+                });
+                let tip = format!("New {label}");
+                let add = crate::icons::button(ui, "plus", 20.0, false, &tip);
+                add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &tip));
+                if add.clicked() {
                     if kind == "cell" {
                         run(app, "style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true}));
                     } else {
-                        run(app, "style.table.create", json!({"name": "Table Style 1"}));
+                        let params = table_style_params(app, &info);
+                        run(app, "style.table.create", params);
                     }
                 }
             });
@@ -228,4 +266,105 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             run(app, "table.options", json!({"footerRows": v.max(0.0) as u64}));
         }
     });
+}
+
+// Capture the fields the existing table-style command supports. Keep the applied style's
+// region bindings; mixed direct cell formatting has no single table-style representation.
+fn table_style_params(app: &DesignApp, info: &Value) -> Value {
+    let options = &info["options"];
+    let border = &options["border"];
+    // Null leaves a style's fills unspecified; zero counts explicitly capture disabled fills.
+    let alt_rows = if options["altRows"].is_null() { json!({"first": 0, "next": 0}) } else { options["altRows"].clone() };
+    let mut params = json!({
+        "name": "Table Style 1",
+        "border": {"weight": border["weight"], "color": border["color"], "tint": border["tint"]},
+        "altRows": alt_rows,
+        "spaceBefore": options["spaceBefore"],
+        "spaceAfter": options["spaceAfter"],
+    });
+    let name = info["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(pagenor_doc::BASIC_TABLE);
+    if let Some(style) = app.session.active().map(|st| st.doc.styles.resolve_table_style(name)) {
+        // Store effective bindings, including inherited "same as body" regions, as a standalone style.
+        let region = |same, value: &Option<String>| if same == Some(true) { style.body.clone() } else { value.clone() };
+        for (key, value) in [
+            ("header", region(style.header_same_as_body, &style.header)),
+            ("body", style.body.clone()),
+            ("footer", region(style.footer_same_as_body, &style.footer)),
+            ("leftColumn", region(style.left_column_same_as_body, &style.left_column)),
+            ("rightColumn", region(style.right_column_same_as_body, &style.right_column)),
+        ] {
+            if let Some(value) = value {
+                params[key] = json!(value);
+            }
+        }
+    }
+    params
+}
+
+#[cfg(test)]
+#[path = "table/tests.rs"]
+mod upstream_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_window::{click_at, open};
+    use egui_kittest::kittest::Queryable;
+    use pagenor_doc::SpreadRef;
+
+    #[test]
+    fn canvas_arrow_cell_selection_keeps_frame_and_border_edits_are_undoable() {
+        let app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        let mut h = open(app, egui::vec2(1440.0, 900.0));
+        let fid =
+            h.state_mut().app.run("frame.create", json!({"rect":[60,60,450,450],"content":"text","caret":true})).unwrap()["id"].as_u64().unwrap();
+        let tid = h.state_mut().app.run("table.insert", json!({"rows":3,"cols":3,"width":360})).unwrap()["table"].as_u64().unwrap();
+        h.state_mut().app.session.set_tool("selection");
+        h.run_steps(6);
+        let at = |row, col| {
+            let app = &h.state().app;
+            let st = app.session.active().unwrap();
+            let item = st.doc.item(pagenor_doc::ItemId(fid)).unwrap();
+            let sid = item.text_frame().unwrap().story;
+            let cs = app.session.cache.get(&st.doc, sid, None);
+            let cell = cs.frames[0].tables[0].cell(row, col).unwrap();
+            let xf = crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+            xf.to_screen(app.session.layout().xf(SpreadRef::Doc(0)) * st.doc.text_xf(item) * cell.rect.center())
+        };
+        let first = at(0, 0);
+        let last = at(2, 2);
+        h.hover_at(first);
+        h.drag_at(first);
+        h.run_steps(2);
+        h.hover_at(last);
+        h.run_steps(3);
+        h.drop_at(last);
+        h.run_steps(4);
+        let sel = &h.state().app.session.active().unwrap().selection;
+        assert_eq!(sel.cells.unwrap().range, pagenor_doc::CellRange { r0: 0, c0: 0, r1: 2, c1: 2 });
+        assert_eq!(sel.text.unwrap().frame, Some(pagenor_doc::ItemId(fid)));
+        h.state_mut().app.run("window.panel.activate", json!({"panel":"table"})).unwrap();
+        h.run_steps(6);
+        assert!(h.query_all_by_label("Cell edges").next().is_some());
+        for (edges, weight, color) in [("innerHorizontal", 3.0, "C=100 M=0 Y=0 K=0"), ("innerVertical", 5.0, "C=0 M=100 Y=0 K=0")] {
+            h.state_mut().app.run("table.setCell", json!({"stroke":{"edges":edges,"weight":weight,"color":color}})).unwrap();
+            let current = h.state_mut().app.run("table.getCellStroke", json!({"edges":edges})).unwrap();
+            assert_eq!(current["weight"], weight);
+            assert_eq!(current["color"], color);
+        }
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state_mut().app.run("table.getCellStroke", json!({"edges":"innerVertical"})).unwrap()["weight"], 1.0);
+        assert_eq!(h.state_mut().app.run("table.getCellStroke", json!({"edges":"innerHorizontal"})).unwrap()["weight"], 3.0);
+        let before = h.state().app.session.active().unwrap().selection.clone();
+        assert!(h.state_mut().app.run("table.select", json!({"table":tid,"frame":u64::MAX})).is_err());
+        assert_eq!(h.state().app.session.active().unwrap().selection, before);
+        // A normal click selects one cell and the larger status controls stay in their bar.
+        click_at(&mut h, first);
+        assert_eq!(h.state().app.session.active().unwrap().selection.cells.unwrap().range, pagenor_doc::CellRange::cell(0, 0));
+        let next = h.get_by_label("Next Spread").rect();
+        assert!(
+            next.height() >= 22.0 && next.top() >= h.state().app.canvas_rect.unwrap().max.y && next.bottom() <= h.ctx.content_rect().bottom(),
+            "larger navigation fits the bottom bar: {next:?}"
+        );
+    }
 }

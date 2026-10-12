@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use pagenor_doc::{Document, Item, Story, StoryId, Styles, WrapMode};
+use pagenor_doc::{Document, Item, Story, StoryId, Styles};
 
 use crate::vars::RunningIndex;
 use crate::{ComposeOptions, ComposedStory};
@@ -112,7 +112,9 @@ impl Cache {
         sig.push(usize::from(doc.settings.glyph_fallback));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
-            sig.push(doc.list_start(sid, &l.name) as usize);
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
+            sig.push(std::hash::Hasher::finish(&h) as usize);
         }
         {
             let mut g = self.map.lock().unwrap_or_else(|e| e.into_inner());
@@ -270,7 +272,9 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
                 for it in &sp.items {
-                    if it.wrap.mode != WrapMode::None {
+                    let mut wraps = false;
+                    it.walk(&mut |i| wraps |= i.has_wrap());
+                    if wraps {
                         sig.push(Arc::as_ptr(it) as usize);
                         keep.push(it.clone());
                     }

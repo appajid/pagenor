@@ -27,7 +27,7 @@ fn paint_brand(ui: &egui::Ui, rect: Rect, name: &str, bytes: &[u8]) {
     let texture = cached.or_else(|| {
         let (pixels, width, height) = pagenor_images::render_svg(bytes, px)?;
         let image = egui::ColorImage::from_rgba_premultiplied([width as usize, height as usize], &pixels);
-        let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+        let texture = crate::widgets::load_texture(ctx, name, image, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(key, texture.clone()));
         Some(texture)
     });

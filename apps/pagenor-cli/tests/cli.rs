@@ -2,6 +2,78 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+/// `--export` wrote a PNG of the page under every name it did not know: `out.html`, `out.txt` and
+/// `OUT.PDF` were page images, and so was `out.pgnr` from `script` (#432).
+#[test]
+fn export_writes_the_file_type_its_extension_names() {
+    let frame = r#"{"rect": [72, 72, 400, 200], "content": "text", "text": "Hello"}"#;
+    let types: [(&str, &[u8]); 13] = [
+        // No extension: a PNG, as before.
+        ("a", b"\x89PNG"),
+        ("a.png", b"\x89PNG"),
+        ("a.jpg", b"\xFF\xD8"),
+        ("A.JPEG", b"\xFF\xD8"),
+        ("a.pdf", b"%PDF"),
+        ("A.PDF", b"%PDF"),
+        ("a.pgnr", b"PK"),
+        ("a.idml", b"PK"),
+        ("a.epub", b"PK"),
+        ("a.html", b"<!DOCTYPE html>"),
+        ("a.htm", b"<!DOCTYPE html>"),
+        ("a.rtf", b"{\\rtf"),
+        ("a.txt", b"Hello"),
+    ];
+    for mode in ["run", "script"] {
+        let dir = std::env::temp_dir().join(format!("pagenor-cli-types-{mode}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("page.pgnrs");
+        std::fs::write(&script, format!("frame.create {frame}\n")).unwrap();
+        let mut args: Vec<String> = match mode {
+            "run" => vec!["run".into(), "--cmd".into(), format!("frame.create={frame}")],
+            _ => vec!["script".into(), script.to_str().unwrap().into()],
+        };
+        for (name, _) in types {
+            args.extend(["--export".into(), dir.join(name).to_str().unwrap().into()]);
+        }
+        let out = cli().args(&args).output().unwrap();
+        assert!(out.status.success(), "{mode}: {}", String::from_utf8_lossy(&out.stderr));
+        for (name, start) in types {
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            assert!(bytes.starts_with(start), "{mode} --export {name} wrote {:?}", String::from_utf8_lossy(&bytes[..bytes.len().min(16)]));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A file type `--export` does not write is an error, before anything runs or is written.
+#[test]
+fn export_to_an_unknown_file_type_is_an_error() {
+    let dir = std::env::temp_dir().join(format!("pagenor-cli-unknown-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (png, doc, unknown) = (dir.join("a.png"), dir.join("a.pgnr"), dir.join("a.xyz"));
+    let (png, doc, unknown) = (png.to_str().unwrap(), doc.to_str().unwrap(), unknown.to_str().unwrap());
+    for args in [["run", "--sample", "--export", png, "--export", unknown], ["script", "-", "--save", doc, "--export", unknown]] {
+        let out = cli().args(args).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {err}");
+        assert!(err.contains(unknown) && err.contains(".html"), "{args:?}: {err}");
+    }
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "nothing is written when a file type is unknown");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--pdf-options` that was JSON but no object (`[1]`) panicked when the PDF's path was added to it.
+#[test]
+fn run_pdf_options_that_are_no_object_are_an_error() {
+    let pdf = std::env::temp_dir().join(format!("pagenor-cli-options-{}.pdf", std::process::id()));
+    for options in ["[1]", "\"all\"", "1", "null"] {
+        let out = cli().args(["run", "--sample", "--pdf-options", options, "--export", pdf.to_str().unwrap()]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{options}: {err}");
+        assert!(err.contains("--pdf-options") && !err.contains("panicked"), "{options}: {err}");
+    }
+    assert!(!pdf.exists());
+}
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pagenor-cli"))
@@ -118,4 +190,51 @@ fn run_export_options_come_before_their_export() {
     assert!(out.status.success(), "{err}");
     assert!(err.contains("wrote") && std::path::Path::new(a).exists() && std::path::Path::new(b).exists(), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `pagenor-cli --help` printed usage to stderr and exited 1; asking for help is not an
+/// error (#243). It now goes to stdout and succeeds, while an unknown command keeps the same
+/// usage on stderr and fails.
+#[test]
+fn help_goes_to_stdout_and_unknown_args_to_stderr() {
+    for flag in ["--help", "-h", "help"] {
+        let out = cli().arg(flag).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{flag}: {:?}", out.status);
+        assert!(stdout.starts_with("usage: pagenor-cli"), "{flag}: {stdout:?}");
+        assert!(stdout.contains("pagenor-cli --version"), "{flag}: {stdout:?}");
+        assert!(out.stderr.is_empty(), "{flag} wrote to stderr: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    // An unknown option is still an error: usage on stderr, nothing on stdout, non-zero exit.
+    let out = cli().arg("--no-such-option").output().unwrap();
+    assert!(!out.status.success(), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "unexpected stdout: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: pagenor-cli"));
+}
+
+#[test]
+fn validate_pdf_reports_checks_in_json_and_uses_failure_exit_status() {
+    let dir = std::env::temp_dir().join(format!("pagenor-cli-pdf-check-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = pagenor_doc::Document::new(&Default::default());
+    let cache = pagenor_compose::Cache::new();
+    for (name, standard, valid) in [("press", pagenor_pdf::Standard::PdfX4, true), ("plain", pagenor_pdf::Standard::None, false)] {
+        let path = dir.join(format!("{name}.pdf"));
+        let bytes = pagenor_pdf::export_pdf(&doc, &cache, &pagenor_pdf::PdfOptions { standard, ..Default::default() }).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let out = cli().arg("validate-pdf").arg(&path).output().unwrap();
+        assert_eq!(out.status.success(), valid, "{}", String::from_utf8_lossy(&out.stderr));
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["valid"], valid);
+        assert_eq!(report["standard"], "PDF/X-4");
+        assert_eq!(report["issues"].as_array().unwrap().is_empty(), valid);
+        let extra = cli().arg("validate-pdf").arg(&path).arg("extra.pdf").output().unwrap();
+        assert!(!extra.status.success());
+        assert!(extra.stdout.is_empty());
+    }
+    assert!(!cli().arg("validate-pdf").output().unwrap().status.success());
+    assert!(!cli().arg("validate-pdf").arg(dir.join("missing.pdf")).output().unwrap().status.success());
+    let help = cli().arg("--help").output().unwrap();
+    assert!(String::from_utf8_lossy(&help.stdout).contains("validate-pdf FILE.pdf"));
+    std::fs::remove_dir_all(dir).unwrap();
 }

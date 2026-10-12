@@ -2,7 +2,8 @@
 //!
 //! - `mimetype` (stored first, uncompressed): `application/vnd.pagenor+zip`
 //! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `pagenor-doc`)
-//! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte
+//! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte: one per distinct file, and only
+//!   the ones the document references (see [`Document::compact_assets`])
 //! - `meta.json`: format version and generator
 //!
 //! Older single-file JSON documents (assets as base64 in `assetData`) still open. Documents
@@ -10,7 +11,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
@@ -83,8 +84,12 @@ fn ext_for(mime: &str) -> &'static str {
     }
 }
 
-/// Serialize a document to `.pgnr` bytes.
+/// Serialize a document to `.pgnr` bytes. The file holds each distinct placed file once
+/// and leaves out assets nothing references; `doc` itself keeps them (undo can bring them back).
 pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    let mut compact = doc.clone();
+    compact.compact_assets();
+    let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
     let meta = json!({"format": "pagenor", "version": VERSION, "generator": concat!("Pagenor ", env!("CARGO_PKG_VERSION"))}).to_string();
     if let Some(ai) = &doc.ai {
@@ -236,6 +241,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     let names: HashSet<String> = z.file_names().filter(|name| name.starts_with("assets/")).map(str::to_string).collect();
     let mut loaded_assets = HashSet::new();
+    let mut loaded: HashMap<usize, Vec<Arc<Vec<u8>>>> = HashMap::new();
     for name in names {
         let Some(stem) = name.strip_prefix("assets/") else { continue };
         let Some(id) = stem.split('.').next().and_then(|s| s.parse::<u64>().ok()) else { continue };
@@ -244,10 +250,20 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
             return Err(FormatError::NotOurs(format!("multiple embedded files for asset {id}")));
         }
         if let Some(data) = read_entry(&mut z, &name, MAX_ENTRY_BYTES as usize, &mut remaining)? {
-            Arc::make_mut(a).data = Arc::new(data);
+            let same = loaded.entry(data.len()).or_default();
+            let data = match same.iter().find(|d| ***d == data) {
+                Some(d) => d.clone(),
+                None => {
+                    let d = Arc::new(data);
+                    same.push(d.clone());
+                    d
+                }
+            };
+            Arc::make_mut(a).data = data;
         }
     }
     upgrade(&mut doc, version);
+    doc.merge_duplicate_assets();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -329,6 +345,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
         }
     }
     upgrade(&mut doc, 1);
+    doc.merge_duplicate_assets();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -410,6 +427,62 @@ mod tests {
     use pagenor_doc::geom::Rect;
     use pagenor_doc::{Asset, ParaFormat, SpreadRef};
 
+    fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
+        let aid = AssetId(d.alloc());
+        let a = Asset {
+            page: 0,
+            id: aid,
+            name: "x.png".into(),
+            mime: "image/png".into(),
+            link: None,
+            data: Arc::new(data.to_vec()),
+            pixels: Some((1, 1)),
+            ..Default::default()
+        };
+        d.assets.insert(aid, Arc::new(a));
+        aid
+    }
+
+    fn place(d: &mut Document, asset: AssetId, crop: f64) -> pagenor_doc::ItemId {
+        use pagenor_doc::geom::{Affine, shapes};
+        use pagenor_doc::{Content, Graphic, Item, ItemId, Shape};
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
+        it.content = Content::Graphic(Graphic {
+            asset,
+            size: (1.0, 1.0),
+            xf: Affine::translate((crop, crop)),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [crop; 4],
+            wrap: Default::default(),
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        id
+    }
+
+    fn asset_entries(bytes: &[u8]) -> usize {
+        let z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        z.file_names().filter(|n| n.starts_with("assets/")).count()
+    }
+
+    /// Zip `d` the way files were saved with one asset per placement (nothing merged or pruned).
+    fn save_uncompacted(d: &Document) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        let mut z = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("mimetype", opts).unwrap();
+        z.write_all(MIME.as_bytes()).unwrap();
+        z.start_file("document.json", opts).unwrap();
+        z.write_all(&serde_json::to_vec(d).unwrap()).unwrap();
+        for (id, a) in &d.assets {
+            z.start_file(format!("assets/{}.png", id.0), opts).unwrap();
+            z.write_all(&a.data).unwrap();
+        }
+        z.finish().unwrap();
+        buf.into_inner()
+    }
+
     #[test]
     fn eps_source_and_preview_documents_keep_current_format_capability() {
         let mut d = Document::new(&NewDocument::default());
@@ -433,8 +506,10 @@ mod tests {
                 data: Arc::new(source.clone()),
                 pixels: Some((40, 20)),
                 page: 0,
+                ..Default::default()
             }),
         );
+        place(&mut d, aid, 0.0);
         assert_eq!(version(&d), u64::from(VERSION), "retain current capability even when legacy metadata says PNG");
         assert_eq!(load(&save(&d).unwrap()).unwrap().assets[&aid].data.as_slice(), source);
         Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"\x89PNG\r\n\x1a\npreview".to_vec());
@@ -446,19 +521,8 @@ mod tests {
         let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
         let lid = d.default_layer();
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "héllo\nworld", ParaFormat::default()).unwrap();
-        let aid = AssetId(d.alloc());
-        d.assets.insert(
-            aid,
-            Arc::new(Asset {
-                page: 0,
-                id: aid,
-                name: "x.png".into(),
-                mime: "image/png".into(),
-                link: None,
-                data: Arc::new(vec![1, 2, 3, 4]),
-                pixels: Some((1, 1)),
-            }),
-        );
+        let aid = png_asset(&mut d, &[1, 2, 3, 4]);
+        place(&mut d, aid, 0.0);
         let bytes = save(&d).unwrap();
         assert!(bytes.starts_with(b"PK"));
         let back = load(&bytes).unwrap();
@@ -603,6 +667,42 @@ mod tests {
         assert!(now.styles.resolve_para(&now.story(sid).unwrap().paras[0]).0.drop_cap_align_left);
     }
 
+    #[test]
+    fn saves_hold_each_used_file_once() {
+        let mut d = Document::new(&NewDocument::default());
+        let first = png_asset(&mut d, &[7; 64]);
+        let copy = png_asset(&mut d, &[7; 64]);
+        let replaced = png_asset(&mut d, &[9; 64]);
+        let a = place(&mut d, first, 1.0);
+        let b = place(&mut d, copy, 2.0);
+        assert_eq!(d.assets.len(), 3);
+
+        // Duplicates merge into the first asset, the unreferenced one is left out, and every
+        // placement keeps its own crop and transform.
+        let bytes = save(&d).unwrap();
+        assert_eq!(asset_entries(&bytes), 1);
+        assert_eq!(d.assets.len(), 3, "the open document keeps its assets");
+        let back = load(&bytes).unwrap();
+        assert_eq!(back.assets.keys().copied().collect::<Vec<_>>(), vec![first]);
+        assert!(!back.assets.contains_key(&replaced));
+        for (id, crop) in [(a, 1.0), (b, 2.0)] {
+            let g = back.item(id).and_then(|i| i.graphic()).unwrap();
+            assert_eq!((g.asset, g.crop, g.xf), (first, [crop; 4], d.item(id).unwrap().graphic().unwrap().xf));
+        }
+    }
+
+    #[test]
+    fn older_files_with_one_asset_per_placement_open_with_one() {
+        let mut d = Document::new(&NewDocument::default());
+        let ids: Vec<AssetId> = (0..3).map(|_| png_asset(&mut d, &[5; 32])).collect();
+        for (k, id) in ids.iter().enumerate() {
+            place(&mut d, *id, k as f64);
+        }
+        let back = load(&save_uncompacted(&d)).unwrap();
+        assert_eq!(back.assets.len(), 1);
+        assert_eq!(asset_entries(&save(&back).unwrap()), 1);
+    }
+
     /// The object of the item `id` in a document's JSON.
     fn item_json(v: &mut Value, id: u64) -> Option<&mut Value> {
         if v.get("id").and_then(Value::as_u64) == Some(id) && v.get("content").is_some() {
@@ -657,6 +757,27 @@ mod tests {
         let mut v = serde_json::to_value(&d).unwrap();
         v["settings"].as_object_mut().unwrap().remove("glyphFallback").unwrap();
         assert!(load(&serde_json::to_vec(&v).unwrap()).unwrap().settings.glyph_fallback);
+    }
+
+    /// A saved tab list over the limits loads repaired, as an imported one does: a non-finite
+    /// position (saved as `null`) dropped, positions clamped, leaders cut, the count capped.
+    #[test]
+    fn saved_tab_lists_load_sanitized() {
+        use pagenor_doc::{MAX_TAB_LEADER, MAX_TAB_POSITION, MAX_TAB_STOPS, TabAlign, TabStop};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 300.0), lid, "a\tb", ParaFormat::default()).unwrap();
+        let stop = |position: f64| TabStop { position, align: TabAlign::Right, leader: "0123456789".into(), align_on: String::new() };
+        let mut tabs: Vec<TabStop> = (0..500).rev().map(|i| stop(i as f64 * 40.0)).collect();
+        tabs.push(stop(f64::NAN));
+        d.story_mut(sid).unwrap().paras[0].para.tabs = Some(tabs);
+        let bytes = save(&d).unwrap();
+        let back = load(&bytes).unwrap();
+        let tabs = back.stories[&sid].paras[0].para.tabs.clone().unwrap();
+        assert_eq!(tabs.len(), MAX_TAB_STOPS);
+        assert!(tabs.windows(2).all(|w| w[0].position < w[1].position), "sorted");
+        assert!(tabs.iter().all(|t| t.position.is_finite() && t.position <= MAX_TAB_POSITION && t.leader.chars().count() <= MAX_TAB_LEADER));
+        assert_eq!(tabs.last().map(|t| t.position), Some(3960.0), "the first stops by position");
     }
 
     #[test]
@@ -749,8 +870,10 @@ mod tests {
                 link: None,
                 data: Arc::new(vec![1, 2, 3, 4]),
                 pixels: None,
+                ..Default::default()
             }),
         );
+        place(&mut d, aid, 0.0);
         let mut bytes = save(&d).unwrap();
         let name = format!("assets/{}.bin", aid.0);
         let at = bytes
@@ -805,6 +928,7 @@ mod tests {
                 link: None,
                 data: Arc::new(vec![]),
                 pixels: None,
+                ..Default::default()
             }),
         );
         let json = serde_json::to_vec(&d).unwrap();
@@ -812,5 +936,114 @@ mod tests {
         let second = format!("assets/{}.png", aid.0);
         let bytes = archive(&[("document.json", &json), (&first, b"first"), (&second, b"second")]);
         assert!(matches!(load(&bytes), Err(FormatError::NotOurs(message)) if message.contains("multiple embedded files")));
+    }
+
+    fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
+        use pagenor_doc::{CharAttrs, ParaAttrs};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let base = d.styles.default_paragraph.clone();
+        let chars = CharAttrs {
+            leading_aki: Some(Some(4.0)),
+            trailing_aki: Some(Some(3.0)),
+            underline_weight: Some(Some(2.0)),
+            underline_offset: Some(Some(1.0)),
+            strikethrough_weight: Some(Some(2.0)),
+            strikethrough_offset: Some(Some(1.0)),
+            ..Default::default()
+        };
+        let para = ParaAttrs {
+            start_at: Some(Some(7)),
+            paragraph_kashida_width: Some(Some(0.5)),
+            kinsoku: Some(Some(Default::default())),
+            ..Default::default()
+        };
+        let style = std::sync::Arc::make_mut(&mut d.styles).paragraph.iter_mut().find(|s| s.name == base).unwrap();
+        style.chars = chars;
+        style.para = para;
+        let clear_chars = CharAttrs {
+            leading_aki: Some(None),
+            trailing_aki: Some(None),
+            underline_weight: Some(None),
+            underline_offset: Some(None),
+            strikethrough_weight: Some(None),
+            strikethrough_offset: Some(None),
+            ..Default::default()
+        };
+        let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+        let selected = if style_clear {
+            std::sync::Arc::make_mut(&mut d.styles).paragraph.push(pagenor_doc::styles::ParagraphStyle {
+                name: "Defaults".into(),
+                based_on: Some(base.clone()),
+                next_style: None,
+                para: clear_para.clone(),
+                chars: clear_chars.clone(),
+                shortcut: String::new(),
+            });
+            "Defaults".to_string()
+        } else {
+            base
+        };
+        let format = ParaFormat {
+            style: selected,
+            para: if local_clear { clear_para } else { ParaAttrs::default() },
+            chars: if local_clear { clear_chars } else { CharAttrs::default() },
+            table: None,
+        };
+        let layer = d.default_layer();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), layer, "clear", format).unwrap();
+        d
+    }
+
+    fn r7a_nullable_resolution(d: &Document) -> (pagenor_doc::ParaProps, pagenor_doc::CharProps) {
+        let s = d.stories.values().find(|s| s.text == "clear").unwrap();
+        d.styles.resolve_para(s.paras.first().unwrap())
+    }
+
+    fn r7a_assert_nullable_defaults_survive(d: &Document) {
+        let expected = r7a_nullable_resolution(d);
+        assert_eq!(expected.0.start_at, None);
+        assert_eq!(expected.0.paragraph_kashida_width, None);
+        assert_eq!(expected.0.kinsoku, None);
+        assert_eq!(expected.1.leading_aki, None);
+        let mut legacy = d.clone();
+        upgrade(&mut legacy, 1);
+        for (bytes, expected_doc) in [(save(d).unwrap(), d), (serde_json::to_vec(d).unwrap(), &legacy)] {
+            let back = load(&bytes).unwrap();
+            let props = r7a_nullable_resolution(&back);
+            assert_eq!(props.0.start_at, None);
+            assert_eq!(props.0.paragraph_kashida_width, None);
+            assert_eq!(props.0.kinsoku, None);
+            assert_eq!(props.1.leading_aki, None);
+            assert_eq!(props, r7a_nullable_resolution(expected_doc), "explicit defaults survive; legacy layout defaults migrate");
+            assert_eq!(back, *expected_doc, "the complete document survives the expected legacy migration");
+        }
+    }
+
+    #[test]
+    fn r7a_native_local_default_text_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(true, false));
+    }
+
+    #[test]
+    fn r7a_native_named_style_default_overrides_survive_zip_and_legacy_json() {
+        r7a_assert_nullable_defaults_survive(&r7a_nullable_document(false, true));
+    }
+
+    #[test]
+    fn r7a_native_nullable_missing_and_explicit_value_controls() {
+        let d = r7a_nullable_document(false, false);
+        assert_eq!(r7a_nullable_resolution(&d).0.start_at, Some(7));
+        assert_eq!(r7a_nullable_resolution(&d).1.leading_aki, Some(4.0));
+        let mut legacy = d.clone();
+        upgrade(&mut legacy, 1);
+        for (bytes, expected_doc) in [(save(&d).unwrap(), &d), (serde_json::to_vec(&d).unwrap(), &legacy)] {
+            let back = load(&bytes).unwrap();
+            assert_eq!(r7a_nullable_resolution(&back), r7a_nullable_resolution(expected_doc));
+            assert_eq!(back, *expected_doc);
+        }
+        let attrs: pagenor_doc::CharAttrs = serde_json::from_value(json!({"size":null})).unwrap();
+        assert!(attrs.size.is_none(), "nonnullable fields retain their existing null contract");
+        let props: pagenor_doc::CharProps = serde_json::from_value(json!({"leadingAki":null})).unwrap();
+        assert_eq!(props.leading_aki, None);
     }
 }

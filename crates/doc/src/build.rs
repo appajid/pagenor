@@ -34,6 +34,7 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "A3", intent: Intent::Print, width: 297.0 * MM, height: 420.0 * MM, units: Unit::Millimeters },
     Preset { name: "A4", intent: Intent::Print, width: 210.0 * MM, height: 297.0 * MM, units: Unit::Millimeters },
     Preset { name: "A5", intent: Intent::Print, width: 148.0 * MM, height: 210.0 * MM, units: Unit::Millimeters },
+    Preset { name: "A6", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "B5", intent: Intent::Print, width: 176.0 * MM, height: 250.0 * MM, units: Unit::Millimeters },
     Preset { name: "Business Card", intent: Intent::Print, width: 252.0, height: 144.0, units: Unit::Picas },
     Preset { name: "Postcard", intent: Intent::Print, width: 432.0, height: 288.0, units: Unit::Picas },
@@ -173,7 +174,7 @@ impl Document {
             suppress_wrap_when_hidden: false,
         });
         // A-Parent.
-        let parent_id = d.add_parent("A", "Parent", nd.columns, nd.gutter, nd.margins);
+        let parent_id = d.add_parent("A", "Master", nd.columns, nd.gutter, nd.margins);
         // Document pages.
         let pages: Vec<Page> = (0..nd.pages.max(1)).map(|_| d.make_page(Some(parent_id), nd.columns, nd.gutter, nd.margins)).collect();
         d.spreads = vec![Arc::new(Spread { id: SpreadId(d.alloc()), pages, items: vec![], parent: None, allow_shuffle: true })];
@@ -219,6 +220,7 @@ impl Document {
             margins,
             columns: Columns { count: columns.max(1), gutter, positions: None },
             parent,
+            inherit_parent_settings: parent.is_some(),
             side: PageSide::Single,
             overridden: vec![],
             guides: vec![],
@@ -236,6 +238,9 @@ impl Document {
         if n == 2 {
             pages[0].side = PageSide::Left;
             pages[1].side = PageSide::Right;
+            if self.settings.right_to_left_binding {
+                pages.reverse();
+            }
         }
         let id = SpreadId(self.alloc());
         let mut sp = Spread {
@@ -248,6 +253,18 @@ impl Document {
         sp.relayout();
         self.parents.push(Arc::new(sp));
         id
+    }
+
+    /// List the pages of each facing parent spread in binding order: left then right, or right
+    /// then left when bound right to left. Positions stay, so the parent items keep their pages.
+    pub fn order_parent_pages(&mut self) {
+        let first = if self.settings.right_to_left_binding { PageSide::Right } else { PageSide::Left };
+        for sp in &mut self.parents {
+            let pair = matches!(sp.pages.as_slice(), [a, b] if a.side != b.side && a.side != PageSide::Single && b.side != PageSide::Single);
+            if pair && sp.pages.first().is_some_and(|p| p.side != first) {
+                Arc::make_mut(sp).pages.reverse();
+            }
+        }
     }
 
     pub fn parent_index(&self, id: SpreadId) -> Option<usize> {
@@ -365,6 +382,7 @@ impl Document {
             out.insert(at, sp);
         }
         self.spreads = out;
+        self.sync_parent_settings();
     }
 
     /// Insert `count` pages after absolute page `after` (None = at the start), using `parent`.
@@ -538,9 +556,87 @@ impl Document {
         }
         for &abs in pages {
             let (si, pi) = self.page_loc(abs).ok_or(DocError::NoPage(abs))?;
-            Arc::make_mut(&mut self.spreads[si]).pages[pi].parent = parent;
+            let page = &mut Arc::make_mut(&mut self.spreads[si]).pages[pi];
+            page.parent = parent;
+            page.inherit_parent_settings = parent.is_some();
         }
+        self.sync_parent_settings();
         Ok(())
+    }
+
+    /// Default master for manually inserted pages and document growth.
+    pub fn default_parent(&self) -> Option<SpreadId> {
+        self.settings.default_parent.filter(|id| self.parent_index(*id).is_some()).or_else(|| self.parents.first().map(|p| p.id))
+    }
+
+    /// Copy shared page settings from the appropriate master side. Explicit page overrides stay local.
+    pub fn sync_parent_settings(&mut self) {
+        let parents = &self.parents;
+        for spread in &mut self.spreads {
+            // Avoid cloning unaffected spreads in undo snapshots.
+            let changes: Vec<_> = spread
+                .pages
+                .iter()
+                .enumerate()
+                .filter_map(|(i, page)| {
+                    if !page.inherit_parent_settings {
+                        return None;
+                    }
+                    let parent = parents.iter().find(|p| Some(p.id) == page.parent)?;
+                    let master = parent.pages.get(parent.parent_page_for_side(page.side)?)?;
+                    (page.margins != master.margins || page.columns != master.columns).then(|| (i, master.margins, master.columns.clone()))
+                })
+                .collect();
+            if !changes.is_empty() {
+                let spread = Arc::make_mut(spread);
+                for (i, margins, columns) in changes {
+                    if let Some(page) = spread.pages.get_mut(i) {
+                        page.margins = margins;
+                        page.columns = columns;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Master guides translated into a page's spread coordinates. Inherited guides are edited
+    /// on their master, never duplicated onto each document page. Cyclic based-on chains stop.
+    pub fn inherited_guides(&self, spread: SpreadRef, page_index: usize) -> Vec<crate::Guide> {
+        let Some(page) = self.spread(spread).and_then(|s| s.pages.get(page_index)) else { return vec![] };
+        let mut next = match spread {
+            SpreadRef::Doc(_) => page.parent,
+            SpreadRef::Parent(_) => self.spread(spread).and_then(|s| s.parent.as_ref()).and_then(|p| p.based_on),
+        };
+        let mut seen = std::collections::HashSet::new();
+        if let Some(sp) = self.spread(spread) {
+            seen.insert(sp.id);
+        }
+        let mut guides = Vec::new();
+        for _ in 0..32 {
+            let Some(id) = next else { break };
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(parent) = self.parent_index(id).and_then(|i| self.parents.get(i)) else { break };
+            let Some(master) = parent.parent_page_for_side(page.side).and_then(|i| parent.pages.get(i)) else { break };
+            for g in parent.pages.iter().flat_map(|pg| pg.guides.iter().filter(move |g| pg.id == master.id || g.spread)) {
+                if g.spread && g.orientation == crate::Orientation::Vertical && (g.position < master.x || g.position > master.x + master.width) {
+                    continue;
+                }
+                let mut g = g.clone();
+                if g.orientation == crate::Orientation::Vertical {
+                    g.position += page.x - master.x;
+                }
+                // Each side's guide belongs only to that side when inherited.
+                g.spread = false;
+                g.locked = true;
+                if !guides.contains(&g) {
+                    guides.push(g);
+                }
+            }
+            next = parent.parent.as_ref().and_then(|p| p.based_on);
+        }
+        guides
     }
 
     /// Parent page (spread index, page index) to show behind document page `abs`.
@@ -549,13 +645,24 @@ impl Document {
         let pi = self.parent_index(page.parent?)?;
         let ps = &self.parents[pi];
         // A parent spread can come without pages from a file.
-        let idx = if ps.pages.len() >= 2 && page.side == PageSide::Left { 0 } else { ps.pages.len().checked_sub(1)? };
-        Some((pi, idx))
+        Some((pi, ps.parent_page_for_side(page.side)?))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn single_sided_page_shows_first_parent_page() {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let extra = d.parents[0].pages[0].clone();
+        Arc::make_mut(&mut d.parents[0]).pages.push(extra);
+        assert_eq!(d.parents[0].pages.len(), 2);
+        assert_eq!(d.parent_page_for(0), Some((0, 0)));
+        assert_eq!(d.parent_page_for(1), Some((0, 0)));
+        Arc::make_mut(&mut d.parents[0]).pages.clear();
+        assert_eq!(d.parent_page_for(0), None);
+    }
+
     use super::*;
 
     #[test]

@@ -8,22 +8,34 @@
 
 pub mod about;
 pub mod ai;
+pub mod appearance;
 pub mod canvas;
+mod canvas_ime;
 pub mod chrome;
 pub mod control;
 pub mod credits;
+pub mod cursors;
 pub mod dialogs;
 pub mod dock;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
+mod new_document;
+mod object_control;
+mod panel_docking;
 pub mod panels;
+mod prefs;
+pub mod recent_documents;
+mod recent_previews;
 pub mod render_worker;
 mod rtl;
+mod section_options;
 mod startup;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
+mod theme_favorites;
+pub mod title_bar;
 pub mod toolbar;
 pub mod widgets;
 
@@ -51,15 +63,28 @@ pub struct ImportedFile {
     pub name: String,
     pub bytes: Vec<u8>,
 }
+/// The document and text selection that requested an asynchronous menu Paste.
+/// Hosts return this opaque context with the clipboard text; stale requests are cancelled.
+pub struct PasteRequest {
+    target: u64,
+    document: std::sync::Arc<pagenor_doc::Document>,
+    selection: pagenor_doc::Selection,
+    story_editor: Option<pagenor_doc::StoryId>,
+}
+
 pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
 pub type ClipboardTextFn = Box<dyn FnMut() -> Option<String>>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
+
 /// Platform services injected by the host (desktop or web).
 #[derive(Default)]
 pub struct Services {
+    /// Optional desktop appearance reader (Linux portal). Native hosts otherwise use egui input.
+    pub system_theme: Option<SystemThemeFn>,
     /// Open-file dialog for a purpose (`open`, `place`) → path.
     pub pick_open: Option<PickFn>,
     /// Save dialog with a suggested name → path.
@@ -76,6 +101,9 @@ pub struct Services {
     pub clipboard_text: Option<ClipboardTextFn>,
     /// Files delivered asynchronously, drained every frame with their captured request context.
     pub inbox: Option<Inbox>,
+    /// Read the host clipboard and return its text through [`DesignApp::receive_clipboard_paste`].
+    /// Without a host reader, use the native integration's `RequestPaste` command.
+    pub request_paste: Option<Box<dyn FnMut(PasteRequest)>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,10 +126,16 @@ pub struct SavedWorkspace {
     pub task_bar: bool,
     pub task_bar_pin: Option<[f32; 2]>,
     pub tools_double_column: bool,
+    pub panels_double_column: bool,
     pub dock_tab: String,
     pub dock_expanded: bool,
     pub open_panel: Option<String>,
     pub floating: Vec<(String, [f32; 2])>,
+    /// Custom panel membership and placement; absent in older workspace files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<craft_ui::docking::Layout<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
 }
 
 /// A missing on-by-default bool stays on. `bool::default` is false.
@@ -161,9 +195,19 @@ impl Default for PdfExportSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    /// Recent local files; unsaved/open document identities last only for this session.
+    pub recent_documents: recent_documents::RecentDocuments,
+    /// Bounded first-page images for local recent files (not full documents).
+    pub recent_thumbnails: recent_previews::SavedThumbnails,
+    /// Welcome screen without closing the active document.
+    #[serde(skip)]
+    pub home: bool,
     pub ai: ai::WindowState,
     pub brightness: theme::Brightness,
+    pub theme_favorites: crate::theme_favorites::Favorites,
     pub screen_mode: ScreenMode,
+    /// Mode restored when leaving Presentation.
+    pub presentation_return: ScreenMode,
     pub frame_edges: bool,
     pub rulers: bool,
     pub guides: bool,
@@ -217,17 +261,37 @@ pub struct UiState {
     pub shortcuts: std::collections::BTreeMap<String, String>,
     pub control_bar: bool,
     pub tools_double_column: bool,
+    pub panels_double_column: bool,
     /// Expanded right-dock panel group tab.
     pub dock_tab: String,
     /// Panel opened from the collapsed icon column (flyout).
     pub open_panel: Option<String>,
     /// Panels torn off the dock into their own floating windows: (panel id, top-left position).
     pub floating: Vec<(String, [f32; 2])>,
+    /// Shared panel layout after the user customizes the legacy dock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<craft_ui::docking::Layout<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub docking_hidden: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
+    /// Invalidates in-flight gestures when a workspace is replaced.
+    #[serde(skip)]
+    pub docking_generation: u64,
+    /// One-frame reveal request; z-order is never persisted.
+    #[serde(skip)]
+    pub docking_raise: Option<String>,
+    /// Last explicitly revealed customized panel, for the legacy closePanel control.
+    #[serde(skip)]
+    pub docking_opened: Option<String>,
     pub dock_expanded: bool,
     pub units: Unit,
     pub workspace: String,
     /// Window › Workspace › New Workspace: saved panel arrangements.
     pub custom_workspaces: Vec<SavedWorkspace>,
+    /// Font menu sample choice and size.
+    pub font_sample: String,
+    pub font_preview_size: u8,
+    /// File › New › Document › Recent: the settings of the last documents made, newest first.
+    pub recent_new_documents: Vec<pagenor_doc::build::NewDocument>,
     /// Transform reference point (0..8, row-major; 0 = top-left).
     pub ref_point: u8,
     /// Align To target (`selection`, `keyObject`, `margins`, `page`, `spread`).
@@ -275,14 +339,22 @@ pub struct UiState {
     pub palette: Option<String>,
     #[serde(skip)]
     pub flyout: Option<usize>,
+    /// Type › Tabs: the selected stop and where the panel sits.
+    #[serde(skip)]
+    pub tabs_panel: panels::tabs::PanelState,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            recent_documents: Default::default(),
+            recent_thumbnails: Default::default(),
+            home: false,
             ai: ai::WindowState::default(),
             brightness: theme::Brightness::MediumDark,
+            theme_favorites: Default::default(),
             screen_mode: ScreenMode::Normal,
+            presentation_return: ScreenMode::Normal,
             frame_edges: true,
             rulers: true,
             guides: true,
@@ -317,13 +389,22 @@ impl Default for UiState {
             shortcuts: Default::default(),
             control_bar: false,
             tools_double_column: false,
+            panels_double_column: false,
             dock_tab: "properties".into(),
             open_panel: None,
             floating: Vec::new(),
+            docking: None,
+            docking_hidden: Default::default(),
+            docking_generation: 0,
+            docking_raise: None,
+            docking_opened: None,
             dock_expanded: true,
             units: Unit::Picas,
             workspace: "Essentials".into(),
             custom_workspaces: Vec::new(),
+            font_sample: "selected".into(),
+            font_preview_size: 1,
+            recent_new_documents: Vec::new(),
             ref_point: 0,
             align_to: "selection".into(),
             text_style_tab: 0,
@@ -347,6 +428,7 @@ impl Default for UiState {
             dialog: None,
             palette: None,
             flyout: None,
+            tabs_panel: Default::default(),
         }
     }
 }
@@ -377,11 +459,14 @@ pub struct View {
     pub fitted: bool,
     /// View › Rotate Spread: quarter turns clockwise (0–3).
     pub rotation: u8,
+    /// Custom ruler zero point (canvas space), dragged from the ruler corner crosshair.
+    /// `None` means the default: the current spread's first page's top-left corner.
+    pub ruler_origin: Option<Point>,
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { zoom: 0.5, origin: Point::new(-100.0, -100.0), fitted: false, rotation: 0 }
+        View { zoom: 0.5, origin: Point::new(-100.0, -100.0), fitted: false, rotation: 0, ruler_origin: None }
     }
 }
 
@@ -453,6 +538,8 @@ pub struct Perf {
 }
 
 pub struct DesignApp {
+    canvas_ime: canvas_ime::Composition,
+    recent_previews: recent_previews::Previews,
     pending_pdf: Option<ImportedFile>,
     pub ai: ai::Assistant,
     pub session: Session,
@@ -477,6 +564,12 @@ pub struct DesignApp {
     pub color_applied: bool,
     pub perf: Perf,
     pub synthetic: Vec<egui::Event>,
+    /// Physical modifiers restored after scripted pointer gestures.
+    native_modifiers: egui::Modifiers,
+    /// Latest successful Copy/Cut output, delivered through the shared egui frame.
+    pending_clipboard_text: Option<String>,
+    /// A user menu Paste waits for the integration to return an actual clipboard payload.
+    pending_clipboard_paste: Option<PasteRequest>,
     /// Story open in the Story Editor.
     pub story_editor: Option<pagenor_doc::StoryId>,
     control_rx: Option<Receiver<ControlRequest>>,
@@ -486,14 +579,20 @@ pub struct DesignApp {
     styled: bool,
     /// The interface language the UI fonts were installed for (it orders the CJK fallbacks).
     fonts_lang: String,
+    ui_font_generation: Option<u64>,
     pub restyle: bool,
+    /// Resolved interface palette; never serialized over the saved choice.
+    resolved_brightness: Option<theme::Brightness>,
     fonts_ready: bool,
     /// Text copied through any command route, awaiting the host's egui output pass.
-    pending_clipboard_text: Option<String>,
     /// Transient desktop launch artwork; never persisted with preferences/documents.
     startup_splash: Option<startup::Splash>,
     font_generation: u64,
     pub integrated_titlebar: bool,
+    /// The desktop host requests custom Windows caption controls.
+    pub custom_titlebar: bool,
+    pub(crate) window_maximized: bool,
+    pending_window_commands: Vec<egui::ViewportCommand>,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
     /// Shortcuts the native menu handles (skip them in the egui shortcut handler).
@@ -501,10 +600,17 @@ pub struct DesignApp {
     last_time: f64,
     /// Last automatic recovery attempt (seconds, egui time), including failed attempts.
     pub last_recovery: f64,
+    pub cursors: cursors::Images,
     #[cfg(not(target_arch = "wasm32"))]
     recovery_failed: bool,
     #[cfg(not(target_arch = "wasm32"))]
     quit_requested: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    quit_confirming: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    closing: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    window_close_frame: Option<u64>,
 }
 
 impl DesignApp {
@@ -512,6 +618,8 @@ impl DesignApp {
         // The font menus and the first file opened need the installed fonts: catalog them now.
         pagenor_fonts::FontDb::global().scan_in_background();
         DesignApp {
+            canvas_ime: Default::default(),
+            recent_previews: Default::default(),
             pending_pdf: None,
             ai: ai::Assistant::default(),
             session,
@@ -529,6 +637,9 @@ impl DesignApp {
             color_applied: false,
             perf: Perf::default(),
             synthetic: vec![],
+            native_modifiers: egui::Modifiers::NONE,
+            pending_clipboard_text: None,
+            pending_clipboard_paste: None,
             story_editor: None,
             control_rx: None,
             pending_shots: vec![],
@@ -536,20 +647,31 @@ impl DesignApp {
             shot_token: 0,
             styled: false,
             fonts_lang: String::new(),
+            ui_font_generation: None,
             restyle: false,
+            resolved_brightness: None,
             fonts_ready: false,
-            pending_clipboard_text: None,
             startup_splash: None,
             font_generation: 0,
             integrated_titlebar: false,
+            custom_titlebar: false,
+            window_maximized: false,
+            pending_window_commands: Vec::new(),
             native_menu: false,
             native_shortcuts: Default::default(),
             last_time: 0.0,
             last_recovery: 0.0,
+            cursors: cursors::Images::default(),
             #[cfg(not(target_arch = "wasm32"))]
             recovery_failed: false,
             #[cfg(not(target_arch = "wasm32"))]
             quit_requested: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            quit_confirming: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            closing: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            window_close_frame: None,
         }
     }
 
@@ -567,7 +689,8 @@ impl DesignApp {
 
     /// The view key of the active document in the current pane.
     fn view_key(&self) -> Option<u64> {
-        let uid = self.session.active()?.uid;
+        let st = self.session.active()?;
+        let uid = st.uid ^ if st.editing_parents { 1 << 62 } else { 0 };
         Some(if self.pane == 1 { uid ^ (1 << 63) } else { uid })
     }
     pub fn view(&self) -> Option<&View> {
@@ -620,14 +743,54 @@ impl DesignApp {
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }
-        let r = self.session.execute(id, &params).map_err(|e| e.to_string());
-        if matches!(id, "edit.copy" | "edit.cut")
-            && let Ok(result) = &r
+        // Copied objects paste on the spread in view.
+        if matches!(id, "edit.paste" | "edit.pasteInPlace")
+            && let Some(spread) = canvas::current_spread(self)
+            && let Some(p) = params.as_object_mut()
         {
-            // Object copies stay internal. Only successful text results reach the OS/browser.
-            self.pending_clipboard_text = result.get("text").and_then(Value::as_str).map(str::to_owned);
+            p.entry("spread").or_insert(json!(spread));
         }
+        // Layout dialogs operate on the master in view while editing masters.
+        if self.session.active().is_some_and(|st| st.editing_parents)
+            && let Some(pagenor_doc::SpreadRef::Parent(index)) = canvas::current_spread(self)
+            && let Some(p) = params.as_object_mut()
+        {
+            if matches!(id, "layout.createGuides" | "guide.deleteAll") {
+                p.entry("spread").or_insert(json!({"kind":"parent", "index":index}));
+            }
+            if id == "layout.marginsAndColumns"
+                && let Some(prefix) =
+                    self.session.active().and_then(|st| st.doc.parents.get(index)).and_then(|sp| sp.parent.as_ref()).map(|p| p.prefix.clone())
+            {
+                p.entry("parent").or_insert(json!(prefix));
+                if let Some((_, pi)) = canvas::current_master_page(self)
+                    && let Some(side) = self.session.active().and_then(|st| st.doc.parents.get(index)).and_then(|sp| sp.pages.get(pi)).map(|p| p.side)
+                {
+                    p.entry("side").or_insert(json!(side));
+                }
+            }
+        }
+        let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if r.is_ok() {
+            if id == "file.close" && self.session.active().is_none() {
+                self.ui.home = true;
+            }
+            if matches!(id, "file.new" | "file.newSample" | "file.open" | "file.openIdml" | "file.openBytes" | "file.activate" | "file.recovery.open")
+            {
+                self.ui.home = false;
+                if id == "file.recovery.open" {
+                    self.sync_recent_documents();
+                }
+                if let Some(doc) = self.session.active() {
+                    self.ui.recent_documents.remember(doc, params.get("path").and_then(Value::as_str));
+                }
+            } else if matches!(id, "file.save" | "file.saveAs")
+                && let Some(doc) = self.session.active()
+            {
+                self.ui.recent_documents.remember(doc, None);
+            }
+        }
         if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes") {
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findFont") {
                 self.ui.dialog = None;
@@ -658,8 +821,16 @@ impl DesignApp {
             dialog.fields.remove("_fonts");
             dialog.fields.remove("_fontKey");
         }
+        if matches!(id, "edit.copy" | "edit.cut")
+            && let Ok(result) = &r
+            && let Some(text) = result.get("clipboardText").and_then(Value::as_str).or_else(|| result.get("text").and_then(Value::as_str))
+        {
+            self.pending_clipboard_text = Some(text.to_string());
+        }
         if let Err(e) = &r {
             self.status(e.clone());
+        } else if matches!(id, "file.save" | "file.saveAs" | "file.saveACopy") {
+            self.ui.status.clear();
         } else if id == "font.rescan"
             && let Ok(report) = &r
         {
@@ -668,9 +839,60 @@ impl DesignApp {
         r
     }
 
-    fn flush_clipboard(&mut self, ctx: &egui::Context) {
+    fn queue_clipboard_paste(&mut self) {
+        self.pending_clipboard_paste = self.session.active().map(|state| PasteRequest {
+            target: state.uid,
+            document: state.doc.clone(),
+            selection: state.selection.clone(),
+            story_editor: self.story_editor,
+        });
+    }
+
+    fn paste_target_matches(&mut self, ctx: &egui::Context, request: &PasteRequest) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.closing {
+            return false;
+        }
+        self.session.wants_text()
+            && !ctx.text_edit_focused()
+            && self.ui.dialog.is_none()
+            && self.story_editor == request.story_editor
+            && self.session.active().is_some_and(|state| {
+                state.uid == request.target && std::sync::Arc::ptr_eq(&state.doc, &request.document) && state.selection == request.selection
+            })
+    }
+
+    /// Complete a host clipboard read only while its original editing context is current.
+    /// Apply immediately so later input cannot route a delayed paste event to another target.
+    pub fn receive_clipboard_paste(&mut self, ctx: &egui::Context, request: PasteRequest, text: String) -> bool {
+        self.paste_target_matches(ctx, &request) && self.run("edit.paste", json!({"text": text})).is_ok()
+    }
+
+    // Called only at frame start, before publishing any queued Copy/Cut. A menu request
+    // made during a frame is read on the next frame, after that frame's writes were delivered.
+    fn flush_clipboard_request(&mut self, ctx: &egui::Context) {
+        if self.pending_clipboard_text.is_none()
+            && let Some(request) = self.pending_clipboard_paste.take()
+        {
+            if !self.paste_target_matches(ctx, &request) {
+                return;
+            }
+            if let Some(request_paste) = &mut self.services.request_paste {
+                request_paste(request);
+            } else if let Some(text) = self.services.clipboard_text.as_mut().and_then(|read| read()) {
+                self.receive_clipboard_paste(ctx, request, text);
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+        }
+    }
+
+    fn flush_clipboard_output(&mut self, ctx: &egui::Context) {
         if let Some(text) = self.pending_clipboard_text.take() {
             ctx.copy_text(text);
+        }
+        if self.pending_clipboard_paste.is_some() {
+            ctx.request_repaint();
         }
     }
 
@@ -679,7 +901,13 @@ impl DesignApp {
         let reqs = std::mem::take(&mut self.session.ui_requests);
         for r in reqs {
             match r {
-                UiRequest::Dialog { id, params } => self.ui.dialog = Some(dialogs::Dialog::new(&id, params)),
+                UiRequest::Dialog { id, params } => {
+                    self.ui.dialog = Some(if id == "textFrameOptions" {
+                        dialogs::text_frame_options_dialog(self, params)
+                    } else {
+                        dialogs::Dialog::new(&id, params)
+                    });
+                }
                 UiRequest::View { params } => canvas::apply_view_request(self, &params),
                 UiRequest::Pick { purpose, params } => {
                     let _ = params;
@@ -688,9 +916,8 @@ impl DesignApp {
             }
         }
         // New documents get a fitted view.
-        if let Some(st) = self.session.active() {
-            let uid = st.uid;
-            self.views.entry(uid).or_default();
+        if let Some(key) = self.view_key() {
+            self.views.entry(key).or_default();
         }
     }
 
@@ -815,7 +1042,11 @@ impl DesignApp {
         } else if place {
             self.run("file.place", json!({"name": file.name, "base64": b64}))
         } else {
-            let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
+            let title = if pagenor_engine::cmd::is_pagemaker_name(&file.name) {
+                file.name.as_str()
+            } else {
+                file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem)
+            };
             self.run("file.openBytes", json!({"name": title, "base64": b64}))
         }
     }
@@ -827,6 +1058,12 @@ impl DesignApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.closing {
+            self.handle_close_request(ctx);
+            return;
+        }
+        self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ai::poll(self, ctx);
         if !self.color_applied {
             self.color_applied = true;
@@ -839,19 +1076,28 @@ impl DesignApp {
             ctx.set_zoom_factor(scale);
         }
         if !self.styled {
-            theme::install_fonts(ctx, &self.ui.language);
+            self.ui_font_generation = theme::install_fonts(ctx, &self.ui.language);
             self.fonts_lang = self.ui.language.clone();
             self.styled = true;
             self.restyle = true;
         } else {
-            if self.fonts_lang != self.ui.language {
-                theme::install_fonts(ctx, &self.ui.language);
+            if self.fonts_lang != self.ui.language || self.ui_font_generation != theme::system_font_generation(&self.ui.language) {
+                self.ui_font_generation = theme::install_fonts(ctx, &self.ui.language);
                 self.fonts_lang = self.ui.language.clone();
             }
             self.fonts_ready = true;
         }
+        if self.ui_font_generation.is_none() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        let system = self.services.system_theme.as_ref().map_or_else(|| ctx.system_theme(), |read| read(ctx));
+        let resolved = self.ui.brightness.resolved(system);
+        if self.resolved_brightness != Some(resolved) {
+            self.resolved_brightness = Some(resolved);
+            self.restyle = true;
+        }
         if self.restyle {
-            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
+            theme::apply(ctx, &theme::Tokens::for_brightness(resolved));
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);
@@ -872,6 +1118,7 @@ impl DesignApp {
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
         if self.fonts_ready {
+            self.validate_canvas_composition(ctx);
             menus::shortcuts(self, ctx);
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -883,7 +1130,24 @@ impl DesignApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_close_request(ctx);
-        self.flush_clipboard(ctx);
+        self.flush_window_commands(ctx);
+        self.flush_clipboard_output(ctx);
+    }
+
+    pub(crate) fn queue_window_command(&mut self, command: egui::ViewportCommand) -> Result<(), String> {
+        if self.pending_window_commands.len() >= 64 {
+            return Err("too many pending window actions".into());
+        }
+        self.pending_window_commands.push(command);
+        Ok(())
+    }
+
+    pub(crate) fn flush_window_commands(&mut self, ctx: &egui::Context) {
+        for command in std::mem::take(&mut self.pending_window_commands) {
+            ctx.send_viewport_cmd(command);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.handle_close_request(ctx);
     }
 
     /// Flush current edits before desktop shutdown, without marking documents saved.
@@ -917,6 +1181,9 @@ impl DesignApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_quit(&mut self) -> Result<Value, String> {
+        if self.quit_confirming || self.quit_requested || self.closing {
+            return Ok(Value::Null);
+        }
         // Control callers receive write failures immediately. Close generates a cancellable
         // viewport event on the next pass, where any intervening edits are checkpointed again.
         self.quit_requested = false;
@@ -924,8 +1191,29 @@ impl DesignApp {
             self.status(format!("{e} Pagenor will stay open."));
             return Err(e);
         }
-        self.quit_requested = true;
+        self.quit_confirming = true;
+        self.continue_quit();
         Ok(Value::Null)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel_quit(&mut self) {
+        self.quit_confirming = false;
+        self.quit_requested = false;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn continue_quit(&mut self) {
+        if !self.quit_confirming {
+            return;
+        }
+        if let Some(doc) = self.session.documents().iter().find(|d| d.is_dirty() || d.path.is_none()) {
+            self.ui.dialog =
+                Some(dialogs::Dialog::new("closeDocument", json!({"uid": doc.uid, "title": doc.title(), "discard": false, "quitting": true})));
+        } else {
+            self.quit_confirming = false;
+            self.quit_requested = true;
+        }
     }
 
     /// Run in logic (including occluded windows) and again after host UI processing, so
@@ -935,6 +1223,35 @@ impl DesignApp {
         if ctx.viewport_id() != egui::ViewportId::ROOT {
             return;
         }
+        // Closing the document window keeps the workspace available. Only explicit Quit
+        // enters shutdown; otherwise the last document returns to Welcome.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_requested && !self.quit_confirming && !self.closing {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let frame = ctx.cumulative_frame_nr();
+            // Logic, UI and the host's final guard all see the same viewport event.
+            if self.window_close_frame == Some(frame) || self.ui.dialog.as_ref().is_some_and(|d| d.id == "closeDocument") {
+                return;
+            }
+            self.window_close_frame = Some(frame);
+            self.finish_canvas_input_before_quit(ctx);
+            if let Err(e) = self.prepare_shutdown() {
+                self.status(format!("{e} Pagenor will stay open."));
+                return;
+            }
+            menus::close_document(self, None);
+            self.validate_canvas_composition(ctx);
+            if self.session.active().is_none() {
+                self.ui.home = true;
+            }
+            ctx.request_repaint();
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && self.session.documents().iter().any(|d| d.is_dirty() || d.path.is_none()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if !self.quit_confirming {
+                let _ = self.request_quit();
+            }
+        }
         if ctx.input(|i| i.viewport().close_requested())
             && let Err(e) = self.prepare_shutdown()
         {
@@ -943,7 +1260,19 @@ impl DesignApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         if std::mem::take(&mut self.quit_requested) {
+            self.closing = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if ctx.input(|i| i.viewport().close_requested())
+            && !self.quit_confirming
+            && !self.recovery_failed
+            && !self.session.documents().iter().any(|d| d.is_dirty() || d.path.is_none())
+        {
+            self.closing = true;
+        }
+        if self.closing {
+            self.cancel_canvas_composition(ctx);
+            ctx.output_mut(|o| o.ime = None);
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(false));
         }
     }
 
@@ -1011,23 +1340,72 @@ impl DesignApp {
 
     /// Inject synthetic events (one pointer event per frame).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        // Read only incoming native events, before any synthetic modifier injection.
+        for event in &raw.events {
+            match event {
+                egui::Event::ModifiersChanged(modifiers) => self.native_modifiers = *modifiers,
+                egui::Event::WindowFocused(false) => self.native_modifiers = egui::Modifiers::NONE,
+                _ => {}
+            }
+        }
+        if !raw.focused {
+            self.native_modifiers = egui::Modifiers::NONE;
+        }
         if self.synthetic.is_empty() {
+            return;
+        }
+        // Restore the current native baseline on the following frame. Drain only this
+        // marker, and let any physical modifier changes in that frame take precedence.
+        if let Some(egui::Event::ModifiersChanged(modifiers)) = self.synthetic.first_mut() {
+            *modifiers = self.native_modifiers;
+            raw.events.splice(0..0, self.synthetic.drain(..1));
             return;
         }
         let n = match self.synthetic[0] {
             egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } => 1,
-            _ => self.synthetic.iter().position(|e| matches!(e, egui::Event::Key { pressed: false, .. })).map_or(self.synthetic.len(), |i| i + 1),
+            // Keep key pairs together, but leave a following pointer gesture for its
+            // own frames. In particular, a ui.key text tail must precede the next click.
+            _ => self
+                .synthetic
+                .iter()
+                .enumerate()
+                .find_map(|(i, e)| match e {
+                    egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::ModifiersChanged(_) => Some(i),
+                    egui::Event::Key { pressed: false, .. } => Some(i + 1),
+                    _ => None,
+                })
+                .unwrap_or(self.synthetic.len()),
         };
+        let reset_modifiers = matches!(self.synthetic.first(), Some(egui::Event::PointerButton { pressed: false, modifiers, .. })
+            if *modifiers != self.native_modifiers);
         if let Some(egui::Event::PointerMoved(p) | egui::Event::PointerButton { pos: p, .. }) = self.synthetic.first() {
             raw.events.push(egui::Event::PointerMoved(*p));
+            // egui 0.36 ignores button-local modifiers for InputState.modifiers. The next
+            // button also carries the gesture's modifiers during its intervening moves.
+            if let Some(modifiers) = self.synthetic.iter().find_map(|e| match e {
+                egui::Event::PointerButton { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            }) {
+                raw.events.push(egui::Event::ModifiersChanged(modifiers));
+            }
         }
         raw.events.extend(self.synthetic.drain(..n));
+        if reset_modifiers {
+            // Keep Alt/Shift through the release handler, then end the synthetic gesture.
+            self.synthetic.insert(0, egui::Event::ModifiersChanged(self.native_modifiers));
+        }
     }
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        self.flush_clipboard(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.closing {
+            self.handle_close_request(&ctx);
+            return;
+        }
+        self.flush_clipboard_request(&ctx);
+        self.flush_clipboard_output(&ctx);
         let db = pagenor_fonts::FontDb::global();
         db.refresh_in_background();
         #[cfg(not(target_arch = "wasm32"))]
@@ -1054,7 +1432,7 @@ impl DesignApp {
                 && let Ok(Value::Object(report)) = self.run("font.diagnostics", json!({}))
                 && let Some(dialog) = &mut self.ui.dialog
             {
-                dialog.fields = report;
+                dialog.fields = report.into();
             }
         }
         if let Some(splash) = &mut self.startup_splash {
@@ -1069,7 +1447,17 @@ impl DesignApp {
         }
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
-        let presenting = self.ui.screen_mode == ScreenMode::Presentation;
+        let welcome = self.ui.home || self.session.active().is_none();
+        if welcome {
+            self.canvas_rect = None;
+            self.cancel_canvas_composition(&ctx);
+            ctx.output_mut(|o| o.ime = None);
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(false));
+        }
+        let presenting = !welcome && self.ui.screen_mode == ScreenMode::Presentation;
+        if welcome || presenting || self.ui.hidden_panels != 0 {
+            panel_docking::cancel_gesture(self, &ctx);
+        }
         let dbg = std::env::var_os("PAGENOR_DEBUG_LAYOUT").is_some();
         if dbg {
             eprintln!("root start {:?}", ui.available_rect_before_wrap());
@@ -1079,38 +1467,59 @@ impl DesignApp {
             if dbg {
                 eprintln!("after app bar {:?}", ui.available_rect_before_wrap());
             }
-            let control_bar = self.ui.control_bar && self.session.active().is_some() && self.ui.hidden_panels == 0;
-            chrome::control_bar(self, ui, control_bar);
-            chrome::status_bar(self, ui);
+            let control_bar = self.ui.control_bar && !self.ui.home && self.session.active().is_some() && self.ui.hidden_panels == 0;
+            if !welcome {
+                chrome::control_bar(self, ui, control_bar);
+                chrome::status_bar(self, ui);
+            }
             if dbg {
                 eprintln!("after status {:?}", ui.available_rect_before_wrap());
             }
-            if self.ui.hidden_panels != 1 {
+            if !welcome && self.ui.hidden_panels != 1 {
                 toolbar::show(self, ui);
             }
-            if self.ui.hidden_panels == 0 {
+            if !welcome && self.ui.hidden_panels == 0 {
                 ai::docked(self, ui);
                 dock::show(self, ui);
             }
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
-            if self.session.active().is_none() {
+            if self.ui.home || self.session.active().is_none() {
                 chrome::start_screen(self, ui);
                 return;
             }
             if !presenting {
                 chrome::doc_tabs(self, ui);
             }
-            if self.split && !presenting {
+            if self.session.active().is_none() {
+                ctx.request_discard("last document tab closed: show Welcome");
+                ctx.request_repaint();
+                chrome::start_screen(self, ui);
+                return;
+            }
+            let split_layout = (self.split && !presenting)
+                .then(|| {
+                    craft_ui::layout::split_rect(
+                        ui.available_rect_before_wrap(),
+                        craft_ui::layout::SplitAxis::Horizontal,
+                        craft_ui::layout::SplitSize::Ratio(0.5),
+                        2.0,
+                        0.0,
+                    )
+                })
+                .flatten();
+            if let Some(layout) = split_layout {
                 // Two panes with a divider; each has its own view (zoom, scroll) and render cache.
-                let r = ui.available_rect_before_wrap();
-                let mid = r.center().x;
-                let halves = [
-                    egui::Rect::from_min_max(r.min, egui::pos2(mid - 1.0, r.max.y)),
-                    egui::Rect::from_min_max(egui::pos2(mid + 1.0, r.min.y), r.max),
-                ];
-                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(mid - 1.0, r.min.y), egui::pos2(mid + 1.0, r.max.y)), 0.0, t.border);
-                for (k, half) in halves.into_iter().enumerate() {
+                ui.painter().rect_filled(layout.divider, 0.0, t.border);
+                // Resolve the clicked pane before either canvas handles this frame's keys.
+                if let Some(p) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
+                    if layout.first.contains(p) {
+                        self.focus_pane = 0;
+                    } else if layout.second.contains(p) {
+                        self.focus_pane = 1;
+                    }
+                }
+                for (k, half) in [layout.first, layout.second].into_iter().enumerate() {
                     self.switch_pane(k as u8);
                     // A new pane starts at the other pane's view.
                     if k == 1 && self.view().is_none() {
@@ -1123,9 +1532,6 @@ impl DesignApp {
                         }
                     }
                     ui.scope_builder(egui::UiBuilder::new().max_rect(half), |ui| canvas::show(self, ui));
-                    if ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| half.contains(p))) {
-                        self.focus_pane = k as u8;
-                    }
                 }
                 self.switch_pane(self.focus_pane);
             } else {
@@ -1139,6 +1545,7 @@ impl DesignApp {
         });
         // New Window: pane 1 in a window of its own.
         if self.second_window
+            && !welcome
             && !presenting
             && let Some(title) = self.session.active().map(|d| format!("{} — 2", d.doc.title))
         {
@@ -1172,17 +1579,23 @@ impl DesignApp {
             );
             self.switch_pane(self.focus_pane);
         }
-        dock::flyout(self, &ctx);
-        dock::floating(self, &ctx);
-        ai::floating(self, &ctx);
-        story_editor::show(self, &ctx);
+        if !welcome {
+            dock::flyout(self, &ctx);
+            dock::floating(self, &ctx);
+            ai::floating(self, &ctx);
+            story_editor::show(self, &ctx);
+        }
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         menus::palette(self, &ctx);
+        if self.custom_titlebar {
+            chrome::resize_borders(self, ui);
+        }
+        self.flush_clipboard_output(&ctx);
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
-        self.flush_clipboard(&ctx);
+        self.flush_clipboard_output(&ctx);
         self.perf.frame_ms = now_ms() - t0;
     }
 
@@ -1256,10 +1669,10 @@ impl DesignApp {
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: Pagenor
-/// and IDML.
+/// and the supported desktop interchange formats.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    pagenor_doc::file_type::is_native_name(name) || n.ends_with(".idml") || n.ends_with(".indd")
+    pagenor_doc::file_type::is_native_name(name) || n.ends_with(".idml") || n.ends_with(".indd") || pagenor_engine::cmd::is_pagemaker_name(name)
 }
 
 pub fn now_ms() -> f64 {
@@ -1581,11 +1994,154 @@ mod tests {
         app.run("file.new", json!({})).unwrap();
         app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
         let output = close_frame(&mut app, &ctx);
-        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "closeDocument");
         let mut restarted = Session::new();
         assert_eq!(pagenor_engine::recovery::open(&mut restarted, &dir).unwrap().len(), 1);
         assert_eq!(restarted.doc().unwrap().doc.as_ref(), app.session.doc().unwrap().doc.as_ref());
         assert!(app.session.doc().unwrap().is_dirty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn window_close_closes_one_document_once_per_frame_then_keeps_welcome_alive() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        let ctx = egui::Context::default();
+        for title in ["First", "Second"] {
+            app.run("file.new", json!({"title": title})).unwrap();
+        }
+        let mut raw = egui::RawInput::default();
+        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
+        let mut output = ctx.run_ui(raw, |ui| {
+            for _ in 0..3 {
+                app.handle_close_request(ui.ctx());
+            }
+        });
+        output.textures_delta.clear();
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.session.documents().len(), 1);
+        assert_eq!(app.session.doc().unwrap().doc.title, "First");
+        assert!(!app.closing && !app.quit_confirming && !app.quit_requested);
+        close_frame(&mut app, &ctx);
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.home);
+        assert!(!app.closing);
+        let output = close_frame(&mut app, &ctx);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!app.closing);
+        app.run("file.new", json!({})).unwrap();
+        assert!(!app.ui.home, "creating a document still restores its editor");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn document_window_close_asks_only_for_active_document_and_cancel_keeps_it() {
+        let (mut app, ctx, dir) = recovery_app("window-close-active");
+        for title in ["First", "Second"] {
+            app.run("file.new", json!({"title": title})).unwrap();
+            app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        }
+        let uid = app.session.doc().unwrap().uid;
+        close_frame(&mut app, &ctx);
+        let dialog = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.fields["uid"], uid);
+        assert_ne!(dialog.fields.get("quitting"), Some(&json!(true)));
+        assert!(!app.closing && !app.quit_confirming);
+        app.ui.dialog = None; // Cancel.
+        assert_eq!(app.session.documents().len(), 2);
+        assert_eq!(app.session.doc().unwrap().uid, uid);
+        close_frame(&mut app, &ctx);
+        app.ui.dialog.as_mut().unwrap().fields.insert("discard".into(), json!(true));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.documents().len(), 1);
+        assert_eq!(app.session.doc().unwrap().doc.title, "First");
+        assert!(app.session.doc().unwrap().is_dirty());
+        assert!(!app.closing && !app.quit_confirming && !app.quit_requested);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn quit_saves_or_discards_each_unsaved_document_before_closing() {
+        let (mut app, ctx, dir) = recovery_app("quit-save-all");
+        let first = dir.join("first.pgnr");
+        app.run("file.new", json!({"title": "First"})).unwrap();
+        app.run("file.saveAs", json!({"path": first})).unwrap();
+        app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap();
+        let first_uid = app.session.doc().unwrap().uid;
+        app.run("file.new", json!({"title": "Second"})).unwrap();
+        let second_uid = app.session.doc().unwrap().uid;
+        // A never-saved blank document also offers Save before quitting.
+        app.run("app.home", json!({})).unwrap();
+        app.run("app.quit", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().fields["uid"], first_uid);
+        assert!(!app.quit_requested);
+        dialogs::confirm(&mut app).unwrap();
+        let mut reopened = Session::new();
+        reopened.execute("file.open", &json!({"path": first})).unwrap();
+        assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 1);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().fields["uid"], second_uid);
+        assert!(!app.quit_requested);
+        app.ui.dialog.as_mut().unwrap().fields.insert("discard".into(), json!(true));
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.session.documents().is_empty());
+        assert!(app.quit_requested);
+        let output = close_frame(&mut app, &ctx);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        assert!(pagenor_engine::recovery::list(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancelled_save_or_failed_save_stops_quitting_without_losing_document() {
+        let (mut app, _, dir) = recovery_app("quit-save-cancel");
+        app.run("file.new", json!({})).unwrap();
+        let uid = app.session.doc().unwrap().uid;
+        app.run("app.quit", json!({})).unwrap();
+        dialogs::confirm(&mut app).unwrap(); // Save picker cancelled, including a blank new doc.
+        assert!(!app.quit_requested && !app.quit_confirming);
+        assert_eq!(app.session.doc().unwrap().uid, uid);
+        let bad_path = dir.join("missing").join("no.pgnr");
+        app.services.pick_save = Some(Box::new(move |_| Some(bad_path.to_string_lossy().into_owned())));
+        app.run("app.quit", json!({})).unwrap();
+        assert!(dialogs::confirm(&mut app).is_err());
+        assert!(!app.quit_requested && !app.quit_confirming);
+        assert_eq!(app.session.doc().unwrap().uid, uid);
+        assert!(app.ui.dialog.is_some(), "failed save retains the question");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn escape_cancels_quit_and_saved_clean_documents_need_no_prompt() {
+        let (mut app, ctx, dir) = recovery_app("quit-escape");
+        theme::install_fonts(&ctx, "");
+        app.run("file.new", json!({})).unwrap();
+        app.run("app.quit", json!({})).unwrap();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                max_texture_side: Some(8192),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| dialogs::show(&mut app, ui.ctx()),
+        );
+        output.textures_delta.clear();
+        assert!(app.ui.dialog.is_none());
+        assert!(!app.quit_requested && !app.quit_confirming);
+        assert_eq!(app.session.documents().len(), 1);
+        app.run("file.saveAs", json!({"path": dir.join("saved.pgnr")})).unwrap();
+        app.run("app.quit", json!({})).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert!(app.quit_requested);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1630,7 +2186,8 @@ mod tests {
         assert_eq!(app.session.documents().len(), 2);
         std::fs::remove_dir(&meta).unwrap();
         let output = close_frame(&mut app, &ctx);
-        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "closeDocument");
         assert_eq!(app.ui.status, "Recovery is up to date.");
         let mut restarted = Session::new();
         assert_eq!(pagenor_engine::recovery::open(&mut restarted, &dir).unwrap().len(), 2);
@@ -1645,7 +2202,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn shutdown_rejects_failed_clean_checkpoint_cleanup_and_retries() {
+    fn document_close_rejects_failed_clean_checkpoint_cleanup_and_retries() {
         let (mut app, ctx, dir) = recovery_app("shutdown-cleanup");
         app.run("file.new", json!({})).unwrap();
         app.run("file.saveAs", json!({"path": dir.join("saved.pagenor")})).unwrap();
@@ -1662,7 +2219,8 @@ mod tests {
         assert!(pagenor_engine::recovery::needs_save(&app.session));
         std::fs::remove_dir(&doc).unwrap();
         let output = close_frame(&mut app, &ctx);
-        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.session.documents().is_empty() && app.ui.home && !app.closing);
         assert!(!pagenor_engine::recovery::needs_save(&app.session));
         assert!(pagenor_engine::recovery::list(&dir).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
@@ -1692,7 +2250,8 @@ mod tests {
         assert_eq!(reply["ok"], true);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
         output.textures_delta.clear();
-        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "closeDocument");
         assert_eq!(pagenor_engine::recovery::list(&dir).len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1931,7 +2490,7 @@ mod tests {
     #[test]
     fn menu_and_control_copy_cut_emit_unicode_to_the_platform_clipboard() {
         for command in ["edit.copy", "edit.cut"] {
-            for control in [false, true] {
+            for route in ["menu", "control", "native"] {
                 let mut app = DesignApp::new(Session::new(), Services::default());
                 let ctx = egui::Context::default();
                 app.run("file.new", json!({})).unwrap();
@@ -1943,10 +2502,12 @@ mod tests {
                 let selection = app.session.doc().unwrap().selection.clone();
                 let undo = app.session.doc().unwrap().history.undo.len();
                 let journal = app.session.journal.len();
-                if control {
+                if route == "control" {
                     let (req, _) = ControlRequest::new("engine.execute", json!({"command": command, "params": {}}));
                     let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("expected command result") };
                     assert_eq!(reply["ok"], true);
+                } else if route == "native" {
+                    menus::activate_native(&mut app, &ctx, command, &Value::Null);
                 } else {
                     menus::activate(&mut app, command, &Value::Null);
                 }
@@ -1961,7 +2522,7 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(copied, [text], "{command}, control={control}: all command routes must reach the host clipboard once");
+                assert_eq!(copied, [text], "{command}, route={route}: all command routes must reach the host clipboard once");
                 if command == "edit.copy" {
                     assert_eq!(app.session.doc().unwrap().doc, before);
                     assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
@@ -2048,7 +2609,7 @@ mod tests {
     }
 
     #[test]
-    fn object_and_failed_copy_cut_do_not_replace_the_platform_clipboard() {
+    fn object_copy_publishes_ownership_and_failed_copy_cut_leave_it_unchanged() {
         let ctx = egui::Context::default();
         let mut app = DesignApp::new(Session::new(), Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -2057,12 +2618,18 @@ mod tests {
         let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
         app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 4})).unwrap();
         app.run("edit.copy", json!({})).unwrap();
-        // A newer object copy supersedes the queued text copy but stays internal.
+        // A newer object copy publishes ownership; its payload stays in the session.
         app.run("frame.create", json!({"rect": [20, 20, 60, 60]})).unwrap();
         app.run("edit.copy", json!({})).unwrap();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
         output.textures_delta.clear();
-        assert!(!output.platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(_))));
+        assert!(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .any(|c| matches!(c, egui::OutputCommand::CopyText(text) if text.starts_with("Pagenor object clipboard ")))
+        );
         app.run("edit.paste", json!({})).unwrap();
         assert_eq!(app.session.doc().unwrap().doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(), 3);
     }
@@ -2210,7 +2777,7 @@ mod tests {
 
     #[test]
     fn dropped_documents_open_and_the_rest_is_placed() {
-        for name in ["a.pagenor", "B.IDML"] {
+        for name in ["a.pagenor", "B.IDML", "a.indd", "Ramsha.P65", "book.pmd", "template.pmt", "template.t65", "book.PM7"] {
             assert!(opens_as_document(name), "{name}");
         }
         for name in ["a.png", "b.pdf", "idml.txt", "c.idml.zip"] {
@@ -2264,6 +2831,38 @@ mod tests {
         assert!(app.run("file.open", json!({"path": "/nonexistent/x.pagenor"})).is_err());
         assert!(app.ui.dialog.is_none(), "a scripted file.open doesn't raise an alert");
         assert!(!app.ui.status.is_empty());
+    }
+
+    /// Copied objects were pasted on the first spread whatever page was in view.
+    #[test]
+    fn paste_lands_on_the_spread_in_view() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({"pages": 3, "facingPages": false})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].clone();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("edit.copy", json!({})).unwrap();
+        let pasted_on = |app: &DesignApp| {
+            let st = app.session.active().unwrap();
+            st.doc.find(st.selection.items[0]).unwrap().spread
+        };
+        // Nothing is in view before the canvas is laid out: the first spread, as in a script.
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), pagenor_doc::SpreadRef::Doc(0));
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        canvas::go_to_page(&mut app, 2);
+        menus::activate(&mut app, "edit.pasteInPlace", &Value::Null);
+        assert_eq!(pasted_on(&app), pagenor_doc::SpreadRef::Doc(2));
+        canvas::go_to_page(&mut app, 1);
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), pagenor_doc::SpreadRef::Doc(1));
+        // A parent spread while parents are edited.
+        app.run("layout.parents.edit", json!({"on": true})).unwrap();
+        app.run("edit.paste", json!({})).unwrap();
+        assert_eq!(pasted_on(&app), pagenor_doc::SpreadRef::Parent(0));
+        // With an insertion point Paste still goes into the text, where the object is anchored.
+        let story = app.run("frame.create", json!({"rect": [36, 200, 300, 400], "content": "text", "text": "ab"})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": story, "anchor": 2})).unwrap();
+        assert_eq!(app.run("edit.paste", json!({})).unwrap()["anchored"], 1);
     }
 }
 
@@ -2616,3 +3215,9 @@ mod control_bar_transition_tests {
         assert!((h.state().canvas_rect.unwrap().min.y - y).abs() < 1.0);
     }
 }
+
+#[cfg(test)]
+mod tests_appearance;
+
+#[cfg(test)]
+mod clipboard_output_review16_tests;

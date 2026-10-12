@@ -854,6 +854,8 @@ fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool
         .map(|f| CatalogEntry {
             family: f.family,
             style: f.style,
+            kind: f.kind,
+            added: None,
             location: CatalogLocation::Native(name.into()),
             group: f.group,
             native: f.native,
@@ -1210,4 +1212,28 @@ fn alias_names_are_bounded_independently_of_the_name_table() {
     let names = aliases(&font, &[StringId::FAMILY_NAME]);
     assert!(names.len() < long_names.len());
     assert!(names.iter().map(String::len).sum::<usize>() <= 64 << 10);
+}
+
+#[test]
+fn font_picker_metadata_never_loads_installed_faces_and_tracks_refresh() {
+    let dir = font_dir("picker-kind");
+    let installed = dir.join("Installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let path = installed.join("installed.otf");
+    std::fs::write(&path, renamed("SourceSans3-Regular.ttf")).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    db.scan_report();
+    assert!(!db.is_loaded(FAMILY));
+    let fonts = db.scoped(0);
+    assert_eq!(fonts.menu_kind(FAMILY).class, crate::FontClass::SansSerif);
+    assert_eq!(fonts.menu_kind(FAMILY).format, crate::FontFormat::TrueType, "tables, not filename");
+    assert!(fonts.menu_added(FAMILY).is_some());
+    assert!(!db.is_loaded(FAMILY), "filters must leave outlines unloaded");
+    let generation = db.scan_generation();
+    std::fs::remove_file(&path).unwrap();
+    db.load_system_fonts();
+    assert!(db.scan_generation() > generation);
+    assert!(fonts.menu_added(FAMILY).is_none());
+    assert_eq!(fonts.menu_kind(FAMILY).class, crate::FontClass::Other);
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -942,6 +942,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-print"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c22bb1b0ce6316f84973cb69675fe7331c5886cc#c22bb1b0ce6316f84973cb69675fe7331c5886cc"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "craft-ui"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5c874d51eeb3de70e735c8ce87a59a7dedd47675#5c874d51eeb3de70e735c8ce87a59a7dedd47675"
+dependencies = [
+ "egui",
+ "serde",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1408,6 +1425,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "exacl"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8de9e551ced9d700a31dacb8b168129640240fcd7a279a3fa4d59608b84ebcae"
+dependencies = [
+ "bitflags 2.13.2",
+ "log",
+ "scopeguard",
+ "uuid",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1693,9 +1722,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3378,25 +3409,35 @@ dependencies = [
 
 [[package]]
 name = "pagenor"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "arboard",
+ "async-channel",
+ "async-io",
  "eframe",
  "egui",
+ "egui-winit",
+ "futures-lite",
  "getrandom 0.3.4",
  "log",
  "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "pagenor-engine",
  "pagenor-ui-egui",
  "rfd",
+ "serde",
  "serde_json",
+ "tempfile",
  "winit",
  "winresource",
+ "winsafe",
+ "zbus 5.19.0",
 ]
 
 [[package]]
 name = "pagenor-ai"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -3413,11 +3454,11 @@ dependencies = [
 
 [[package]]
 name = "pagenor-archive"
-version = "0.3.0"
+version = "0.6.0"
 
 [[package]]
 name = "pagenor-cli"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3433,19 +3474,20 @@ dependencies = [
 
 [[package]]
 name = "pagenor-color"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "kurbo",
  "moxcms",
  "proptest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "pagenor-compose"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "log",
  "miniz_oxide 0.8.9",
@@ -3457,12 +3499,13 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-script",
  "unicode-segmentation",
 ]
 
 [[package]]
 name = "pagenor-doc"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-color",
  "pagenor-geom",
@@ -3474,9 +3517,12 @@ dependencies = [
 
 [[package]]
 name = "pagenor-engine"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "caseless",
+ "craft-print",
+ "exacl",
+ "getrandom 0.3.4",
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
@@ -3500,6 +3546,7 @@ dependencies = [
  "pagenor-tools",
  "quick-xml",
  "regex",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "tempfile",
@@ -3510,7 +3557,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-epub"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-color",
  "pagenor-doc",
@@ -3519,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-fonts"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "core-text",
  "fontconfig",
@@ -3535,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-format"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3547,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-geom"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -3560,9 +3607,10 @@ dependencies = [
 
 [[package]]
 name = "pagenor-idml"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-color",
+ "pagenor-compose",
  "pagenor-doc",
  "pagenor-geom",
  "pagenor-images",
@@ -3573,7 +3621,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-images"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3584,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-indd"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3593,7 +3641,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-mcp"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "image",
  "log",
@@ -3606,7 +3654,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pdf"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "hayro-cmap",
  "hayro-interpret",
@@ -3628,7 +3676,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pptx"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3646,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-render"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "hayro",
  "image",
@@ -3664,17 +3712,18 @@ dependencies = [
 
 [[package]]
 name = "pagenor-textimport"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
  "quick-xml",
+ "unicode-general-category",
  "zip",
 ]
 
 [[package]]
 name = "pagenor-tools"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3686,8 +3735,9 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ui-egui"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
+ "craft-ui",
  "egui",
  "egui_kittest",
  "log",
@@ -3713,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-web"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "eframe",
  "egui",
@@ -6623,6 +6673,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "winsafe"
+version = "0.0.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ef0ffc427f045c0cc9ebffd6f4f91153dcd2a1547b5c3c29ee3f541e16e95c6"
+
+[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6734,10 +6790,11 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.6.0"
 dependencies = [
  "resvg",
  "serde_json",
+ "tempfile",
  "usvg",
 ]
 

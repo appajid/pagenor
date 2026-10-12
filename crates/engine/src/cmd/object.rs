@@ -2,10 +2,13 @@
 //! fill/stroke, content type, Text Frame Options, corners, fitting, text wrap.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use pagenor_color::BlendMode;
 use pagenor_doc::{
-    Content, Document, Fill, Item, ItemId, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions, TextSel,
+    Content, Document, Fill, Item, ItemId, ItemLoc, ParaFormat, Selection, Shape, SpreadRef, Story, StoryId, Stroke, TextFrame, TextFrameOptions,
+    TextSel,
 };
 use pagenor_geom::{Affine, Point, Rect, Vec2, shapes};
 use serde_json::{Value, json};
@@ -25,7 +28,15 @@ pub fn specs() -> Vec<CommandSpec> {
             frame_create
         ),
         cmd!("line.create", "Create Line", [], None, "{spread?, a: [x,y], b: [x,y]}", has_doc, line_create),
-        cmd!("transform.move", "Move", ["Object", "Transform"], None, "{dx, dy, copy?: bool, ids?, toSpread?}", has_selection, transform_move),
+        cmd!(
+            "transform.move",
+            "Move",
+            ["Object", "Transform"],
+            None,
+            "{dx, dy, copy?: bool, ids?, toSpread?, content?: bool (move the placed graphic or pasted-in items inside each frame; the frame stays. Default: whether the selection is content, when neither ids nor copy is given)}",
+            has_selection,
+            transform_move
+        ),
         cmd!(
             "transform.resize",
             "Resize",
@@ -128,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .execute("object.arrange", &json!({"to": "backward"}))),
         cmd!("object.sendToBack", "Send to Back", ["Object", "Arrange"], Some("Cmd+Shift+["), "{}", has_selection, |s, _| s
             .execute("object.arrange", &json!({"to": "back"}))),
-        cmd!("object.group", "Group", ["Object"], Some("Cmd+G"), "{ids?}", has_selection, group),
+        cmd!("object.group", "Group", ["Object"], Some("Cmd+G"), "{ids?}", can_group, group),
         cmd!("object.ungroup", "Ungroup", ["Object"], Some("Cmd+Shift+G"), "{ids?}", has_selection, ungroup),
         cmd!("object.lock", "Lock", ["Object"], Some("Cmd+L"), "{ids?}", has_selection, |s, p| set_flag(s, p, |i| i.locked = true, true)),
         cmd!("object.unlockAll", "Unlock All on Spread", ["Object"], Some("Cmd+Alt+L"), "{}", has_doc, |s, _| all_flag(s, |i| i.locked = false)),
@@ -219,7 +230,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("object.opacity", "Opacity", [], None, "{opacity: 0..1, blend?: normal|multiply|…, ids?}", has_selection, |s, p| {
             let o = f64_or(p, "opacity", 1.0).clamp(0.0, 1.0) as f32;
-            let blend = p.get("blend").and_then(|b| serde_json::from_value(b.clone()).ok());
+            // `BlendMode::parse` takes the documented lowercase forms (`multiply`), the panel
+            // labels (`Color Burn`) and the serialized names (`Multiply`). An unknown value is
+            // an error rather than a silent no-op that still reports `changed` (#260).
+            let blend = match p.get("blend") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let raw = v.as_str().ok_or_else(|| bad("object.opacity", "blend must be a string"))?;
+                    Some(BlendMode::parse(raw).ok_or_else(|| bad("object.opacity", format!("unknown blend mode `{raw}`")))?)
+                }
+            };
             set_flag(
                 s,
                 p,
@@ -479,7 +499,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r], verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r]|{top?,left?,bottom?,right?} (pt; null array entries or omitted edges unchanged), verticalJustification?: top|center|bottom|justify, firstBaseline?, autoSize?, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -488,52 +508,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Corner Options…",
             ["Object"],
             None,
-            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, ids?}",
+            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, corners?: [{shape, size}] (4 entries in path order: top-left, top-right, bottom-right, bottom-left; replaces shape and size), ids?}",
             has_selection,
-            |s, p| {
-                let shape =
-                    p.get("shape").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(pagenor_geom::corners::CornerShape::Rounded);
-                let size = f64_or(p, "size", 12.0);
-                set_flag(s, p, move |i| i.corners = pagenor_geom::corners::CornerOptions::uniform(shape, size), false)
-            }
+            corner_options
         ),
         cmd!(
             "object.textWrap",
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode: none|boundingBox|contour|jumpObject|jumpToNextColumn, offset?: number|[t,l,b,r], invert?: bool, ids?}",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool, ids?}",
             has_selection,
-            |s, p| {
-                let mode = p.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(pagenor_doc::WrapMode::BoundingBox);
-                let off = match p.get("offset") {
-                    Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
-                    Some(v) => serde_json::from_value(v.clone()).ok(),
-                    None => None,
-                };
-                let invert = p.get("invert").and_then(Value::as_bool);
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        i.wrap.mode = mode;
-                        if let Some(o) = off {
-                            i.wrap.offsets = o;
-                        }
-                        if let Some(v) = invert {
-                            i.wrap.invert = v;
-                        }
-                    },
-                    false,
-                )
-            }
+            text_wrap
         ),
         cmd!(
             "object.fit",
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally|fitProportionally|fitContentToFrame|centerContent|fitFrameToContent, ids?}",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), ids?}",
             has_selection,
             fit
         ),
@@ -782,10 +775,24 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"ids": ids}))
         }),
-        cmd!("object.setLayer", "Move to Layer", [], None, "{layer, ids?}", has_selection, |s, p| {
-            let l = pagenor_doc::LayerId(p.get("layer").and_then(Value::as_u64).unwrap_or(0));
-            set_flag(s, p, move |i| i.layer = l, false)
-        }),
+        cmd!(
+            "object.setLayer",
+            "Move to Layer",
+            [],
+            None,
+            "{layer, ids?} — a group member moves its whole top-level group",
+            has_selection,
+            set_layer
+        ),
+        cmd!(
+            "object.reorder",
+            "Reorder Objects",
+            [],
+            None,
+            "{ids?, above?: id | below?: id | index?: n (0 = top of the layer), layer?} — moves the objects (siblings on one spread) in the stacking order: in front of `above` or behind `below` (onto that object's layer), or to `index` in `layer` counted from the top (default: the first object's layer, index 0). Group members stay in their group. Leaves the document (and undo history) alone when nothing would change.",
+            has_doc,
+            reorder
+        ),
     ]
 }
 
@@ -887,9 +894,14 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
     Ok(out)
 }
 
-fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
+pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
+    if let Some(m) = it.media.as_mut()
+        && let Some(p) = m.poster
+    {
+        m.poster = dst.adopt_asset(src, p).or(Some(p));
+    }
     match &mut it.content {
         Content::Text(tf) => {
             let new_sid = match stories.get(&tf.story) {
@@ -898,6 +910,15 @@ fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut Has
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
+                    let mut assets = HashMap::new();
+                    for a in pagenor_doc::story_asset_refs(&st) {
+                        if let Some(na) = dst.adopt_asset(src, a)
+                            && na != a
+                        {
+                            assets.insert(a, na);
+                        }
+                    }
+                    pagenor_doc::remap_story_assets(&mut st, &assets);
                     st.frames.clear();
                     dst.stories.insert(n, Arc::new(st));
                     stories.insert(tf.story, n);
@@ -910,10 +931,8 @@ fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut Has
             }
         }
         Content::Graphic(g) => {
-            if let Some(a) = src.assets.get(&g.asset)
-                && !dst.assets.contains_key(&g.asset)
-            {
-                dst.assets.insert(g.asset, a.clone());
+            if let Some(a) = dst.adopt_asset(src, g.asset) {
+                g.asset = a;
             }
         }
         Content::Group { items } => {
@@ -929,6 +948,12 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let (dx, dy) = (f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let copy = bool_or(p, "copy", false);
+    let explicit = p.get("ids").is_some() || p.get("id").is_some();
+    // Duplicating copies the frame; moving a content selection moves what the frame holds.
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or(!explicit && !copy && s.doc()?.selection.content);
+    if content {
+        return move_content(s, &ids, Vec2::new(dx, dy));
+    }
     let to: Option<SpreadRef> = p.get("toSpread").and_then(|v| serde_json::from_value(v.clone()).ok());
     s.edit(|d, sel| {
         let ids = if copy {
@@ -953,13 +978,58 @@ fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
                 let it = d.remove_item_keep_story(*id)?;
                 d.insert_item(target, it, None)?;
             }
+            // A nested item moves in its container's space.
+            let v = d.find(*id).map_or(Vec2::new(dx, dy), |l| linear_inverse(d.parent_xf(&l), Vec2::new(dx, dy)));
             let it = d.item_mut(*id).ok_or(pagenor_doc::DocError::NoItem(*id))?;
             if it.locked {
                 continue;
             }
-            it.xf = Affine::translate((dx, dy)) * it.xf;
+            it.xf = Affine::translate(v) * it.xf;
         }
         Ok(json!({"moved": ids.len()}))
+    })
+}
+
+/// `v` (a spread-space displacement) in the space `m` maps from. Degenerate maps leave it as is.
+fn linear_inverse(m: Affine, v: Vec2) -> Vec2 {
+    let c = m.as_coeffs();
+    let lin = Affine::new([c[0], c[1], c[2], c[3], 0.0, 0.0]);
+    if lin.determinant().abs() < 1e-12 {
+        return v;
+    }
+    let r = lin.inverse() * Point::new(v.x, v.y);
+    if r.x.is_finite() && r.y.is_finite() { r.to_vec2() } else { v }
+}
+
+/// Move what each frame holds — its placed graphic or the items pasted into it — by the
+/// spread-space displacement `d`; the frame stays, so the visible part of the content changes.
+/// Frames without such content (and groups) move as a whole. Auto-fit stays as it is: the next
+/// frame resize refits.
+fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
+    s.edit(|doc, _| {
+        let mut moved = 0;
+        for id in ids {
+            let loc = doc.find(*id).ok_or(pagenor_doc::DocError::NoItem(*id))?;
+            let parent = doc.parent_xf(&loc);
+            let it = doc.item_mut(*id).ok_or(pagenor_doc::DocError::NoItem(*id))?;
+            if it.locked {
+                continue;
+            }
+            let inner = linear_inverse(parent * it.xf, d);
+            let nested = it.has_nested_items();
+            match &mut it.content {
+                Content::Graphic(g) => g.xf = Affine::translate(inner) * g.xf,
+                Content::Group { items } if nested => {
+                    for c in items.iter_mut() {
+                        let c = Arc::make_mut(c);
+                        c.xf = Affine::translate(inner) * c.xf;
+                    }
+                }
+                _ => it.xf = Affine::translate(linear_inverse(parent, d)) * it.xf,
+            }
+            moved += 1;
+        }
+        Ok(json!({"moved": moved}))
     })
 }
 
@@ -1015,6 +1085,9 @@ fn union_bounds(d: &Document, ids: &[ItemId]) -> Rect {
 /// Transform an item's geometry in its own space: the path and the gradient vector with it.
 pub(crate) fn bake(it: &mut Item, inner: Affine) {
     it.path.transform(inner);
+    if let Some(w) = &mut it.wrap.path {
+        w.transform(inner);
+    }
     if let Some([x0, y0, x1, y1]) = it.fill.gradient_vector {
         let (a, b) = (inner * Point::new(x0, y0), inner * Point::new(x1, y1));
         it.fill.gradient_vector = Some([a.x, a.y, b.x, b.y]);
@@ -1292,26 +1365,251 @@ fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// An optional non-negative integer parameter; any other value is an error.
+fn opt_u64(p: &Value, cmd: &str, key: &str) -> Result<Option<u64>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("{key} must be a non-negative integer"))),
+    }
+}
+
+/// The sibling list under the group at `parent` (the spread's top level when empty).
+fn siblings_mut<'a>(d: &'a mut Document, r: SpreadRef, parent: &[usize]) -> Option<&'a mut Vec<Arc<Item>>> {
+    let mut items = &mut d.spread_mut(r)?.items;
+    for &i in parent {
+        items = Arc::make_mut(items.get_mut(i)?).children_mut()?;
+    }
+    Some(items)
+}
+
+fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "object.reorder";
+    let mut ids = targets(s, p)?;
+    let mut seen = HashSet::new();
+    ids.retain(|i| seen.insert(*i));
+    let Some(&first) = ids.first() else { return Err(bad(C, "no objects")) };
+    let above = opt_u64(p, C, "above")?.map(ItemId);
+    let below = opt_u64(p, C, "below")?.map(ItemId);
+    let index = opt_u64(p, C, "index")?;
+    let layer = opt_u64(p, C, "layer")?.map(pagenor_doc::LayerId);
+    if [above.is_some(), below.is_some(), index.is_some()].into_iter().filter(|b| *b).count() > 1 {
+        return Err(bad(C, "give only one of above, below and index"));
+    }
+    let target = above.map(|t| (t, true)).or(below.map(|t| (t, false)));
+    let d = s.doc()?.doc.clone();
+    let (spread, parent, new_items) = {
+        let no_object = |id: ItemId| bad(C, format!("no object {}", id.0));
+        let loc = d.find(first).ok_or_else(|| no_object(first))?;
+        let Some((_, parent)) = loc.path.split_last() else { return Err(no_object(first)) };
+        let parent = parent.to_vec();
+        let sibling = |id: ItemId| d.find(id).is_some_and(|l| l.spread == loc.spread && l.path.split_last().is_some_and(|(_, pp)| pp == parent));
+        for id in &ids {
+            if d.find(*id).is_none() {
+                return Err(no_object(*id));
+            }
+            if !sibling(*id) {
+                return Err(bad(C, "the objects must be on one spread and in one group"));
+            }
+        }
+        let in_group = !parent.is_empty();
+        let group_layer = if in_group {
+            let g = d.item_at(&pagenor_doc::ItemLoc { spread: loc.spread, path: parent.clone() }).ok_or_else(|| no_object(first))?;
+            if !g.states.is_empty() {
+                return Err(bad(C, "the states of a multi-state object are reordered in the Object States panel"));
+            }
+            Some(g.layer)
+        } else {
+            None
+        };
+        let own_layer = d.item(first).map(|i| i.layer).ok_or_else(|| no_object(first))?;
+        let target_layer = match target {
+            Some((t, _)) => {
+                if ids.contains(&t) {
+                    return Err(bad(C, "an object can't move next to itself"));
+                }
+                if d.find(t).is_none() {
+                    return Err(no_object(t));
+                }
+                if !sibling(t) {
+                    return Err(bad(C, "the target must be on the same spread and in the same group"));
+                }
+                let tl = d.item(t).map(|i| i.layer).ok_or_else(|| no_object(t))?;
+                if layer.is_some_and(|l| l != tl) {
+                    return Err(bad(C, "layer differs from the target's layer"));
+                }
+                if in_group { own_layer } else { tl }
+            }
+            None => layer.unwrap_or(own_layer),
+        };
+        if d.layer(target_layer).is_none() {
+            return Err(bad(C, "no such layer"));
+        }
+        if let Some(gl) = group_layer
+            && layer.is_some_and(|l| l != gl)
+        {
+            return Err(bad(C, "group members stay on their group's layer"));
+        }
+        let items = d.spread(loc.spread).map(|sp| sp.items.clone()).ok_or_else(|| no_object(first))?;
+        let items = parent.iter().try_fold(items, |items, &i| items.get(i).map(|g| g.children().to_vec())).ok_or_else(|| no_object(first))?;
+        // Moved objects keep their relative stacking order.
+        let moved: Vec<Arc<Item>> = items.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
+        let rest: Vec<Arc<Item>> = items.iter().filter(|i| !ids.contains(&i.id)).cloned().collect();
+        let at = match target {
+            Some((t, front)) => {
+                let i = rest.iter().position(|x| x.id == t).ok_or_else(|| no_object(t))?;
+                if front { i + 1 } else { i }
+            }
+            None => {
+                let k = usize::try_from(index.unwrap_or(0)).map_err(|_| bad(C, "index out of range"))?;
+                // Positions of the layer's objects (all siblings in a group), topmost first.
+                let stack: Vec<usize> = rest.iter().enumerate().filter(|(_, x)| in_group || x.layer == target_layer).map(|(i, _)| i).rev().collect();
+                if k > stack.len() {
+                    return Err(bad(C, format!("index {k} out of range (0..={})", stack.len())));
+                }
+                match (stack.get(k), stack.last()) {
+                    (Some(&i), _) => i + 1,
+                    (None, Some(&backmost)) => backmost,
+                    (None, None) => rest.len(),
+                }
+            }
+        };
+        let (back, front) = rest.split_at(at.min(rest.len()));
+        let moved = moved.into_iter().map(|mut it| {
+            if !in_group && it.layer != target_layer {
+                set_layer_deep(Arc::make_mut(&mut it), target_layer, 0);
+            }
+            it
+        });
+        let new_items: Vec<Arc<Item>> = back.iter().cloned().chain(moved).chain(front.iter().cloned()).collect();
+        if new_items.iter().zip(items.iter()).all(|(a, b)| a.id == b.id && a.layer == b.layer) {
+            return ok();
+        }
+        (loc.spread, parent, new_items)
+    };
+    s.edit(|d, _| {
+        let items = siblings_mut(d, spread, &parent).ok_or_else(|| bad(C, "the objects moved"))?;
+        *items = new_items;
+        ok()
+    })
+}
+
+/// Sets the layer of `it` and its group members (nesting is bounded).
+fn set_layer_deep(it: &mut Item, l: pagenor_doc::LayerId, depth: usize) {
+    it.layer = l;
+    if depth < 64
+        && let Some(kids) = it.children_mut()
+    {
+        for k in kids {
+            set_layer_deep(Arc::make_mut(k), l, depth + 1);
+        }
+    }
+}
+
+/// `object.setLayer`: moves the objects, or the top-level groups of group members, to a layer.
+fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "object.setLayer";
+    let l = pagenor_doc::LayerId(p.get("layer").and_then(Value::as_u64).ok_or_else(|| bad(C, "missing layer"))?);
+    let ids = targets(s, p)?;
+    s.edit(|d, _| {
+        if d.layer(l).is_none() {
+            return Err(bad(C, "no such layer"));
+        }
+        let mut tops: Vec<ItemId> = Vec::new();
+        for id in &ids {
+            if let Some(t) = d.top_level_of(*id)
+                && !tops.contains(&t)
+            {
+                tops.push(t);
+            }
+        }
+        for t in &tops {
+            if let Some(it) = d.item_mut(*t) {
+                set_layer_deep(it, l, 0);
+            }
+        }
+        Ok(json!({"changed": tops.len()}))
+    })
+}
+
+/// Where a group of `ids` goes: their spread, the path of the group holding them (empty at top
+/// level), and their indices in that list, back to front.
+struct GroupPlan {
+    spread: SpreadRef,
+    parent: Vec<usize>,
+    indices: Vec<usize>,
+}
+
+/// Objects can be grouped when they share a spread and a parent: all top-level, or all in the
+/// same group (which then holds the new group). A multi-state object keeps one state per child,
+/// so objects inside one stay as they are.
+fn group_plan(d: &Document, ids: &[ItemId]) -> std::result::Result<GroupPlan, String> {
+    let mut seen = HashSet::new();
+    let mut locs = Vec::new();
+    for id in ids {
+        if seen.insert(*id) {
+            locs.push(d.find(*id).ok_or_else(|| format!("no object with id {}", id.0))?);
+        }
+    }
+    if locs.len() < 2 {
+        return Err("select at least two objects".into());
+    }
+    let mut plan: Option<GroupPlan> = None;
+    for loc in locs {
+        let Some((&i, parent)) = loc.path.split_last() else { return Err("object not found".into()) };
+        match &mut plan {
+            None => plan = Some(GroupPlan { spread: loc.spread, parent: parent.to_vec(), indices: vec![i] }),
+            Some(p) if p.spread == loc.spread && p.parent == parent => p.indices.push(i),
+            Some(_) => return Err(GROUP_SAME_LEVEL.into()),
+        }
+    }
+    let Some(mut plan) = plan else { return Err("select at least two objects".into()) };
+    if !plan.parent.is_empty() && d.item_at(&ItemLoc { spread: plan.spread, path: plan.parent.clone() }).is_some_and(|g| !g.states.is_empty()) {
+        return Err("objects inside a multi-state object can't be grouped".into());
+    }
+    plan.indices.sort_unstable();
+    Ok(plan)
+}
+
+const GROUP_SAME_LEVEL: &str = "objects to group must be on the same spread and at the same level (all top-level, or all in the same group)";
+
+/// The list that holds the objects a [`GroupPlan`] groups.
+fn group_siblings_mut<'a>(d: &'a mut Document, plan: &GroupPlan) -> Option<&'a mut Vec<Arc<Item>>> {
+    if plan.parent.is_empty() {
+        return Some(&mut d.spread_mut(plan.spread)?.items);
+    }
+    d.item_mut_at(&ItemLoc { spread: plan.spread, path: plan.parent.clone() })?.children_mut()
+}
+
+/// Menu state of Object › Group: the selection must be groupable.
+fn can_group(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    let st = s.active().ok_or_else(|| "no document open".to_string())?;
+    group_plan(&st.doc, &st.selection.items).map(|_| ()).map_err(|_| super::CANT_GROUP_SELECTION.into())
+}
+
 fn group(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    if ids.len() < 2 {
-        return Err(bad("object.group", "select at least two objects"));
-    }
     s.edit(|d, sel| {
-        let sr = d.find(ids[0]).map(|l| l.spread).ok_or(pagenor_doc::DocError::NoItem(ids[0]))?;
-        // Keep stacking order: collect in z-order.
-        let order: Vec<ItemId> = d.spread(sr).map(|sp| sp.items.iter().map(|i| i.id).filter(|i| ids.contains(i)).collect()).unwrap_or_default();
-        let front = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| Some(&i.id) == order.last())).unwrap_or(0);
-        let layer = d.item(order[0]).map(|i| i.layer).unwrap_or_default();
-        let mut kids = Vec::new();
-        for id in &order {
-            kids.push(d.remove_item_keep_story(*id)?);
+        let plan = group_plan(d, &ids).map_err(|e| bad("object.group", e))?;
+        let missing = || bad("object.group", "the objects to group are gone");
+        let siblings = group_siblings_mut(d, &plan).ok_or_else(missing)?;
+        let (Some(&back), Some(&front)) = (plan.indices.first(), plan.indices.last()) else { return Err(missing()) };
+        let layer = siblings.get(back).ok_or_else(missing)?.layer;
+        // Keep stacking order: remove front to back, then restore back-to-front order.
+        let mut kids = Vec::with_capacity(plan.indices.len());
+        for &i in plan.indices.iter().rev() {
+            if i >= siblings.len() {
+                return Err(missing());
+            }
+            kids.push(siblings.remove(i));
         }
+        kids.reverse();
         let gid = ItemId(d.alloc());
         let mut g = Item::new(gid, layer, Shape::Group, pagenor_geom::PathData::default());
-        g.content = Content::Group { items: kids.into_iter().map(Arc::new).collect() };
-        let at = front + 1 - order.len();
-        d.insert_item(sr, g, Some(at))?;
+        let at = (front + 1).saturating_sub(kids.len());
+        g.content = Content::Group { items: kids };
+        let siblings = group_siblings_mut(d, &plan).ok_or_else(missing)?;
+        siblings.insert(at.min(siblings.len()), Arc::new(g));
         *sel = Selection::items(vec![gid]);
         Ok(json!({"id": gid.0}))
     })
@@ -1340,6 +1638,82 @@ fn ungroup(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(out);
         ok()
     })
+}
+
+fn corner_options(s: &mut Session, p: &Value) -> Result<Value> {
+    use pagenor_geom::corners::{Corner, CornerOptions, CornerShape};
+    let opts = match p.get("corners") {
+        Some(v) => {
+            let corners: [Corner; 4] =
+                serde_json::from_value(v.clone()).map_err(|e| bad("object.cornerOptions", format!("corners: four {{shape, size}} entries ({e})")))?;
+            if corners.iter().any(|c| !c.size.is_finite() || c.size < 0.0) {
+                return Err(bad("object.cornerOptions", "corner sizes must be finite and not negative"));
+            }
+            CornerOptions { corners }
+        }
+        None => {
+            let shape = p.get("shape").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(CornerShape::Rounded);
+            CornerOptions::uniform(shape, f64_or(p, "size", 12.0))
+        }
+    };
+    set_flag(s, p, move |i| i.corners = opts, false)
+}
+
+fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
+    use pagenor_doc::{ContourType, WrapMode, WrapSide};
+    let side: Option<WrapSide> = match p.get("side") {
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown side"))?),
+        None => None,
+    };
+    // Detected edges, alpha channels and image paths need the image's pixels or paths, which
+    // composition doesn't read; those types aren't offered.
+    let contour = match p.get("contour").map(|v| serde_json::from_value::<ContourType>(v.clone())) {
+        Some(Ok(c @ (ContourType::BoundingBox | ContourType::GraphicFrame | ContourType::SameAsClipping))) => Some(c),
+        Some(_) => return Err(bad("object.textWrap", "unsupported contour type")),
+        None => None,
+    };
+    let mode: Option<WrapMode> = match p.get("mode") {
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
+        None if side.is_some() || contour.is_some() => None,
+        None => Some(WrapMode::BoundingBox),
+    };
+    let off = match p.get("offset") {
+        Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
+        Some(v) => serde_json::from_value(v.clone()).ok(),
+        None => None,
+    };
+    let invert = p.get("invert").and_then(Value::as_bool);
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or(p.get("ids").is_none() && p.get("id").is_none() && s.doc()?.selection.content);
+    set_flag(
+        s,
+        p,
+        move |i| {
+            let w = match &mut i.content {
+                Content::Graphic(g) if content => &mut g.wrap,
+                _ => &mut i.wrap,
+            };
+
+            if let Some(m) = mode {
+                w.mode = m;
+            }
+            if let Some(o) = off {
+                w.offsets = o;
+            }
+            if let Some(v) = invert {
+                w.invert = v;
+            }
+            if let Some(v) = side {
+                w.side = v;
+            }
+            if let Some(c) = contour {
+                w.contour = c;
+            }
+            if off.is_some() || contour.is_some() {
+                w.path = None;
+            }
+        },
+        false,
+    )
 }
 
 fn set_flag(s: &mut Session, p: &Value, f: impl Fn(&mut Item), deselect: bool) -> Result<Value> {
@@ -1411,12 +1785,43 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
     let mut ids = targets(s, p)?;
     if ids.is_empty()
         && let Some(t) = st.selection.text
     {
         ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
+    }
+    let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+            _ => Err(bad(ID, format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+        },
+    };
+    let rule_weight = ranged("columnRuleWeight", 0.0, 1000.0, "a number of points")?;
+    let rule_tint = ranged("columnRuleTint", 0.0, 1.0, "a tint")?;
+    let rule_offset = ranged("columnRuleOffset", -1440.0, 1440.0, "a number of points")?;
+    let rule_top = ranged("columnRuleTopInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_bottom = ranged("columnRuleBottomInset", -1440.0, 1440.0, "a number of points")?;
+    let rule_color = match p.get("columnRuleColor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(c)) if st.doc.swatch(c).is_some() => Some(c.clone()),
+        Some(v) => return Err(bad(ID, format!("no swatch {v}"))),
+    };
+    let mut inset_edges = [None; 4];
+    if let Some(edges) = p.get("inset").and_then(Value::as_object) {
+        for (key, edge) in ["top", "left", "bottom", "right"].into_iter().zip(&mut inset_edges) {
+            if let Some(value) = edges.get(key) {
+                *edge = Some(
+                    value
+                        .as_f64()
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| bad("object.textFrameOptions", format!("inset.{key} must be a finite number")))?,
+                );
+            }
+        }
     }
     let p = p.clone();
     s.edit(|d, _| {
@@ -1432,11 +1837,20 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             match p.get("inset") {
                 Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
                 Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value(v.clone()) {
-                        o.inset = a;
+                    if let Ok(a) = serde_json::from_value::<[Option<f64>; 4]>(v.clone()) {
+                        for (side, v) in o.inset.iter_mut().zip(a) {
+                            if let Some(v) = v {
+                                *side = v;
+                            }
+                        }
                     }
                 }
                 _ => {}
+            }
+            for (edge, value) in o.inset.iter_mut().zip(inset_edges) {
+                if let Some(value) = value {
+                    *edge = value;
+                }
             }
             for (k, which) in [("verticalJustification", 0), ("firstBaseline", 1), ("autoSize", 2), ("columnsKind", 3)] {
                 if let Some(v) = p.get(k).cloned() {
@@ -1456,6 +1870,24 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
                 o.column_rule = v;
+            }
+            if let Some(w) = rule_weight {
+                o.column_rule_weight = w;
+            }
+            if let Some(c) = &rule_color {
+                o.column_rule_color = c.clone();
+            }
+            if let Some(t) = rule_tint {
+                o.column_rule_tint = t as f32;
+            }
+            if let Some(v) = rule_offset {
+                o.column_rule_offset = v;
+            }
+            if let Some(v) = rule_top {
+                o.column_rule_top_inset = v;
+            }
+            if let Some(v) = rule_bottom {
+                o.column_rule_bottom_inset = v;
             }
         }
         // Story direction belongs to the story: every frame of the thread turns.
@@ -1561,6 +1993,11 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
             let Some(px) = pagenor_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            // A placed PDF cropped to a box: trace that box, which graphic space spans.
+            let px = match pagenor_render::shown_box(asset) {
+                Some(frac) => pagenor_render::crop_pixmap(&px, frac).unwrap_or(px),
+                None => px,
+            };
             let (pw, ph) = (px.width() as usize, px.height() as usize);
             // A grid of at most 400 cells on the long side.
             let step = (pw.max(ph) as f64 / 400.0).max(1.0);
@@ -2391,6 +2828,82 @@ mod line_end_tests {
 mod named_target_tests {
     use super::*;
 
+    #[test]
+    fn column_rule_tint_swatch_matches_equivalent_process_ink_on_screen_and_pdf() {
+        use pagenor_color::{Color, Swatch, SwatchValue};
+        let mut session = Session::new();
+        session.execute("file.new", &json!({"pages": 1})).unwrap();
+        session
+            .edit(|doc, _| {
+                doc.swatches.push(Swatch {
+                    name: "K30 tint".into(),
+                    value: SwatchValue::Tint { base: "[Black]".into(), tint: 0.3 },
+                    locked: false,
+                    named: true,
+                    hidden: false,
+                });
+                doc.swatches.push(Swatch::color("K30 process", Color::cmyk(0.0, 0.0, 0.0, 0.3)));
+                Ok(())
+            })
+            .unwrap();
+        for (x, color) in [(20, "K30 tint"), (240, "K30 process")] {
+            let frame = session.execute("frame.create", &json!({"rect": [x, 20, x + 200, 220], "content": "text"})).unwrap();
+            session
+                .execute(
+                    "object.textFrameOptions",
+                    &json!({"ids": [frame["id"]], "columns": 2, "gutter": 20,
+                "inset": 10, "columnRule": true, "columnRuleWeight": 4, "columnRuleColor": color}),
+                )
+                .unwrap();
+        }
+        let doc = &session.doc().unwrap().doc;
+        let mut renderer = pagenor_render::Renderer::new();
+        renderer.threads = 0;
+        let screen = renderer.render_page(doc, &session.cache, 0, 1.0, false, &Default::default()).unwrap();
+        assert_eq!(screen.pixel(120, 100), screen.pixel(340, 100), "named tint and equivalent process ink must agree");
+        assert!(screen.pixel(120, 100)[0] > 100 && screen.pixel(120, 100)[0] < 245);
+        let pdf = pagenor_pdf::export_pdf(doc, &session.cache, &Default::default()).unwrap();
+        let page = pagenor_render::render_pdf_page(&pdf, 0, 792).unwrap();
+        let at = |x: usize| page.data()[100 * page.width() as usize + x];
+        assert_eq!(at(120), at(340), "PDF must preserve named tint ink");
+        assert!(at(120).r > 100 && at(120).r < 245 && at(120).a > 200);
+    }
+
+    #[test]
+    fn column_rules_render_on_screen_and_pdf_and_undo() {
+        for vertical in [false, true] {
+            let mut session = Session::new();
+            session.execute("file.new", &json!({"pages": 1})).unwrap();
+            let frame = session.execute("frame.create", &json!({"rect": [20, 20, 220, 220], "content": "text"})).unwrap();
+            let id = ItemId(frame["id"].as_u64().unwrap());
+            session.execute("object.textFrameOptions", &json!({"ids": [id], "columns": 2, "gutter": 20, "inset": 10, "vertical": vertical})).unwrap();
+            let before = session.doc().unwrap().doc.clone();
+            assert!(session.execute("object.textFrameOptions", &json!({"ids": [id], "columnRule": true, "columnRuleWeight": -1})).is_err());
+            assert_eq!(*session.doc().unwrap().doc, *before, "invalid weight must leave settings untouched");
+            session
+                .execute("object.textFrameOptions", &json!({"ids": [id], "columnRule": true, "columnRuleWeight": 4, "columnRuleColor": "[Black]"}))
+                .unwrap();
+            let (x, y) = if vertical { (100, 120) } else { (120, 100) };
+            let doc = &session.doc().unwrap().doc;
+            let mut renderer = pagenor_render::Renderer::new();
+            renderer.threads = 0;
+            let screen = renderer.render_page(doc, &session.cache, 0, 1.0, false, &Default::default()).unwrap();
+            // Color-managed 100% K renders near RGB 52 rather than ideal sRGB zero.
+            assert!(screen.pixel(x, y)[0] < 100, "enabled rule must draw on screen (vertical={vertical}, pixel={:?})", screen.pixel(x, y));
+            assert_eq!(screen.pixel(25, 25), [255, 255, 255, 255], "rules respect the text inset");
+            let pdf = pagenor_pdf::export_pdf(doc, &session.cache, &Default::default()).unwrap();
+            let page = pagenor_render::render_pdf_page(&pdf, 0, 792).unwrap();
+            let pixel = page.data()[y as usize * page.width() as usize + x as usize];
+            assert!(pixel.r < 100 && pixel.a > 200, "PDF must retain the same column rule");
+            session.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(*session.doc().unwrap().doc, *before);
+            let off = renderer.render_page(&session.doc().unwrap().doc, &session.cache, 0, 1.0, false, &Default::default()).unwrap();
+            assert_eq!(off.pixel(x, y), [255, 255, 255, 255], "undo removes the visible rule");
+            session.execute("edit.redo", &json!({})).unwrap();
+            assert!(session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.column_rule);
+        }
+    }
+
     /// With a text caret (or nothing) selected, a command given `ids` failed
     /// with "command `object.textFrameOptions` is not available right now: nothing selected".
     #[test]
@@ -2415,5 +2928,478 @@ mod named_target_tests {
         assert_eq!(columns(&s), Some(2));
         // Commands documented with `ids` honour `id` too.
         assert_eq!(s.execute("conveyor.collect", &json!({"id": r["id"]})).unwrap()["count"], 1);
+    }
+}
+
+#[cfg(test)]
+mod column_rule_tests {
+    use super::*;
+
+    #[test]
+    fn column_rules_set_validate_undo_and_inspect() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let opts = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": 3, "inset": [1, 2, 3, 4]})).unwrap();
+        let before = opts(&s);
+        // An unknown swatch or a bad weight is an error and changes nothing.
+        let e = s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRule": true, "columnRuleColor": "Mauve"})).unwrap_err();
+        assert!(e.to_string().contains("Mauve"), "{e}");
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleWeight": -1})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTint": 2})).is_err());
+        assert!(s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columnRuleTopInset": "x"})).is_err());
+        assert_eq!(opts(&s), before);
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [id.0], "columnRule": true, "columnRuleWeight": 0.5, "columnRuleColor": "C=100 M=0 Y=0 K=0", "columnRuleTint": 0.5,
+                "columnRuleOffset": -2, "columnRuleTopInset": 4, "columnRuleBottomInset": 6}),
+        )
+        .unwrap();
+        let o = opts(&s);
+        assert!(o.column_rule && o.column_rule_weight == 0.5 && o.column_rule_color == "C=100 M=0 Y=0 K=0");
+        assert_eq!(o.inset, [1.0, 2.0, 3.0, 4.0], "untouched options stay");
+        assert_eq!((o.column_rule_tint, o.column_rule_offset, o.column_rule_top_inset, o.column_rule_bottom_inset), (0.5, -2.0, 4.0, 6.0));
+        let item = s.execute("document.inspect", &json!({})).unwrap()["spreads"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!(id.0))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (&item["columnRule"], &item["columnRuleWeight"], &item["columnRuleColor"]),
+            (&json!(true), &json!(0.5), &json!("C=100 M=0 Y=0 K=0"))
+        );
+        assert_eq!(
+            (&item["columnRuleTint"], &item["columnRuleOffset"], &item["columnRuleTopInset"], &item["columnRuleBottomInset"]),
+            (&json!(0.5), &json!(-2.0), &json!(4.0), &json!(6.0))
+        );
+        // One undo step.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(opts(&s), before);
+    }
+}
+
+#[cfg(test)]
+mod text_frame_inset_tests {
+    use super::*;
+
+    fn mixed_frame_session() -> (Session, [ItemId; 2]) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frames = [20, 260].map(|x| {
+            let frame = s.execute("frame.create", &json!({"rect": [x, 20, x + 220, 220], "content": "text"})).unwrap();
+            ItemId(frame["id"].as_u64().unwrap())
+        });
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [frames[0]], "columns": 3, "gutter": 18, "inset": [2, 4, 6, 8], "verticalJustification": "center"}),
+        )
+        .unwrap();
+        s.execute(
+            "object.textFrameOptions",
+            &json!({"ids": [frames[1]], "columns": 2, "gutter": 12, "inset": [10, 20, 30, 40], "verticalJustification": "bottom"}),
+        )
+        .unwrap();
+        s.execute("selection.set", &json!({"ids": frames})).unwrap();
+        (s, frames)
+    }
+
+    #[test]
+    fn partial_insets_preserve_each_frames_other_edges_and_legacy_forms_undo() {
+        for (inset, expected_insets) in [
+            (json!({"top": 2}), [[2.0, 4.0, 6.0, 8.0], [2.0, 20.0, 30.0, 40.0]]),
+            (json!({"left": 9, "right": 13}), [[2.0, 9.0, 6.0, 13.0], [10.0, 9.0, 30.0, 13.0]]),
+            (json!(6), [[6.0; 4]; 2]),
+            (json!([1, 3, 5, 7]), [[1.0, 3.0, 5.0, 7.0]; 2]),
+        ] {
+            let (mut s, frames) = mixed_frame_session();
+            let st = s.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let undo_len = st.history.undo.len();
+            s.execute("object.textFrameOptions", &json!({"inset": inset})).unwrap();
+            let mut expected = (*before).clone();
+            for (id, insets) in frames.into_iter().zip(expected_insets) {
+                expected.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset = insets;
+            }
+            assert_eq!(*s.doc().unwrap().doc, expected);
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo_len + 1);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(*s.doc().unwrap().doc, *before);
+            assert_eq!(s.doc().unwrap().selection, selection);
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo_len);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert_eq!(*s.doc().unwrap().doc, expected);
+            assert_eq!(s.doc().unwrap().selection, selection);
+        }
+    }
+
+    #[test]
+    fn invalid_partial_inset_rejects_the_whole_edit_before_mutation() {
+        for invalid in [json!("bad"), Value::Null] {
+            let (mut s, _) = mixed_frame_session();
+            let st = s.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let revision = st.revision;
+            let undo_len = st.history.undo.len();
+            let error = s.execute("object.textFrameOptions", &json!({"columns": 4, "inset": {"top": 11, "left": invalid}})).unwrap_err();
+            assert!(error.to_string().contains("inset.left must be a finite number"));
+            let st = s.doc().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&st.doc, &before));
+            assert_eq!(st.selection, selection);
+            assert_eq!(st.revision, revision);
+            assert_eq!(st.history.undo.len(), undo_len);
+        }
+    }
+}
+
+#[cfg(test)]
+mod blend_mode_tests {
+    use pagenor_color::BlendMode;
+
+    use super::*;
+
+    /// `object.opacity` documents `blend?: normal|multiply|…`, but deserializing the value
+    /// against the enum only accepted the PascalCase variant names, so the documented
+    /// lowercase forms were silently dropped: the command reported `changed: 1` while the
+    /// stored blend stayed as it was (#260).
+    #[test]
+    fn lowercase_documented_blend_modes_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let blend = |s: &Session| s.doc().unwrap().doc.item(id).map(|i| i.blend);
+
+        for (given, want) in [
+            ("multiply", BlendMode::Multiply),
+            ("screen", BlendMode::Screen),
+            ("MULTIPLY", BlendMode::Multiply),
+            ("Color Burn", BlendMode::ColorBurn),
+            ("color-burn", BlendMode::ColorBurn),
+            ("soft_light", BlendMode::SoftLight),
+            ("normal", BlendMode::Normal),
+        ] {
+            let out = s.execute("object.opacity", &json!({"opacity": 1, "blend": given})).unwrap();
+            assert_eq!(out["changed"], 1, "{given}");
+            assert_eq!(blend(&s), Some(want), "blend mode {given:?} must be applied");
+        }
+    }
+
+    /// The PascalCase names keep working, so the Properties panel's own submissions are
+    /// unaffected.
+    #[test]
+    fn pascal_case_blend_modes_still_apply() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 0.5, "blend": "Multiply"})).unwrap();
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply);
+        assert!((it.opacity - 0.5).abs() < 1e-6, "opacity must still be set");
+    }
+
+    /// A blend mode the command doesn't know is an error, not a silent success that leaves
+    /// the previous appearance in place.
+    #[test]
+    fn an_unknown_blend_mode_is_an_error() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "unassigned"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.opacity", &json!({"opacity": 1, "blend": "Multiply"})).unwrap();
+        let e = s.execute("object.opacity", &json!({"opacity": 1, "blend": "sparkle"})).unwrap_err().to_string();
+        assert!(e.contains("sparkle") && e.contains("blend"), "{e}");
+        let it = s.doc().unwrap().doc.item(id).cloned().unwrap();
+        assert_eq!(it.blend, BlendMode::Multiply, "a rejected value changes nothing");
+        assert_eq!(it.opacity, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod reorder_tests {
+    use super::*;
+
+    fn frame(s: &mut Session) -> u64 {
+        s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap()
+    }
+
+    /// Top-level objects of the first spread on `layer`, topmost first.
+    fn stack(s: &Session, layer: u64) -> Vec<u64> {
+        let d = &s.doc().unwrap().doc;
+        d.spreads[0].items.iter().rev().filter(|i| i.layer.0 == layer).map(|i| i.id.0).collect()
+    }
+
+    #[test]
+    fn reorder_within_and_across_layers_validates_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let l1 = s.doc().unwrap().doc.layers[0].id.0;
+        let l2 = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layer.activate", &json!({"id": l1})).unwrap();
+        let (a, b, c) = (frame(&mut s), frame(&mut s), frame(&mut s));
+        s.execute("layer.activate", &json!({"id": l2})).unwrap();
+        let (x, y) = (frame(&mut s), frame(&mut s));
+        assert_eq!(stack(&s, l1), [c, b, a]);
+        s.execute("object.reorder", &json!({"ids": [a], "above": c})).unwrap();
+        assert_eq!(stack(&s, l1), [a, c, b]);
+        s.execute("object.reorder", &json!({"ids": [b], "index": 0})).unwrap();
+        assert_eq!(stack(&s, l1), [b, a, c]);
+        // To another layer at a position.
+        s.execute("object.reorder", &json!({"ids": [a], "layer": l2, "index": 1})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c], vec![y, a, x]));
+        s.execute("object.reorder", &json!({"ids": [x, y], "below": c})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c, y, x], vec![a]));
+        // Bad input is an error and changes nothing.
+        let before = s.doc().unwrap().doc.clone();
+        for bad in [
+            json!({"ids": [999], "index": 0}),
+            json!({"ids": [b], "index": 4}),
+            json!({"ids": [b], "above": b}),
+            json!({"ids": [b], "above": 999}),
+            json!({"ids": [b], "layer": 999}),
+            json!({"ids": [b], "layer": l2, "above": c}),
+            json!({"ids": [b], "above": c, "index": 0}),
+            json!({"ids": [b], "index": "top"}),
+            json!({"ids": []}),
+        ] {
+            assert!(s.execute("object.reorder", &bad).is_err(), "{bad}");
+            assert_eq!(*s.doc().unwrap().doc, *before, "{bad}");
+        }
+        // The bottom of a layer is index = its count.
+        s.execute("object.reorder", &json!({"ids": [b], "index": 3})).unwrap();
+        assert_eq!(stack(&s, l1), [c, y, x, b]);
+        // A reorder that changes nothing adds no undo step.
+        let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+        let steps = undo(&s);
+        s.execute("object.reorder", &json!({"ids": [x], "index": 2})).unwrap();
+        s.execute("object.reorder", &json!({"ids": [y], "above": x})).unwrap();
+        s.execute("object.reorder", &json!({"ids": [c], "layer": l1, "index": 0})).unwrap();
+        assert_eq!(stack(&s, l1), [c, y, x, b]);
+        assert_eq!(undo(&s), steps);
+        // One undo step per reorder.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(stack(&s, l1), [b, c, y, x]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!((stack(&s, l1), stack(&s, l2)), (vec![b, c], vec![y, a, x]));
+    }
+
+    #[test]
+    fn group_members_reorder_only_within_their_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (a, b, c) = (frame(&mut s), frame(&mut s), frame(&mut s));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let kids = |s: &Session| s.doc().unwrap().doc.item(ItemId(g)).unwrap().children().iter().map(|i| i.id.0).collect::<Vec<_>>();
+        assert_eq!(kids(&s), [a, b]);
+        s.execute("object.reorder", &json!({"ids": [a], "above": b})).unwrap();
+        assert_eq!(kids(&s), [b, a]);
+        s.execute("object.reorder", &json!({"ids": [a], "index": 1})).unwrap();
+        assert_eq!(kids(&s), [a, b]);
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("object.reorder", &json!({"ids": [a], "above": c})).is_err(), "out of the group");
+        assert!(s.execute("object.reorder", &json!({"ids": [c], "above": a})).is_err(), "into the group");
+        assert!(s.execute("object.reorder", &json!({"ids": [a, c], "index": 0})).is_err(), "mixed parents");
+        assert_eq!(*s.doc().unwrap().doc, *before);
+    }
+
+    #[test]
+    fn moving_a_group_member_to_a_layer_moves_its_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (a, b) = (frame(&mut s), frame(&mut s));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let art = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let r = s.execute("object.setLayer", &json!({"ids": [a, b], "layer": art})).unwrap();
+        assert_eq!(r["changed"], 1, "the group, once");
+        let d = &s.doc().unwrap().doc;
+        assert!([g, a, b].iter().all(|i| d.item(ItemId(*i)).unwrap().layer.0 == art));
+        assert!(s.execute("object.setLayer", &json!({"ids": [a], "layer": 999})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod content_move_tests {
+    use super::*;
+
+    /// A session with a 40×20 image placed in a frame at (100, 100)–(300, 300).
+    fn placed() -> (Session, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("place.load", &json!({"base64": super::super::base64_encode(&png)})).unwrap();
+        s.execute("place.drop", &json!({"frame": f})).unwrap();
+        (s, ItemId(f))
+    }
+
+    /// Spread bounds of the frame and of its graphic.
+    fn boxes(s: &Session, id: ItemId) -> (Rect, Rect) {
+        let it = s.doc().unwrap().doc.item(id).unwrap().clone();
+        let g = it.graphic().unwrap();
+        (it.bounds(), (it.xf * g.xf).transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1)))
+    }
+
+    fn near(a: Rect, b: Rect) -> bool {
+        [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1].iter().all(|d| d.abs() < 1e-6)
+    }
+
+    #[test]
+    fn content_moves_inside_the_frame_in_one_undo_step() {
+        let (mut s, f) = placed();
+        let (frame0, g0) = boxes(&s, f);
+        s.execute("selection.set", &json!({"ids": [f.0], "content": true})).unwrap();
+        s.execute("transform.move", &json!({"dx": 10, "dy": -5})).unwrap();
+        let (frame1, g1) = boxes(&s, f);
+        assert!(near(frame1, frame0), "the frame stays");
+        assert!(near(g1, g0 + Vec2::new(10.0, -5.0)), "{g1:?}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(near(boxes(&s, f).1, g0));
+        // Explicit ids with `content` act on the content whatever the selection is.
+        s.execute("selection.set", &json!({"ids": [f.0]})).unwrap();
+        s.execute("transform.move", &json!({"ids": [f.0], "content": true, "dx": 3})).unwrap();
+        assert!(near(boxes(&s, f).0, frame0) && near(boxes(&s, f).1, g0 + Vec2::new(3.0, 0.0)));
+        // A frame selection moves frame and content together.
+        s.execute("transform.move", &json!({"dx": 4})).unwrap();
+        assert!(near(boxes(&s, f).0, frame0 + Vec2::new(4.0, 0.0)) && near(boxes(&s, f).1, g0 + Vec2::new(7.0, 0.0)));
+    }
+
+    #[test]
+    fn content_moves_on_the_page_axes_in_a_rotated_frame_and_pasted_items_move_too() {
+        let (mut s, f) = placed();
+        s.execute("transform.rotate", &json!({"ids": [f.0], "angle": 90})).unwrap();
+        let (frame0, g0) = boxes(&s, f);
+        s.execute("transform.move", &json!({"ids": [f.0], "content": true, "dx": 10})).unwrap();
+        let (frame1, g1) = boxes(&s, f);
+        assert!(near(frame1, frame0) && near(g1, g0 + Vec2::new(10.0, 0.0)), "{g0:?} → {g1:?}");
+        // Items pasted into a frame are its content.
+        let a = s.execute("frame.create", &json!({"rect": [400, 100, 420, 120], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [400, 300, 500, 400], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [b]})).unwrap();
+        s.execute("edit.pasteInto", &json!({})).unwrap();
+        let kids = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(ItemId(b)).unwrap().clone();
+            (it.bounds(), it.children().iter().map(|c| it.xf.transform_rect_bbox(c.bounds())).collect::<Vec<_>>())
+        };
+        let (fb0, k0) = kids(&s);
+        s.execute("transform.move", &json!({"ids": [b], "content": true, "dx": 5, "dy": 6})).unwrap();
+        let (fb1, k1) = kids(&s);
+        assert!(near(fb1, fb0) && near(k1[0], k0[0] + Vec2::new(5.0, 6.0)), "{k0:?} → {k1:?}");
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    fn frame(s: &mut Session, rect: [f64; 4], spread: usize) -> ItemId {
+        ItemId(s.execute("frame.create", &json!({"rect": rect, "spread": spread})).unwrap()["id"].as_u64().unwrap())
+    }
+
+    fn group_ids(s: &mut Session, ids: &[ItemId]) -> Result<ItemId> {
+        let r = s.execute("object.group", &json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))?;
+        Ok(ItemId(r["id"].as_u64().unwrap()))
+    }
+
+    fn children(s: &Session, id: ItemId) -> Vec<ItemId> {
+        s.doc().unwrap().doc.item(id).unwrap().children().iter().map(|c| c.id).collect()
+    }
+
+    fn world(s: &Session, id: ItemId) -> Affine {
+        let d = &s.doc().unwrap().doc;
+        let loc = d.find(id).unwrap();
+        d.parent_xf(&loc) * d.item(id).unwrap().xf
+    }
+
+    fn group_enabled(s: &Session) -> bool {
+        super::super::find_command("object.group").unwrap().info(s).enabled
+    }
+
+    #[test]
+    fn grouping_objects_already_in_a_group_does_not_panic() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = frame(&mut s, [36.0, 36.0, 136.0, 136.0], 0);
+        let b = frame(&mut s, [200.0, 36.0, 300.0, 136.0], 0);
+        let g = group_ids(&mut s, &[a, b]).unwrap();
+        let inner = group_ids(&mut s, &[a, b]).unwrap();
+        assert_eq!(children(&s, g), vec![inner]);
+        assert_eq!(children(&s, inner), vec![a, b]);
+
+        // The same through the selection, and through Convert to Multi-State Object.
+        s.execute("selection.set", &json!({"ids": [a.0, b.0], "content": true})).unwrap();
+        assert!(group_enabled(&s));
+        let inner2 = ItemId(s.execute("object.group", &json!({})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(children(&s, inner), vec![inner2]);
+        let st = ItemId(s.execute("states.create", &json!({"ids": [a.0, b.0]})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(children(&s, inner2), vec![st]);
+        assert_eq!(s.doc().unwrap().doc.item(st).unwrap().states.len(), 2);
+    }
+
+    #[test]
+    fn grouping_siblings_inside_a_group_nests_them_and_undo_restores() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let a = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 0);
+        let b = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 0);
+        let c = frame(&mut s, [40.0, 0.0, 50.0, 10.0], 0);
+        let g = group_ids(&mut s, &[a, b, c]).unwrap();
+        s.execute("transform.rotate", &json!({"ids": [g.0], "angle": 30})).unwrap();
+        let before = (world(&s, a), world(&s, c));
+
+        let inner = group_ids(&mut s, &[c, a]).unwrap();
+        assert_eq!(children(&s, g), vec![b, inner], "the new group takes the frontmost object's place");
+        assert_eq!(children(&s, inner), vec![a, c], "stacking order kept");
+        assert_eq!((world(&s, a), world(&s, c)), before, "nothing moves");
+        assert_eq!(s.doc().unwrap().selection.items, vec![inner]);
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(children(&s, g), vec![a, b, c]);
+        assert!(s.doc().unwrap().doc.find(inner).is_none());
+    }
+
+    #[test]
+    fn grouping_across_levels_or_spreads_is_refused_and_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 0);
+        let b = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 0);
+        let top = frame(&mut s, [40.0, 0.0, 50.0, 10.0], 0);
+        let other = frame(&mut s, [0.0, 0.0, 10.0, 10.0], 1);
+        let other2 = frame(&mut s, [20.0, 0.0, 30.0, 10.0], 1);
+        let g = group_ids(&mut s, &[a, b]).unwrap();
+        let doc = s.doc().unwrap().doc.clone();
+
+        for ids in [[a, top], [top, a], [a, other], [top, other], [g, a]] {
+            let e = group_ids(&mut s, &ids).unwrap_err().to_string();
+            assert!(e.contains("same spread and at the same level"), "{ids:?}: {e}");
+            let e = s.execute("states.create", &json!({"ids": [ids[0].0, ids[1].0]})).unwrap_err().to_string();
+            assert!(e.contains("same spread and at the same level"), "states.create {ids:?}: {e}");
+            assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &doc), "{ids:?} changed the document");
+        }
+        assert!(group_ids(&mut s, &[a, ItemId(999_999)]).is_err());
+
+        s.execute("selection.set", &json!({"ids": [a.0, other.0], "content": true})).unwrap();
+        assert!(!group_enabled(&s), "Group is disabled for objects on different spreads");
+        s.execute("selection.set", &json!({"ids": [other.0, other2.0]})).unwrap();
+        assert!(group_enabled(&s));
+        // Named objects win over a selection that can't be grouped.
+        s.execute("selection.set", &json!({"ids": [a.0, other.0], "content": true})).unwrap();
+        assert!(group_ids(&mut s, &[other, other2]).is_ok());
+
+        // A multi-state object keeps one state per object.
+        let ms = ItemId(s.execute("states.create", &json!({"ids": [g.0]})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(ms, g);
+        let e = group_ids(&mut s, &[a, b]).unwrap_err().to_string();
+        assert!(e.contains("multi-state"), "{e}");
+        assert_eq!(children(&s, g), vec![a, b]);
     }
 }
