@@ -171,6 +171,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::panel_docking::legacy_tab(app, ui, id, &response);
                     x += w;
                 }
+                let menu_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 46.0, strip.min.y + 4.0), vec2(18.0, 18.0));
+                let menu = ui.interact(menu_r, ui.id().with("dock-menu"), Sense::click());
+                menu.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Panel menu"));
+                if menu.hovered() {
+                    ui.painter().rect_filled(menu_r, 3.0, t.hover);
+                }
+                icons::paint(ui.painter(), menu_r, "menu", t.icon);
+                let tab = app.ui.dock_tab.clone();
+                egui::Popup::menu(&menu).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                    if tab == "pages" {
+                        panels::pages::panel_menu(app, ui);
+                        ui.separator();
+                    }
+                    crate::panel_docking::panel_menu(app, ui, &tab);
+                });
                 let close_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 24.0, strip.min.y + 4.0), vec2(18.0, 18.0));
                 let response = ui.interact(close_r, ui.id().with("close_panel"), Sense::click());
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close Panel"));

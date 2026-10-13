@@ -879,3 +879,26 @@ used and unsafe_code remains forbidden. Proprietary fonts/documents stay out of
 Git and release assets. Counts/terminal-byte/native/gate evidence and current
 limits are in docs/pagenor/PAGEMAKER_COMPLETE_IMPORT_071.md. The earlier five-page
 copy is explicitly superseded as a partial import; the owner confirms 28 pages.
+
+
+## Local upstream adaptation — P11.16 (2026-10-13)
+
+Reviewed open and closed upstream PR metadata through #748 and inspected 33
+candidate diffs. Adapted 19 compatible corrections into local Pagenor 0.7.2:
+#567, #576, #634, #637, #638, #639, #641, #666, #667, #670, #672, #673,
+#677, #678, #690, #695, #702, #703 and #704.
+Source heads/authors, the full new-proposal inventory and integration decisions
+are in [the adoption log](docs/pagenor/UPSTREAM_ADOPTION_072.md).
+
+Retain MIT OR Apache-2.0 upstream provenance. Keep Pagenor branding, .pgnr
+association/document icon, fallible native serialization, blank-EOF formatting,
+scoped/lazy fonts, whole Indic-cluster fallback, inline IME, color-mode Links
+metadata, panel closing/grouping and cross-platform release workflows.
+No proprietary owner file or font is committed. The older Anupama encoding tables
+are not applied to the pending Anu6/Anu7 Unicode conversion.
+
+All seven workspace gates pass: 2,647 tests, zero failures, 7 existing skips;
+twenty WASM packages. Isolated native UI and final shared-menu offscreen visual
+inspection pass. The local Mac bundle includes a matching CLI; signature and
+version evidence accompanies the artifact. Native Windows/Linux execution remains
+unverified in this pass. No remote publication is requested.

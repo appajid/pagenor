@@ -105,7 +105,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Character Style…",
             [],
             None,
-            "{name, basedOn?: style | \"[None]\", chars?: {…}} — the style sets only `chars` → {name} (made unique)",
+            "{name, basedOn?: style | \"[None]\", chars?: {…}, fromSelection?: bool (default false)} — if true, capture the first selected character's style/local overrides (caret: typing format), then overlay chars (null unsets); only explicit fill names are validated; paragraph formatting stays inherited; no text target: chars only → {name} (made unique)",
             has_doc,
             create_char
         ),
@@ -688,8 +688,27 @@ fn delete_para(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Character Style 1").to_string();
-    let chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    let mut chars: CharAttrs = attrs(p.get("chars"), |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
+    // Validate caller-supplied fills; captured formatting may retain a deleted swatch name.
     super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.character.create")?;
+    if p.get("fromSelection").and_then(Value::as_bool).unwrap_or(false)
+        && let Some(target) = super::text::format_targets_pub(s).first()
+    {
+        let st = s.doc()?;
+        let story = st.doc.text_story(target.story, target.cell).ok_or(pagenor_doc::DocError::NoStory(target.story))?;
+        // Match paragraph fromSelection's first-character/caret policy, but keep paragraph
+        // attributes inherited instead of freezing the fully resolved character properties.
+        let format = if target.range.is_empty() { story.char_format_at(target.range.start) } else { story.format_after(target.range.start) };
+        let mut captured = st.doc.styles.char_style_attrs(&format.style);
+        captured.merge(&format.over);
+        // Replay the explicit fields so null clears a captured value rather than looking absent.
+        if let Some(overrides) = p.get("chars").and_then(Value::as_object) {
+            for (key, value) in overrides {
+                captured.set_json(key, value).map_err(|e| bad("style", e))?;
+            }
+        }
+        chars = captured;
+    }
     // Based on [None] is based on nothing.
     let based_on = str_param(p, "basedOn").filter(|b| *b != pagenor_doc::NO_CHAR_STYLE).map(str::to_string);
     s.edit(|d, _| {
@@ -912,9 +931,14 @@ fn load_swatches(s: &mut Session, p: &Value) -> Result<Value> {
     let incoming = pagenor_color::ase::read(&bytes).map_err(|e| bad("swatch.load", e.to_string()))?;
     let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
     s.edit(|d, _| {
+        // The position of the first swatch with each name, kept up to date as the file's colors are added.
+        let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (i, x) in d.swatches.iter().enumerate() {
+            at.entry(x.name.clone()).or_insert(i);
+        }
         let (mut added, mut replaced) = (0, 0);
         for w in incoming {
-            match d.swatches.iter_mut().find(|x| x.name == w.name) {
+            match at.get(&w.name).and_then(|&i| d.swatches.get_mut(i)) {
                 Some(x) if x.locked => {}
                 Some(x) => {
                     if replace {
@@ -924,6 +948,7 @@ fn load_swatches(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                 }
                 None => {
+                    at.insert(w.name.clone(), d.swatches.len());
                     d.swatches.push(w);
                     added += 1;
                 }
@@ -1532,6 +1557,39 @@ mod color_tests {
         let r = s.execute("swatch.load", &json!({"base64": b64})).unwrap();
         assert_eq!((r["added"].as_u64(), r["replaced"].as_u64()), (Some(0), Some(0)));
         assert!(s.execute("swatch.load", &json!({"base64": "AAAA"})).is_err());
+    }
+
+    #[test]
+    fn loading_swatches_matches_the_first_swatch_of_each_name() {
+        use pagenor_color::{Color, ColorType};
+        let ink = |k: f32| SwatchValue::Color { color: Color::cmyk(0.0, 0.0, 0.0, k), color_type: ColorType::Process };
+        let sw = |name: &str, k: f32| Swatch { name: name.into(), value: ink(k), locked: false, named: true, hidden: false };
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // Two swatches share a name, and an unnamed color is hidden.
+        s.edit(|d, _| {
+            d.swatches.extend([sw("Twin", 0.1), sw("Twin", 0.2), Swatch { named: false, hidden: true, ..sw("Unnamed", 0.3) }]);
+            Ok(())
+        })
+        .unwrap();
+        let file = pagenor_color::ase::write(&[sw("New", 0.4), sw("New", 0.5), sw("Twin", 0.6), sw("Unnamed", 0.7), sw("[Black]", 0.8)]);
+        let b64 = crate::cmd::base64_encode(&file);
+        let named = |s: &Session, name: &str| -> Vec<(SwatchValue, bool)> {
+            s.doc().unwrap().doc.swatches.iter().filter(|w| w.name == name).map(|w| (w.value.clone(), w.hidden)).collect()
+        };
+        // With `replace`, the file's second "New" replaces its first, only the first "Twin" changes, the hidden
+        // swatch becomes visible, and the locked [Black] stays.
+        let r = s.execute("swatch.load", &json!({"base64": b64, "replace": true})).unwrap();
+        assert_eq!((r["added"].as_u64(), r["replaced"].as_u64()), (Some(1), Some(3)));
+        assert_eq!(named(&s, "New"), [(ink(0.5), false)]);
+        assert_eq!(named(&s, "Twin"), [(ink(0.6), false), (ink(0.2), false)]);
+        assert_eq!(named(&s, "Unnamed"), [(ink(0.7), false)]);
+        assert_eq!(named(&s, "[Black]"), [(ink(1.0), false)]);
+        // Without it, every name is already there and nothing changes.
+        let before = s.doc().unwrap().doc.swatches.clone();
+        let r = s.execute("swatch.load", &json!({"base64": b64})).unwrap();
+        assert_eq!((r["added"].as_u64(), r["replaced"].as_u64()), (Some(0), Some(0)));
+        assert_eq!(s.doc().unwrap().doc.swatches, before);
     }
 
     #[test]

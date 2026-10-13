@@ -1,7 +1,15 @@
 # Pagenor development phases
 
-Current version: **0.7.0** (P11.13), published desktop development preview. 0.6.0
-and v0.3.0 packages remain intact.
+Current local version: **0.7.2** (P11.16); published desktop preview remains **0.7.0** (P11.13).
+0.6.0 and v0.3.0 packages remain intact.
+
+P11.16 implements nineteen compatible upstream corrections from the open/closed
+review through #748. Complete source pins and deferred/covered dispositions are
+in [the adoption log](docs/pagenor/UPSTREAM_ADOPTION_072.md). All seven gates pass:
+2,647 tests, zero failures, seven existing skips; twenty WASM packages. Native
+Mac and offscreen UI inspection pass. A local optimized Mac app includes the
+matching CLI; native Windows/Linux checks for this patch and remote publication
+remain pending.
 
 P11.13 completes all 26 new selected proposals and six incremental updates.
 All seven gates pass: 2,574 tests, zero failures, seven existing ignores; twenty

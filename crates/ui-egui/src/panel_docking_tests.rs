@@ -789,3 +789,50 @@ fn right_toolbar_columns_restore_with_preferences_and_named_workspaces() {
     app.run("window.workspace", json!({"name":"Two columns"})).unwrap();
     assert!(!app.ui.panels_double_column, "older workspaces also retain their single column");
 }
+
+#[test]
+fn legacy_dock_menu_button_opens_the_active_panel_menu() {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let pages = app.session.active().unwrap().doc.page_count();
+    let mut h = harness(app, vec2(1280.0, 800.0));
+    assert!(h.state().ui.docking.is_none());
+    h.get_by_label("Panel menu").click();
+    h.run_steps(3);
+    assert!(egui::Popup::is_any_open(&h.ctx));
+    h.get_by_label("Insert Page After").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
+    assert!(!egui::Popup::is_any_open(&h.ctx));
+    assert!(h.query_by_label("Close Panel").is_some(), "Pagenor's close button remains available");
+}
+
+#[test]
+fn shared_pages_menu_inserts_a_page_and_keeps_panel_close_available() {
+    for stacked in [false, true] {
+        let mut app = app();
+        app.run("file.new", json!({})).unwrap();
+        app.run("window.panel.activate", json!({"panel":"pages"})).unwrap();
+        if stacked {
+            app.run("window.panel.stack", json!({})).unwrap();
+            assert!(matches!(app.ui.docking.as_ref().unwrap().root, Some(Node::Stack { .. })));
+        }
+        let pages = app.session.active().unwrap().doc.page_count();
+        let mut h = harness(app, vec2(1280.0, 900.0));
+        assert!(h.state().ui.docking.is_some());
+        h.get_by_label("Pages Panel menu").click();
+        h.run_steps(3);
+        h.get_by_label("Insert Page After").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
+        assert!(!egui::Popup::is_any_open(&h.ctx));
+        assert!(h.query_by_label("Close Pages Panel").is_some());
+        h.get_by_label("Pages Panel menu").click();
+        h.run_steps(3);
+        h.get_by_label("Close Panel").click();
+        h.run_steps(3);
+        assert!(!h.state().ui.docking.as_ref().unwrap().contains(&"pages".to_owned()));
+        assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
+    }
+}

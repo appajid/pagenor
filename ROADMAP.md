@@ -1,5 +1,14 @@
 # Pagenor roadmap
 
+- P11.16: local **0.7.2** adapts nineteen compatible upstream corrections through
+  #748. Document tabs/Links/dock menus, table edit/split integrity, page movement,
+  Malayalam fallback, styles, ASE/gradients/indexes and CSV/XLSX/Tagged Text/EPUB
+  fixes are implemented. All seven gates pass: 2,647 tests, zero failures, seven
+  existing skips; twenty WASM packages. Native and offscreen UI inspection passes.
+  Local Mac bundle includes the matching CLI; native Windows/Linux validation
+  for this patch and publication remain pending.
+  [Source pins and review](docs/pagenor/UPSTREAM_ADOPTION_072.md).
+
 - P11.15: local **0.7.1** fixes the owner-confirmed 28-page PageMaker import.
   All referenced page containers are recovered; source/imported counts are checked.
   UTF-8-safe V2 transport restores terminal legacy vowel bytes, including 0xE8.

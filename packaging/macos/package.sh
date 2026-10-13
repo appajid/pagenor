@@ -102,6 +102,7 @@ echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/pagenor" "$APP/Contents/MacOS/Pagenor"
+cp "$WORK/bin/pagenor-cli" "$APP/Contents/MacOS/pagenor-cli"
 cp "$ROOT/assets/app-icon/pagenor.icns" "$APP/Contents/Resources/Pagenor.icns"
 cp "$ROOT/assets/app-icon/pagenor-document.icns" "$APP/Contents/Resources/PagenorDocument.icns"
 # Licences of the embedded craft-fonts fonts (only when built with CRAFT_FONTS_DIR).
@@ -116,10 +117,12 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 xattr -cr "$APP"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+# Both executables must be signed before signing their enclosing bundle.
+sign --options runtime "$APP/Contents/MacOS/pagenor-cli"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/Pagenor"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
+"$APP/Contents/MacOS/pagenor-cli" --version
 
 if [ "$NOTARIZE" = 1 ]; then
   ditto -c -k --keepParent "$APP" "$WORK/Pagenor-notarize.zip"
@@ -219,6 +222,6 @@ ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
 # A bare Mach-O can't carry a stapled ticket; Gatekeeper looks the notarization up online.
 if [ "$NOTARIZE" = 1 ]; then notarize "$CLI_ZIP"; fi
 
-"$WORK/bin/pagenor-cli" --version
+"$CLI_DIR/pagenor-cli" --version
 echo "==> done"
 ls -lh "$DMG" "$CLI_ZIP"

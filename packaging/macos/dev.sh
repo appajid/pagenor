@@ -37,7 +37,7 @@ if [ -f "$APP/Contents/MacOS/Pagenor" ] && lsof -a -d txt -t "$APP/Contents/MacO
 fi
 args=()
 [ "$PROFILE" = release ] && args+=(--release)
-cargo build --locked -p pagenor ${args[@]+"${args[@]}"}
+cargo build --locked -p pagenor -p pagenor-cli ${args[@]+"${args[@]}"}
 
 # Stage the complete bundle before replacing the previous local build. Use the
 # release metadata and owner-supplied ICNS; no runtime icon cache reset is needed.
@@ -46,6 +46,7 @@ trap 'rm -rf "$STAGE"' EXIT
 BUNDLE="$STAGE/Pagenor.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$CARGO_TARGET_DIR/$PROFILE/pagenor" "$BUNDLE/Contents/MacOS/Pagenor"
+cp "$CARGO_TARGET_DIR/$PROFILE/pagenor-cli" "$BUNDLE/Contents/MacOS/pagenor-cli"
 cp "$ROOT/assets/app-icon/pagenor.icns" "$BUNDLE/Contents/Resources/Pagenor.icns"
 cp "$ROOT/assets/app-icon/pagenor-document.icns" "$BUNDLE/Contents/Resources/PagenorDocument.icns"
 copy_font_licences "$BUNDLE/Contents/Resources"
@@ -55,9 +56,11 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   "$ROOT/packaging/macos/Info.plist.in" >"$BUNDLE/Contents/Info.plist"
 plutil -lint "$BUNDLE/Contents/Info.plist"
 printf 'APPL????' >"$BUNDLE/Contents/PkgInfo"
+codesign --force --sign - --timestamp=none "$BUNDLE/Contents/MacOS/pagenor-cli"
 codesign --force --sign - --timestamp=none "$BUNDLE/Contents/MacOS/Pagenor"
 codesign --force --sign - --timestamp=none "$BUNDLE"
 codesign --verify --strict --deep "$BUNDLE"
+"$BUNDLE/Contents/MacOS/pagenor-cli" --version
 rm -rf "$APP"
 mv "$BUNDLE" "$APP"
 echo "Local app: $APP"

@@ -518,37 +518,7 @@ fn icon_rail(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub(crate) fn legacy_tab(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str, response: &egui::Response) {
     let Some(panel) = normalize(panel) else { return };
-    let language = app.ui.language.clone();
-    response.context_menu(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Close Panel"))).clicked() {
-            if let Err(error) = app.run("window.panel.close", json!({"panel": panel})) {
-                app.status(error);
-            }
-            ui.close();
-        }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Float Panel"))).clicked() {
-            if let Err(error) = app.run("window.panel.float", json!({"panel": panel})) {
-                app.status(error);
-            }
-            ui.close();
-        }
-        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Group with")), |ui| {
-            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                for (anchor, label, _) in crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS) {
-                    if *anchor != panel && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, label))).clicked() {
-                        // A closed icon panel is made visible before becoming the destination.
-                        let result = app
-                            .run("window.panel.activate", json!({"panel": anchor}))
-                            .and_then(|_| app.run("window.panel.move", json!({"panel":panel,"anchor":anchor})));
-                        if let Err(error) = result {
-                            app.status(error);
-                        }
-                        ui.close();
-                    }
-                }
-            });
-        });
-    });
+    response.context_menu(|ui| panel_menu(app, ui, panel));
     if response.drag_started()
         && let Some(id) = normalize(panel)
     {
@@ -577,6 +547,54 @@ pub(crate) fn legacy_tab(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str, re
     }
 }
 
+/// Dock commands shared by the tab context menu and its visible menu button.
+pub(crate) fn panel_menu(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str) {
+    let Some(panel) = normalize(panel) else { return };
+    let language = app.ui.language.clone();
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Close Panel"))).clicked() {
+        if let Err(error) = app.run("window.panel.close", json!({"panel": panel})) {
+            app.status(error);
+        }
+        ui.close();
+    }
+    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Float Panel"))).clicked() {
+        if let Err(error) = app.run("window.panel.float", json!({"panel": panel})) {
+            app.status(error);
+        }
+        ui.close();
+    }
+    ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Group with")), |ui| {
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for (anchor, label, _) in crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS) {
+                if *anchor != panel && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, label))).clicked() {
+                    // A closed icon panel is made visible before becoming the destination.
+                    let result = app
+                        .run("window.panel.activate", json!({"panel": anchor}))
+                        .and_then(|_| app.run("window.panel.move", json!({"panel":panel,"anchor":anchor})));
+                    if let Err(error) = result {
+                        app.status(error);
+                    }
+                    ui.close();
+                }
+            }
+        });
+    });
+}
+
+/// The same menu is available in stacked, tabbed and floating panel layouts.
+fn shared_menu_button(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str) {
+    let label = format!("{} Panel menu", crate::dock::panel_label(panel));
+    let response = crate::icons::button(ui, "menu", 18.0, false, &label);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        if panel == "pages" {
+            crate::panels::pages::panel_menu(app, ui);
+            ui.separator();
+        }
+        panel_menu(app, ui, panel);
+    });
+}
+
 struct PanelContent<'a>(&'a mut DesignApp, Option<String>);
 impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, id: &String) {
@@ -593,6 +611,7 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
                         if response.clicked() {
                             let _ = self.0.run("window.panel.close", json!({"panel": id}));
                         }
+                        shared_menu_button(self.0, ui, id);
                     });
                 });
             }
@@ -608,15 +627,19 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
         }
     }
     fn group_header_width(&self, _: &[String], _: &String, _: bool) -> f32 {
-        28.0
+        52.0
     }
     fn group_header(&mut self, ui: &mut egui::Ui, _: &[String], active: &String, _: bool) {
-        let response = ui.button("×").on_hover_text(format!("Close {}", crate::dock::panel_label(active)));
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {} Panel", crate::dock::panel_label(active))));
-        if response.clicked() {
-            let _ = self.0.run("window.panel.close", json!({"panel": active}));
-        }
+        ui.horizontal(|ui| {
+            shared_menu_button(self.0, ui, active);
+            let response = ui.button("×").on_hover_text(format!("Close {}", crate::dock::panel_label(active)));
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {} Panel", crate::dock::panel_label(active)))
+            });
+            if response.clicked() {
+                let _ = self.0.run("window.panel.close", json!({"panel": active}));
+            }
+        });
     }
     fn label(&mut self, ui: &egui::Ui, _: &String, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
         egui::WidgetText::Galley(crate::rtl::plain(ui.ctx(), logical, font.clone(), color))
