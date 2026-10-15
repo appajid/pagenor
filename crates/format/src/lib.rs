@@ -97,6 +97,8 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
         ai.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     }
     let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
+    // JSON turns non-finite coordinates into null; refuse a file that cannot reopen.
+    serde_json::from_slice::<Document>(&json).map_err(|e| FormatError::Io(format!("the document has a value that can't be saved: {e}")))?;
     validate_save_parts(json.len(), meta.len(), doc.assets.values().filter(|a| !a.data.is_empty()).map(|a| a.data.len()), SAVE_LIMITS)?;
     let mut buf = Cursor::new(Vec::new());
     {
@@ -1084,5 +1086,20 @@ mod tests {
         assert!(attrs.size.is_none(), "nonnullable fields retain their existing null contract");
         let props: pagenor_doc::CharProps = serde_json::from_value(json!({"leadingAki":null})).unwrap();
         assert_eq!(props.leading_aki, None);
+    }
+
+    /// A coordinate the JSON can't hold (an infinity is written as `null`) must not reach a file:
+    /// that file would no longer open. The save is refused instead.
+    #[test]
+    fn a_document_with_a_non_finite_coordinate_is_not_saved() {
+        use pagenor_doc::geom::shapes;
+        use pagenor_doc::{Item, ItemId, Shape};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let path = shapes::rectangle(Rect::new(0.0, 0.0, f64::INFINITY, 10.0));
+        d.insert_item(SpreadRef::Doc(0), Item::new(id, lid, Shape::Rectangle, path), None).unwrap();
+        let Err(err) = save(&d) else { panic!("a document with an infinite coordinate was saved") };
+        assert!(err.to_string().contains("can't be saved"), "{err}");
     }
 }

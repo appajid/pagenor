@@ -174,6 +174,11 @@ fn packaged_link_candidates(link: &str, dir: Option<&std::path::Path>) -> Vec<st
                 candidates.push(dir.join("Links").join(suffix.iter().collect::<std::path::PathBuf>()));
             }
         }
+        for start in parts.len().saturating_sub(8)..parts.len().saturating_sub(1) {
+            if let Some(suffix) = parts.get(start..).filter(|parts| parts.iter().all(safe_part)) {
+                candidates.push(dir.join(suffix.iter().collect::<std::path::PathBuf>()));
+            }
+        }
         if let Some(name) = parts.last().filter(|part| safe_part(part)) {
             candidates.push(dir.join(name));
             candidates.push(dir.join("Links").join(name));
@@ -355,6 +360,22 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), Some(oversized.as_str()));
         assert_eq!(*asset.data, png);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn opens_links_from_a_subfolder_beside_the_package() {
+        let dir = std::env::temp_dir().join(format!("pagenor-idml-subfolder-links-{}", std::process::id()));
+        let path = dir.join("images").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The author's absolute `/images/…` does not exist here; `images/` beside the .idml does.
+        let (idml, png) = linked_idml("/images/logo.png", false).unwrap();
+        std::fs::write(&path, &png).unwrap();
+
+        let doc = import(&idml, Some(&dir)).unwrap();
+        let asset = doc.assets.values().next().unwrap();
+        assert_eq!(*asset.data, png);
+        assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
+        assert_eq!(super::super::links::status(asset), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

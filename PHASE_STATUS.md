@@ -1,7 +1,18 @@
 # Pagenor development phases
 
-Current local version: **0.7.2** (P11.16); published desktop preview remains **0.7.0** (P11.13).
+Current local version: **0.7.3** (P11.17); published desktop preview remains **0.7.0** (P11.13).
 0.6.0 and v0.3.0 packages remain intact.
+
+P11.17 adapts 26 compatible upstream corrections from the open/closed review
+through #1054. Page/spread navigation, palette visibility and tint entry join
+import/text/transaction reliability and bounded parser/archive/preference/table
+inputs. Source pins, per-change decisions and deferred proposals are in
+[the adoption log](docs/pagenor/UPSTREAM_ADOPTION_073.md). All seven gates pass:
+2,684 tests, zero failures, seven existing ignores; twenty WASM packages.
+Offscreen UI inspection passes. A separate optimized Mac bundle includes the
+matching CLI; native Windows/Linux execution and publication remain pending.
+Owner app sessions stay open. The older Anupama tables are not applied to the
+pending Anu6/Anu7 Unicode-conversion work.
 
 P11.16 implements nineteen compatible upstream corrections from the open/closed
 review through #748. Complete source pins and deferred/covered dispositions are

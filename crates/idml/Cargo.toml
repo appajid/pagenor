@@ -11,6 +11,7 @@ description = "Pagenor IDML (InDesign Markup Language) import and export"
 workspace = true
 
 [dependencies]
+pagenor-archive.workspace = true
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }

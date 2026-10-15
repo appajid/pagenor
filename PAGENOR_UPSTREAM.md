@@ -902,3 +902,33 @@ twenty WASM packages. Isolated native UI and final shared-menu offscreen visual
 inspection pass. The local Mac bundle includes a matching CLI; signature and
 version evidence accompanies the artifact. Native Windows/Linux execution remains
 unverified in this pass. No remote publication is requested.
+
+
+## Local upstream adaptation — P11.17 (2026-10-15)
+
+Reviewed 300 latest-created and 100 latest-updated open/closed PR records through
+#1054, including 202 new proposals after #748 and 30 older updated proposals.
+Inspected 41 candidate diffs and adapted 26 compatible corrections into local
+Pagenor 0.7.3: #837, #863, #914, #928, #933, #951, #952, #954, #963,
+#965, #966, #967, #968, #971 (IDML portion), #982, #985, #1001, #1015,
+#1028, #1029, #1038, #1040, #1042, #1043, #1045 and #1054.
+All 26 selected source heads were rechecked unchanged. Authors/heads and review
+of covered, deferred and excluded proposals are in
+[the adoption log](docs/pagenor/UPSTREAM_ADOPTION_073.md). Upstream #1030 is
+rejected: its EPS TIFF offset change conflicts with the primary EPSF 3.0 table;
+Pagenor retains the correct 30-byte DOS header. Later #1056 is queued for review.
+
+Retain MIT OR Apache-2.0 source provenance, Pagenor owner assets, .pgnr/legacy
+loading, document icons, bounded fallible serialization, EOF formatting,
+scoped/lazy fonts, inline Indic/IME input, masters and cross-platform structure.
+The script change deliberately rolls failed document edits back; external writes
+from earlier script steps are not undone. The IDML ZIP reader preflights its
+directory and lazily bounds actual expansion; existing native/Word guards remain.
+No private document/font is committed. Anu6/Anu7 Unicode conversion remains
+separate and pending matching verified maps.
+
+All seven gates pass: 2,684 tests, zero failures, seven existing skips; twenty
+WASM packages. Offscreen UI inspection and Linux packaging YAML validation pass.
+A separate optimized local Mac GUI/CLI bundle preserves current app sessions;
+commit/hash/signature/export evidence accompanies the artifact. Native Windows/
+Linux execution for this patch and publication remain pending. No remote write.

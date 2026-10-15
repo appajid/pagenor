@@ -1558,9 +1558,11 @@ impl DesignApp {
             self.switch_pane(self.focus_pane);
         }
         if !welcome {
-            dock::flyout(self, &ctx);
-            dock::floating(self, &ctx);
-            ai::floating(self, &ctx);
+            if !presenting && self.ui.hidden_panels == 0 {
+                dock::flyout(self, &ctx);
+                dock::floating(self, &ctx);
+                ai::floating(self, &ctx);
+            }
             story_editor::show(self, &ctx);
         }
         dialogs::show(self, &ctx);

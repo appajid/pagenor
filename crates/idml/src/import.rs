@@ -70,30 +70,14 @@ pub struct Imported {
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
 pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Imported> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-    // Normalised part name → entry name, first entry wins (zip order, so the choice is stable).
-    let mut lenient: HashMap<String, String> = HashMap::new();
-    for i in 0..zip.len() {
-        let mut f = zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-        if f.is_dir() {
-            continue;
-        }
-        let name = f.name().to_string();
-        // The size is what the archive claims: don't reserve more than a sane part up front.
-        let mut buf = Vec::with_capacity((f.size() as usize).min(1 << 24));
-        f.read_to_end(&mut buf).map_err(|e| IdmlError::Part { part: name.clone(), msg: e.to_string() })?;
-        lenient.entry(normalize_part_name(&name)).or_insert_with(|| name.clone());
-        files.insert(name, buf);
-    }
-    let part = |name: &str| files.get(name).or_else(|| lenient.get(&normalize_part_name(name)).and_then(|n| files.get(n)));
-    if let Some(m) = part("mimetype")
-        && String::from_utf8_lossy(m).trim() != MIMETYPE
+    let mut pkg = Package::open(bytes)?;
+    if let Some(m) = pkg.part("mimetype")?
+        && String::from_utf8_lossy(&m).trim() != MIMETYPE
     {
-        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(m).trim())));
+        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(&m).trim())));
     }
-    let dm = part("designmap.xml").ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
-    let root = parse(dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
+    let dm = pkg.part("designmap.xml")?.ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
+    let root = parse(&dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
     if root.local() != "Document" {
         return Err(IdmlError::NotIdml(format!("designmap root is <{}>", root.name)));
     }
@@ -103,11 +87,11 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     for c in root.elements() {
         if c.name.starts_with("idPkg:") {
             let Some(src) = c.get("src") else { continue };
-            let Some(data) = part(src) else {
+            let Some(data) = pkg.part(src)? else {
                 warnings.push(format!("{src}: listed in designmap.xml but missing from the package; its contents were not imported"));
                 continue;
             };
-            let el = parse(data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
+            let el = parse(&data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
             top.extend(el.elements().cloned());
         } else {
             top.push(c.clone());
@@ -122,6 +106,74 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     })?;
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings })
+}
+
+/// Most entries an IDML package may hold.
+const MAX_ENTRIES: usize = 100_000;
+/// Most bytes one package part may expand to.
+const MAX_PART_BYTES: u64 = 512 << 20;
+/// Most bytes all the parts read from one package may expand to together.
+const MAX_TOTAL_BYTES: u64 = 2 << 30;
+
+/// An IDML package whose parts are decompressed only when the import asks for them, within
+/// byte budgets that don't trust the sizes the archive claims.
+struct Package<'a> {
+    zip: zip::ZipArchive<std::io::Cursor<&'a [u8]>>,
+    /// Normalised part name → entry name, first entry wins (zip order, so the choice is stable).
+    lenient: HashMap<String, String>,
+    /// Bytes the parts still to be read may expand to.
+    left: u64,
+}
+
+impl<'a> Package<'a> {
+    fn open(bytes: &'a [u8]) -> Result<Self> {
+        let directory =
+            pagenor_archive::preflight(bytes, pagenor_archive::Limits { max_entries: MAX_ENTRIES as u64, max_central_directory_bytes: 64 << 20 })
+                .map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        if directory.entries != zip.len() as u64 {
+            return Err(IdmlError::NotIdml("duplicate or inconsistent package entries".into()));
+        }
+        if zip.len() > MAX_ENTRIES {
+            return Err(IdmlError::NotIdml(format!("{} entries (at most {MAX_ENTRIES})", zip.len())));
+        }
+        let mut lenient: HashMap<String, String> = HashMap::new();
+        for i in 0..zip.len() {
+            let Some(name) = zip.name_for_index(i) else { continue };
+            if name.ends_with('/') {
+                continue;
+            }
+            lenient.entry(normalize_part_name(name)).or_insert_with(|| name.to_string());
+        }
+        Ok(Package { zip, lenient, left: MAX_TOTAL_BYTES })
+    }
+
+    /// The bytes of part `name` (matched exactly, then leniently), or `None` if the package has
+    /// no such part.
+    fn part(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        let exact = self.zip.index_for_name(name).filter(|_| !name.ends_with('/'));
+        let Some(i) = exact.or_else(|| self.lenient.get(&normalize_part_name(name)).and_then(|n| self.zip.index_for_name(n))) else {
+            return Ok(None);
+        };
+        let f = self.zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let part = f.name().to_string();
+        let limit = MAX_PART_BYTES.min(self.left);
+        let too_big = || IdmlError::Part {
+            part: part.clone(),
+            msg: format!("larger than the {MAX_PART_BYTES}-byte part limit (or the package is larger than {MAX_TOTAL_BYTES} bytes)"),
+        };
+        if f.size() > limit {
+            return Err(too_big());
+        }
+        let mut buf = Vec::new();
+        f.take(limit.saturating_add(1)).read_to_end(&mut buf).map_err(|e| IdmlError::Part { part: part.clone(), msg: e.to_string() })?;
+        let n = buf.len() as u64;
+        if n > limit {
+            return Err(too_big());
+        }
+        self.left = self.left.saturating_sub(n);
+        Ok(Some(buf))
+    }
 }
 
 /// A package part name in the form the lookup compares: InDesign and other IDML writers differ
@@ -207,7 +259,8 @@ struct Importer<'r> {
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
     /// Assets read from a link path, so later placements of that path reuse them unread.
-    linked_assets: HashMap<String, AssetId>,
+    linked_assets: HashMap<(String, u32, pagenor_doc::PdfCrop), AssetId>,
+    linked_files: HashMap<String, Arc<Vec<u8>>>,
     ctx: ItemCtx,
     sections: Vec<Section>,
     footnote_options: pagenor_doc::FootnoteOptions,
@@ -264,6 +317,46 @@ fn mojikumi_row(e: &El) -> Result<pagenor_doc::cjk::MojikumiAki> {
 
 fn nums(s: &str) -> Vec<f64> {
     s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
+}
+
+/// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
+/// none): InDesign places such a file at one viewBox unit to the point.
+fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
+    use quick_xml::events::Event;
+    if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
+        return None;
+    }
+    let mut r = quick_xml::Reader::from_reader(data);
+    let mut buf = Vec::new();
+    let root = loop {
+        match r.read_event_into(&mut buf).ok()? {
+            Event::Start(e) | Event::Empty(e) => break e.into_owned(),
+            Event::Eof => return None,
+            _ => buf.clear(),
+        }
+    };
+    if root.local_name().as_ref() != b"svg" {
+        return None;
+    }
+    let attr = |name: &[u8]| {
+        root.attributes()
+            .with_checks(false)
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .and_then(|a| a.normalized_value(Default::default()).ok().map(|v| v.to_string()))
+    };
+    let absolute = |name: &[u8]| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
+    if absolute(b"width") || absolute(b"height") {
+        return None;
+    }
+    let viewbox = attr(b"viewBox")?;
+    if viewbox.len() > 256 {
+        return None;
+    }
+    let mut values = viewbox.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty());
+    let mut next = || values.next()?.parse::<f64>().ok();
+    let (x, y, w, h) = (next()?, next()?, next()?, next()?);
+    (values.next().is_none() && [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0).then_some((w, h))
 }
 
 fn parse_affine(s: Option<&str>) -> Affine {
@@ -375,6 +468,7 @@ impl<'r> Importer<'r> {
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
             linked_assets: HashMap::new(),
+            linked_files: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
             footnote_options: Default::default(),
@@ -2493,7 +2587,7 @@ impl<'r> Importer<'r> {
         let clip = clipping_path(g, Affine::translate((-l, -t)));
         let link = g.find("Link");
         let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
-        let graphic = |asset| {
+        let graphic = |asset, size| {
             Content::Graphic(pagenor_doc::Graphic {
                 asset,
                 size,
@@ -2505,20 +2599,29 @@ impl<'r> Importer<'r> {
                 wrap: g.find("TextWrapPreference").map(text_wrap).unwrap_or_default(),
             })
         };
-        let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
+        let mut data = Arc::new(g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default());
+        let page = pdf_page_in(g);
+        let pdf_crop = g.find("PDFAttribute").and_then(|a| a.get("PDFCrop")).map_or(pagenor_doc::PdfCrop::Crop, names::pdf_crop_in);
         let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
         {
             // Every placement of a linked file shares one asset; read the file once.
-            if let Some(id) = self.linked_assets.get(p) {
-                return graphic(*id);
+            let key = (p.clone(), page, pdf_crop);
+            if let Some(id) = self.linked_assets.get(&key) {
+                let size = self.assets.get(id).and_then(|a| svg_viewbox_size(&a.data)).unwrap_or(size);
+                return graphic(*id, size);
             }
-            if let Some(d) = (self.read_link)(p) {
-                data = d;
-                read_from = Some(p.clone());
+            if let Some(bytes) = self.linked_files.get(p) {
+                data = bytes.clone();
+                read_from = Some(key);
+            } else if let Some(bytes) = (self.read_link)(p) {
+                data = Arc::new(bytes);
+                self.linked_files.insert(p.clone(), data.clone());
+                read_from = Some(key);
             }
         }
+        let size = svg_viewbox_size(&data).unwrap_or(size);
         let (mime, px) = sniff_image(&data);
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
@@ -2536,16 +2639,14 @@ impl<'r> Importer<'r> {
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        let page = pdf_page_in(g);
-        let pdf_crop = g.find("PDFAttribute").and_then(|a| a.get("PDFCrop")).map_or(pagenor_doc::PdfCrop::Crop, names::pdf_crop_in);
         let id = pagenor_doc::insert_asset(
             &mut self.assets,
-            Asset { page, pdf_crop, id: fresh, name, mime, link: link_path, data: Arc::new(data), pixels, ..Default::default() },
+            Asset { page, pdf_crop, id: fresh, name, mime, link: link_path, data, pixels, ..Default::default() },
         );
         if let Some(p) = read_from {
             self.linked_assets.insert(p, id);
         }
-        graphic(id)
+        graphic(id, size)
     }
 
     fn link_threads(&mut self) {
@@ -3089,4 +3190,49 @@ pub(crate) fn uri_to_path(uri: &str) -> String {
         _ => rest,
     };
     percent_decode(rest)
+}
+
+#[cfg(test)]
+mod svg_viewbox_tests {
+    use super::svg_viewbox_size;
+    #[test]
+    fn viewbox_only_sizes_require_exactly_four_finite_values() {
+        assert_eq!(svg_viewbox_size(br#"<svg viewBox="0 0 200 100"/>"#), Some((200.0, 100.0)));
+        for value in ["0 0 200 100 junk", "NaN 0 200 100", "0 0 inf 100", "0 0 -2 100"] {
+            let svg = format!("<svg viewBox=\"{value}\"/>");
+            assert_eq!(svg_viewbox_size(svg.as_bytes()), None, "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod package_budget_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn actual_inflated_bytes_are_bounded_when_the_size_header_lies() {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer.start_file("part", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(&vec![b'x'; 1024]).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let mut patched = 0;
+        for i in 0..bytes.len().saturating_sub(46) {
+            let (size_at, len_at, name_at) = match bytes.get(i..i + 4) {
+                Some(b"PK\x03\x04") => (22, 26, 30),
+                Some(b"PK\x01\x02") => (24, 28, 46),
+                _ => continue,
+            };
+            let len = u16::from_le_bytes([bytes[i + len_at], bytes[i + len_at + 1]]) as usize;
+            if bytes.get(i + name_at..i + name_at + len) == Some(b"part".as_slice()) {
+                bytes[i + size_at..i + size_at + 4].copy_from_slice(&1u32.to_le_bytes());
+                patched += 1;
+            }
+        }
+        assert_eq!(patched, 2);
+        let mut package = Package::open(&bytes).unwrap();
+        package.left = 64;
+        let err = package.part("part").unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
+    }
 }

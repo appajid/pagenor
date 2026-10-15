@@ -151,16 +151,15 @@ fn a_command_that_runs_another_is_one_undo_step() {
 /// What a command did before it failed is an undo step too: a script that stopped at a bad
 /// step left its earlier steps in the document with nothing to undo.
 #[test]
-fn a_command_that_fails_partway_can_be_undone() {
+fn a_failed_script_is_atomic_and_the_next_command_can_be_undone() {
     let mut s = session();
     let before = s.doc().unwrap().doc.clone();
     let script = "frame.create {\"rect\": [36, 36, 136, 136]}\nnope.command";
     assert!(s.execute("script.run", &json!({"text": script})).is_err());
     let st = s.doc().unwrap();
-    assert_eq!(st.doc.spreads[0].items.len(), 1, "the first step ran");
-    assert_eq!(st.history.undo.len(), 1);
-    s.execute("edit.undo", &json!({})).unwrap();
-    assert_eq!(s.doc().unwrap().doc, before);
+    assert_eq!(st.doc, before, "the successful prefix is rolled back");
+    assert_eq!(st.history.undo.len(), 0);
+    assert!(s.execute("edit.undo", &json!({})).is_err(), "no partial script remains to undo");
     // The next command records its step as usual.
     s.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap();
     assert_eq!(s.doc().unwrap().history.undo.len(), 1);
@@ -1126,4 +1125,39 @@ fn live_corner_gestures_are_one_undo_step_each() {
     assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c]})).is_err());
     assert!(s.execute("object.cornerOptions", &json!({"corners": [c, c, c, {"shape": "rounded", "size": -1}]})).is_err());
     assert!(s.execute("object.cornerOptions", &json!({"corners": "rounded"})).is_err());
+}
+
+#[test]
+fn the_type_tool_draws_a_text_frame_over_a_locked_frame() {
+    // Adobe's "Set up a modern magazine layout" (4:03): with the page frame locked (Cmd+L), the
+    // Type tool draws text frames on top of it; the locked frame stays an empty frame.
+    use pagenor_tools::{PointerEvent, PointerKind, SnapView};
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width": 612, "height": 792, "facingPages": false})).unwrap();
+    let big = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.stroke", &json!({"ids": [big], "swatch": "[Black]", "weight": 6})).unwrap();
+    s.execute("object.lock", &json!({"ids": [big]})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.set_tool("type");
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let layout = s.layout();
+    let at = |x: f64, y: f64| layout.to_canvas(pagenor_doc::SpreadRef::Doc(0), pagenor_geom::Point::new(x, y));
+    let (a, b) = (at(100.0, 100.0), at(300.0, 200.0));
+    s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 200.0 + a.x - 100.0, a.y + 50.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y), v).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let it = d.item(pagenor_doc::ItemId(big)).unwrap();
+    assert!(matches!(it.content, pagenor_doc::Content::Unassigned), "the locked frame stays empty");
+    let frames: Vec<_> = d.spreads[0].items.iter().filter(|i| i.is_text_frame()).collect();
+    assert_eq!(frames.len(), 1, "a new text frame");
+    let r = frames[0].bounds();
+    assert!((r.x0 - 100.0).abs() < 1e-6 && (r.y1 - 200.0).abs() < 1e-6, "{r:?}");
+    // The engine refuses to turn a locked empty frame into a text frame.
+    assert!(s.execute("text.placeCaret", &json!({"frame": big, "point": [300, 400]})).is_err());
+    // Unlocked, a press inside converts it, as before.
+    s.execute("object.unlockAll", &json!({})).unwrap();
+    s.execute("text.placeCaret", &json!({"frame": big, "point": [300, 400]})).unwrap();
+    assert!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(big)).unwrap().is_text_frame());
 }

@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+- P11.17: local **0.7.3** adapts 26 compatible upstream corrections after an
+  open/closed review through #1054. Page/spread navigation, palette visibility,
+  tint editing, locked-frame handling, transactional script/panic recovery,
+  linked-story safety, DOCX/RTF/IDML/SVG/PDF placement, parser/archive limits,
+  table/preference bounds, missing-link packaging and Linux RPM dependencies
+  are covered. All seven gates pass: 2,684 tests, zero failures, seven existing
+  skips; twenty WASM packages. Offscreen editor inspection passes. A separate
+  optimized local Mac bundle includes the matching CLI; native Windows/Linux
+  execution and publication for this patch remain pending.
+  [Source pins and review](docs/pagenor/UPSTREAM_ADOPTION_073.md).
+
 - P11.16: local **0.7.2** adapts nineteen compatible upstream corrections through
   #748. Document tabs/Links/dock menus, table edit/split integrity, page movement,
   Malayalam fallback, styles, ASE/gradients/indexes and CSV/XLSX/Tagged Text/EPUB

@@ -2629,3 +2629,48 @@ fn applied_font_with_an_id_prefix_names_the_family() {
         .collect();
     assert!(!families.is_empty() && families.iter().all(|f| *f == "Source Serif 4"), "{families:?}");
 }
+
+/// A package entry nothing in `designmap.xml` refers to is never decompressed: a damaged one
+/// (its checksum no longer matches) does not stop the import.
+#[test]
+fn unreferenced_entries_are_not_read() {
+    use zip::write::SimpleFileOptions;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    w.start_file("mimetype", stored).unwrap();
+    w.write_all(MIMETYPE.as_bytes()).unwrap();
+    for (n, c) in [
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ] {
+        w.start_file(n, SimpleFileOptions::default()).unwrap();
+        w.write_all(c.as_bytes()).unwrap();
+    }
+    w.start_file("junk/irrelevant.bin", stored).unwrap();
+    w.write_all(b"<<payload-of-an-unused-entry>>").unwrap();
+    let mut bytes = w.finish().unwrap().into_inner();
+    let at = bytes.windows(9).position(|w| w == b"<<payload").unwrap();
+    bytes[at] = b'X';
+    let d = import_idml(&bytes).unwrap();
+    assert_eq!(d.spreads.len(), 1);
+}
+
+/// A package with more entries than any document needs is refused before any is read.
+#[test]
+fn too_many_entries_are_refused() {
+    use zip::write::SimpleFileOptions;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    w.start_file("mimetype", stored).unwrap();
+    w.write_all(MIMETYPE.as_bytes()).unwrap();
+    for i in 0..100_000 {
+        w.start_file(format!("junk/{i}"), stored).unwrap();
+    }
+    let Err(err) = import_idml(&w.finish().unwrap().into_inner()) else { panic!("a package with 100 001 entries imported") };
+    assert!(err.to_string().contains("entries"), "{err}");
+}

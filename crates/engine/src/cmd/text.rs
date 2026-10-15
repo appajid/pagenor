@@ -388,6 +388,11 @@ fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
     let pt = point_param(p, "point").unwrap_or(Point::ZERO);
     // Empty frames become text frames.
     let needs_convert = s.doc()?.doc.item(frame).is_some_and(|i| matches!(i.content, Content::Unassigned));
+    if needs_convert
+        && s.doc()?.doc.item(frame).is_some_and(|it| it.locked || s.doc().is_ok_and(|st| st.doc.layer(it.layer).is_some_and(|l| l.locked)))
+    {
+        return Err(bad("text.placeCaret", "the frame is locked"));
+    }
     if needs_convert {
         s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
     }

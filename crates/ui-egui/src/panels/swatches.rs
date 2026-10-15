@@ -296,12 +296,22 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(sw) = sw.as_ref().filter(|w| !w.hidden && !w.locked) {
         let cur = if stroke { stroke_tint } else { fill_tint };
         let mut tint = cur * 100.0;
+        let mut commit = None;
         ui.horizontal(|ui| {
             ui.label("T");
-            if ui.add(egui::Slider::new(&mut tint, 0.0..=100.0).suffix("%").integer()).drag_stopped() {
-                let _ = super::apply_swatch(app, stroke, &sw.name, Some(tint / 100.0));
+            ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+            if ui.add(egui::Slider::new(&mut tint, 0.0..=100.0).integer().show_value(false)).drag_stopped() {
+                commit = Some(tint);
+            }
+            if let Some(value) =
+                crate::widgets::NumField::number("color_tint", Some(f64::from(cur) * 100.0), "%", 0).width(44.0).range(0.0, 100.0).show(ui)
+            {
+                commit = Some(value as f32);
             }
         });
+        if let Some(value) = commit {
+            let _ = super::apply_swatch(app, stroke, &sw.name, Some(value / 100.0));
+        }
     }
     let mut send: Option<serde_json::Value> = None;
     match mode {

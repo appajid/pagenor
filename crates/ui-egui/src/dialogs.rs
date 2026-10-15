@@ -2850,7 +2850,9 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 let words: Vec<String> = d.s("userWords").lines().map(str::to_string).collect();
                 app.run("spelling.setWords", json!({"words": words}))?;
             }
-            app.ui.story_editor_size = d.n("storyEditorSize").unwrap_or(14.0) as f32;
+            if let Some(size) = d.n("storyEditorSize").filter(|v| v.is_finite()) {
+                app.ui.story_editor_size = size.clamp(8.0, 36.0) as f32;
+            }
             // Highlight options change the screen view only.
             app.canvas.shown = None;
             let view = match d.s("displayQuality").as_str() {
@@ -5873,6 +5875,22 @@ mod tests {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
         app
+    }
+
+    #[test]
+    fn preferences_ok_saves_a_story_editor_size_that_loads_back() {
+        // `ui.dialog.set` takes any value; a size that isn't finite is saved as `null`.
+        let sizes = [(json!("nan"), 20.0), (json!("inf"), 20.0), (json!(null), 20.0), (json!(1e39), 36.0), (json!(3), 8.0), (json!(11), 11.0)];
+        for (size, want) in sizes {
+            let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.ui.story_editor_size = 20.0;
+            app.run("app.preferences", json!({})).unwrap();
+            app.ui.dialog.as_mut().unwrap().fields.insert("storyEditorSize".into(), size);
+            confirm(&mut app).unwrap();
+            let saved = serde_json::to_vec(&app.ui).unwrap();
+            assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().story_editor_size, want);
+        }
     }
 
     #[test]

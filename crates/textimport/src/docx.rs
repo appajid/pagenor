@@ -60,7 +60,7 @@ impl El {
         self.child(name).map(|e| e.attr("val").unwrap_or("true").to_string())
     }
     fn on(&self, name: &str) -> Option<bool> {
-        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none"))
+        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none" | "off"))
     }
 }
 
@@ -204,7 +204,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
         _ => None,
     };
     if let Some(u) = r.val("u") {
-        a.underline = Some(u != "none" && u != "0" && u != "false");
+        a.underline = Some(!matches!(u.as_str(), "none" | "0" | "false" | "off"));
     }
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
@@ -336,6 +336,11 @@ impl Ctx {
             match e.name.as_str() {
                 "r" => self.run(e, st, allow_notes)?,
                 "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
+                "sdt" => {
+                    if let Some(content) = e.child("sdtContent") {
+                        self.inline(content, st, allow_notes)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -697,5 +702,49 @@ mod tests {
         let i = import(&docx(&document, "", "")).unwrap();
         i.story.check().unwrap();
         assert_eq!(i.story.text, "Kept text. MOVED HERE. Plain INSERTED\nEnd.");
+    }
+
+    /// `ST_OnOff` is a boolean plus the words `on` and `off`: an explicit `off` is off.
+    #[test]
+    fn off_valued_toggles_stay_off() {
+        let document = format!(
+            r#"<w:document {W}><w:body><w:p>
+              <w:r><w:rPr><w:b w:val="off"/><w:i w:val="0"/><w:strike w:val="off"/><w:u w:val="off"/><w:caps w:val="off"/></w:rPr><w:t>plain</w:t></w:r>
+              <w:r><w:rPr><w:b w:val="on"/></w:rPr><w:t>bold</w:t></w:r>
+            </w:p></w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let plain = st.format_after(st.text.find("plain").unwrap()).clone().over;
+        assert_eq!(plain.font_style.as_deref(), Some("Regular"), "an explicit `off` is not bold");
+        assert_eq!(plain.strikethrough, Some(false));
+        assert_eq!(plain.underline, Some(false));
+        assert_eq!(plain.capitalization, None, "no all-caps");
+        let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
+        assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
+    }
+    /// A content control inside a paragraph (`w:sdt`) keeps its text, also around a hyperlink.
+    #[test]
+    fn inline_content_control_text_is_kept() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t xml:space="preserve">Date: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="d"/></w:sdtPr><w:sdtContent><w:r><w:t>1 May 2026</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r></w:p>
+              <w:p><w:sdt><w:sdtContent><w:hyperlink><w:r><w:t>Link</w:t></w:r></w:hyperlink></w:sdtContent></w:sdt></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        assert_eq!(st.text, "Date: 1 May 2026.\nLink");
+    }
+
+    #[test]
+    fn inline_content_controls_preserve_telugu_and_joiners() {
+        let text = "ఉదయం తెలుగు ఫాంట్‌";
+        let document = format!(
+            r#"<w:document {W}><w:body><w:p><w:sdt><w:sdtPr><w:alias w:val="ignored metadata"/></w:sdtPr><w:sdtContent><w:r><w:t>{text}</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#
+        );
+        let imported = import(&docx(&document, "", "")).unwrap();
+        assert_eq!(imported.story.text, text);
+        imported.story.check().unwrap();
     }
 }

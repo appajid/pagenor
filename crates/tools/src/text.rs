@@ -53,6 +53,7 @@ impl Tool for TypeTool {
                 if let Some((_, id)) = cx.hit(ev.pos)
                     && let Some(it) = cx.doc.item(id)
                     && !matches!(it.content, pagenor_doc::Content::Graphic(_) | pagenor_doc::Content::Group { .. })
+                    && (it.is_text_frame() || (!it.locked && cx.doc.layer(it.layer).is_none_or(|l| !l.locked)))
                 {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
                     let clicks = ev.click_count();

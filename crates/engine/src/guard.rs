@@ -36,18 +36,26 @@ impl Session {
     /// Run command `id` (`f`) inside the guard.
     pub(crate) fn guarded(&mut self, id: &str, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
         let undo_step = self.in_undo_step;
-        let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone(), d.revision));
+        let docs = self.docs.clone();
+        let active = self.active;
+        let revision = self.active().map_or(0, |d| d.revision);
+        let journal = self.journal.len();
+        let typing = self.typing_format.clone();
+        let requests = self.ui_requests.clone();
+        let loaded = self.loaded;
         match catch_unwind(AssertUnwindSafe(|| f(self))) {
             Ok(r) => r,
             Err(payload) => {
                 self.in_undo_step = undo_step;
                 let msg = panic_message(payload.as_ref());
-                // Keep the document as it was before the command.
-                if let (Some((uid, doc, selection, revision)), Some(st)) = (before, self.active_mut())
-                    && st.uid == uid
-                {
-                    st.doc = doc;
-                    st.selection = selection;
+                // Restore all open documents, history and pending UI/caret state before recovery.
+                self.docs = docs;
+                self.active = active;
+                self.journal.truncate(journal);
+                self.typing_format = typing;
+                self.ui_requests = requests;
+                self.loaded = loaded;
+                if let Some(st) = self.active_mut() {
                     st.interaction = None;
                     st.revision = revision.max(st.revision).saturating_add(1);
                 }
@@ -130,5 +138,48 @@ mod tests {
         assert!(st.history.undo.is_empty(), "the continuing edit belongs to the outer command's undo step");
         s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]})).unwrap();
         assert_eq!(s.active().unwrap().history.undo.len(), 1, "later independent commands still record undo");
+    }
+
+    /// A nested edit that succeeded before the panic is rolled back with its history entry, and
+    /// the redo it cleared is back (#742).
+    #[test]
+    fn a_panicking_command_restores_history_with_the_document() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let (undo, redo) = {
+            let h = &s.active().unwrap().history;
+            (h.undo.len(), h.redo.len())
+        };
+        assert_eq!(redo, 1, "there is redo to lose");
+        let err = s
+            .guarded("test.panic", |s| {
+                s.execute("frame.create", &json!({"rect": [36, 236, 200, 400]}))?;
+                panic!("boom");
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+        let st = s.active().unwrap();
+        assert_eq!(st.history.undo.len(), undo, "the nested edit's undo entry is gone with the edit");
+        assert_eq!(st.history.redo.len(), redo, "the redo the nested edit cleared is back");
+        assert_eq!(st.doc.spreads[0].items.len(), 0, "the document is the one from before the command");
+    }
+
+    /// A command that opens another document and then panics leaves none of it behind (#742).
+    #[test]
+    fn a_panicking_command_restores_the_document_set() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let err = s
+            .guarded("test.panic", |s| {
+                s.execute("file.new", &json!({}))?;
+                assert_eq!(s.docs.len(), 2);
+                panic!("boom");
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+        assert_eq!(s.docs.len(), 1, "the document the command opened is gone");
+        assert_eq!(s.active, Some(0), "the document from before the command is active");
     }
 }

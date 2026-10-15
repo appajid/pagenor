@@ -286,6 +286,7 @@ impl Document {
         if from == to {
             return Err(DocError::Invalid("cannot thread a frame to itself".into()));
         }
+        self.check_thread_links(from, to, false)?;
         let ts = self.frame_story(to)?;
         let fs = match self.frame_story(from)? {
             Some(s) => s,
@@ -309,8 +310,16 @@ impl Document {
         let after = other.frames.split_off(pos_to);
         let before = std::mem::take(&mut other.frames);
         let (vertical, direction) = (other.vertical, other.direction);
+        let offset;
         {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
+            offset = if st.text.is_empty() {
+                0
+            } else if other.text.is_empty() {
+                st.len()
+            } else {
+                st.len().saturating_add(1)
+            };
             // The story keeps its own direction, even when it was empty and takes the other's text.
             let own = (st.vertical, st.direction);
             st.append_story(other);
@@ -321,6 +330,7 @@ impl Document {
             }
             st.rev = st.rev.wrapping_add(1);
         }
+        self.remap_thread_story_refs(ts, fs, offset);
         for f in &after {
             if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
                 t.story = fs;
@@ -351,8 +361,10 @@ impl Document {
         let ts = self.frame_story(to)?;
         let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
         let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else { return self.thread(from, to) };
+        self.check_thread_links(from, to, true)?;
         if let Some(fs) = fs {
             self.stories.remove(&fs);
+            self.remap_thread_story_refs(fs, ts, 0);
         }
         let st = self.story_mut(ts).ok_or(DocError::NoStory(ts))?;
         st.frames.insert(0, from);
@@ -361,6 +373,73 @@ impl Document {
         match it.text_frame_mut() {
             Some(t) => t.story = ts,
             None => it.content = Content::Text(TextFrame { story: ts, options: TextFrameOptions::default() }),
+        }
+        Ok(())
+    }
+
+    fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
+        // The child's old snapshot is not a snapshot of the newly merged parent. Force it
+        // out of date even when the old and surviving revision numbers happen to coincide.
+        let stale_rev = self.story(to).map_or(0, |st| st.rev.wrapping_sub(1));
+        for st in self.stories.values_mut() {
+            if st.link.is_some_and(|(parent, _)| parent == from) {
+                Arc::make_mut(st).link = Some((to, stale_rev));
+            }
+        }
+        for link in &mut self.hyperlinks {
+            if let crate::HyperlinkSource::Text { story, start, end } = &mut link.source
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        for placeholder in &mut self.data_merge.placeholders {
+            if let crate::PlaceholderAnchor::Text { story, start, end } = &mut placeholder.anchor
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        if self.settings.primary_story == Some(from) {
+            self.settings.primary_story = Some(to);
+        }
+    }
+
+    /// A linked child is replaced wholesale on update. Only empty, unlinked frame
+    /// extensions can join it without losing a link or newly appended body text.
+    fn check_thread_links(&self, from: ItemId, to: ItemId, keep_to: bool) -> Result<()> {
+        let fs = self.frame_story(from)?;
+        let ts = self.frame_story(to)?;
+        let first = fs.and_then(|id| self.story(id));
+        let second = ts.and_then(|id| self.story(id));
+        let incompatible = if keep_to {
+            first.is_some_and(|st| st.link.is_some()) || second.is_some_and(|st| st.link.is_some_and(|(parent, _)| Some(parent) == fs))
+        } else {
+            second.is_some_and(|st| st.link.is_some())
+                || first.is_some_and(|st| {
+                    st.link.is_some()
+                        && second.is_some_and(|incoming| !incoming.text.is_empty() || st.link.is_some_and(|(parent, _)| parent == incoming.id))
+                })
+        };
+        // Removing any ancestor of the survivor would redirect a link back into its own chain.
+        let (removed, survivor) = if keep_to { (fs, second) } else { (ts, first) };
+        let mut parent = survivor.and_then(|st| st.link);
+        let mut absorbs_ancestor = false;
+        // Bound the walk even when an existing document already contains a link cycle.
+        for _ in 0..self.stories.len() {
+            let Some((id, _)) = parent else { break };
+            if Some(id) == removed {
+                absorbs_ancestor = true;
+                break;
+            }
+            parent = self.story(id).and_then(|st| st.link);
+        }
+        if incompatible || absorbs_ancestor {
+            return Err(DocError::Invalid("unlink the linked story before merging its text".into()));
         }
         Ok(())
     }
@@ -393,6 +472,9 @@ impl Document {
         if self.prev_frame(to).is_some() {
             return Err(DocError::Invalid(format!("text already flows into {to} from another frame: break that thread first")));
         }
+        let fs = self.frame_story(from)?;
+        let from_empty = fs.is_none_or(|id| self.story(id).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
+        self.check_thread_links(from, to, from_empty && self.frame_story(to)?.is_some())?;
         Ok(())
     }
 

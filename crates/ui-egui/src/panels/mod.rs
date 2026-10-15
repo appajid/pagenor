@@ -897,3 +897,6 @@ mod swatch_list_tests {
         assert!(texts(&shapes).iter().any(|(t, r)| t == "[Black]" && r.right() <= row.right()));
     }
 }
+
+#[cfg(test)]
+mod color_panel_tests;

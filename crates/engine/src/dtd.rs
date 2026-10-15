@@ -97,12 +97,19 @@ fn tokens(s: &str) -> Vec<String> {
     out
 }
 
-/// Parse a content particle from `t[*i..]`.
-fn particle(t: &[String], i: &mut usize) -> Result<Cp, String> {
+/// How deep content-model groups may nest: real DTDs stay in single digits, and each group is a
+/// recursive call, so an unbounded `((((…` is refused rather than run into the stack (#712).
+const MAX_GROUP_DEPTH: usize = 64;
+
+/// Parse a content particle from `t[*i..]`; `depth` is how many groups enclose it.
+fn particle(t: &[String], i: &mut usize, depth: usize) -> Result<Cp, String> {
     let base = match t.get(*i).map(String::as_str) {
         Some("(") => {
+            if depth >= MAX_GROUP_DEPTH {
+                return Err(format!("content-model groups nested deeper than {MAX_GROUP_DEPTH} levels"));
+            }
             *i += 1;
-            let mut items = vec![particle(t, i)?];
+            let mut items = vec![particle(t, i, depth + 1)?];
             let mut sep = None;
             loop {
                 match t.get(*i).map(String::as_str) {
@@ -116,7 +123,7 @@ fn particle(t: &[String], i: &mut usize) -> Result<Cp, String> {
                         }
                         sep = Some(if s == "," { "," } else { "|" });
                         *i += 1;
-                        items.push(particle(t, i)?);
+                        items.push(particle(t, i, depth + 1)?);
                     }
                     other => return Err(format!("unexpected `{}` in a content model", other.unwrap_or("end"))),
                 }
@@ -151,7 +158,7 @@ fn parse_model(s: &str) -> Result<Model, String> {
     }
     let t = tokens(s);
     let mut i = 0;
-    let cp = particle(&t, &mut i)?;
+    let cp = particle(&t, &mut i, 0)?;
     if i != t.len() {
         return Err(format!("unexpected `{}` after the content model", t[i]));
     }
@@ -177,10 +184,20 @@ pub fn parse(src: &str) -> Result<Dtd, String> {
         }
     }
     let mut text = src.to_string();
+    let limit = src.len().saturating_add(1024 * 1024);
     for _ in 0..8 {
         let before = text.clone();
         for (n, v) in &ents {
-            text = text.replace(&format!("%{n};"), v);
+            let pattern = format!("%{n};");
+            let count = text.matches(&pattern).count();
+            let expanded = count
+                .checked_mul(pattern.len())
+                .and_then(|removed| text.len().checked_sub(removed))
+                .and_then(|kept| count.checked_mul(v.len()).and_then(|added| kept.checked_add(added)));
+            if expanded.is_none_or(|size| size > limit) {
+                return Err(format!("parameter entities expand the DTD beyond {limit} bytes"));
+            }
+            text = text.replace(&pattern, v);
         }
         if text == before {
             break;
@@ -411,6 +428,16 @@ mod tests {
 <!ELEMENT figure EMPTY>
 <!ATTLIST figure href CDATA #REQUIRED alt CDATA "a > b" kind (photo|chart) "photo">"##;
 
+    /// Issue #712: a content model nested past the group budget is an error, not a stack overflow.
+    #[test]
+    fn content_model_groups_past_the_budget_are_refused() {
+        let model = |n: usize| format!("<!ELEMENT a {}b{}>", "(".repeat(n), ")".repeat(n));
+        assert!(parse(&model(MAX_GROUP_DEPTH)).is_ok(), "the budget itself parses");
+        let err = parse(&model(MAX_GROUP_DEPTH + 1)).expect_err("one level more is refused");
+        assert!(err.contains("nested deeper"), "{err}");
+        assert!(parse(&model(100_000)).is_err());
+    }
+
     #[test]
     fn content_models_and_required_attributes() {
         let dtd = parse(DTD).unwrap();
@@ -448,5 +475,21 @@ mod tests {
         ] {
             assert_eq!(validate(&dtd, xml).is_empty(), ok, "{xml}");
         }
+    }
+    /// A few hundred bytes of nested parameter entities used to inflate multiplicatively across
+    /// the eight wholly-string-replacing passes (#713); expansion is capped.
+    #[test]
+    fn parameter_entities_cannot_expand_without_a_budget() {
+        let mut src = String::from("<!ENTITY % e1 \"xx\">\n");
+        for i in 2..=6 {
+            src.push_str(&format!("<!ENTITY % e{i} \"{}\">\n", format!("%e{};", i - 1).repeat(16)));
+        }
+        src.push_str("<!ELEMENT r (%e6;)>");
+        assert!(src.len() < 500, "the payload is small: {} bytes", src.len());
+        let err = parse(&src).unwrap_err();
+        assert!(err.contains("expand the DTD beyond"), "{err}");
+        // Entities that expand a little still parse.
+        let dtd = parse("<!ENTITY % inline \"#PCDATA | em\">\n<!ELEMENT r (%inline;)*>").unwrap();
+        assert_eq!(dtd.element_names().collect::<Vec<_>>(), ["r"]);
     }
 }
