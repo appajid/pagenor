@@ -444,6 +444,15 @@ fn paint(app: &mut DesignApp, ui: &mut egui::Ui, canvas: &PreparedCanvas) {
         let r = xf.rect(slot.bounds);
         painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
     }
+    // Paper under the rendered content: a page scrolled or jumped to shows its paper colour,
+    // not the shadow's black, until its render arrives.
+    let [r, g, b, _] = doc.resolve_color(pagenor_color::swatch::PAPER, 1.0).unwrap_or(pagenor_color::Color::WHITE).to_rgba8(1.0);
+    let paper = Color32::from_rgb(r, g, b);
+    for slot in &layout.slots {
+        for page in doc.spread(slot.spread).map(|sp| sp.pages.as_slice()).unwrap_or_default() {
+            painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(page.bounds())), 0.0, paper);
+        }
+    }
     // Rendered content.
     render_texture(app, ui.ctx(), rect, &xf, &layout, &doc, preview);
     if let (Some(tex), Some(sh)) = (&app.canvas.texture, app.canvas.shown) {
@@ -1695,32 +1704,77 @@ fn ruler_rects(full: Rect, rect: Rect) -> (Rect, Rect) {
     )
 }
 
-/// Right-clicking a ruler opens a menu of units for that ruler.
+/// Right-clicking a ruler opens its menu, as InDesign's: units for that ruler, Hide Rulers and
+/// (the horizontal ruler) Delete All Guides on Spread. Right-clicking the corner where they meet
+/// opens the units for both rulers at once.
 fn ruler_units_menus(app: &mut DesignApp, resp: &egui::Response, full: Rect, rect: Rect, doc: &Document) {
     let (top, left) = ruler_rects(full, rect);
+    let corner = Rect::from_min_max(full.min, rect.min);
     let at = resp.interact_pointer_pos();
-    for (ruler, key, cur) in [(top, "horizontalUnits", doc.settings.horizontal_units), (left, "verticalUnits", doc.settings.vertical_units)] {
+    let (h, v) = (doc.settings.horizontal_units, doc.settings.vertical_units);
+    // (where, which units it sets, the unit checked)
+    let menus = [(top, RulerMenu::Horizontal, Some(h)), (left, RulerMenu::Vertical, Some(v)), (corner, RulerMenu::Both, (h == v).then_some(h))];
+    for (area, which, cur) in menus {
         let open = if resp.secondary_clicked() {
-            Some(egui::SetOpenCommand::Bool(at.is_some_and(|p| ruler.contains(p))))
+            Some(egui::SetOpenCommand::Bool(at.is_some_and(|p| area.contains(p))))
         } else if resp.clicked() {
             Some(egui::SetOpenCommand::Bool(false))
         } else {
             None
         };
-        egui::Popup::context_menu(resp).id(resp.id.with(("ruler_units", key))).open_memory(open).show(|ui| ruler_units_menu(app, ui, key, cur));
+        egui::Popup::context_menu(resp)
+            .id(resp.id.with(("ruler_units", which as u8)))
+            .open_memory(open)
+            .show(|ui| ruler_units_menu(app, ui, which, cur));
     }
 }
 
-/// Every unit, the current one checked; picking one sets `key` (`horizontalUnits` or
-/// `verticalUnits`) through `document.preferences`.
-fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, key: &str, cur: pagenor_geom::Unit) {
-    for u in pagenor_geom::Unit::ALL {
-        let label = crate::i18n::tr(&app.ui.language, u.label());
-        let text = if u == cur { format!("✓ {label}") } else { format!("   {label}") };
+#[derive(Clone, Copy, PartialEq)]
+enum RulerMenu {
+    Horizontal,
+    Vertical,
+    Both,
+}
+
+/// The units a ruler's menu offers, in InDesign's order.
+const RULER_UNITS: [pagenor_geom::Unit; 9] = {
+    use pagenor_geom::Unit::*;
+    [Points, Picas, Inches, InchesDecimal, Millimeters, Centimeters, Ciceros, Agates, Pixels]
+};
+
+/// A ruler's menu: the units (the current one checked), then Hide Rulers and, on the horizontal
+/// ruler, Delete All Guides on Spread. Picking a unit sets `horizontalUnits`, `verticalUnits` or
+/// both through `document.preferences`.
+fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, which: RulerMenu, cur: Option<pagenor_geom::Unit>) {
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    // A document in Q or Ha keeps its unit on the list.
+    let extra = cur.filter(|u| !RULER_UNITS.contains(u));
+    for u in RULER_UNITS.into_iter().chain(extra) {
+        let label = tr(u.label());
+        let text = if Some(u) == cur { format!("✓ {label}") } else { format!("   {label}") };
         if ui.button(crate::rtl::widget(ui, text)).clicked() {
-            let _ = app.run("document.preferences", json!({ key: u }));
+            let p = match which {
+                RulerMenu::Horizontal => json!({"horizontalUnits": u}),
+                RulerMenu::Vertical => json!({"verticalUnits": u}),
+                RulerMenu::Both => json!({"horizontalUnits": u, "verticalUnits": u}),
+            };
+            let _ = app.run("document.preferences", p);
             ui.close();
         }
+    }
+    ui.separator();
+    let hide = format!("   {}", tr("Hide Rulers"));
+    if ui
+        .add(egui::Button::new(crate::rtl::widget(ui, hide)).shortcut_text(crate::menus::shortcut_of(app, "view.rulers").unwrap_or_default()))
+        .clicked()
+    {
+        let _ = app.run("view.rulers", json!({}));
+        ui.close();
+    }
+    if which == RulerMenu::Horizontal && ui.button(crate::rtl::widget(ui, format!("   {}", tr("Delete All Guides on Spread")))).clicked() {
+        crate::menus::activate(app, "app.deleteAllGuides", &Value::Null);
+        ui.close();
     }
 }
 
@@ -3039,11 +3093,30 @@ mod tests {
         h.get_by_label("   Inches").click();
         h.run_steps(3);
         assert_eq!(units(&h), (Unit::Inches, Unit::Millimeters));
-        // The page and the ruler corner open no units menu.
-        for p in [rect.center(), rect.min - vec2(RULER / 2.0, RULER / 2.0)] {
-            right_click(&mut h, p);
-            assert!(h.query_by_label("   Points").is_none());
-        }
+        // The corner where the rulers meet sets both, as InDesign's: nothing is checked while
+        // they differ.
+        let corner = rect.min - vec2(RULER / 2.0, RULER / 2.0);
+        right_click(&mut h, corner);
+        assert!(h.query_by_label("✓ Inches").is_none() && h.query_by_label("✓ Millimeters").is_none());
+        let _ = h.get_by_label_contains("Hide Rulers");
+        assert!(h.query_by_label("   Delete All Guides on Spread").is_none(), "only on the horizontal ruler");
+        h.get_by_label("   Points").click();
+        h.run_steps(3);
+        assert_eq!(units(&h), (Unit::Points, Unit::Points));
+        // InDesign's list: no Q or Ha.
+        right_click(&mut h, corner);
+        h.get_by_label("✓ Points");
+        assert!(h.query_by_label("   Q").is_none() && h.query_by_label("   Ha").is_none());
+        let _ = h.get_by_label("   Inches Decimal");
+        // The horizontal ruler's menu also deletes the spread's guides; Hide Rulers hides them.
+        right_click(&mut h, pos2(rect.center().x, rect.min.y - RULER / 2.0));
+        let _ = h.get_by_label("   Delete All Guides on Spread");
+        h.get_by_label_contains("Hide Rulers").click();
+        h.run_steps(3);
+        assert!(!h.state().ui.rulers);
+        // The page opens no units menu.
+        right_click(&mut h, rect.center());
+        assert!(h.query_by_label("   Points").is_none());
     }
 
     /// Screen position of spread 0's point (x, y).
@@ -3059,7 +3132,13 @@ mod tests {
         h.query_by(move |n| {
             n.role() == egui::accesskit::Role::Button
                 && n.toggled().is_none()
-                && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
+                && n.label().is_some_and(|l| {
+                    if label == "Arrange" {
+                        l == "Arrange ⏵"
+                    } else {
+                        l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' '))
+                    }
+                })
         })
     }
 
@@ -3924,3 +4003,40 @@ mod scrollbar_tests {
 #[cfg(test)]
 #[path = "clipboard_menu_paste_tests.rs"]
 mod clipboard_menu_paste_tests;
+
+#[cfg(test)]
+mod pending_paper_regressions {
+    use super::*;
+    /// While a page's render is on its way the page shows paper, not the black of its shadow.
+    #[test]
+    fn pages_show_paper_under_their_render() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
+        let ctx = egui::Context::default();
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let st = app.session.active().unwrap();
+        let layout = CanvasLayout::new(&st.doc, false);
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        // The paper swatch on screen (white, as the colour settings show it).
+        let [r, g, b, _] = st.doc.resolve_color(pagenor_color::swatch::PAPER, 1.0).unwrap().to_rgba8(1.0);
+        let paper: Vec<Rect> = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(s) if s.fill == Color32::from_rgb(r, g, b) => Some(s.rect),
+                _ => None,
+            })
+            .collect();
+        // Each page on its own (a spread's pages may differ in size).
+        assert_eq!(paper.len(), st.doc.page_count());
+        for abs in 0..st.doc.page_count() {
+            let want = xf.rect(layout.page_rect(&st.doc, abs).unwrap());
+            assert!(paper.iter().any(|r| (r.min - want.min).length() < 0.01 && (r.max - want.max).length() < 0.01), "page {abs}");
+        }
+    }
+}

@@ -240,6 +240,19 @@ impl ToolContext<'_> {
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
+    /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
+    /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
+    /// (gaps 27); InDesign threads into it.
+    pub fn hit_text_frame(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if it.is_text_frame() {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        pagenor_doc::hit_descendant(it, sp, self.tol(4.0), &|c| c.is_text_frame()).map(|f| (sr, f))
+    }
+
     /// The parent item showing (not yet overridden) on the document page under `p`:
     /// (absolute page, parent item).
     pub fn hit_parent_on_page(&self, p: Point) -> Option<(usize, ItemId)> {
@@ -431,6 +444,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "scale" => Box::new(xform::XformTool::new("scale")),
         "shear" => Box::new(xform::XformTool::new("shear")),
         "eyedropper" => Box::new(xform::EyedropperTool),
+        "colorTheme" => Box::new(xform::ColorThemeTool),
         "hand" => Box::new(nav::HandTool::default()),
         "placeGun" => Box::new(nav::PlaceGun::default()),
         "zoom" => Box::new(nav::ZoomTool::default()),

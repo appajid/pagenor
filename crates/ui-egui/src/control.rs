@@ -321,6 +321,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             None => err("no dialog open"),
         },
         "ui.dialog.open" => {
+            crate::dialogs::cancel(app);
             let Some(id) = s("id") else { return err("missing `id`") };
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
             let d = if id == "textFrameOptions" {
@@ -422,6 +423,30 @@ pub(crate) fn page_index(p: &Value, default: usize, count: usize) -> Result<usiz
 #[cfg(test)]
 mod automation_contract_tests {
     use super::*;
+
+    #[test]
+    fn replacing_a_style_preview_dialog_restores_the_document_and_undo_recording() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let before = app.session.doc().unwrap().doc.clone();
+        let history = app.session.doc().unwrap().history.undo.len();
+        app.session.begin_interaction("Style Options").unwrap();
+        app.session.preview("style.paragraph.edit", json!({"name":pagenor_doc::BASIC_PARAGRAPH,"chars":{"size":24}})).unwrap();
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            "paragraphStyleOptions",
+            json!({
+                "name":pagenor_doc::BASIC_PARAGRAPH,"preview":true,"_stylePreviewed":{"chars":{"size":24}}
+            }),
+        ));
+        assert_ne!(app.session.doc().unwrap().doc, before);
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id":"characterStyleOptions","fields":{"new":true}}));
+        assert_eq!(response["ok"], true);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        assert!(app.session.doc().unwrap().interaction.is_none());
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
+        app.run("style.paragraph.edit", json!({"name":pagenor_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({"pages":2})).unwrap();

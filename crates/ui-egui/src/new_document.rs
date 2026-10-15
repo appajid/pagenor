@@ -1011,3 +1011,14 @@ mod tests {
         assert!(cards(&h.state().app, "saved").is_empty());
     }
 }
+
+#[cfg(test)]
+mod mobile_preset_regressions {
+    use super::*;
+    #[test]
+    fn mobile_presets_select_a_primary_frame_and_web_presets_do_not() {
+        let app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        assert!(cards(&app, "mobile").iter().all(|c| c.nd.primary_text_frame));
+        assert!(cards(&app, "web").iter().all(|c| !c.nd.primary_text_frame));
+    }
+}

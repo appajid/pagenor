@@ -101,9 +101,22 @@ pub(crate) fn icon_groups(app: &mut DesignApp, ui: &mut egui::Ui) {
     crate::widgets::overflow_scrolling(ui);
     egui::ScrollArea::vertical().id_salt("panel-icon-groups").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
-        for (group, short, ids) in PANEL_GROUPS {
+        let groups: Vec<(String, String, Vec<String>)> = match &app.ui.icon_groups {
+            Some(groups) => groups
+                .iter()
+                .map(|ids| {
+                    let label = ids.first().and_then(|id| panel_entry(id)).map_or("Panels", |(_, label, _)| label);
+                    (label.to_owned(), label.to_owned(), ids.clone())
+                })
+                .collect(),
+            None => PANEL_GROUPS
+                .iter()
+                .map(|(group, short, ids)| (group.to_string(), short.to_string(), ids.iter().map(|id| id.to_string()).collect()))
+                .collect(),
+        };
+        for (group, short, ids) in &groups {
             ui.separator();
-            ui.label(egui::RichText::new(*short).size(9.0).color(t.text_dim)).on_hover_text(crate::i18n::tr(&app.ui.language, group));
+            ui.label(egui::RichText::new(short).size(9.0).color(t.text_dim)).on_hover_text(crate::i18n::tr(&app.ui.language, group));
             for row in ids.chunks(cols) {
                 ui.horizontal(|ui| {
                     ui.add_space(3.0);
@@ -195,8 +208,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let _ = app.run("window.panel.close", serde_json::json!({"panel": panel}));
                 }
                 egui::Frame::NONE.inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 6 }).show(ui, |ui| {
+                    // The Pages panel scrolls its parts itself and keeps its footer at the bottom.
+                    if app.ui.dock_tab == "pages" {
+                        panels::pages::show(app, ui);
+                        return;
+                    }
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match app.ui.dock_tab.as_str() {
-                        "pages" => panels::pages::show(app, ui),
                         "layers" => panels::layers::show(app, ui),
                         _ => panels::properties::show(app, ui),
                     });
@@ -288,13 +305,27 @@ pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
                 return;
             }
             egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                egui::ScrollArea::vertical().max_height(screen.height() - 220.0).show(ui, |ui| panel_body(app, ui, &id));
+                scrolled_body(app, ui, &id, screen.height() - 220.0);
             });
         });
     });
     if !open {
         app.ui.open_panel = None;
     }
+}
+
+/// A panel's contents at most `max_h` tall, scrolling past that. The Pages panel scrolls its
+/// parts itself and keeps its footer at the bottom, so it gets the height instead.
+fn scrolled_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, max_h: f32) {
+    if scrolls_itself(id) {
+        ui.allocate_ui(vec2(ui.available_width(), max_h.clamp(160.0, 560.0)), |ui| panel_body(app, ui, id));
+    } else {
+        egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| panel_body(app, ui, id));
+    }
+}
+
+pub fn scrolls_itself(id: &str) -> bool {
+    id == "pages"
 }
 
 /// The contents of an icon-column panel.
@@ -419,7 +450,7 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
                 dock_glyph(ui.painter(), dock_r, t.text_dim);
             }
             egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 160.0).show(ui, |ui| panel_body(app, ui, &id));
+                scrolled_body(app, ui, &id, ctx.content_rect().height() - 160.0);
             });
         });
         // Remember where it was left.

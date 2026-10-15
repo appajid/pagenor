@@ -25,6 +25,32 @@ fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout)
 }
 
 #[test]
+fn color_theme_tool_requests_a_palette_without_editing_the_image() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    d.item_mut(id).unwrap().content = pagenor_doc::Content::Graphic(pagenor_doc::Graphic {
+        asset: pagenor_doc::AssetId(1),
+        size: (100.0, 100.0),
+        xf: pagenor_geom::Affine::IDENTITY,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        clip: Default::default(),
+        wrap: Default::default(),
+    });
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tool = create("colorTheme");
+    assert_eq!(tool.id(), "colorTheme");
+    assert_eq!(
+        tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0 + off.x, 150.0 + off.y)),
+        vec![Action::Dialog("colorTheme".into(), serde_json::json!({"id":id.0}))]
+    );
+    assert!(tool.pointer(&cx, &PointerEvent::new(PointerKind::Up, 150.0 + off.x, 150.0 + off.y)).is_empty());
+}
+
+#[test]
 fn frame_tool_drag_emits_begin_preview_commit() {
     let d = Document::new(&NewDocument::default());
     let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
@@ -1352,4 +1378,53 @@ fn a_selected_graphics_own_handles_resize_it_and_leave_the_frame() {
     let frame_corner = spread_pt(&l, 200.0, 200.0);
     let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Down, frame_corner.x, frame_corner.y));
     assert!(!a.contains(&Action::Begin("Resize".into())), "{a:?}");
+}
+
+#[test]
+fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
+    // `hit` stops at the group, so the loaded cursor showed NotAllowed over a text frame inside
+    // one and a click did nothing. InDesign threads into it (gaps 27).
+    let mut td = thread_doc();
+    let lid = td.d.default_layer();
+    let rect = Rect::new(600.0, 100.0, 700.0, 200.0);
+    // The frame, then the same frame moved inside a group. Both transforms are the identity, so
+    // the child's coordinates stay the spread's.
+    let (inner, _) = td.d.add_text_frame(SpreadRef::Doc(0), rect, lid, "", ParaFormat::default()).unwrap();
+    let frame_item = td.d.item(inner).cloned().unwrap();
+    td.d.remove_item(inner).unwrap();
+    let gid = ItemId(td.d.alloc());
+    let mut group = Item::new(gid, lid, Shape::Group, shapes::rectangle(rect));
+    group.content = pagenor_doc::item::Content::Group { items: vec![std::sync::Arc::new(frame_item)] };
+    td.d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    td.l = CanvasLayout::new(&td.d, false);
+
+    let mut t = create("selection");
+    let cx = td.cx();
+    click(&mut t, &cx, td.port(td.a, true), Mods::default());
+    let p = td.at(650.0, 150.0);
+
+    // Selection still reaches the group, which is what a plain click there should pick.
+    assert_eq!(cx.hit(p).map(|(_, i)| i), Some(gid));
+    // The loaded text cursor reaches the frame inside it.
+    assert_eq!(cx.hit_text_frame(p).map(|(_, i)| i), Some(inner), "the frame in the group");
+    assert_eq!(t.cursor(&cx, p, Mods::default()), Cursor::ThreadLink);
+    // And the click threads to that frame, not to the group.
+    assert_eq!(click(&mut t, &cx, p, Mods::default()), thread_exec(serde_json::json!({"from": td.a.0, "to": inner.0})));
+
+    // A group with nothing threadable in it still says no.
+    let mut td2 = thread_doc();
+    let r2 = Rect::new(600.0, 300.0, 700.0, 400.0);
+    let plain = ItemId(td2.d.alloc());
+    let child = Item::new(plain, lid, Shape::Rectangle, shapes::rectangle(r2));
+    let g2 = ItemId(td2.d.alloc());
+    let mut group2 = Item::new(g2, lid, Shape::Group, shapes::rectangle(r2));
+    group2.content = pagenor_doc::item::Content::Group { items: vec![std::sync::Arc::new(child)] };
+    td2.d.insert_item(SpreadRef::Doc(0), group2, None).unwrap();
+    td2.l = CanvasLayout::new(&td2.d, false);
+    let cx2 = td2.cx();
+    let mut t2 = create("selection");
+    click(&mut t2, &cx2, td2.port(td2.a, true), Mods::default());
+    let q = td2.at(650.0, 350.0);
+    assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
+    assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }

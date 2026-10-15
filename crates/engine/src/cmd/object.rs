@@ -187,7 +187,7 @@ pub fn specs() -> Vec<CommandSpec> {
             [],
             None,
             "{swatch?, tint?: 0..1, ids?} — a swatch (tint 100% unless given), or a tint alone that keeps each object's swatch; use an existing document swatch name, e.g. [Paper]",
-            has_selection,
+            has_doc,
             |s, p| {
                 let sw = str_param(p, "swatch").map(str::to_string);
                 if let Some(name) = &sw {
@@ -196,6 +196,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 let tint = p.get("tint").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 1.0) as f32);
                 if sw.is_none() && tint.is_none() {
                     return Err(bad("object.fill", "missing swatch"));
+                }
+                if nothing_targeted(s, p)? {
+                    return set_new_object(s, |c| {
+                        if let Some(sw) = &sw {
+                            c.fill = sw.clone();
+                            c.fill_tint = 1.0;
+                        }
+                        c.fill_tint = tint.unwrap_or(c.fill_tint);
+                    });
                 }
                 set_flag(
                     s,
@@ -215,12 +224,27 @@ pub fn specs() -> Vec<CommandSpec> {
             [],
             None,
             "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind:…}, cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
-            has_selection,
+            has_doc,
             |s, p| {
                 for key in ["swatch", "gapSwatch"] {
                     if let Some(name) = p.get(key).and_then(Value::as_str) {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
                     }
+                }
+                // With nothing selected, the swatch and tint are those of new shapes.
+                if nothing_targeted(s, p)? {
+                    let sw = str_param(p, "swatch").map(str::to_string);
+                    let tint = p.get("tint").and_then(Value::as_f64).filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 1.0) as f32);
+                    if sw.is_none() && tint.is_none() {
+                        return Err(bad("object.stroke", super::NOTHING_SELECTED));
+                    }
+                    return set_new_object(s, |c| {
+                        if let Some(sw) = &sw {
+                            c.stroke = sw.clone();
+                            c.stroke_tint = 1.0;
+                        }
+                        c.stroke_tint = tint.unwrap_or(c.stroke_tint);
+                    });
                 }
                 let p2 = p.clone();
                 // A tint alone changes no stroke into one (it would become the default 1 pt black).
@@ -867,6 +891,39 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// No objects named and none selected (and no text): fill and stroke go to new shapes.
+pub(crate) fn nothing_targeted(s: &Session, p: &Value) -> Result<bool> {
+    let st = s.doc()?;
+    Ok(p.get("ids").is_none()
+        && p.get("id").is_none()
+        && st.selection.items.is_empty()
+        && st.selection.text.is_none()
+        && st.selection.cells.is_none())
+}
+
+/// Change the colours new shapes are drawn with (one undo step).
+pub(crate) fn set_new_object(s: &mut Session, f: impl FnOnce(&mut pagenor_doc::NewObjectColors)) -> Result<Value> {
+    s.edit(|d, _| {
+        f(&mut d.settings.new_object);
+        let c = &d.settings.new_object;
+        Ok(json!({"newObject": {"fill": c.fill, "fillTint": c.fill_tint, "stroke": c.stroke, "strokeTint": c.stroke_tint}}))
+    })
+}
+
+/// A new shape's fill and stroke: the document's colours for new objects (a swatch deleted
+/// since leaves the shape's own).
+fn new_object_colors(d: &pagenor_doc::Document, it: &mut Item) {
+    let c = &d.settings.new_object;
+    let known = |sw: &str| sw == pagenor_color::swatch::NONE || d.swatches.iter().any(|w| w.name == sw);
+    if known(&c.fill) {
+        it.fill = Fill { swatch: c.fill.clone(), tint: c.fill_tint, ..it.fill.clone() };
+    }
+    if known(&c.stroke) {
+        it.stroke.swatch = c.stroke.clone();
+        it.stroke.tint = c.stroke_tint;
+    }
+}
+
 fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
     let rect = rect_param(p, "rect").ok_or_else(|| bad("frame.create", "missing rect"))?;
     let shape = str_param(p, "shape").unwrap_or("rectangle");
@@ -907,8 +964,10 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         if content == "graphic" {
             it.object_style = d.styles.default_graphic_frame.clone();
         } else {
-            // Shapes drawn with Rectangle/Ellipse/Polygon get the default 1 pt black stroke.
+            // Shapes drawn with Rectangle/Ellipse/Polygon get a 1 pt stroke in the document's
+            // colours for new objects (no fill and black at first).
             it.stroke = Stroke::default();
+            new_object_colors(d, &mut it);
         }
         d.insert_item(sr, it, None)?;
         *sel = Selection::items(vec![id]);
@@ -940,6 +999,7 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
         let id = ItemId(d.alloc());
         let mut it = Item::new(id, lid, Shape::GraphicLine, shapes::line(a, b));
         it.stroke = Stroke::default();
+        new_object_colors(d, &mut it);
         d.insert_item(sr, it, None)?;
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
@@ -3432,6 +3492,22 @@ mod line_end_tests {
         s.execute("note.edit", &json!({"story": n["story"], "id": n["id"], "text": "Three\r\nFour"})).unwrap();
         assert_eq!(note(&mut s), "Three\nFour");
     }
+
+    /// "One\u{B}Two" kept the vertical tab, drawn as a missing-glyph box, where Word and
+    /// PowerPoint text (Chr(11)) means a forced line break.
+    #[test]
+    fn vertical_tabs_are_forced_line_breaks() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "One\u{B}Two"})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let story = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("One\u{2028}Two", 1));
+        s.execute("text.insert", &json!({"text": "\u{B}Three", "raw": true})).unwrap();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("One\u{2028}Two\u{2028}Three", 1));
+        s.execute("story.setText", &json!({"story": sid.0, "text": "A\u{B}B\rC"})).unwrap();
+        assert_eq!((story(&s).text.as_str(), story(&s).paras.len()), ("A\u{2028}B\nC", 2));
+    }
 }
 
 #[cfg(test)]
@@ -4537,5 +4613,38 @@ mod clear_effects_tests {
         assert_eq!((it.opacity, it.blend), (1.0, pagenor_color::BlendMode::Normal));
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(item(&s).opacity, 0.5);
+    }
+}
+
+#[cfg(test)]
+mod new_object_color_regressions {
+    use super::*;
+    #[test]
+    fn colors_chosen_without_a_selection_survive_native_reopen_and_only_affect_new_shapes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let result = s.execute("object.color", &json!({"color":"#7c1315"})).unwrap();
+        let red = result["swatch"].as_str().unwrap().to_string();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.fill, red);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        s.execute("object.stroke", &json!({"swatch":"[None]"})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect":[36,36,136,136],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(first)).unwrap();
+        assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str()), (red.as_str(), "[None]"));
+        s.execute("selection.set", &json!({"ids":[]})).unwrap();
+        s.execute("object.fill", &json!({"swatch":"[Paper]","tint":0.5})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(first)).unwrap().fill.swatch, red);
+        let encoded = s.execute("file.serialize", &json!({})).unwrap()["base64"].clone();
+        let mut reopened = Session::new();
+        reopened.execute("file.openBytes", &json!({"name":"Colors.pgnr","base64":encoded})).unwrap();
+        let c = &reopened.doc().unwrap().doc.settings.new_object;
+        assert_eq!((c.fill.as_str(), c.fill_tint, c.stroke.as_str()), ("[Paper]", 0.5, "[None]"));
+        let second = reopened.execute("frame.create", &json!({"rect":[150,36,250,136],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let it = reopened.doc().unwrap().doc.item(ItemId(second)).unwrap();
+        assert_eq!((it.fill.swatch.as_str(), it.fill.tint), ("[Paper]", 0.5));
+        assert!(reopened.execute("object.fill", &json!({"swatch":"not a swatch"})).is_err());
     }
 }

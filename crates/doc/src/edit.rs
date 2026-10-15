@@ -685,3 +685,31 @@ fn grid_outline_hit(it: &Item, p: Point, tol: f64) -> bool {
     let dividers = grid.divider_path(it.inner_bounds());
     pagenor_geom::hit::stroke_contains(&dividers, width, tol, inner)
 }
+
+/// The frontmost descendant of `it` under `p` that `want` accepts, looking inside nested groups;
+/// `it` itself when nothing inside it matches and `want` accepts it. `p` is in the space `it`
+/// sits in, as [`item_hit`] takes it.
+///
+/// Children are tried front to back and a hidden one is skipped, so of several that `want`
+/// accepts the answer is the one in front. Objects `want` rejects do not hide the ones behind
+/// them: a text frame under a rectangle in the same group is still found.
+pub fn hit_descendant(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool) -> Option<ItemId> {
+    hit_descendant_at(it, p, tol, want, 0)
+}
+
+fn hit_descendant_at(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool, depth: usize) -> Option<ItemId> {
+    if depth >= 64 || !item_hit(it, p, tol) {
+        return None;
+    }
+    let inner = it.xf.inverse() * p;
+    let children: Vec<&Arc<Item>> = it.shown_children().collect();
+    for c in children.into_iter().rev() {
+        if c.hidden {
+            continue;
+        }
+        if let Some(id) = hit_descendant_at(c, inner, tol, want, depth + 1) {
+            return Some(id);
+        }
+    }
+    want(it).then_some(it.id)
+}

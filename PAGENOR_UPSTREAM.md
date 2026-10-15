@@ -958,3 +958,31 @@ arm64 app includes the matching CLI. Strict/deep ad-hoc signature verification,
 version/icon checks and a four-page synthetic CLI PDF export pass. Native
 Windows/Linux execution and publication remain pending. The current owner app
 session is left open.
+
+
+## Local new-PR adaptation — P11.19 (2026-10-16)
+
+Reviewed 300 latest-created and 100 latest-updated open/closed records through
+#1081: 25 new proposals and two older updated records. Adapted 22 new proposals
+(#1056–#1068, #1072–#1076, #1078–#1081) plus incremental #325. #1071 is already
+covered. #1070 and #1077 require absent TOC/hyphenation prerequisites; #400 still
+requires unsafe Rust and is excluded. All 27 inspected heads were rechecked
+unchanged. #1080's additional layout/numeric-entry revision was inspected and
+adapted before the recheck. Author/SHA pins and deliberate differences are in
+[the adoption log](docs/pagenor/UPSTREAM_ADOPTION_090.md).
+
+Retain MIT OR Apache-2.0 source provenance, Appaji Ambarisha's reserved branding
+rights, Rust layers and unsafe_code=forbid. No private documents, fonts or encoding
+maps are committed. Keep lazy/scoped fonts, inline Indic IME, explicit left/right
+masters and .pgnr/legacy loading with separate icons. Raw formatting-query counters,
+genuine paragraph defaults and final-LF/EOF marker policies remain intact.
+Native format 6 retains document shape-color defaults; prior formats load and older
+readers reject the new capability. Color Theme uses local bounded raster decoding;
+no network service. Linux decorations add only locked target-specific dependencies;
+MIT/OFL notices accompany the change. No Greek data or replacement composer.
+
+All seven workspace gates pass: 2,815 tests, zero failures, 7 existing ignores;
+twenty WASM packages. Six synthetic offscreen views are inspected. A separate
+optimized local Mac arm64 GUI/CLI bundle has artifact-side signature/version/icon,
+four-page PDF and native-format/older-reader-guard evidence. Native Windows/Linux
+execution and publication remain pending. The owner app session stays open.

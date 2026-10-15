@@ -427,3 +427,12 @@ fn page_numbers_saturate_at_the_largest_start() {
     d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
     assert_eq!(d.page_number(2), u32::MAX, "a section continuing it saturates too");
 }
+
+#[test]
+fn renamed_swatch_updates_the_colors_of_future_shapes() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.new_object.fill = "Custom".into();
+    d.settings.new_object.stroke = "Custom".into();
+    d.rename_swatch_refs("Custom", "Renamed");
+    assert_eq!((d.settings.new_object.fill.as_str(), d.settings.new_object.stroke.as_str()), ("Renamed", "Renamed"));
+}

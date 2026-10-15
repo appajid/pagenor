@@ -1,7 +1,18 @@
 # Pagenor development phases
 
-Current local version: **0.8.0** (P11.18); published desktop preview remains **0.7.0** (P11.13).
+Current local version: **0.9.0** (P11.19); published desktop preview remains **0.7.0** (P11.13).
 0.6.0 and v0.3.0 packages remain intact.
+
+P11.19 adapts 22 new upstream proposals and incremental #325 after reviewing
+25 new proposals and two older heads through #1081. Pages/master options, page
+Properties, transactional style previews, redefinition/summary, Typography groups,
+table row kinds, local Color Theme, Color Picker and saved new-shape defaults join
+compatible reliability fixes. Native format 6 reads prior documents and guards
+against silent loss in older readers. All seven gates pass: 2,815 tests, zero
+failures, 7 existing ignores; twenty WASM packages. Six offscreen views and a
+separate optimized local Mac GUI/CLI bundle are verified. Native Windows/Linux
+execution and publication remain pending; the owner session stays open.
+[Per-PR pins, preserved policies and limits](docs/pagenor/UPSTREAM_ADOPTION_090.md).
 
 P11.18 updates the older PR queue before newer proposals. Sixteen source proposals
 supply compatible changes, eleven are already covered and three are deferred or

@@ -1,5 +1,203 @@
 //! Paragraph / character styles and swatches.
 
+#[cfg(test)]
+mod application_inheritance_tests {
+    use super::*;
+
+    fn setup(text: &str) -> (Session, Value) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [36,36,300,300], "content": "text", "text": text})).unwrap();
+        (s, f["story"].clone())
+    }
+    fn select(s: &mut Session, story: &Value, start: usize, end: usize) {
+        s.execute("text.select", &json!({"story": story, "anchor": start, "focus": end})).unwrap();
+    }
+    fn attrs(s: &mut Session) -> Value {
+        s.execute("type.selectionAttrs", &json!({})).unwrap()
+    }
+
+    #[test]
+    fn paragraph_capture_source_follows_later_style_edits_and_undo() {
+        let (mut s, story) = setup("First\nSecond");
+        select(&mut s, &story, 0, 5);
+        s.execute("type.char", &json!({"size": 18, "fill": "[Paper]"})).unwrap();
+        s.execute("type.para", &json!({"spaceAfter": 6})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Header", "fromSelection": true})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        s.execute("style.paragraph.apply", &json!({"name": "Header"})).unwrap();
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        select(&mut s, &story, 6, 6);
+        s.execute("style.paragraph.apply", &json!({"name": "Header"})).unwrap();
+        s.execute("style.paragraph.edit", &json!({"name": "Header", "chars": {"size": 20, "fill": "[Black]"}, "para": {"spaceAfter": 12}})).unwrap();
+        for pos in [0, 6] {
+            select(&mut s, &story, pos, pos + 1);
+            let a = attrs(&mut s);
+            assert_eq!(a["chars"]["size"], 20.0);
+            assert_eq!(a["chars"]["fill"], "[Black]");
+            assert_eq!(a["para"]["spaceAfter"], 12.0);
+        }
+    }
+
+    #[test]
+    fn applying_styles_keeps_different_overrides_and_named_character_styles() {
+        let (mut s, story) = setup("First\nSecond");
+        select(&mut s, &story, 0, 5);
+        s.execute("type.char", &json!({"size": 14})).unwrap();
+        s.execute("type.para", &json!({"spaceAfter": 9})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Emphasis", "chars": {"underline": true}})).unwrap();
+        s.execute("style.character.apply", &json!({"name": "Emphasis"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body", "chars": {"size": 10}, "para": {"spaceAfter": 6}})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Body"})).unwrap();
+        let a = attrs(&mut s);
+        assert_eq!(a["chars"]["size"], 14.0);
+        assert_eq!(a["para"]["spaceAfter"], 9.0);
+        assert_eq!(a["characterStyle"], "Emphasis");
+        assert_eq!(a["chars"]["underline"], true);
+    }
+
+    #[test]
+    fn character_capture_source_remains_sparse_and_follows_style_edits() {
+        let (mut s, story) = setup("First\nSecond");
+        select(&mut s, &story, 0, 5);
+        s.execute("type.char", &json!({"underline": true})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Emphasis", "fromSelection": true})).unwrap();
+        s.execute("style.character.apply", &json!({"name": "Emphasis"})).unwrap();
+        s.execute("style.character.edit", &json!({"name": "Emphasis", "chars": {"underline": false}})).unwrap();
+        assert_eq!(attrs(&mut s)["chars"]["underline"], false);
+        assert!(s.doc().unwrap().doc.styles.char_style("Emphasis").unwrap().chars.size.is_none());
+        s.execute("style.paragraph.edit", &json!({"name": pagenor_doc::BASIC_PARAGRAPH, "chars": {"size": 20}})).unwrap();
+        assert_eq!(attrs(&mut s)["chars"]["size"], 20.0);
+    }
+
+    #[test]
+    fn paragraph_selection_excludes_the_next_paragraph_at_its_start() {
+        let (mut s, story) = setup("é\nNext");
+        select(&mut s, &story, 0, 3);
+        s.execute("style.paragraph.create", &json!({"name": "Header"})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Header", "clearOverrides": true})).unwrap();
+        select(&mut s, &story, 3, 4);
+        assert_eq!(attrs(&mut s)["paragraphStyle"], pagenor_doc::BASIC_PARAGRAPH);
+        select(&mut s, &story, 0, 2);
+        assert_eq!(attrs(&mut s)["paragraphStyle"], "Header");
+    }
+
+    #[test]
+    fn clearing_a_partial_selection_preserves_character_overrides_outside_it() {
+        let (mut s, story) = setup("First Second");
+        select(&mut s, &story, 0, 12);
+        s.execute("type.char", &json!({"size": 18})).unwrap();
+        select(&mut s, &story, 0, 5);
+        s.execute("style.paragraph.apply", &json!({"name": pagenor_doc::BASIC_PARAGRAPH, "clearOverrides": true})).unwrap();
+        assert_ne!(attrs(&mut s)["chars"]["size"], 18.0);
+        select(&mut s, &story, 6, 12);
+        assert_eq!(attrs(&mut s)["chars"]["size"], 18.0);
+    }
+}
+
+#[cfg(test)]
+mod redefine_tests {
+    use super::*;
+
+    fn sample() -> (Session, Value, Value) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"First header"})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect":[36,240,300,400],"content":"text","text":"Second header"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name":"Header","chars":{"size":18,"fill":"[Paper]"}})).unwrap();
+        for story in [&a["story"], &b["story"]] {
+            s.execute("text.select", &json!({"story":story,"anchor":0,"focus":5})).unwrap();
+            s.execute("style.paragraph.apply", &json!({"name":"Header"})).unwrap();
+        }
+        s.execute("text.select", &json!({"story":a["story"],"anchor":0,"focus":5})).unwrap();
+        (s, a["story"].clone(), b["story"].clone())
+    }
+
+    #[test]
+    fn redefine_paragraph_updates_other_stories_and_clears_the_source_overrides() {
+        let (mut s, a, b) = sample();
+        s.execute("style.character.create", &json!({"name":"Emphasis","chars":{"underline":true}})).unwrap();
+        s.execute("style.character.apply", &json!({"name":"Emphasis"})).unwrap();
+        s.execute("type.char", &json!({"size":20,"fill":"[Black]"})).unwrap();
+        s.execute("type.para", &json!({"spaceAfter":9})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        s.execute("style.paragraph.redefine", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+        assert!(s.doc().unwrap().doc.styles.para("Header").unwrap().chars.underline.is_none());
+        for story in [&a, &b] {
+            s.execute("text.select", &json!({"story":story,"anchor":0,"focus":5})).unwrap();
+            let attrs = s.execute("type.selectionAttrs", &json!({})).unwrap();
+            assert_eq!(attrs["chars"]["size"], 20.0);
+            assert_eq!(attrs["chars"]["fill"], "[Black]");
+            assert_eq!(attrs["para"]["spaceAfter"], 9.0);
+            assert_eq!(attrs["chars"]["underline"], story == &a);
+        }
+        s.execute("style.paragraph.edit", &json!({"name":"Header","chars":{"size":22}})).unwrap();
+        s.execute("text.select", &json!({"story":a,"anchor":0,"focus":5})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["size"], 22.0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn redefine_character_does_not_capture_paragraph_font_size() {
+        let (mut s, a, b) = sample();
+        s.execute("style.character.create", &json!({"name":"Underline","chars":{"underline":true}})).unwrap();
+        for story in [&a, &b] {
+            s.execute("text.select", &json!({"story":story,"anchor":0,"focus":5})).unwrap();
+            s.execute("style.character.apply", &json!({"name":"Underline"})).unwrap();
+        }
+        s.execute("type.char", &json!({"fill":"[Black]"})).unwrap();
+        s.execute("style.character.redefine", &json!({"name":"Underline"})).unwrap();
+        let style = s.doc().unwrap().doc.styles.char_style("Underline").unwrap();
+        assert!(style.chars.size.is_none());
+        assert_eq!(style.chars.underline, Some(true));
+        for story in [&a, &b] {
+            s.execute("text.select", &json!({"story":story,"anchor":0,"focus":5})).unwrap();
+            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fill"], "[Black]");
+        }
+    }
+
+    #[test]
+    fn redefine_rejects_the_wrong_style_and_the_none_entry_atomically() {
+        let (mut s, _, _) = sample();
+        let before = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        assert!(s.execute("style.paragraph.redefine", &json!({"name":"Other"})).is_err());
+        assert!(s.execute("style.character.redefine", &json!({})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    }
+
+    #[test]
+    fn redefine_character_at_a_caret_cleans_the_source_run_but_keeps_other_overrides() {
+        let (mut s, story, _) = sample();
+        s.execute("style.character.create", &json!({"name":"Emphasis","chars":{"underline":true}})).unwrap();
+        for (start, end, size) in [(0, 5, 24), (6, 12, 32)] {
+            s.execute("text.select", &json!({"story":story,"anchor":start,"focus":end})).unwrap();
+            s.execute("style.character.apply", &json!({"name":"Emphasis"})).unwrap();
+            s.execute("type.char", &json!({"size":size})).unwrap();
+        }
+        let before = s.doc().unwrap().doc.clone();
+        s.execute("text.select", &json!({"story":story,"anchor":2,"focus":2})).unwrap();
+        s.execute("style.character.redefine", &json!({"name":"Emphasis"})).unwrap();
+        s.execute("style.character.edit", &json!({"name":"Emphasis","chars":{"size":30}})).unwrap();
+        for (start, end, size) in [(0, 5, 30.0), (6, 12, 32.0)] {
+            s.execute("text.select", &json!({"story":story,"anchor":start,"focus":end})).unwrap();
+            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["size"], size);
+        }
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+    }
+}
+
 use pagenor_color::{Swatch, SwatchValue};
 use pagenor_doc::{CharAttrs, CharacterStyle, ParaAttrs, ParagraphStyle, Styles};
 use serde_json::{Value, json};
@@ -81,6 +279,24 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("style.paragraph.apply", "Apply Paragraph Style", [], None, "{name, clearOverrides?: bool}", has_text_or_frames, apply_para),
         cmd!("style.character.apply", "Apply Character Style", [], None, "{name}", has_text_or_frames, apply_char),
+        cmd!(
+            "style.paragraph.redefine",
+            "Redefine Paragraph Style",
+            [],
+            None,
+            "{name?} — incorporate the first selected paragraph/character's local formatting into its paragraph style; retain character styles; one undo step",
+            has_text_or_frames,
+            |s, p| redefine(s, p, true)
+        ),
+        cmd!(
+            "style.character.redefine",
+            "Redefine Character Style",
+            [],
+            None,
+            "{name?} — incorporate the first selected character's local formatting into its character style without capturing paragraph attributes; one undo step",
+            has_text_or_frames,
+            |s, p| redefine(s, p, false)
+        ),
         cmd!(
             "style.paragraph.create",
             "New Paragraph Style…",
@@ -182,7 +398,7 @@ pub fn specs() -> Vec<CommandSpec> {
             [],
             None,
             "{color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255), target?: fill|stroke, text?: bool, ids?} — an unnamed colour (not in the Swatches panel until Add to Swatches) on the selection; without ids, selected text or table-cell text takes the colour; `text`: on the selected text, or the text of the selected frames (Formatting Affects Text)",
-            has_color_target,
+            has_doc,
             apply_color
         ),
         cmd!(
@@ -391,6 +607,95 @@ fn attrs<T: Default>(v: Option<&Value>, set: impl Fn(&mut T, &str, &Value) -> st
     Ok(a)
 }
 
+fn redefine(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
+    let command = if paragraph { "style.paragraph.redefine" } else { "style.character.redefine" };
+    let targets = super::text::format_targets_pub(s);
+    let target = targets.first().ok_or_else(|| bad(command, "select text using the style to redefine"))?;
+    let state = s.doc()?;
+    let story = state.doc.text_story(target.story, target.cell).ok_or(pagenor_doc::DocError::NoStory(target.story))?;
+    let pf = story.paras.get(story.para_at(target.range.start)).ok_or_else(|| bad(command, "no paragraph at the selection"))?;
+    let cf = super::text::effective_char_format(s, target)?;
+    let selected = if paragraph { &pf.style } else { &cf.style };
+    let name = str_param(p, "name").unwrap_or(selected).to_string();
+    if name != *selected || name == if paragraph { pagenor_doc::NO_PARA_STYLE } else { pagenor_doc::NO_CHAR_STYLE } {
+        return Err(bad(command, "select text using the named style; the no-style entry cannot be redefined"));
+    }
+    let (base_para, base_chars) = state.doc.styles.resolve_para_style(&pf.style);
+    let (resolved_para, paragraph_chars) = state.doc.styles.resolve_para(pf);
+    let para_changes = base_para.delta(&resolved_para);
+    let mut current = if paragraph {
+        paragraph_chars.clone()
+    } else {
+        state.doc.styles.resolve_char(&paragraph_chars, &pagenor_doc::CharFormat { style: name.clone(), over: CharAttrs::default() })
+    };
+    let inherited = if paragraph { base_chars } else { current.clone() };
+    // A named character style is an intentional layer, not a paragraph override to absorb.
+    current.apply(&cf.over);
+    let char_changes = inherited.delta(&current);
+    let result = s.edit(|d, _| {
+        if paragraph {
+            let style = d.styles_mut().para_mut(&name).ok_or_else(|| bad(command, "paragraph style no longer exists"))?;
+            style.para.merge(&para_changes);
+            style.chars.merge(&char_changes);
+        } else {
+            let style =
+                d.styles_mut().character.iter_mut().find(|st| st.name == name).ok_or_else(|| bad(command, "character style no longer exists"))?;
+            style.chars.merge(&char_changes);
+        }
+        let styles = d.styles.clone();
+        for target in &targets {
+            let Some(story) = d.text_story_mut(target.story, target.cell) else { continue };
+            // At a character-style caret, the sampled format belongs to the containing run
+            // (the preceding run at a boundary). Normalize that source run too, otherwise its
+            // old local values would mask the next edit of the redefined style.
+            let mut selected_range = target.range.clone();
+            if !paragraph && selected_range.is_empty() {
+                let caret = selected_range.start;
+                let mut start = 0usize;
+                for run in &story.chars {
+                    let end = start.saturating_add(run.len).min(story.len());
+                    if caret < end || (caret == end && caret > start) {
+                        selected_range = start..end;
+                        break;
+                    }
+                    start = end;
+                }
+            }
+            let end = if selected_range.is_empty() { selected_range.start } else { selected_range.end.saturating_sub(1) };
+            let (first, last) = (story.para_at(selected_range.start), story.para_at(end));
+            for (index, range) in story.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+                let Some(pf) = story.paras.get_mut(index) else { continue };
+                if paragraph && pf.style != name {
+                    continue;
+                }
+                if paragraph {
+                    let (pp, cp) = styles.resolve_para(pf);
+                    let (base_p, base_c) = styles.resolve_para_style(&name);
+                    pf.para = base_p.delta(&pp);
+                    pf.chars = base_c.delta(&cp);
+                }
+                let (_, base) = styles.resolve_para(pf);
+                let end = range.end.saturating_add(1).min(story.len());
+                let range = if paragraph { range.start..end } else { range.start.max(selected_range.start)..end.min(selected_range.end) };
+                story.format_chars(range, |format| {
+                    if !paragraph && format.style != name {
+                        return;
+                    }
+                    let mut inherited = base.clone();
+                    inherited.apply(&styles.char_style_attrs(&format.style));
+                    let resolved = styles.resolve_char(&base, format);
+                    format.over = inherited.delta(&resolved);
+                });
+            }
+        }
+        Ok(json!({"name":name}))
+    });
+    if result.is_ok() {
+        s.typing_format = None;
+    }
+    result
+}
+
 fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.apply", "missing name"))?.to_string();
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
@@ -399,28 +704,55 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let targets = super::text::format_targets_pub(s);
     s.edit(|d, _| {
+        let styles = d.styles.clone();
+        let (style_para, _) = styles.resolve_para_style(&name);
         for t in &targets {
             let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                st.format_paras(r.clone(), |f| {
+                let blank_eof = st.text.ends_with('\n');
+                let end = if r.is_empty() || (r.end == st.len() && blank_eof) { r.end } else { r.end.saturating_sub(1) };
+                let (first, last) = (st.para_at(r.start), st.para_at(end));
+                let eof_index = st.paras.len().saturating_sub(1);
+                let mut pi = first;
+                st.format_paras(r.start..end, |f| {
+                    let final_blank = blank_eof && pi == eof_index;
+                    pi += 1;
                     f.style = name.clone();
                     if clear {
                         f.para = ParaAttrs::default();
                         f.chars = CharAttrs::default();
                         f.eof_inherited_chars = None;
+                    } else if !final_blank {
+                        f.para.retain_differences(&style_para);
+                        // Genuine paragraph character defaults remain explicit, even when equal to the new style.
                     }
                 });
-                if clear {
-                    let (a, b) = (st.para_ranges()[st.para_at(r.start)].start, st.para_ranges()[st.para_at(r.end)].end);
-                    st.format_chars(a..b, |f| f.over = CharAttrs::default());
-                    if t.cell.is_none()
-                        && r.end == st.len()
-                        && st.text.ends_with('\n')
-                        && let Some(pf) = st.paras.last_mut()
-                    {
-                        // Clearing an outer EOF still chooses an explicit empty typing format.
-                        pf.eof_inherited_chars = Some(CharAttrs::default());
+                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+                    let Some(pf) = st.paras.get(pi) else { continue };
+                    let (_, base) = styles.resolve_para(pf);
+                    let end = range.end.saturating_add(1).min(if blank_eof && !clear { st.len().saturating_sub(1) } else { st.len() });
+                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+                    if !clear && range.is_empty() {
+                        continue;
                     }
+                    st.format_chars(range, |f| {
+                        if clear {
+                            f.over = CharAttrs::default();
+                        } else {
+                            let mut inherited = base.clone();
+                            inherited.apply(&styles.char_style_attrs(&f.style));
+                            f.over.retain_differences(&inherited);
+                        }
+                    });
+                }
+                if clear
+                    && t.cell.is_none()
+                    && r.end == st.len()
+                    && st.text.ends_with('\n')
+                    && let Some(pf) = st.paras.last_mut()
+                {
+                    // Clearing an outer EOF still chooses an explicit empty typing format.
+                    pf.eof_inherited_chars = Some(CharAttrs::default());
                 }
             }
         }
@@ -435,9 +767,26 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let targets = super::text::format_targets_pub(s);
     s.edit(|d, _| {
+        let styles = d.styles.clone();
         for t in &targets {
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                st.format_chars(t.range.clone(), |f| f.style = name.clone());
+                if t.range.is_empty() {
+                    st.format_chars(t.range.clone(), |f| f.style = name.clone());
+                    continue;
+                }
+                for (pi, range) in st.para_ranges().into_iter().enumerate() {
+                    let range = range.start.max(t.range.start)..range.end.saturating_add(1).min(st.len()).min(t.range.end);
+                    if range.is_empty() {
+                        continue;
+                    }
+                    let Some(pf) = st.paras.get(pi) else { continue };
+                    let (_, mut inherited) = styles.resolve_para(pf);
+                    inherited.apply(&styles.char_style_attrs(&name));
+                    st.format_chars(range, |f| {
+                        f.style = name.clone();
+                        f.over.retain_differences(&inherited);
+                    });
+                }
             }
         }
         ok()
@@ -1097,6 +1446,16 @@ fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
     let text = p.get("text").and_then(Value::as_bool).unwrap_or(false) || (!explicit && (selection.text.is_some() || selection.cells.is_some()));
     let (ids, texts) = if text { (vec![], super::text::format_targets_pub(s)) } else { (super::targets(s, p)?, vec![]) };
     // A caret: the colour is for the next typing (once the swatch exists).
+    let new_object = !text && super::object::nothing_targeted(s, p)?;
+    if !new_object {
+        has_color_target(s).map_err(|e| bad("object.color", e))?;
+    }
+    if text && texts.is_empty() {
+        return Err(bad("object.color", "select the text to colour"));
+    }
+    if !text && !new_object && (ids.is_empty() || ids.iter().any(|id| s.active().is_none_or(|st| st.doc.item(*id).is_none()))) {
+        return Err(bad("object.color", "select existing objects to colour"));
+    }
     let caret = matches!(texts.as_slice(), [t] if t.range.is_empty());
     let r = s.edit(|d, _| {
         // Reuse a swatch holding exactly this colour, else add an unnamed one.
@@ -1119,6 +1478,16 @@ fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {
                 name
             }
         };
+        if new_object {
+            let c = &mut d.settings.new_object;
+            if stroke {
+                c.stroke = name.clone();
+                c.stroke_tint = 1.0;
+            } else {
+                c.fill = name.clone();
+                c.fill_tint = 1.0;
+            }
+        }
         for id in &ids {
             if let Some(it) = d.item_mut(*id) {
                 if stroke {

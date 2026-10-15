@@ -8,6 +8,7 @@ pub mod book;
 mod buttons;
 pub(crate) mod captions;
 mod changes;
+mod color_theme;
 mod colorsettings;
 mod conditions;
 mod datamerge;
@@ -181,6 +182,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(buttons::specs());
         v.extend(captions::specs());
         v.extend(colorsettings::specs());
+        v.extend(color_theme::specs());
         v.extend(changes::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
@@ -255,9 +257,14 @@ pub(crate) fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 }
 /// Plain text from a parameter, with CR LF and lone CR (classic Mac and InDesign line ends) as
 /// `\n`, the paragraph separator, as edit.paste and text import already do. Kept as they were,
-/// the CRs joined the paragraphs into one.
+/// the CRs joined the paragraphs into one. A vertical tab (Word's and PowerPoint's Shift+Enter,
+/// Chr(11)) is a forced line break: kept, it was drawn as a missing-glyph box.
 pub(crate) fn text_param(p: &Value, key: &str) -> String {
-    str_param(p, key).unwrap_or("").replace("\r\n", "\n").replace('\r', "\n")
+    str_param(p, key)
+        .unwrap_or("")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\u{B}', pagenor_doc::story::FORCED_LINE_BREAK.encode_utf8(&mut [0; 4]))
 }
 pub(crate) fn id_param(p: &Value, key: &str) -> Option<ItemId> {
     p.get(key).and_then(Value::as_u64).map(ItemId)

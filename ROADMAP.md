@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+- P11.19: local **0.9.0** reviews 25 new proposals through #1081 plus two older
+  heads; 22 new proposals and incremental #325 are adapted, #1071 is covered,
+  two require missing prerequisites and #400 remains excluded. Adds page Properties,
+  independent Pages/master scrolling and options, style preview/redefinition/summary,
+  Typography groups, row conversion, Color Theme, expanded Color Picker and saved
+  shape-color defaults. Native format 6 preserves those defaults and reads prior files.
+  All seven gates pass: 2,815 tests, zero failures, 7 existing ignores;
+  twenty WASM packages. Six offscreen views pass. A separate local macOS GUI/CLI
+  bundle is verified; native Windows/Linux execution and publication remain pending.
+  [Source pins and compatibility choices](docs/pagenor/UPSTREAM_ADOPTION_090.md).
+
 - P11.18: local **0.8.0** updates the older upstream queue first: thirty proposals
   reviewed, sixteen source proposals adapted, eleven already covered and three
   excluded/deferred. Adds the Effects dialog/panel, editable SVG paste, text fitting,

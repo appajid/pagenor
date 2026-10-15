@@ -142,6 +142,8 @@ impl Document {
             return;
         }
         let n = Names { from, to };
+        n.s(&mut self.settings.new_object.fill);
+        n.s(&mut self.settings.new_object.stroke);
         for w in &mut self.swatches {
             if let SwatchValue::Tint { base, .. } = &mut w.value {
                 n.s(base);

@@ -45,6 +45,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.add_space(2.0);
             let current = app.session.tool_id();
             let mut chosen: Option<&'static str> = None;
+            let mut opened_now = false;
             let mut row_items = Vec::new();
             for (gi, g) in TOOL_GROUPS.iter().enumerate() {
                 if g.is_empty() {
@@ -109,6 +110,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         || (resp.is_pointer_button_down_on()
                                             && ui.input(|i| i.pointer.press_start_time().is_some_and(|s| i.time - s > 0.35))))
                                 {
+                                    opened_now |= app.ui.flyout != Some(gi);
                                     app.ui.flyout = Some(gi);
                                 }
                                 if app.ui.flyout == Some(gi) {
@@ -148,6 +150,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                                 t.text_dim,
                                                             );
                                                         }
+                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl.label));
                                                         if row.clicked() {
                                                             chosen = Some(tl.id);
                                                         }
@@ -169,8 +172,18 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             if let Some(id) = chosen {
                 app.select_tool(id);
             }
-            if app.ui.flyout.is_some() && ui.input(|i| i.pointer.any_click()) && chosen.is_none() && !ui.ctx().is_pointer_over_egui() {
-                app.ui.flyout = None;
+            // As InDesign's, an open flyout closes on Esc and on a click anywhere outside it (a
+            // panel, a swatch, the canvas), not only on the canvas.
+            if let Some(gi) = app.ui.flyout
+                && chosen.is_none()
+                && !opened_now
+            {
+                let area = ui.ctx().memory(|m| m.area_rect(egui::Id::new(("flyout", gi))));
+                let outside = ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| area.is_none_or(|a| !a.contains(p))));
+                let esc = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                if outside || esc {
+                    app.ui.flyout = None;
+                }
             }
             ui.add_space(8.0);
             fill_stroke_proxy(app, ui, width);
@@ -201,7 +214,10 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
     let (fill_sw, stroke_sw) = match &target {
         Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
-        None => ("[None]".to_string(), "[Black]".to_string()),
+        // Nothing selected: the colours new shapes are drawn with.
+        None => doc
+            .as_ref()
+            .map_or(("[None]".to_string(), "[Black]".to_string()), |d| (d.settings.new_object.fill.clone(), d.settings.new_object.stroke.clone())),
     };
     let x0 = ui.max_rect().min.x + (width - 30.0) / 2.0;
     // Row 1: default colours + swap.
@@ -457,6 +473,39 @@ mod tests {
 
     fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
         h.get_by_label(label).rect()
+    }
+
+    /// As InDesign's: a tool group's flyout closes on Esc and on a click outside it (the fill
+    /// swatch, a panel), not only on the canvas.
+    #[test]
+    fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
+        use egui::{Event, Modifiers, PointerButton};
+        use egui_kittest::kittest::Queryable;
+        let app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+        let open = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
+            let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
+            h.input_mut().events.push(Event::PointerMoved(at));
+            for pressed in [true, false] {
+                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            }
+            h.run_steps(3);
+            assert!(h.state().app.ui.flyout.is_some(), "a right-click opens the flyout");
+            let _ = h.get_by_label("Ellipse Frame Tool");
+        };
+        open(&mut h);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().app.ui.flyout.is_none(), "Esc closes it");
+        // A click on a panel closes it.
+        open(&mut h);
+        crate::test_window::click_at(&mut h, egui::pos2(1300.0, 700.0));
+        assert!(h.state().app.ui.flyout.is_none(), "a click elsewhere closes it");
+        // Choosing a tool in it closes it and selects the tool.
+        open(&mut h);
+        h.get_by_label("Ellipse Frame Tool").click();
+        h.run_steps(3);
+        assert_eq!((h.state().app.session.tool_id(), h.state().app.ui.flyout), ("ellipseFrame", None));
     }
 
     #[test]

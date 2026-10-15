@@ -6,7 +6,7 @@
 
 use egui::{Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use pagenor_geom::Unit;
-use pagenor_geom::units::{format_measure_prec, parse_measure};
+use pagenor_geom::units::{format_measure, parse_measure};
 
 use crate::theme::Tokens;
 
@@ -38,7 +38,7 @@ pub enum NumKind<'a> {
 impl NumKind<'_> {
     pub fn format(&self, v: f64) -> String {
         match *self {
-            NumKind::Measure(u) => format_measure_prec(v, u, 3),
+            NumKind::Measure(u) => format_measure(v, u),
             NumKind::Number { suffix, decimals } => {
                 let s = format!("{v:.decimals$}");
                 let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
@@ -343,6 +343,8 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     }
     p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
+    // Screen readers (and tests) find it by its label.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     resp
 }
 

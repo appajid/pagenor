@@ -65,11 +65,7 @@ pub fn page_of_command(id: &str) -> Option<&'static str> {
 /// Open the dialog on `page` for the selected objects, the page's effect turned on (as InDesign
 /// does when an effect is chosen from a menu). Nothing selected: a status message.
 pub fn open(app: &mut DesignApp, page: &str) {
-    if let Some(old) = app.ui.dialog.take()
-        && old.id == ID
-    {
-        cancel(app, &old);
-    }
+    crate::dialogs::cancel(app);
 
     let Some(st) = app.session.active() else { return };
     let ids: Vec<u64> = st.selection.items.iter().map(|i| i.0).collect();
@@ -690,7 +686,7 @@ mod tests {
         ] {
             assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
         }
-        assert!(texts.iter().any(|x| x.contains("0.097 in")), "distance in inches: {texts:?}");
+        assert!(texts.iter().any(|x| x.contains("0.0972 in")), "distance in inches: {texts:?}");
         // Preview: the shadow is on the page while the dialog is open, without an undo step.
         frame(&mut app, &ctx);
         assert!(fx(&app).inner_shadow.on);

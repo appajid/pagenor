@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 pub use pagenor_doc::file_type::MIME;
 /// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering;
 /// format 4 retains placed-graphic clipping paths that older readers would otherwise discard.
-pub const VERSION: u32 = 5;
+// Format 6 retains document colors for future shapes; prior readers must reject it.
+pub const VERSION: u32 = 6;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
@@ -171,16 +172,40 @@ fn validate_save_parts(
 
 /// Read `.pgnr` / `.pagenor` bytes (zip, or the legacy single JSON file).
 pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
-    if bytes.starts_with(b"PK") {
+    let mut doc = if bytes.starts_with(b"PK") {
         if bytes.len() > MAX_ARCHIVE_BYTES {
             return Err(FormatError::NotOurs(format!("file exceeds the {MAX_ARCHIVE_BYTES}-byte size limit")));
         }
-        return load_zip(bytes);
+        load_zip(bytes)?
+    } else {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(FormatError::NotOurs(format!("legacy document exceeds the {MAX_DOCUMENT_BYTES}-byte size limit")));
+        }
+        load_legacy_json(bytes)?
+    };
+    normalize_story_revisions_on_load(&mut doc);
+    Ok(doc)
+}
+
+fn normalize_story_revisions_on_load(doc: &mut Document) {
+    let original: HashMap<_, _> = doc.stories.iter().filter(|(_, story)| story.rev >= (1_u64 << 63)).map(|(&id, story)| (id, story.rev)).collect();
+    if original.is_empty() {
+        return;
     }
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(FormatError::NotOurs(format!("legacy document exceeds the {MAX_DOCUMENT_BYTES}-byte size limit")));
+    for (id, story) in &mut doc.stories {
+        let rebase = original.contains_key(id);
+        let link = story.link.and_then(|(parent, copied)| original.get(&parent).map(|&rev| (parent, if copied == rev { 0 } else { u64::MAX })));
+        if !rebase && link.is_none() {
+            continue;
+        }
+        let story = Arc::make_mut(story);
+        if rebase {
+            story.rev = 0;
+        }
+        if let Some(link) = link {
+            story.link = Some(link);
+        }
     }
-    load_legacy_json(bytes)
 }
 
 fn validate_archive(z: &mut zip::ZipArchive<Cursor<&[u8]>>, limits: ArchiveLimits) -> Result<(), FormatError> {

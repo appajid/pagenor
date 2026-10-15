@@ -1359,6 +1359,13 @@ fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
         apply_typing_format(&mut cf, f);
     }
     let cp = st.doc.styles.resolve_char(&base, &cf);
+    let (style_para, style_chars) = st.doc.styles.resolve_para_style(&pf.style);
+    let mut character_base = base.clone();
+    let character_style = st.doc.styles.char_style_attrs(&cf.style);
+    character_base.apply(&character_style);
+    let char_delta = character_base.delta(&cp);
+    let style_keys = character_style.keys();
+    let character_style_overrides = char_delta.keys().iter().filter(|key| style_keys.contains(key)).count();
     let selected: String = story
         .text
         .get(r.start..r.end)
@@ -1370,7 +1377,9 @@ fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
         .take(60)
         .collect();
     let mut out = json!({"story": sid.0, "paragraphStyle": pf.style, "characterStyle": cf.style, "para": pp, "chars": cp,
-        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count(), "selectedText": selected.trim()});
+        "paraOverrides": pf.para.count(), "charOverrides": cf.over.count(),
+        "effectiveParaOverrides": style_para.delta(&pp).count() + style_chars.delta(&base).count(),
+        "effectiveCharOverrides": char_delta.count(), "characterStyleOverrides": character_style_overrides, "selectedText": selected.trim()});
     if bool_or(p, "mixed", false) {
         out["paraMixed"] = json!(mixed_para_attrs(&st.doc, &targets));
     }
@@ -2523,3 +2532,18 @@ mod eof_fixture;
 
 #[cfg(test)]
 mod tests_eof_upstream;
+
+/// The selected character/caret format, retaining persisted EOF and pending typing attributes.
+pub(crate) fn effective_char_format(s: &Session, t: &Target) -> Result<pagenor_doc::story::CharFormat> {
+    let st = s.doc()?;
+    let story = st.doc.text_story(t.story, t.cell).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
+    let mut cf = if t.range.is_empty() {
+        story_typing_format(story, t.range.start, t.cell.is_none()).into_owned()
+    } else {
+        story.format_after(t.range.start).clone()
+    };
+    if let Some(f) = typing_format(s) {
+        apply_typing_format(&mut cf, f);
+    }
+    Ok(cf)
+}

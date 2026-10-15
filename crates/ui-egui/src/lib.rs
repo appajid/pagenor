@@ -230,6 +230,12 @@ pub struct UiState {
     pub flattener_preview: bool,
     /// Tab / Shift+Tab: 1 = every panel hidden, 2 = all but the Tools panel (0 = shown).
     pub hidden_panels: u8,
+    /// "Don't show again" in the warning before deleting pages that contain objects.
+    pub skip_delete_pages_warning: bool,
+    pub pages_parents_height: Option<[f32; 2]>,
+    pub pages_panel: panels::pages::PanelOptions,
+    pub icon_groups: Option<Vec<Vec<String>>>,
+    pub page_edit: Option<(u64, usize)>,
     /// Edit › Color Settings (re-applied at start).
     pub color_settings: Option<pagenor_color::cms::ColorSettings>,
     /// View › Proof Colors and View › Proof Setup.
@@ -374,6 +380,11 @@ impl Default for UiState {
             tag_markers: false,
             flattener_preview: false,
             hidden_panels: 0,
+            skip_delete_pages_warning: false,
+            pages_parents_height: None,
+            pages_panel: Default::default(),
+            icon_groups: None,
+            page_edit: None,
             color_settings: None,
             proof_colors: false,
             proof_setup: Default::default(),
@@ -724,10 +735,18 @@ impl DesignApp {
         if matches!(
             id,
             "file.new" | "file.newSample" | "file.activate" | "file.close" | "file.open" | "file.openIdml" | "file.openBytes" | "file.recovery.open"
-        ) && self.ui.dialog.as_ref().is_some_and(|d| d.id == crate::effects_dialog::ID)
+        ) && self
+            .ui
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.id == crate::effects_dialog::ID || matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions"))
             && let Some(mut dialog) = self.ui.dialog.take()
         {
-            crate::effects_dialog::suspend(self, &mut dialog);
+            if dialog.id == crate::effects_dialog::ID {
+                crate::effects_dialog::suspend(self, &mut dialog);
+            } else {
+                dialogs::suspend_style_preview(self, &mut dialog);
+            }
             self.ui.dialog = Some(dialog);
         }
         // Pagenor external clipboard bridge. Native menus/accelerators can invoke Paste
@@ -934,6 +953,7 @@ impl DesignApp {
         let reqs = std::mem::take(&mut self.session.ui_requests);
         for r in reqs {
             match r {
+                UiRequest::Dialog { id, params } if id == "colorTheme" => dialogs::open_color_theme(self, params),
                 UiRequest::Dialog { id, params } => {
                     self.ui.dialog = Some(if id == "textFrameOptions" {
                         dialogs::text_frame_options_dialog(self, params)
@@ -1216,6 +1236,14 @@ impl DesignApp {
     pub(crate) fn request_quit(&mut self) -> Result<Value, String> {
         if self.quit_confirming || self.quit_requested || self.closing {
             return Ok(Value::Null);
+        }
+        if self
+            .ui
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.id == crate::effects_dialog::ID || matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions"))
+        {
+            dialogs::cancel(self);
         }
         // Control callers receive write failures immediately. Close generates a cancellable
         // viewport event on the next pass, where any intervening edits are checkpointed again.

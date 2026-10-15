@@ -427,6 +427,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.graphicCell|Convert Cell to Graphic Cell…",
             "cmd:table.textCell",
             "<",
+            ">Convert Rows",
+            "cmd:table.convertRowsToHeader",
+            "cmd:table.convertRowsToBody",
+            "cmd:table.convertRowsToFooter",
+            "<",
             "cmd:table.splitHorizontally",
             "cmd:table.splitVertically",
             "cmd:table.distributeColumns",
@@ -566,6 +571,17 @@ pub const MENUS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Help", &["ui:help.github", "ui:help.issues", "-", "cmd:file.newSample", "-", "ui:help.about"]),
+];
+
+/// The Typography preset's available panels in the order observed in InDesign's workspace.
+/// CC Libraries and the separate Story panel have no corresponding Pagenor panel.
+pub const TYPOGRAPHY_GROUPS: &[&[&str]] = &[
+    &["pages", "layers", "swatches"],
+    &["glyphs", "textWrap"],
+    &["stroke", "gradient"],
+    &["hyperlinks", "effects"],
+    &["paragraph", "paragraphStyles"],
+    &["character", "characterStyles"],
 ];
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
@@ -1013,7 +1029,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let page = crate::canvas::current_page(app).unwrap_or(0);
             let r = if id == "app.deletePage" {
-                app.run("layout.pages.delete", json!({"pages": [page]}))
+                crate::dialogs::delete_pages(app, vec![page])
             } else {
                 let spread = st.doc.page_loc(page).map_or(0, |l| l.0);
                 app.run("layout.pages.duplicateSpread", json!({"spread": spread}))
@@ -1540,8 +1556,13 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.docking = None;
             app.ui.docking_hidden.clear();
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Interactive for PDF");
+            let groups = match name {
+                "Typography" => Some(TYPOGRAPHY_GROUPS),
+                _ => None,
+            };
+            app.ui.icon_groups = groups.map(|groups| groups.iter().map(|g| g.iter().map(|p| p.to_string()).collect()).collect());
+            app.ui.dock_expanded = groups.is_none();
             let dock_tab = match name {
-                "Typography" => Some("properties"),
                 "Interactive for PDF" | "Digital Publishing" => Some("pages"),
                 _ => None,
             };
@@ -1550,7 +1571,6 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.ui.dock_expanded = true;
             }
             app.ui.open_panel = match name {
-                "Typography" => Some("paragraphStyles".into()),
                 "Printing and Proofing" => Some("swatches".into()),
                 "Interactive for PDF" => Some("buttons".into()),
                 "Digital Publishing" => Some("liquid".into()),
@@ -2135,6 +2155,10 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// A menu item was chosen. An engine command whose label ends in "…" and that takes parameters
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
+    if params.is_null() && id == "swatch.addColorTheme" {
+        crate::dialogs::open_color_theme(app, json!({}));
+        return;
+    }
     if params.is_null()
         && let Some(page) = crate::effects_dialog::page_of_command(id)
     {
@@ -2634,6 +2658,10 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
     {
         ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::Escape));
         let _ = app.run("view.togglePresentation", json!({}));
+        return;
+    }
+    if app.ui.flyout.is_some() && app.ui.dialog.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.ui.flyout = None;
         return;
     }
     // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
@@ -4937,3 +4965,32 @@ mod eof_readers_tests;
 #[cfg(test)]
 #[path = "menus/tests_text_frame_options.rs"]
 mod text_frame_options_tests;
+
+#[cfg(test)]
+mod typography_regressions {
+    use super::*;
+    #[test]
+    fn typography_workspace_opens_its_panels_from_named_icon_groups_and_resets() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "window.workspace", &json!({"name":"Typography"})).unwrap().unwrap();
+        assert!(app.ui.control_bar);
+        assert!(!app.ui.dock_expanded);
+        assert!(app.ui.open_panel.is_none());
+        let groups = app.ui.icon_groups.clone().unwrap();
+        assert_eq!(groups[0], ["pages", "layers", "swatches"]);
+        assert_eq!(groups[4], ["paragraph", "paragraphStyles"]);
+        assert_eq!(groups[5], ["character", "characterStyles"]);
+        for panel in ["pages", "paragraphStyles", "characterStyles"] {
+            run_ui(&mut app, "window.panel", &json!({"panel":panel})).unwrap().unwrap();
+            assert!(app.ui.docking.as_ref().is_some_and(|d| d.contains(&panel.to_owned())));
+            assert!(app.ui.dock_expanded);
+        }
+        run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+        assert_eq!(app.ui.icon_groups, Some(groups));
+        assert!(app.ui.open_panel.is_none());
+        assert!(!app.ui.dock_expanded);
+        run_ui(&mut app, "window.workspace", &json!({"name":"Essentials"})).unwrap().unwrap();
+        assert!(app.ui.icon_groups.is_none());
+        assert!(app.ui.dock_expanded);
+    }
+}
