@@ -2,7 +2,8 @@
 //!
 //! Click selects the frontmost item (Shift toggles), drag moves (Alt duplicates, Shift constrains),
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
-//! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool.
+//! empty-canvas drags make a marquee, double-clicking a text frame switches to the Type tool and
+//! double-clicking a handle fits the frame to its content (corner: both sides, edge: that one).
 //! A click on a selected text frame's in or out port loads the text cursor (see [`crate::thread`]).
 //!
 //! Content (a placed graphic, or items pasted into a frame) moves inside its frame: the Direct
@@ -51,6 +52,12 @@ enum Drag {
         stroke_pad: [f64; 2],
         scaled_stroke: bool,
         fixed_stroke: bool,
+    },
+    ContentResize {
+        id: ItemId,
+        handle: usize,
+        from: Rect,
+        spread: SpreadRef,
     },
     Rotate {
         center: Point,
@@ -295,10 +302,50 @@ pub fn handles(r: Rect) -> [Point; 8] {
     ]
 }
 
+/// The selected placed graphic (content selection of one graphic frame) and its bounds on the canvas.
+fn selected_graphic(cx: &ToolContext) -> Option<(ItemId, Rect)> {
+    let [id] = cx.selection.items.as_slice() else { return None };
+    if !cx.selection.content || !matches!(cx.doc.item(*id)?.content, Content::Graphic(_)) {
+        return None;
+    }
+    Some((*id, content_bounds(cx)?))
+}
+
+/// A handle of the selected placed graphic's bounding box under `p` (0 TL … 7 L).
+fn content_handle_at(cx: &ToolContext, p: Point) -> Option<(ItemId, usize)> {
+    let (id, b) = selected_graphic(cx)?;
+    let tol = cx.tol(5.0);
+    handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol).map(|h| (id, h))
+}
+
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
+    // With a placed graphic selected, the handles are the graphic's, not the frame's.
+    if selected_graphic(cx).is_some() {
+        return None;
+    }
     let b = cx.selection_bounds()?;
     let tol = cx.tol(5.0);
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
+}
+
+/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
+fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
+    if handle.is_multiple_of(2) {
+        return "both";
+    }
+    let canvas_height = matches!(handle, 1 | 5);
+    let local_width_is_vertical = cx
+        .selection
+        .items
+        .first()
+        .and_then(|id| {
+            let it = cx.doc.item(*id)?;
+            let xf = cx.item_canvas_xf(*id)? * it.xf;
+            let [a, b, _, _, _, _] = xf.as_coeffs();
+            Some(b.abs() > a.abs())
+        })
+        .unwrap_or(false);
+    if canvas_height == local_width_is_vertical { "width" } else { "height" }
 }
 
 /// Just outside a corner handle of the selection → rotate.
@@ -812,6 +859,16 @@ impl Tool for SelectionTool {
         {
             return actions;
         }
+        // Keep Pagenor's established text-frame multiple-click entry, including Indic input.
+        if !self.direct
+            && !cx.selection.items.iter().any(|id| cx.doc.item(*id).is_some_and(|it| it.is_text_frame()))
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+            && ev.click_count() >= 2
+            && let Some(handle) = handle_at(cx, p)
+        {
+            self.drag = Drag::None;
+            return vec![Action::Exec("object.fit".into(), json!({"mode":"fitFrameToContent", "axis":fitting_axis(cx, handle)}))];
+        }
         // Native multiple clicks arrive as Down with a count; explicit DoubleClick uses
         // the same path, while text-frame and thread-port handling stays unchanged.
         if !self.direct
@@ -852,6 +909,15 @@ impl Tool for SelectionTool {
                     let at = anchor_spread_point(cx, id, si, ai);
                     self.drag = Drag::Anchor { id, si, ai, handle, start: p, at };
                     return vec![Action::Begin(if handle.is_some() { "Move Direction Handle".into() } else { "Move Anchor".into() })];
+                }
+                if let Some((id, h)) = content_handle_at(cx, p)
+                    && let (Some(loc), Some((_, b))) = (cx.doc.find(id), selected_graphic(cx))
+                {
+                    let turns = cx.layout.slot(loc.spread).map_or(0, |slot| slot.rotation as usize);
+                    let handle = (h + 8 - 2 * turns) % 8;
+                    let from = cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b);
+                    self.drag = Drag::ContentResize { id, handle, from, spread: loc.spread };
+                    return vec![Action::Begin("Resize Content".into())];
                 }
                 if let Some((frame, corner)) = self.diamond_at(cx, p) {
                     if ev.mods.alt {
@@ -1213,6 +1279,10 @@ impl Tool for SelectionTool {
                         json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
                     )]
                 }
+                Drag::ContentResize { id, handle, from, spread } => {
+                    let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
+                    vec![Action::Preview("transform.set".into(), json!({"ids": [id.0], "content": true, "bounds": rect_json(to)}))]
+                }
                 Drag::Marquee { start, .. } => {
                     self.drag = Drag::Marquee { start, cur: p };
                     vec![]
@@ -1313,7 +1383,12 @@ impl Tool for SelectionTool {
                 let release = self.shift_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
-                    Drag::Move { .. } | Drag::Resize { .. } | Drag::Anchor { .. } | Drag::Rotate { .. } | Drag::Corner { .. } => vec![Action::Commit],
+                    Drag::Move { .. }
+                    | Drag::Resize { .. }
+                    | Drag::ContentResize { .. }
+                    | Drag::Anchor { .. }
+                    | Drag::Rotate { .. }
+                    | Drag::Corner { .. } => vec![Action::Commit],
                     Drag::Pending { .. } => match release {
                         Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
                         None => vec![],
@@ -1342,9 +1417,11 @@ impl Tool for SelectionTool {
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
-        if key == ToolKey::Escape && self.loaded.take().is_some() {
-            // Unload; the selection stays. Cancel (no interaction runs) marks the key handled.
+        if key == ToolKey::Escape && (self.loaded.take().is_some() || matches!(self.drag, Drag::Resize { .. } | Drag::ContentResize { .. })) {
+            // Cancel the resize or unload placement without deselecting. A later release stays inert.
             self.drag = Drag::None;
+            self.guides.clear();
+            self.shift_release = None;
             return vec![Action::Cancel];
         }
         let inc = cx.doc.settings.keyboard_increment * if mods.shift { 10.0 } else { 1.0 };
@@ -1375,6 +1452,8 @@ impl Tool for SelectionTool {
                 v
             }
             Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
+            // The whole graphic shows while it's resized, outside the frame too.
+            Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
             _ => vec![],
         };
         if !self.direct && self.loaded.is_none() && matches!(self.drag, Drag::None) {
@@ -1391,6 +1470,9 @@ impl Tool for SelectionTool {
         if let Drag::Move { content: true, .. } = self.drag {
             return Cursor::HandGrab;
         }
+        if let Some((_, handle)) = content_handle_at(cx, p) {
+            return handle_cursor(handle);
+        }
         if self.direct {
             let over_content = matches!(self.drag, Drag::None)
                 && anchor_at(cx, p).is_none()
@@ -1402,7 +1484,7 @@ impl Tool for SelectionTool {
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
-            Drag::Resize { handle, .. } => return handle_cursor(handle),
+            Drag::Resize { handle, .. } | Drag::ContentResize { handle, .. } => return handle_cursor(handle),
             Drag::Rotate { .. } => return Cursor::Rotate,
             Drag::Corner { .. } => return Cursor::Arrow,
             _ => {}

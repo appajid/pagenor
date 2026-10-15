@@ -2520,3 +2520,6 @@ use pagenor_format as fixture_format;
 #[cfg(test)]
 #[path = "../../tests/support/eof_format.rs"]
 mod eof_fixture;
+
+#[cfg(test)]
+mod tests_eof_upstream;

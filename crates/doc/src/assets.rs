@@ -2,7 +2,7 @@
 //! compaction a save applies (duplicates merged, unused assets left out).
 //!
 //! An asset holds what is shared by every placement of a file (bytes, link, type, the PDF page
-//! shown); each placement's frame data (transform, crop, fitting) lives on its [`Graphic`].
+//! and crop shown); each placement's frame data (transform, crop, fitting) lives on its [`Graphic`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;

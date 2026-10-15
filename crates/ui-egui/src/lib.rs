@@ -17,6 +17,7 @@ pub mod credits;
 pub mod cursors;
 pub mod dialogs;
 pub mod dock;
+pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod menus;
@@ -720,6 +721,15 @@ impl DesignApp {
 
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if matches!(
+            id,
+            "file.new" | "file.newSample" | "file.activate" | "file.close" | "file.open" | "file.openIdml" | "file.openBytes" | "file.recovery.open"
+        ) && self.ui.dialog.as_ref().is_some_and(|d| d.id == crate::effects_dialog::ID)
+            && let Some(mut dialog) = self.ui.dialog.take()
+        {
+            crate::effects_dialog::suspend(self, &mut dialog);
+            self.ui.dialog = Some(dialog);
+        }
         // Pagenor external clipboard bridge. Native menus/accelerators can invoke Paste
         // without an egui Paste event, so fetch Unicode text from the host in that case.
         let mut params = params;
@@ -770,6 +780,29 @@ impl DesignApp {
                 }
             }
         }
+        let typing = self.session.active().is_some_and(|d| d.selection.text.is_some()) || self.story_editor.is_some();
+        let (id, params) = match params.get("text").and_then(Value::as_str) {
+            Some(text) if id == "edit.paste" && !typing && pagenor_engine::cmd::is_svg_markup(text) => {
+                let mut p = json!({"svg":text});
+                for key in ["spread", "at"] {
+                    if let Some(v) = params.get(key) {
+                        p[key] = v.clone();
+                    }
+                }
+                if p.get("at").is_none()
+                    && let Some(rect) = self.canvas_rect
+                    && let Some(view) = self.view()
+                {
+                    let at = crate::canvas::Xf::new(rect, view).to_canvas(rect.center());
+                    if let Some((spread, at)) = self.session.layout().spread_at(at) {
+                        p["spread"] = json!(spread);
+                        p["at"] = json!([at.x, at.y]);
+                    }
+                }
+                ("edit.pasteSvg", p)
+            }
+            _ => (id, params),
+        };
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
         if r.is_ok() {

@@ -251,6 +251,18 @@ impl Story {
         self.chars.last().map_or(&NO_FORMAT, |r| &r.format)
     }
 
+    /// The format for newly inserted bytes, including Pagenor's persisted blank-EOF stage.
+    pub fn typing_format(&self, pos: usize) -> CharFormat {
+        let mut format = self.char_format_at(pos).clone();
+        if pos == self.len()
+            && self.text.ends_with('\n')
+            && let Some(pf) = self.paras.last().filter(|pf| !pf.chars.is_empty() || pf.eof_inherited_chars.is_some())
+        {
+            format.over = pf.chars.clone();
+        }
+        format
+    }
+
     /// Iterate `(range, format)` of character runs.
     pub fn runs(&self) -> impl Iterator<Item = (std::ops::Range<usize>, &CharFormat)> {
         let mut start = 0;

@@ -191,7 +191,8 @@ fn table_creation_consumes_anchor_stage_but_keeps_true_eof_and_cell_baseline() {
             }
             let cell = &st.tables[&tid].cells[0].text;
             assert_eq!(cell.paras, vec![baseline.clone()]);
-            assert_eq!(cell.char_format_at(0), prior.char_format_at(prior.len()), "cell typing policy remains independent of the outer stage");
+            let expected = if command == "table.insert" { prior.typing_format(prior.len()) } else { prior.char_format_at(prior.len()).clone() };
+            assert_eq!(cell.char_format_at(0), &expected, "new cells inherit the caret format; converted text retains its source format");
             edit(&mut s, "table.setCell", json!({"story": sid.0, "table": tid, "row": 0, "col": 0, "text": "Z"}));
             let mut back = reopen(&mut s);
             select(&mut back, sid, 2, 2);

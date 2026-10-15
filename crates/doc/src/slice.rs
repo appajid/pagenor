@@ -193,11 +193,19 @@ impl Story {
                 p.table = p.table.and_then(|id| ids.get(&id).copied());
             }
         }
+        let separator = self.typing_format(self.len());
+        if self.text.ends_with('\n')
+            && let Some(pf) = self.paras.last_mut()
+            && (!pf.chars.is_empty() || pf.eof_inherited_chars.is_some())
+        {
+            pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
+        }
         self.text.push('\n');
         self.text.push_str(&other.text);
-        // The paragraph end takes the last run's format.
-        if let Some(last) = self.chars.last_mut() {
+        if let Some(last) = self.chars.last_mut().filter(|last| last.format == separator) {
             last.len += 1;
+        } else {
+            self.chars.push(CharRun { len: 1, format: separator });
         }
         self.chars.extend(other.chars.into_iter().filter(|r| r.len > 0));
         self.paras.extend(other.paras);

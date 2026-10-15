@@ -1273,3 +1273,83 @@ fn arrow_selects_table_cells_and_drags_a_range_in_transformed_frame() {
     let a = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, first.x, first.y).with_mods(Mods { cmd: true, ..Default::default() }));
     assert!(a.iter().any(|a| matches!(a, Action::Exec(id, _) if id == "selection.set")));
 }
+
+#[test]
+fn double_clicking_a_handle_fits_the_frame_to_its_content_along_that_side() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    for ((x, y), axis) in [((300.0, 200.0), "both"), ((200.0, 200.0), "height"), ((300.0, 150.0), "width")] {
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, x + off.x, y + off.y));
+        assert_eq!(a, vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))], "{axis}");
+    }
+}
+
+#[test]
+fn fitting_handle_axes_follow_spread_and_frame_rotation() {
+    for spread_turn in 0..4 {
+        for frame_turn in 0..4 {
+            let mut d = Document::new(&NewDocument::default());
+            let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+            d.item_mut(id).unwrap().xf = pagenor_geom::Affine::rotate(f64::from(frame_turn) * std::f64::consts::FRAC_PI_2);
+            Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = spread_turn;
+            let s = Selection { items: vec![id], ..Default::default() };
+            let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+            let cx = ctx(&d, &s, &c, &l);
+            let b = cx.selection_bounds().unwrap();
+            let mut t = create("selection");
+            let swapped = (spread_turn + frame_turn) % 2 == 1;
+            for (index, axis) in [(1, if swapped { "width" } else { "height" }), (3, if swapped { "height" } else { "width" }), (4, "both")] {
+                let p = select::handles(b)[index];
+                let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+                assert_eq!(
+                    a,
+                    vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))],
+                    "spread={spread_turn}, frame={frame_turn}, handle={index}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_selected_graphics_own_handles_resize_it_and_leave_the_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let content = Selection { content: true, ..Selection::items(vec![f]) };
+    let set_params = |a: &[Action]| match a.last() {
+        Some(Action::Preview(cmd, p)) if cmd == "transform.set" => p.clone(),
+        other => panic!("{other:?}"),
+    };
+    for tool in ["selection", "directSelection"] {
+        let mut t = create(tool);
+        let cx = ctx(&d, &content, &c, &l);
+        // The graphic's bottom-right corner, (250, 200), outside the frame's (200, 200).
+        let corner = spread_pt(&l, 250.0, 200.0);
+        assert_ne!(t.cursor(&cx, corner, Mods::default()), Cursor::Arrow, "{tool}");
+        assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, corner.x, corner.y)), vec![Action::Begin("Resize Content".into())], "{tool}");
+        let to = spread_pt(&l, 300.0, 250.0);
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y));
+        let p = set_params(&a);
+        assert_eq!(
+            (&p["ids"], &p["content"], &p["bounds"]),
+            (&serde_json::json!([f.0]), &serde_json::json!(true), &serde_json::json!([50.0, 100.0, 300.0, 250.0]))
+        );
+        assert!(t.overlays(&cx).contains(&Overlay::ContentGhost(f)));
+        // Shift keeps the graphic's proportions (2:1).
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y).with_mods(Mods { shift: true, ..Default::default() }));
+        let b = set_params(&a)["bounds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        assert!(((b[2] - b[0]) / (b[3] - b[1]) - 2.0).abs() < 1e-6, "{b:?}");
+        assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.x, to.y)), vec![Action::Commit]);
+    }
+    // The frame's own handles don't resize the frame while its graphic is selected.
+    let mut t = create("selection");
+    let frame_corner = spread_pt(&l, 200.0, 200.0);
+    let a = t.pointer(&ctx(&d, &content, &c, &l), &PointerEvent::new(PointerKind::Down, frame_corner.x, frame_corner.y));
+    assert!(!a.contains(&Action::Begin("Resize".into())), "{a:?}");
+}

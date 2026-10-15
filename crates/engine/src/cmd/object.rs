@@ -533,6 +533,24 @@ pub fn specs() -> Vec<CommandSpec> {
                 )
             }
         ),
+        cmd!(
+            "object.effects",
+            "Effects",
+            [],
+            None,
+            "{effects?: {dropShadow?: {on?, color?, opacity?, angle?, globalLight?, distance?, size?, spread?}, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, feather? (width), directionalFeather?, gradientFeather?} (the fields given replace the object's, as the Effects dialog sets them), opacity?: 0..1, blend?, ids?} — every effect at once, one undo step",
+            has_selection,
+            set_effects
+        ),
+        cmd!(
+            "object.clearEffects",
+            "Clear Effects",
+            [],
+            None,
+            "{opaque?: bool (also Normal 100 %: the Effects panel's Clear All button), ids?} — removes every effect (the Effects panel's trash button)",
+            has_selection,
+            clear_effects
+        ),
         cmd!("object.feather", "Basic Feather", ["Object", "Effects"], None, "{width (0 = off), ids?}", has_selection, |s, p| {
             let w = f64_or(p, "width", 9.0).max(0.0);
             set_flag(s, p, move |i| i.effects.feather = w, false)
@@ -570,7 +588,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), ids?}",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ids?} — locked objects and objects on locked layers are left as they are",
             has_selection,
             fit
         ),
@@ -1268,15 +1286,32 @@ fn values_json(m: Affine) -> Value {
     json!({"scaleX": r(v.scale_x * 100.0), "scaleY": r(v.scale_y * 100.0), "rotation": r(v.rotation), "shear": r(v.shear)})
 }
 
+/// Whether `transform.set` / `transform.info` act on the placed graphic in each frame: `content`
+/// when given, else whether the selection is content (Direct Selection) when no `ids` or `id` name
+/// the targets.
+fn content_mode(s: &Session, p: &Value) -> Result<bool> {
+    if let Some(c) = p.get("content").and_then(Value::as_bool) {
+        return Ok(c);
+    }
+    let explicit = p.get("ids").is_some() || p.get("id").is_some();
+    Ok(!explicit && s.doc()?.selection.content)
+}
+
 fn transform_info(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let totals = s.prefs.transformations_are_totals;
+    let content = content_mode(s, p)?;
     let d = &s.doc()?.doc;
     let id = *ids.first().ok_or_else(|| bad("transform.info", "nothing selected"))?;
     let (_, m) = measured_xf(d, id, totals).ok_or_else(|| bad("transform.info", "no such object"))?;
     let mut out = values_json(m);
     if let Some(g) = d.item(id).and_then(Item::graphic) {
-        out["content"] = values_json(if totals { m * g.xf } else { g.xf });
+        let c = values_json(if totals { m * g.xf } else { g.xf });
+        // With the graphic selected, its values are the ones the Transform fields show and set.
+        if content {
+            out = c.clone();
+        }
+        out["content"] = c;
     }
     Ok(out)
 }
@@ -1403,6 +1438,10 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
 /// Transformations are Totals, else in the frame); x, y, width and height are the graphic's bounds
 /// on the page, about the reference point. Frames without a placed graphic are left alone.
 fn transform_content(s: &mut Session, p: &Value, ids: &[ItemId]) -> Result<Value> {
+    let bounds = rect_param(p, "bounds").filter(|r| r.is_finite());
+    if p.get("bounds").is_some() && bounds.is_none() {
+        return Err(bad("transform.set", "bounds must be four finite numbers"));
+    }
     let totals = s.prefs.transformations_are_totals;
     let get = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
     let (rot, shear, sx, sy) = (get("rotation"), get("shear").map(|v| v.clamp(-85.0, 85.0)), get("scaleX"), get("scaleY"));
@@ -1417,13 +1456,19 @@ fn transform_content(s: &mut Session, p: &Value, ids: &[ItemId]) -> Result<Value
             return Err(bad("transform.set", "no placed graphic to transform"));
         }
     }
+    if !ids
+        .iter()
+        .any(|id| s.active().is_some_and(|st| st.doc.item(*id).is_some_and(|it| !it.locked && st.doc.layer(it.layer).is_none_or(|l| !l.locked))))
+    {
+        return Ok(json!({"changed":0}));
+    }
     s.edit(|d, _| {
         let mut changed = 0;
         for id in ids {
             let Some(loc) = d.find(*id) else { continue };
             let full = d.parent_xf(&loc);
             let Some(it) = d.item(*id) else { continue };
-            if it.locked {
+            if it.locked || d.layer(it.layer).is_some_and(|l| l.locked) {
                 continue;
             }
             let Some(g) = it.graphic() else { continue };
@@ -1469,6 +1514,17 @@ fn transform_content(s: &mut Session, p: &Value, ids: &[ItemId]) -> Result<Value
                 cur = Affine::translate(a) * delta * Affine::translate(-a) * cur;
             }
             let mut gx = q.inverse() * cur;
+            // The graphic's bounds dragged on the spread (its content handles): scale and move it so
+            // its bounding box becomes `bounds` (normalized; at least 0.01 pt each way).
+            if let Some(r) = bounds {
+                let to =
+                    Rect::new(r.x0.min(r.x1), r.y0.min(r.y1), r.x0.max(r.x1).max(r.x0.min(r.x1) + 0.01), r.y0.max(r.y1).max(r.y0.min(r.y1) + 0.01));
+                let b = (frame * gx).transform_rect_bbox(rect);
+                let m = Affine::translate((to.x0, to.y0))
+                    * Affine::scale_non_uniform(to.width() / b.width().max(1e-9), to.height() / b.height().max(1e-9))
+                    * Affine::translate((-b.x0, -b.y0));
+                gx = frame.inverse() * m * frame * gx;
+            }
             // Position and size: the graphic's bounds on the page.
             if x.is_some() || y.is_some() || w.is_some() || h.is_some() {
                 let b = (frame * gx).transform_rect_bbox(rect);
@@ -1777,8 +1833,14 @@ fn ungroup(s: &mut Session, p: &Value) -> Result<Value> {
         for id in &ids {
             let Some(loc) = d.find(*id) else { continue };
             let Some(g) = d.item(*id).cloned() else { continue };
-            let Content::Group { items } = &g.content else { continue };
-            if loc.path.len() != 1 {
+            // Only groups come apart: a frame holding pasted-into items stays whole, and objects
+            // that aren't groups stay selected (as in InDesign).
+            let Content::Group { items } = &g.content else {
+                out.push(*id);
+                continue;
+            };
+            if !g.is_group() || loc.path.len() != 1 {
+                out.push(*id);
                 continue;
             }
             let Some(sp) = d.spread_mut(loc.spread) else { continue };
@@ -1869,6 +1931,167 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         },
         false,
     )
+}
+
+/// `patch` merged into `base`: objects field by field (recursively), anything else replaced.
+fn merge_json(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(b), Value::Object(p)) => {
+            for (k, v) in p {
+                merge_json(b.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (b, p) => *b = p.clone(),
+    }
+}
+
+/// Keep effect values in their ranges: opacities 0–1, sizes and distances ≥ 0, percentages 0–100.
+fn sanitize_effects(e: &mut pagenor_doc::Effects) -> Result<()> {
+    const ID: &str = "object.effects";
+    let len = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 10_000.0);
+        Ok(())
+    };
+    let pct = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 100.0);
+        Ok(())
+    };
+    let ang = |v: &mut f64| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = (*v + 180.0).rem_euclid(360.0) - 180.0;
+        Ok(())
+    };
+    let op = |v: &mut f32| -> Result<()> {
+        if !v.is_finite() {
+            return Err(bad(ID, "values must be finite"));
+        }
+        *v = v.clamp(0.0, 1.0);
+        Ok(())
+    };
+    let ds = &mut e.drop_shadow;
+    op(&mut ds.opacity)?;
+    ang(&mut ds.angle)?;
+    len(&mut ds.distance)?;
+    len(&mut ds.size)?;
+    pct(&mut ds.spread)?;
+    let is = &mut e.inner_shadow;
+    op(&mut is.opacity)?;
+    ang(&mut is.angle)?;
+    len(&mut is.distance)?;
+    len(&mut is.size)?;
+    pct(&mut is.choke)?;
+    let og = &mut e.outer_glow;
+    op(&mut og.opacity)?;
+    len(&mut og.size)?;
+    pct(&mut og.spread)?;
+    let ig = &mut e.inner_glow;
+    op(&mut ig.opacity)?;
+    len(&mut ig.size)?;
+    pct(&mut ig.choke)?;
+    let bv = &mut e.bevel;
+    len(&mut bv.size)?;
+    len(&mut bv.depth)?;
+    ang(&mut bv.angle)?;
+    op(&mut bv.highlight_opacity)?;
+    op(&mut bv.shadow_opacity)?;
+    let sa = &mut e.satin;
+    op(&mut sa.opacity)?;
+    ang(&mut sa.angle)?;
+    len(&mut sa.distance)?;
+    len(&mut sa.size)?;
+    len(&mut e.feather)?;
+    for w in &mut e.directional_feather.widths {
+        len(w)?;
+    }
+    let gf = &mut e.gradient_feather;
+    ang(&mut gf.angle)?;
+    op(&mut gf.start)?;
+    op(&mut gf.end)?;
+    Ok(())
+}
+
+fn effects_targets(s: &Session, p: &Value) -> Result<Vec<ItemId>> {
+    let d = &s.doc()?.doc;
+    Ok(targets(s, p)?
+        .into_iter()
+        .filter(|id| d.item(*id).is_some_and(|it| !it.locked && d.layer(it.layer).is_none_or(|layer| !layer.locked)))
+        .collect())
+}
+
+fn clear_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = effects_targets(s, p)?;
+    if ids.is_empty() {
+        return Ok(json!({"changed": 0}));
+    }
+    let opaque = bool_or(p, "opaque", false);
+    s.edit(|d, _| {
+        for id in &ids {
+            if let Some(it) = d.item_mut(*id) {
+                it.effects = Default::default();
+                if opaque {
+                    it.opacity = 1.0;
+                    it.blend = Default::default();
+                }
+            }
+        }
+        Ok(json!({"changed": ids.len()}))
+    })
+}
+
+fn set_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.effects";
+    let patch = match p.get("effects") {
+        None | Some(Value::Null) => None,
+        Some(v @ Value::Object(_)) => Some(v.clone()),
+        Some(_) => return Err(bad(ID, "effects must be an object")),
+    };
+    let opacity = match p.get("opacity") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().filter(|o| o.is_finite()).ok_or_else(|| bad(ID, "opacity must be a number"))?.clamp(0.0, 1.0) as f32),
+    };
+    let blend = match p.get("blend") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let raw = v.as_str().ok_or_else(|| bad(ID, "blend must be a string"))?;
+            Some(BlendMode::parse(raw).ok_or_else(|| bad(ID, format!("unknown blend mode `{raw}`")))?)
+        }
+    };
+    let ids = effects_targets(s, p)?;
+    if ids.is_empty() {
+        return Ok(json!({"changed": 0}));
+    }
+    s.edit(|d, _| {
+        let mut changed = 0;
+        for id in &ids {
+            let Some(it) = d.item_mut(*id) else { continue };
+            if it.locked {
+                continue;
+            }
+            if let Some(patch) = &patch {
+                let mut cur = serde_json::to_value(&it.effects).map_err(|e| bad(ID, e.to_string()))?;
+                merge_json(&mut cur, patch);
+                let mut fx: pagenor_doc::Effects = serde_json::from_value(cur).map_err(|e| bad(ID, format!("effects: {e}")))?;
+                sanitize_effects(&mut fx)?;
+                it.effects = fx;
+            }
+            if let Some(o) = opacity {
+                it.opacity = o;
+            }
+            if let Some(b) = blend {
+                it.blend = b;
+            }
+            changed += 1;
+        }
+        Ok(json!({"changed": changed}))
+    })
 }
 
 fn set_flag(s: &mut Session, p: &Value, f: impl Fn(&mut Item), deselect: bool) -> Result<Value> {
@@ -2323,9 +2546,32 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn fit(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
+    let doc = &s.doc()?.doc;
+    let ids: Vec<_> =
+        targets(s, p)?.into_iter().filter(|id| doc.item(*id).is_some_and(|it| !it.locked && doc.layer(it.layer).is_none_or(|l| !l.locked))).collect();
     let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    let (height, width) = match str_param(p, "axis").unwrap_or("both") {
+        "height" => (true, false),
+        "width" => (false, true),
+        "both" => (true, true),
+        other => return Err(bad("object.fit", format!("unknown axis `{other}`"))),
+    };
+    // Text frames: Fit Frame to Content fits the frame to its composed text.
+    let mut text_fits = Vec::new();
+    if mode == "fitFrameToContent" {
+        let d = s.doc()?.doc.clone();
+        for id in &ids {
+            if let Some(r) = fitted_text_frame(&d, *id, height, width)? {
+                text_fits.push((*id, r));
+            }
+        }
+    }
     s.edit(|d, _| {
+        for (id, r) in &text_fits {
+            if let Some(it) = d.item_mut(*id) {
+                it.path = shapes::rectangle(*r);
+            }
+        }
         for id in &ids {
             let Some(it) = d.item_mut(*id) else { continue };
             let r = it.inner_bounds();
@@ -2333,7 +2579,12 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
             let (nw, nh) = g.size;
             let cur = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
             if mode == "fitFrameToContent" {
-                it.path = shapes::rectangle(cur);
+                it.path = shapes::rectangle(Rect::new(
+                    if width { cur.x0 } else { r.x0 },
+                    if height { cur.y0 } else { r.y0 },
+                    if width { cur.x1 } else { r.x1 },
+                    if height { cur.y1 } else { r.y1 },
+                ));
                 continue;
             }
             let m = fitting_mode(&mode)
@@ -2345,6 +2596,103 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
         }
         ok()
     })
+}
+
+/// The inner rectangle that fits text frame `id` to its text (Fit Frame to Content): the smallest
+/// fitting height and the right side at the longest line's end (`width`, one column only),
+/// including insets; the top-left stays. Overset text grows the frame first. None for
+/// frames that aren't horizontal text frames, have no text, or are threaded on to another frame.
+fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Result<Option<Rect>> {
+    let Some(it) = d.item(id) else { return Ok(None) };
+    let Some(tf) = it.text_frame() else { return Ok(None) };
+    if d.frame_vertical(it) || tf.options.path.is_some() {
+        return Ok(None);
+    }
+    let Some(story) = d.story(tf.story) else { return Ok(None) };
+    // The last frame of its thread only: an earlier frame's text runs on.
+    if story.frames.last() != Some(&id) {
+        return Ok(None);
+    }
+    let r = it.inner_bounds();
+    if !(r.width().is_finite() && r.height().is_finite() && r.width() > 0.0 && r.height() > 0.0) {
+        return Err(bad("object.fit", "text frame bounds must be finite and nonempty"));
+    }
+    // Keep trial layouts out of the session cache. Search with the actual columns and frame
+    // options: measuring a very tall frame collapses columns and includes vertical alignment's
+    // extra space. A fitting trial must compose all the text, regardless of its justification.
+    let cache = pagenor_compose::Cache::new();
+    let mut trial = d.clone();
+    let mut compose = |rect| {
+        if let Some(it) = trial.item_mut(id) {
+            it.path = shapes::rectangle(rect);
+        }
+        cache.get(&trial, tf.story, None)
+    };
+    let initial = compose(r);
+    if initial.frame(id).is_none_or(|ft| ft.lines.is_empty()) && !initial.is_overset() {
+        return Ok(None);
+    }
+    let mut out = r;
+    // First fit the height at the existing width, then measure the complete text's width.
+    // Recheck height after fitting width, since a small width change can change a line break.
+    if height {
+        out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+    }
+    if width && tf.options.columns <= 1 {
+        let cs = compose(out);
+        if let Some(ft) = cs.frame(id) {
+            let right = ft.lines.iter().map(|l| l.end_x).fold(f64::NEG_INFINITY, f64::max);
+            if right.is_finite() {
+                out.x1 = (right + tf.options.inset[3] + 0.001).max(r.x0 + 1.0);
+            }
+        }
+        if height {
+            out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+        }
+    }
+    Ok(Some(out))
+}
+
+fn fit_text_height(
+    mut rect: Rect,
+    id: ItemId,
+    inset_bottom: f64,
+    compose: &mut impl FnMut(Rect) -> Arc<pagenor_compose::ComposedStory>,
+) -> Result<Rect> {
+    let mut low = 1.0;
+    let limit = 20_000.0;
+    let mut high = rect.height().clamp(1.0, limit);
+    rect.y1 = rect.y0 + high;
+    while compose(rect).is_overset() {
+        if high >= limit {
+            return Err(bad("object.fit", "text does not fit within the 20,000 pt fitting limit"));
+        }
+        low = high;
+        high = (high * 2.0).min(limit);
+        rect.y1 = rect.y0 + high;
+    }
+    // Bounded search, always retaining a verified fitting upper bound.
+    for _ in 0..32 {
+        if high - low < 0.001 {
+            break;
+        }
+        let mid = low + (high - low) / 2.0;
+        rect.y1 = rect.y0 + mid;
+        if compose(rect).is_overset() {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    rect.y1 = rect.y0 + high;
+    // A line is set when its baseline is within 0.01 pt of the bottom, so the search stops just
+    // short of the lowest baseline. The bottom goes onto it (plus the inset), as InDesign's does:
+    // the frame then fits its text exactly and still does when it is scaled up.
+    let lowest = compose(rect).frame(id).and_then(|ft| ft.lines.iter().map(|l| l.baseline).reduce(f64::max));
+    if let Some(b) = lowest.map(|b| b + inset_bottom).filter(|b| b.is_finite() && *b > rect.y1 && *b - rect.y1 <= 0.02) {
+        rect.y1 = b;
+    }
+    Ok(rect)
 }
 
 pub(crate) trait RemoveKeep {
@@ -3824,5 +4172,370 @@ mod tint_alone_tests {
         s.execute("object.stroke", &json!({"tint": 0.5, "ids": [a]})).unwrap();
         assert!(item(&s, a).stroke.is_none(), "{:?}", item(&s, a).stroke);
         assert!(s.execute("object.fill", &json!({"ids": [a]})).is_err(), "neither swatch nor tint");
+    }
+}
+
+#[cfg(test)]
+mod ungroup_tests {
+    use super::*;
+
+    #[test]
+    fn ungroup_leaves_frames_with_pasted_in_items_whole() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = |r: Value| ItemId(r["id"].as_u64().unwrap());
+        let sq = id(s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap());
+        let ell = id(s.execute("frame.create", &json!({"rect": [90, 90, 210, 210], "shape": "ellipse"})).unwrap());
+        s.execute("selection.set", &json!({"ids": [sq.0]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": [ell.0]})).unwrap();
+        s.execute("edit.pasteInto", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.item(ell).unwrap().default_label(), "<ellipse>", "named by its shape, not <group>");
+        // Ungroup: the frame keeps its content and stays selected.
+        s.execute("object.ungroup", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.item(ell).unwrap().has_nested_items());
+        assert_eq!(d.spreads[0].items.len(), 1);
+        assert_eq!(s.doc().unwrap().selection.items, vec![ell]);
+        // A real group with the frame in it still comes apart, the frame whole.
+        let other = id(s.execute("frame.create", &json!({"rect": [300, 100, 400, 200]})).unwrap());
+        s.execute("selection.set", &json!({"ids": [ell.0, other.0]})).unwrap();
+        let g = id(s.execute("object.group", &json!({})).unwrap());
+        assert_eq!(s.doc().unwrap().doc.item(g).unwrap().default_label(), "<group>");
+        s.execute("object.ungroup", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.item(g).is_none());
+        assert!(d.item(ell).unwrap().has_nested_items());
+        assert_eq!(s.doc().unwrap().selection.items.len(), 2);
+        d.check().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fit_text_frame_tests {
+    use super::*;
+
+    fn frame(s: &mut Session, rect: [f64; 4], text: &str) -> ItemId {
+        let id = ItemId(s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap());
+        s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 30}})).unwrap();
+        id
+    }
+
+    fn bounds(s: &Session, id: ItemId) -> Rect {
+        s.doc().unwrap().doc.item(id).unwrap().bounds()
+    }
+
+    #[test]
+    fn fit_frame_to_content_fits_a_text_frame_to_its_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "INDESIGN");
+        // The height only (a top or bottom handle): the width stays.
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [id.0]})).unwrap();
+        let h = bounds(&s, id);
+        assert!(h.x1 == 500.0 && h.y0 == 100.0 && h.height() > 30.0 && h.height() < 45.0, "{h:?}");
+        // Both (a corner handle, or the menu): around the line.
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        assert!(b.x0 == 100.0 && b.width() > 100.0 && b.width() < 250.0, "{b:?}");
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(id).unwrap().text_frame().unwrap().story;
+        let cs = s.cache.get(&d, sid, None);
+        assert!(!cs.is_overset(), "still fits");
+        // The bottom is on the baseline (Dansky's Exclude Overlap tutorial, 1:56: 70 pt Kanji_PA
+        // fits to 18.521 mm, its ascent), so a frame scaled up with its text still fits.
+        let baseline = cs.frame(id).unwrap().lines[0].baseline;
+        assert!((b.y1 - baseline).abs() < 1e-9, "{b:?} {baseline}");
+    }
+
+    #[test]
+    fn fit_frame_to_content_grows_a_frame_with_overset_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = frame(&mut s, [100.0, 100.0, 300.0, 140.0], "one two three four five six seven eight nine ten eleven twelve");
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(id).unwrap().text_frame().unwrap().story;
+        assert!(s.cache.get(&d, sid, None).is_overset());
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [id.0]})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(!s.cache.get(&d, sid, None).is_overset(), "{:?}", bounds(&s, id));
+        assert!(bounds(&s, id).height() > 100.0);
+        assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "diagonal", "ids": [id.0]})).is_err());
+    }
+
+    #[test]
+    fn fitting_text_keeps_columns_and_vertical_justification() {
+        use pagenor_doc::VerticalJustification::{Bottom, Center, Justify, Top};
+        for columns in [1, 2] {
+            for justification in [Top, Bottom, Center, Justify] {
+                let mut s = Session::new();
+                s.execute("file.new", &json!({})).unwrap();
+                let id = frame(&mut s, [100.0, 100.0, 500.0, 500.0], "one two three four five six seven eight nine ten eleven twelve");
+                let options = &mut Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id).unwrap().text_frame_mut().unwrap().options;
+                options.columns = columns;
+                options.vertical_justification = justification;
+                s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height"})).unwrap();
+                let d = &s.doc().unwrap().doc;
+                let it = d.item(id).unwrap();
+                let tf = it.text_frame().unwrap();
+                let composed = s.cache.get(d, tf.story, None);
+                assert!(!composed.is_overset(), "{columns} {justification:?}");
+                assert!(it.bounds().height() < 250.0, "{columns} {justification:?}: {:?}", it.bounds());
+                assert_eq!(tf.options.vertical_justification, justification);
+                assert_eq!(tf.options.columns, columns);
+                if columns == 2 {
+                    let ft = composed.frame(id).unwrap();
+                    assert!(ft.lines.iter().any(|l| l.column == 1), "both columns stay in use: {ft:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn graphic_fitting_obeys_each_axis_and_locked_text_and_graphics_stay_put() {
+        for graphic in [false, true] {
+            for lock_layer in [false, true] {
+                let mut s = Session::new();
+                s.execute("file.new", &json!({})).unwrap();
+                let id = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Fit me");
+                if graphic {
+                    let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+                    s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "test.png", "frame": id.0})).unwrap();
+                    let it = Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id).unwrap();
+                    let Content::Graphic(g) = &mut it.content else { panic!("graphic") };
+                    g.xf = Affine::translate((80.0, 90.0)) * Affine::scale(3.0);
+                    let original = it.inner_bounds();
+                    s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ids": [id.0]})).unwrap();
+                    let fitted = s.doc().unwrap().doc.item(id).unwrap().inner_bounds();
+                    assert_eq!(fitted, Rect::new(80.0, original.y0, 200.0, original.y1));
+                    Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id).unwrap().path = shapes::rectangle(original);
+                    s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [id.0]})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().inner_bounds(), Rect::new(original.x0, 90.0, original.x1, 150.0));
+                    Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id).unwrap().path = shapes::rectangle(original);
+                }
+                let before = bounds(&s, id);
+                if lock_layer {
+                    let layer = s.doc().unwrap().doc.item(id).unwrap().layer;
+                    Arc::make_mut(&mut s.doc_mut().unwrap().doc).layer_mut(layer).unwrap().locked = true;
+                } else {
+                    Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id).unwrap().locked = true;
+                }
+                s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ids": [id.0]})).unwrap();
+                assert_eq!(bounds(&s, id), before, "graphic={graphic}, layer={lock_layer}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unfittable_frame_returns_an_error_without_changing_any_target() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Fits");
+        let b = frame(&mut s, [100.0, 400.0, 500.0, 600.0], "Cannot fit");
+        Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(b).unwrap().text_frame_mut().unwrap().options.first_baseline_min = 30_000.0;
+        let before = [bounds(&s, a), bounds(&s, b)];
+        assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ids": [a.0, b.0]})).is_err());
+        assert_eq!([bounds(&s, a), bounds(&s, b)], before);
+    }
+}
+
+#[cfg(test)]
+mod graphic_handle_bounds_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A rotated graphic frame holding a 200 x 100 image, its content selected.
+    fn rotated_frame_with_image() -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![200u8; 200 * 100 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        s.execute("transform.rotate", &json!({"ids": [f], "angle": -45})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+        (s, f)
+    }
+
+    #[test]
+    fn content_bounds_resize_the_graphic_and_leave_the_frame() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        let png = pagenor_render::Rendered { width: 200, height: 100, pixels: vec![200u8; 200 * 100 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        let bounds = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).unwrap().clone();
+            let g = it.graphic().unwrap().clone();
+            (it.bounds(), (it.xf * g.xf).transform_rect_bbox(pagenor_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1)))
+        };
+        let (frame0, _) = bounds(&s);
+        // The handles' drag: the image to (20, 40)–(420, 240), one undo step; the frame stays.
+        s.execute("transform.set", &json!({"ids": [f], "content": true, "bounds": [20, 40, 420, 240]})).unwrap();
+        let (frame1, g1) = bounds(&s);
+        assert_eq!(frame1, frame0);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(g1.x0, 20.0) && near(g1.y0, 40.0) && near(g1.x1, 420.0) && near(g1.y1, 240.0), "{g1:?}");
+        // Dragged past the opposite edge: normalized, never empty.
+        s.execute("transform.set", &json!({"ids": [f], "content": true, "bounds": [300, 300, 300, 100]})).unwrap();
+        let (_, g2) = bounds(&s);
+        assert!(g2.width() > 0.0 && near(g2.y0, 100.0) && near(g2.y1, 300.0), "{g2:?}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(near(bounds(&s).1.x1, 420.0));
+    }
+
+    #[test]
+    fn rotating_the_content_leaves_the_frame_as_it_is() {
+        let (mut s, f) = rotated_frame_with_image();
+        let before = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((before["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6 && (before["content"]["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6);
+        // The tutorial's step: the image straightened inside its tilted frame.
+        s.execute("transform.set", &json!({"rotation": 0})).unwrap();
+        let after = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((after["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "the frame stays at -45: {after}");
+        assert!(after["content"]["rotation"].as_f64().unwrap().abs() < 1e-6, "the image is upright: {after}");
+        // Scale and position act on the image too.
+        s.execute("transform.set", &json!({"scaleX": 50, "scaleY": 50})).unwrap();
+        let info = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((info["content"]["scaleX"].as_f64().unwrap() - 50.0).abs() < 1e-6, "{info}");
+        assert!((info["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6);
+        // One undo step each.
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let undone = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((undone["content"]["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "{undone}");
+    }
+
+    #[test]
+    fn with_the_graphic_selected_transform_info_reports_the_graphic() {
+        let (mut s, f) = rotated_frame_with_image();
+        s.execute("transform.set", &json!({"rotation": 0})).unwrap();
+        // What the Control bar and Properties read: the graphic's 0, not the frame's -45, so a
+        // spinner step from it gives 1, not -44.
+        let info = s.execute("transform.info", &json!({})).unwrap();
+        assert!(info["rotation"].as_f64().unwrap().abs() < 1e-6, "{info}");
+        let rot = info["rotation"].as_f64().unwrap() + 1.0;
+        s.execute("transform.set", &json!({"rotation": rot})).unwrap();
+        let after = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!((after["content"]["rotation"].as_f64().unwrap() - 1.0).abs() < 1e-6, "{after}");
+        assert!((after["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "the frame stays: {after}");
+        // `id` names the target explicitly, like `ids`: the frame.
+        let by_id = s.execute("transform.info", &json!({"id": f})).unwrap();
+        assert!((by_id["rotation"].as_f64().unwrap() + 45.0).abs() < 1e-6, "{by_id}");
+    }
+
+    #[test]
+    fn a_locked_frame_records_no_undo_step() {
+        let (mut s, f) = rotated_frame_with_image();
+        s.execute("object.lock", &json!({"ids": [f]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        assert_eq!(s.execute("transform.set", &json!({"rotation": 0})).unwrap()["changed"], 0);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "no empty undo step");
+    }
+
+    #[test]
+    fn a_frame_selection_still_transforms_the_frame_and_an_empty_frame_has_no_content() {
+        let (mut s, f) = rotated_frame_with_image();
+        // `content: false` (or a frame selection) turns frame and image together.
+        s.execute("transform.set", &json!({"rotation": 0, "content": false})).unwrap();
+        let info = s.execute("transform.info", &json!({"ids": [f]})).unwrap();
+        assert!(info["rotation"].as_f64().unwrap().abs() < 1e-6, "{info}");
+        let e = s.execute("frame.create", &json!({"rect": [400, 100, 500, 200], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        assert!(s.execute("transform.set", &json!({"ids": [e], "content": true, "rotation": 10})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod effects_command_tests {
+    use pagenor_doc::ItemId;
+    use serde_json::json;
+
+    #[test]
+    fn effects_leave_locked_items_and_layers_unchanged_without_history() {
+        for layer_lock in [false, true] {
+            let mut s = crate::Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let id = s.execute("frame.create", &json!({"rect": [10, 10, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+            let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let layer = d.item(ItemId(id)).unwrap().layer;
+            if layer_lock {
+                d.layer_mut(layer).unwrap().locked = true;
+            } else {
+                d.item_mut(ItemId(id)).unwrap().locked = true;
+            }
+            let before = s.doc().unwrap().doc.clone();
+            let undo = s.doc().unwrap().history.undo.len();
+            for (cmd, p) in [
+                ("object.effects", json!({"ids": [id], "opacity": 0.2, "effects": {"feather": 4}})),
+                ("object.clearEffects", json!({"ids": [id], "opaque": true})),
+            ] {
+                assert_eq!(s.execute(cmd, &p).unwrap()["changed"], 0);
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+                assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+            }
+        }
+    }
+
+    #[test]
+    fn effects_set_together_in_one_undo_step_and_keep_what_is_not_given() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.dropShadow", &json!({"on": true, "distance": 10, "ids": [id]})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s
+            .execute(
+                "object.effects",
+                &json!({"ids": [id], "opacity": 0.5, "blend": "multiply",
+                    "effects": {"innerShadow": {"on": true, "angle": 120, "distance": 7, "size": 7}, "dropShadow": {"size": 9}, "feather": 4}}),
+            )
+            .unwrap();
+        assert_eq!(r["changed"], 1);
+        let st = s.doc().unwrap();
+        assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
+        let it = st.doc.item(ItemId(id)).unwrap();
+        let e = &it.effects;
+        assert!(e.inner_shadow.on && e.inner_shadow.angle == 120.0 && e.inner_shadow.size == 7.0);
+        assert!(e.drop_shadow.on && e.drop_shadow.distance == 10.0 && e.drop_shadow.size == 9.0, "untouched fields stay");
+        assert_eq!((e.feather, it.opacity, it.blend), (4.0, 0.5, pagenor_color::BlendMode::Multiply));
+        // Out of range values are kept in range; garbage changes nothing.
+        s.execute("object.effects", &json!({"ids": [id], "effects": {"outerGlow": {"on": true, "opacity": 3, "spread": 400, "size": -5}}})).unwrap();
+        let og = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.outer_glow.clone();
+        assert_eq!((og.opacity, og.spread, og.size), (1.0, 100.0, 0.0));
+        let before = s.doc().unwrap().doc.clone();
+        for bad in [json!({"effects": {"dropShadow": {"distance": "far"}}}), json!({"effects": 5}), json!({"blend": "loud"}), json!({"opacity": "x"})]
+        {
+            let mut p = bad.clone();
+            p["ids"] = json!([id]);
+            assert!(s.execute("object.effects", &p).is_err(), "{bad}");
+        }
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    }
+}
+
+#[cfg(test)]
+mod clear_effects_tests {
+    use serde_json::json;
+
+    #[test]
+    fn clear_effects_removes_them_and_opaque_resets_transparency() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let item = |s: &crate::Session| s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap().clone();
+        s.execute("object.effects", &json!({"ids": [id], "opacity": 0.5, "blend": "multiply", "effects": {"innerGlow": {"on": true}, "feather": 4}}))
+            .unwrap();
+        s.execute("object.clearEffects", &json!({"ids": [id]})).unwrap();
+        let it = item(&s);
+        assert!(!it.effects.any());
+        assert_eq!(it.opacity, 0.5, "the trash button keeps the transparency");
+        s.execute("object.clearEffects", &json!({"ids": [id], "opaque": true})).unwrap();
+        let it = item(&s);
+        assert_eq!((it.opacity, it.blend), (1.0, pagenor_color::BlendMode::Normal));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(item(&s).opacity, 0.5);
     }
 }

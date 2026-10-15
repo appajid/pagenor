@@ -437,7 +437,11 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             // A blank outer EOF carries typing attrs, not new cell defaults.
             pf.chars = pf.eof_inherited_chars.take().unwrap_or_default();
         }
-        let cf = st.char_format_at(t.range().start).clone();
+        let cf = if t.range().is_empty() {
+            super::text::story_typing_format(st, t.range().start, t.cell.is_none()).into_owned()
+        } else {
+            st.char_format_at(t.range().start).clone()
+        };
         for c in &mut table.cells {
             c.text.paras[0] = pagenor_doc::ParaFormat { table: None, ..pf.clone() };
             c.text.chars[0].format = cf.clone();

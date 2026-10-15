@@ -1060,7 +1060,16 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
             && sel.content
         {
             let gb = xf.rect((a * it.xf * g.xf).transform_rect_bbox(DRect::new(0.0, 0.0, g.size.0, g.size.1)));
-            painter.rect_stroke(gb, 0.0, Stroke::new(1.0, Color32::from_rgb(196, 111, 43)), StrokeKind::Middle);
+            let brown = Color32::from_rgb(196, 111, 43);
+            painter.rect_stroke(gb, 0.0, Stroke::new(1.0, brown), StrokeKind::Middle);
+            // Its own handles resize the graphic (InDesign's brown content bounding box).
+            if sel.items.len() == 1 {
+                for h in pagenor_tools::select::handles(DRect::new(gb.min.x as f64, gb.min.y as f64, gb.max.x as f64, gb.max.y as f64)) {
+                    let r = Rect::from_center_size(pos2(h.x as f32, h.y as f32), vec2(6.5, 6.5));
+                    painter.rect_filled(r, 0.0, Color32::WHITE);
+                    painter.rect_stroke(r, 0.0, Stroke::new(hair(painter), brown), StrokeKind::Inside);
+                }
+            }
         }
     }
     let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
@@ -1089,6 +1098,7 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
     if let Some(u) = union
         && sel.text.is_none()
         && !direct
+        && !sel.content
     {
         if sel.items.len() > 1 {
             painter.rect_stroke(u, 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
@@ -2284,6 +2294,9 @@ impl CanvasInput {
                 egui::Event::Text(t) if wants_text && !app.canvas_ime.active() => {
                     let _ = app.run("text.insert", json!({"text": t}));
                 }
+                egui::Event::Paste(t) if !wants_text && pagenor_engine::cmd::is_svg_markup(&t) => {
+                    let _ = app.run("edit.paste", json!({"text":t}));
+                }
                 egui::Event::Paste(t) if wants_text => {
                     // Formatted when the system clipboard still holds what was copied here;
                     // Shift (⇧⌘V) pastes without formatting.
@@ -2922,6 +2935,57 @@ mod tests {
     fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
         let s = &h.state().session.doc().unwrap().doc.settings;
         (s.horizontal_units, s.vertical_units)
+    }
+
+    const ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100pt" height="50pt"><path d="M0,0 C30,0 70,50 100,50" fill="none" stroke="#000" stroke-width="2"/></svg>"##;
+
+    #[test]
+    fn pasting_svg_from_another_app_places_editable_paths_in_the_middle_of_the_view() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut h = harness(app);
+        let undo = h.state().session.doc().unwrap().history.undo.len();
+        h.event(egui::Event::Paste(ART.into()));
+        h.run_steps(2);
+        let app = h.state();
+        let st = app.session.doc().unwrap();
+        assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
+        let id = *st.selection.items.first().expect("the pasted path is selected");
+        let it = st.doc.item(id).unwrap();
+        assert_eq!(it.shape, pagenor_doc::Shape::Path);
+        assert_eq!(it.path.subpaths[0].anchors.len(), 2);
+        assert!((it.stroke.weight - 2.0).abs() < 1e-9);
+        // Centred where the view's centre falls on the spread.
+        let rect = app.canvas_rect.unwrap();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let (_, centre) = CanvasLayout::new(&st.doc, false).spread_at(xf.to_canvas(rect.center())).unwrap();
+        assert!((it.bounds().center() - centre).hypot() < 0.01, "{:?} vs {centre:?}", it.bounds());
+        // Plain text isn't art: it goes to Edit › Paste, as on main, and never becomes paths.
+        let paths = |app: &DesignApp| {
+            let d = &app.session.doc().unwrap().doc;
+            d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|it| it.shape == pagenor_doc::Shape::Path).count()
+        };
+        let before = paths(h.state());
+        h.event(egui::Event::Paste("just words".into()));
+        h.run_steps(2);
+        assert_eq!(paths(h.state()), before);
+    }
+
+    #[test]
+    fn edit_paste_from_a_menu_pastes_svg_on_the_system_clipboard_as_paths() {
+        let services = crate::Services { clipboard_text: Some(Box::new(|| Some(ART.to_string()))), ..Default::default() };
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+        let st = app.session.doc().unwrap();
+        let id = *st.selection.items.first().expect("the pasted path is selected");
+        assert_eq!(st.doc.item(id).unwrap().shape, pagenor_doc::Shape::Path, "paths, not a text frame of markup");
+        // Typing: the markup is text, pasted at the insertion point.
+        let sid = app.run("frame.create", json!({"rect": [10, 10, 300, 300], "content": "text", "text": ""})).unwrap()["story"].clone();
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+        let d = &app.session.doc().unwrap().doc;
+        assert!(d.story(pagenor_doc::StoryId(sid.as_u64().unwrap())).unwrap().text.contains("<svg"));
     }
 
     /// A viewport wider than the GPU's largest texture: the canvas texture is sampled down, and an

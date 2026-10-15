@@ -280,33 +280,44 @@ pub fn swatch_list(ui: &mut egui::Ui, doc: &pagenor_doc::Document, current: &str
     picked
 }
 
-/// A swatch dropdown showing a chip and name; `on_pick` gets the chosen swatch name.
-pub fn swatch_picker(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, current: Option<String>, on_pick: impl FnOnce(&mut DesignApp, String)) {
-    let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+/// A swatch dropdown showing a chip and name; `on_pick` gets the chosen swatch name. Returns the
+/// chip's response (`None` without a document), for a caller to label or annotate.
+pub fn swatch_picker(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    id: &str,
+    current: Option<String>,
+    on_pick: impl FnOnce(&mut DesignApp, String),
+) -> Option<egui::Response> {
+    let doc = app.session.active().map(|d| d.doc.clone())?;
     let cur = current.unwrap_or_default();
     let (c, g) = crate::widgets::swatch_colors(&doc, &cur, 1.0);
     let mut picked = None;
-    ui.push_id(id, |ui| {
-        let (r, resp) = ui.allocate_exact_size(vec2(30.0, 18.0), egui::Sense::click());
-        crate::widgets::paint_chip(
-            ui.painter(),
-            egui::Rect::from_min_size(r.min, vec2(18.0, 18.0)),
-            if cur.is_empty() { Some(egui::Color32::GRAY) } else { c },
-            g,
-        );
-        crate::icons::paint(
-            ui.painter(),
-            egui::Rect::from_min_size(r.min + vec2(18.0, 3.0), vec2(12.0, 12.0)),
-            "chevron-down",
-            Tokens::get(ui.ctx()).icon,
-        );
-        egui::Popup::menu(&resp).show(|ui| {
-            picked = swatch_list(ui, &doc, &cur);
-        });
-    });
+    let resp = ui
+        .push_id(id, |ui| {
+            let (r, resp) = ui.allocate_exact_size(vec2(30.0, 18.0), egui::Sense::click());
+            crate::widgets::paint_chip(
+                ui.painter(),
+                egui::Rect::from_min_size(r.min, vec2(18.0, 18.0)),
+                if cur.is_empty() { Some(egui::Color32::GRAY) } else { c },
+                g,
+            );
+            crate::icons::paint(
+                ui.painter(),
+                egui::Rect::from_min_size(r.min + vec2(18.0, 3.0), vec2(12.0, 12.0)),
+                "chevron-down",
+                Tokens::get(ui.ctx()).icon,
+            );
+            egui::Popup::menu(&resp).show(|ui| {
+                picked = swatch_list(ui, &doc, &cur);
+            });
+            resp
+        })
+        .inner;
     if let Some(p) = picked {
         on_pick(app, p);
     }
+    Some(resp)
 }
 
 /// A font family combo box showing `current` by its menu name, with [`font_menu_body`] as its menu.
@@ -813,6 +824,35 @@ mod font_menu_ui_tests {
 }
 
 #[cfg(test)]
+mod content_selection_tests {
+    use serde_json::json;
+
+    /// With a placed graphic selected (Direct Selection), X/Y/W/H are the graphic's: what the
+    /// Transform fields then set.
+    #[test]
+    fn a_selected_graphic_shows_its_own_bounds() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].clone();
+        let png = pagenor_render::Rendered { width: 400, height: 400, pixels: vec![200u8; 400 * 400 * 4] }.to_png();
+        let b64 = pagenor_engine::cmd::base64_encode(&png);
+        app.run("file.place", json!({"base64": b64, "name": "a.png", "frame": f})).unwrap();
+        app.run("selection.set", json!({"ids": [f]})).unwrap();
+        let frame = super::sel_info(&app).unwrap().page_rect;
+        assert!((frame.width() - 200.0).abs() < 1e-6, "{frame:?}");
+        app.run("selection.set", json!({"ids": [f], "content": true})).unwrap();
+        // Placing fitted it to 50%: back to its own 400 pt.
+        app.run("transform.set", json!({"scaleX": 100, "scaleY": 100})).unwrap();
+        let g = super::sel_info(&app).unwrap().page_rect;
+        assert!((g.width() - 400.0).abs() < 1e-6, "the graphic's width, not the frame's: {g:?}");
+        // So a width typed from it scales the graphic by that ratio, not by half.
+        app.run("transform.set", json!({"width": 401})).unwrap();
+        let after = super::sel_info(&app).unwrap().page_rect;
+        assert!((after.width() - 401.0).abs() < 1e-6, "{after:?}");
+    }
+}
+
+#[cfg(test)]
 mod swatch_list_tests {
     use super::*;
 
@@ -863,7 +903,9 @@ mod swatch_list_tests {
                 events,
                 ..Default::default()
             };
-            let mut out = ctx.run_ui(raw, |ui| swatch_picker(app, ui, "list", Some("[Black]".into()), |_, _| {}));
+            let mut out = ctx.run_ui(raw, |ui| {
+                swatch_picker(app, ui, "list", Some("[Black]".into()), |_, _| {});
+            });
             out.textures_delta.clear();
             out.shapes
         };

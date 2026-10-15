@@ -127,6 +127,7 @@ New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 Copy-Item (Join-Path $Stage 'pagenor-document.ico') $Portable
 Copy-Item (Join-Path $Notices '*') $Portable
+Set-Content -LiteralPath (Join-Path $Portable 'portable.txt') -Value 'Pagenor portable settings and recovery' -Encoding utf8
 $Zip = Join-Path $Dist "pagenor-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

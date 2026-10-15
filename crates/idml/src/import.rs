@@ -2601,7 +2601,7 @@ impl<'r> Importer<'r> {
         };
         let mut data = Arc::new(g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default());
         let page = pdf_page_in(g);
-        let pdf_crop = g.find("PDFAttribute").and_then(|a| a.get("PDFCrop")).map_or(pagenor_doc::PdfCrop::Crop, names::pdf_crop_in);
+        let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(pagenor_doc::PdfCrop::Crop, names::pdf_crop_in);
         let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
@@ -3173,9 +3173,19 @@ fn path_capped(pg: &El, max: usize) -> PathData {
     PathData::new(subs)
 }
 
-/// The page a placed PDF shows (0-based), from its `PDFAttribute` (`PageNumber` is 1-based).
+/// A placed PDF's `PDFAttribute` (Image Import Options), as a child or a property.
+fn pdf_attribute(g: &El) -> Option<&El> {
+    g.find("PDFAttribute").or_else(|| g.prop_el("PDFAttribute"))
+}
+
+/// The page a placed PDF shows (0-based), from `PDFAttribute/@PageNumber` (1-based). A missing or
+/// malformed value means page 1; a page the PDF lacks draws nothing and is left out of PDF export.
 fn pdf_page_in(g: &El) -> u32 {
-    g.find("PDFAttribute").and_then(|a| a.get("PageNumber")).and_then(|v| v.trim().parse::<u32>().ok()).map_or(0, |n| n.saturating_sub(1))
+    pdf_attribute(g)
+        .and_then(|a| a.get("PageNumber"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|n| u32::try_from(n.saturating_sub(1)).ok())
+        .unwrap_or(0)
 }
 
 /// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).

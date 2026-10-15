@@ -20,6 +20,7 @@ mod recovery_runs;
 pub mod sample;
 pub mod script;
 mod tooling;
+pub mod ui_commands;
 
 use std::sync::Arc;
 

@@ -200,3 +200,21 @@ fn placed_svg_with_only_a_viewbox_keeps_its_viewbox_size() {
     let got: Vec<_> = gs.into_iter().map(|(_, size, x)| (size, x)).collect();
     assert_eq!(got, vec![((200.0, 100.0), -11.0), ((200.0, 100.0), -11.0), ((210.0, 100.0), -10.0)]);
 }
+
+#[test]
+fn pdf_page_and_crop_properties_preserve_distinct_placements() {
+    let direct = pdf_frame(1, 0.0, 2).replace("CropMedia", "CropTrim");
+    let attribute = r#"<PDFAttribute PageNumber="2" PDFCrop="CropTrim" TransparentBackground="true"/>"#;
+    assert!(direct.contains(attribute));
+    let property = direct.replace(attribute, "").replace("</Properties><Link", &format!("{attribute}</Properties><Link"));
+    // Match the actual whitespace between the graphic's properties and link.
+    let property = if property.contains(attribute) {
+        property
+    } else {
+        direct.replace(attribute, "").replacen("</Properties>\n        <Link", &format!("{attribute}</Properties>\n        <Link"), 1)
+    };
+    assert!(property.contains(attribute));
+    let d = import_idml_with(&package(&[property]), &|_| Some(b"%PDF-1.7\nfixture".to_vec())).unwrap();
+    let a = d.assets.values().next().unwrap();
+    assert_eq!((a.page, a.pdf_crop), (1, pagenor_doc::PdfCrop::Trim));
+}

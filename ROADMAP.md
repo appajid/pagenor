@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P11.18: local **0.8.0** updates the older upstream queue first: thirty proposals
+  reviewed, sixteen source proposals adapted, eleven already covered and three
+  excluded/deferred. Adds the Effects dialog/panel, editable SVG paste, text fitting,
+  graphic content handles, portable profiles, bounded font previews and DTD matching;
+  compatible EOF/IDML/MCP/preset/window fixes retain Pagenor’s existing policies.
+  All seven gates pass: 2,768 tests, zero failures, 7 existing ignores;
+  twenty WASM packages. Offscreen UI inspection and the separate local Mac GUI/CLI
+  bundle pass; native Windows/Linux execution and publication remain pending.
+  [Source pins and review](docs/pagenor/UPSTREAM_OLDER_080.md).
+
 - P11.17: local **0.7.3** adapts 26 compatible upstream corrections after an
   open/closed review through #1054. Page/spread navigation, palette visibility,
   tint editing, locked-frame handling, transactional script/panic recovery,

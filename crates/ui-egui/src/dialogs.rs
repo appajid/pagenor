@@ -33,7 +33,7 @@ impl DialogFields {
         self.values.insert(key, value)
     }
 
-    fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+    pub(crate) fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
         if self.values.contains_key(key) {
             self.edited.insert(key.into());
         }
@@ -135,6 +135,23 @@ impl Dialog {
         }
         if id == "characterStyleOptions" {
             fields.entry("section".to_string()).or_insert(json!("general"));
+        }
+        if id == "textFrameOptions" {
+            for key in [
+                "gutter",
+                "insetTop",
+                "insetLeft",
+                "insetBottom",
+                "insetRight",
+                "columnRuleWeight",
+                "columnRuleTopInset",
+                "columnRuleBottomInset",
+                "columnRuleOffset",
+            ] {
+                if let Some(value) = fields.get(key).and_then(Value::as_f64) {
+                    fields.insert(key.into(), json!(format!("{value} pt")));
+                }
+            }
         }
         if id == "frameSize" {
             for k in ["width", "height"] {
@@ -1643,6 +1660,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     // Read before the dialog draws: a popup closed by this frame's Escape is still open here.
     let popup_open = egui::Popup::is_any_open(ctx);
     let mut result: Option<bool> = None;
+    // An open dropdown owns Enter only while focus is in its popup layer.
+    // Tab can move focus back to the dialog's checkbox or Cancel button.
+
+    // Otherwise consume Enter before a focused checkbox can toggle again.
+    // The footer still lets a focused Cancel button handle that Enter.
+
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
         "masterNew" => "New Master",
@@ -1694,6 +1717,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "colorSettings" => crate::i18n::tr(&app.ui.language, "Color Settings"),
         "layerOptions" => crate::i18n::tr(&app.ui.language, "Object Layer Options"),
+        crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
         "keyboardShortcuts" => crate::i18n::tr(&app.ui.language, "Keyboard Shortcuts"),
         "colorPicker" => crate::i18n::tr(&app.ui.language, "Color Picker"),
         "swatchOptions" => crate::i18n::tr(&app.ui.language, "Swatch Options"),
@@ -1708,6 +1732,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let frame_margin = egui::Frame::popup(ui.style()).total_margin().sum();
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
+            crate::effects_dialog::ID => 680.0,
             "alert" => 440.0,
             "closeDocument" => 380.0,
             "newDocument" => 960.0,
@@ -2019,6 +2044,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                 }
             }
+            crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
             "keyboardShortcuts" => keyboard_shortcuts(app, ui, &mut d),
             "userDictionary" => user_dictionary(app, ui, &mut d),
             "menus" => {
@@ -2354,8 +2380,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             if app.ui.dialog.as_ref().is_some_and(|d| d.id == "closeDocument" && d.b("quitting")) {
                 app.cancel_quit();
             }
-            app.ui.dialog = None;
-            app.cancel_pdf_import();
+            cancel(app);
         }
         None => {}
     }
@@ -3037,6 +3062,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             app.run("footnote.options", p)
         }
+        crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
         "alert" => Ok(Value::Null),
         "findChange" if d.b("objectMode") => Ok(Value::Null),
         "findChange" => app.run("find.change", json!({"find": d.s("find"), "change": d.s("change"), "grep": d.b("grep"), "caseSensitive": d.b("caseSensitive"), "wholeWord": d.b("wholeWord"), "scope": d.s("scope")})),
@@ -7534,4 +7560,18 @@ mod layout_target_tests {
         assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
         assert!(app.session.active().unwrap().doc.parents[0].pages.iter().all(|p| p.margins.top == 20.0));
     }
+}
+
+/// Cancel through either the editor buttons or the control channel.
+pub fn cancel(app: &mut DesignApp) {
+    if let Some(d) = app.ui.dialog.take() {
+        if d.id == crate::effects_dialog::ID {
+            crate::effects_dialog::cancel(app, &d);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if d.id == "closeDocument" && d.b("quitting") {
+            app.cancel_quit();
+        }
+    }
+    app.cancel_pdf_import();
 }

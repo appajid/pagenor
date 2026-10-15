@@ -932,3 +932,29 @@ WASM packages. Offscreen UI inspection and Linux packaging YAML validation pass.
 A separate optimized local Mac GUI/CLI bundle preserves current app sessions;
 commit/hash/signature/export evidence accompanies the artifact. Native Windows/
 Linux execution for this patch and publication remain pending. No remote write.
+
+
+## Local older-PR adaptation — P11.18 (2026-10-15)
+
+Reviewed all thirty older updated proposals before continuing the newer queue.
+Compatible changes from #253, #255, #303, #319, #325, #362, #466, #542, #550,
+#580, #591, #618, #643 (via #748), #689, #699 and #748 supply local 0.8.0.
+All adapted heads were rechecked unchanged; updated #400 still requires unsafe
+Rust and is not adopted. Full authors, source heads, equivalent/deferred outcomes
+and deliberate compatibility choices are in
+[the older-PR adoption log](docs/pagenor/UPSTREAM_OLDER_080.md).
+
+Retain MIT OR Apache-2.0 provenance and owner branding rights. No private fonts,
+documents or conversion maps are included. Keep scoped/lazy fonts, inline Indic
+input, explicit masters, .pgnr/legacy loading and separate icons. EOF changes are
+a narrow adaptation of source tests/behavior to Pagenor format 5, preserving its
+marker policy. Text-frame and Direct Selection multiple-click entry is retained.
+CJK is excluded by owner preference; Russian expansion remains optional/deferred.
+
+All seven workspace gates pass: 2,768 tests, zero failures, 7 existing ignores;
+twenty WASM packages. Offscreen inspection covers the Effects dialog/panel,
+editable SVG paste and New Document presets. A separate optimized local macOS
+arm64 app includes the matching CLI. Strict/deep ad-hoc signature verification,
+version/icon checks and a four-page synthetic CLI PDF export pass. Native
+Windows/Linux execution and publication remain pending. The current owner app
+session is left open.

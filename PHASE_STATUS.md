@@ -1,7 +1,20 @@
 # Pagenor development phases
 
-Current local version: **0.7.3** (P11.17); published desktop preview remains **0.7.0** (P11.13).
+Current local version: **0.8.0** (P11.18); published desktop preview remains **0.7.0** (P11.13).
 0.6.0 and v0.3.0 packages remain intact.
+
+P11.18 updates the older PR queue before newer proposals. Sixteen source proposals
+supply compatible changes, eleven are already covered and three are deferred or
+excluded. Effects, SVG paste, text fitting, content handles and portable settings
+join bounded font previews and parser/MCP/IDML/EOF reliability changes.
+All seven workspace gates pass: 2,768 tests, zero failures, 7 existing ignores;
+twenty WASM packages. Offscreen inspection covers the Effects dialog/panel,
+editable SVG paste and New Document presets. A separate optimized local macOS
+arm64 app includes the matching CLI. Strict/deep ad-hoc signature verification,
+version/icon checks and a four-page synthetic CLI PDF export pass. Native
+Windows/Linux execution and publication remain pending. The current owner app
+session is left open.
+[Per-PR pins, preserved policies and limits](docs/pagenor/UPSTREAM_OLDER_080.md).
 
 P11.17 adapts 26 compatible upstream corrections from the open/closed review
 through #1054. Page/spread navigation, palette visibility and tint entry join

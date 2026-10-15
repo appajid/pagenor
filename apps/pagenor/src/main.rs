@@ -300,6 +300,10 @@ fn main() -> std::process::ExitCode {
             },
         }
     }
+    let portable_note = profile::unwritable_portable_dir().map(|dir| {
+        log::warn!("portable mode is off: {} cannot be written; using platform settings and recovery", dir.display());
+        format!("Portable mode is off: {} cannot be written; using the usual settings folder.", dir.display())
+    });
     // `--version` returns above without rotating or creating diagnostic files.
     if let Some(logger) = logger {
         match profile::config_dir() {
@@ -439,6 +443,9 @@ fn main() -> std::process::ExitCode {
                     app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
                 }
                 load_prefs(&mut app);
+                if let Some(note) = portable_note {
+                    app.status(note);
+                }
                 if let Some(error) = recovery_error {
                     log::warn!("{error}");
                     app.status(error);

@@ -303,8 +303,11 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                     t.text_strong,
                 );
             }
-            if resp.clicked() {
+            if resp.clicked() && !on {
                 d.fields.insert("tab".into(), json!(key));
+                if let Some(first) = cards(app, key).first() {
+                    select(d, first);
+                }
             }
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, text));
         }
@@ -312,6 +315,13 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
     let y = strip.bottom();
     ui.painter().line_segment([pos2(ui.min_rect().left(), y), pos2(ui.max_rect().right(), y)], Stroke::new(1.0, t.divider));
+}
+
+fn select(d: &mut Dialog, c: &Card) {
+    let name = d.s("name");
+    d.fields.extend(fields_for(&c.nd));
+    d.fields.insert("name".into(), json!(name));
+    d.fields.insert("preset".into(), json!(c.key));
 }
 
 /// The cards of the current tab; true when one was double-clicked (create at once).
@@ -970,5 +980,34 @@ mod tests {
         remember(&mut app, &p);
         remember(&mut app, &p);
         assert_eq!(app.ui.recent_new_documents.len(), 1, "a repeat moves to the front");
+    }
+    #[test]
+    fn a_tab_shows_its_first_preset_as_indesign_does() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut h = crate::test_window::open(app(), vec2(1440.0, 900.0));
+        h.run_steps(4);
+        h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("name".into(), json!("Poster"));
+        let click = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, name: &str| {
+            let pos = h.get_by_label(name).rect().center();
+            crate::test_window::click_at(h, pos);
+            h.run_steps(4);
+        };
+        click(&mut h, "Web");
+        let d = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("tab"), d.s("preset")), ("web".into(), "Web 1920 \u{d7} 1080".into()));
+        assert_eq!((d.s("width"), d.s("height"), units(d)), ("1920 px".into(), "1080 px".into(), Unit::Pixels));
+        assert!(!d.b("facingPages"));
+        assert_eq!(d.s("name"), "Poster", "the typed name stays");
+        click(&mut h, "Print");
+        let d = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("preset"), units(d)), ("Letter".into(), Unit::Picas));
+        click(&mut h, "A4");
+        click(&mut h, "Print");
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("preset"), "A4", "the current tab keeps its selected card");
+        click(&mut h, "Saved");
+        let d = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("tab"), "saved");
+        assert_eq!((d.s("preset"), d.s("width")), ("A4".into(), "210 mm".into()), "an empty Saved tab keeps the entered details");
+        assert!(cards(&h.state().app, "saved").is_empty());
     }
 }

@@ -206,6 +206,24 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             if app.custom_titlebar {
                 full.max.x = (full.right() - 146.0).max(full.left() + 1.0);
             }
+            if app.custom_titlebar {
+                let drag = egui::Rect::from_min_max(
+                    egui::pos2(full.min.x - f32::from(left), full.min.y),
+                    egui::pos2(full.max.x, full.min.y + bar + APP_BAR_BAND),
+                );
+                let response = ui.interact(drag, egui::Id::new("window_title_drag"), Sense::click_and_drag());
+                let (gap0, gap1) =
+                    ui.data(|d| (d.get_temp::<f32>(egui::Id::new("app_bar_menus_end")), d.get_temp::<f32>(egui::Id::new("app_bar_tools_start"))));
+                let from_empty = ui
+                    .input(|i| i.pointer.press_origin().or(i.pointer.interact_pos()))
+                    .is_some_and(|p| p.y >= full.min.y + bar || matches!((gap0,gap1),(Some(a),Some(b)) if p.x>=a && p.x<=b));
+                if response.double_clicked() && from_empty {
+                    let _ = app.run("window.maximize", json!({}));
+                } else if response.drag_started_by(egui::PointerButton::Primary) && from_empty {
+                    let _ = app.run("window.drag", json!({}));
+                }
+                app.flush_window_commands(ui.ctx());
+            }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().id_salt("app_bar_body").max_rect(full));
             body_ui.set_clip_rect(body_ui.clip_rect().intersect(full));
             let ui = &mut body_ui;
@@ -325,17 +343,10 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             let galley = crate::rtl::plain(ui.ctx(), &title, egui::FontId::proportional(11.5), t.text);
             let w = galley.size().x;
             let cx = full.center().x;
-            if app.custom_titlebar {
-                let drag = egui::Rect::from_min_max(egui::pos2(menus_end, full.top()), egui::pos2(tools_start.max(menus_end), full.top() + 36.0));
-                let response = ui.interact(drag, egui::Id::new("window_title_drag"), Sense::click_and_drag());
-                if response.double_clicked() {
-                    let on = !ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                    let _ = app.run("window.maximize", json!({"on": on}));
-                } else if response.drag_started_by(egui::PointerButton::Primary) {
-                    let _ = app.run("window.drag", json!({}));
-                }
-                app.flush_window_commands(ui.ctx());
-            }
+            ui.data_mut(|d| {
+                d.insert_temp(egui::Id::new("app_bar_menus_end"), menus_end);
+                d.insert_temp(egui::Id::new("app_bar_tools_start"), tools_start);
+            });
             if cx - w / 2.0 > menus_end + 12.0 && cx + w / 2.0 < tools_start - 12.0 {
                 ui.painter().galley(egui::pos2(cx - w / 2.0, full.center().y - galley.size().y / 2.0), galley, t.text);
             }
@@ -1576,5 +1587,50 @@ mod window_control_tests {
             let p = rect.center();
             assert!(!h.click(p).is_empty(), "{id} remains clickable");
         }
+    }
+    #[test]
+    fn caption_buttons_stay_put_while_a_narrow_app_bar_scrolls() {
+        let mut h = WindowHarness::new();
+        h.size = vec2(640.0, 560.0);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let rect = |h: &WindowHarness, id: &str| h.ctx.read_response(egui::Id::new(id)).unwrap().rect;
+        let menus_end = |h: &WindowHarness| h.ctx.data(|d| d.get_temp::<f32>(egui::Id::new("app_bar_menus_end"))).unwrap();
+        let (close, menus0) = (rect(&h, "window.close"), menus_end(&h));
+        assert!(close.left() >= 0.0 && close.right() <= h.size.x, "{close:?}");
+        let p = egui::pos2(200.0, 18.0);
+        h.frame(vec![
+            egui::Event::PointerMoved(p),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -3000.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        for _ in 0..10 {
+            h.frame(vec![]);
+        }
+        assert!(menus_end(&h) < menus0, "the menus scrolled");
+        assert_eq!(rect(&h, "window.close"), close, "the caption buttons did not");
+        assert!(h.click(close.center()).contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn the_window_drags_from_its_lower_band_at_the_minimum_width() {
+        // At 900 px the menus and tools fill the bar's row; its lower band still moves the window,
+        // and it isn't drawn over the caption buttons.
+        let mut h = WindowHarness::new();
+        h.size = vec2(900.0, 560.0);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let drag = h.ctx.read_response(egui::Id::new("window_title_drag")).unwrap().rect;
+        let close = h.ctx.read_response(egui::Id::new("window.close")).unwrap().rect;
+        assert!(drag.right() <= close.left() + 0.5, "{drag:?} {close:?}");
+        let p = egui::pos2(450.0, APP_BAR + APP_BAR_BAND / 2.0);
+        assert!(drag.contains(p), "{drag:?}");
+        let mut commands = h.press(p);
+        commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
+        assert!(commands.contains(&egui::ViewportCommand::StartDrag));
     }
 }

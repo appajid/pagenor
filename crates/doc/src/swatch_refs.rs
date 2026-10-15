@@ -115,6 +115,9 @@ impl Names<'_> {
         for f in &mut st.paras {
             self.para(&mut f.para);
             self.chars(&mut f.chars);
+            if let Some(inherited) = &mut f.eof_inherited_chars {
+                self.chars(inherited);
+            }
         }
         for r in &mut st.chars {
             self.chars(&mut r.format.over);
