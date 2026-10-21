@@ -146,6 +146,16 @@ fn parse_with_limits(xml: &str, limits: XmlLimits) -> Result<El, ImportError> {
                     p.kids.push(Node::Text(s));
                 }
             }
+            Event::CData(t) => {
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
+                let s = t.decode().map_err(|e| ImportError::Corrupt(format!("Invalid XML CDATA: {e}")))?.into_owned();
+                if let Some(p) = stack.last_mut() {
+                    p.kids.push(Node::Text(s));
+                }
+            }
             Event::GeneralRef(e) => {
                 nodes = nodes.saturating_add(1);
                 if nodes > limits.nodes {
@@ -209,8 +219,9 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
     }
-    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()) {
-        a.size = Some(sz / 2.0);
+    // Half-points; sizes outside the engine's 0.1–1296 pt range (or non-finite) are dropped.
+    if let Some(pt) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).map(|sz| sz / 2.0).filter(|pt| (0.1..=1296.0).contains(pt)) {
+        a.size = Some(pt);
     }
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
         a.font_family = Some(f.to_string());
@@ -232,7 +243,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
 fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     let mut a = ParaAttrs::default();
     let Some(p) = ppr else { return a };
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0);
+    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
     if let Some(sp) = p.child("spacing") {
         a.space_before = tw(sp.attr("before"));
         a.space_after = tw(sp.attr("after"));
@@ -746,5 +757,47 @@ mod tests {
         let imported = import(&docx(&document, "", "")).unwrap();
         assert_eq!(imported.story.text, text);
         imported.story.check().unwrap();
+    }
+    /// `str::parse::<f64>` accepts "NaN"/"inf"; sizes, spacing and indents must ignore them.
+    #[test]
+    fn non_finite_sizes_spacing_and_indents_are_ignored() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:spacing w:before="NaN" w:after="inf"/><w:ind w:left="-inf" w:right="NaN" w:firstLine="-inf"/></w:pPr>
+                <w:r><w:rPr><w:sz w:val="NaN"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="inf"/></w:rPr><w:t>b</w:t></w:r></w:p>
+              <w:p><w:pPr><w:ind w:hanging="inf"/></w:pPr><w:r><w:t>c</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        let fin = |v: Option<f64>| v.is_none_or(f64::is_finite);
+        for p in &st.paras {
+            let p = &p.para;
+            assert!(fin(p.space_before) && fin(p.space_after), "{p:?}");
+            assert!(fin(p.left_indent) && fin(p.right_indent) && fin(p.first_line_indent), "{p:?}");
+        }
+        for at in [0, 1] {
+            assert!(fin(st.format_after(at).over.size), "{:?}", st.format_after(at).over.size);
+        }
+    }
+
+    #[test]
+    fn out_of_range_sizes_are_dropped() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="99999999"/></w:rPr><w:t>b</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        for at in [0, 1] {
+            assert_eq!(st.format_after(at).over.size, None, "run {at}");
+        }
+    }
+
+    #[test]
+    fn cdata_text() {
+        let limits = XmlLimits { nodes: 2, ..XML_LIMITS };
+        assert!(parse_with_limits("<a><![CDATA[x]]><![CDATA[y]]></a>", limits).is_err());
+        let el = parse("<a><t><![CDATA[x < y]]></t></a>").unwrap();
+        assert_eq!(el.child("t").unwrap().text(), "x < y");
     }
 }

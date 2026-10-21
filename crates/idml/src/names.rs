@@ -237,7 +237,7 @@ pub fn leading_out(l: Leading) -> (String, &'static str) {
     }
 }
 pub fn leading_in(s: &str) -> Option<Leading> {
-    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse().ok().map(Leading::Points) }
+    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(Leading::Points) }
 }
 
 pub fn stroke_align_out(a: StrokeAlign) -> &'static str {
@@ -612,6 +612,8 @@ pub fn number_style_in(s: &str) -> NumberStyle {
     }
 }
 
+/// IDML `MeasurementUnits` of a unit. Q is `Q`; `U` is a different unit, which Pagenor
+/// doesn't have.
 pub fn unit_out(u: Unit) -> &'static str {
     match u {
         Unit::Points => "Points",
@@ -623,27 +625,14 @@ pub fn unit_out(u: Unit) -> &'static str {
         Unit::Ciceros => "Ciceros",
         Unit::Agates => "Agates",
         Unit::Pixels => "Pixels",
-        Unit::Q => "U",
+        Unit::Q => "Q",
         Unit::Ha => "Ha",
     }
 }
-pub fn unit_in(s: &str) -> Unit {
-    [
-        Unit::Points,
-        Unit::Picas,
-        Unit::Inches,
-        Unit::InchesDecimal,
-        Unit::Millimeters,
-        Unit::Centimeters,
-        Unit::Ciceros,
-        Unit::Agates,
-        Unit::Pixels,
-        Unit::Q,
-        Unit::Ha,
-    ]
-    .into_iter()
-    .find(|u| unit_out(*u) == s)
-    .unwrap_or(Unit::Points)
+/// The unit an IDML `MeasurementUnits` value names, if Pagenor has it (not `U`, `Bai`,
+/// `Mils`, `AmericanPoints` or `Custom`).
+pub fn unit_in(s: &str) -> Option<Unit> {
+    Unit::ALL.into_iter().find(|u| unit_out(*u) == s)
 }
 
 /// IDML layer colour enumeration names for our layer colour table.

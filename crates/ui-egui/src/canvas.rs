@@ -2192,7 +2192,7 @@ fn begin_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, re
         && !egui::Popup::is_any_open(ui.ctx())
         && app.pane == app.focus_pane
         && focused
-        && (!ui.ctx().text_edit_focused() || resp.has_focus())
+        && (!field_owned_keyboard(ui.ctx()) || resp.has_focus())
     {
         if !resp.has_focus() {
             resp.request_focus();
@@ -2202,6 +2202,23 @@ fn begin_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, re
         });
     }
     Some(CanvasInput { menu_open, space, m, alt_hand, down, gesture, clicks, dist, duration, delay, now, focused })
+}
+
+/// A text field had keyboard focus when this frame began, per window: egui keeps one focus per
+/// viewport, so a field focused in the main window must not mute the second window's canvas.
+fn field_owned_keyboard(ctx: &egui::Context) -> bool {
+    ctx.text_edit_focused() || ctx.data(|d| d.get_temp::<bool>(field_focused_id(ctx))).unwrap_or(false)
+}
+
+fn field_focused_id(ctx: &egui::Context) -> egui::Id {
+    egui::Id::new("canvas_field_focused").with(ctx.viewport_id())
+}
+
+/// Called before the panels draw. A panel field gives up focus on Enter or Tab while it draws,
+/// before the canvas: without this the canvas would take that same key for the text.
+pub fn begin_frame(ctx: &egui::Context) {
+    let (id, focused) = (field_focused_id(ctx), ctx.text_edit_focused());
+    ctx.data_mut(|d| d.insert_temp(id, focused));
 }
 
 fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
@@ -2319,7 +2336,7 @@ impl CanvasInput {
             // Keys belong to the focused pane and the current caret, which a preceding
             // click in this same event batch may have just created or removed.
             if menu_open
-                || (ui.ctx().text_edit_focused() && !resp.has_focus())
+                || (field_owned_keyboard(ui.ctx()) && !resp.has_focus())
                 || app.ui.dialog.is_some()
                 || app.ui.palette.is_some()
                 || egui::Popup::is_any_open(ui.ctx())
@@ -2347,6 +2364,22 @@ impl CanvasInput {
                 }
                 egui::Event::Text(t) if wants_text && !app.canvas_ime.active() => {
                     let _ = app.run("text.insert", json!({"text": t}));
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                egui::Event::Paste(_)
+                    if crate::menus::paste_chord_command(
+                        app,
+                        egui::Modifiers { alt: m.alt, ctrl: m.ctrl, shift: m.shift, command: m.cmd, mac_cmd: cfg!(target_os = "macos") && m.cmd },
+                    )
+                    .is_some() =>
+                {
+                    if let Some(id) = crate::menus::paste_chord_command(
+                        app,
+                        egui::Modifiers { alt: m.alt, ctrl: m.ctrl, shift: m.shift, command: m.cmd, mac_cmd: cfg!(target_os = "macos") && m.cmd },
+                    ) && crate::menus::enabled(app, id)
+                    {
+                        crate::menus::activate(app, id, &serde_json::Value::Null);
+                    }
                 }
                 egui::Event::Paste(t) if !wants_text && pagenor_engine::cmd::is_svg_markup(&t) => {
                     let _ = app.run("edit.paste", json!({"text":t}));
@@ -3504,6 +3537,65 @@ mod tests {
         // Double-clicking the corner resets it to the default origin.
         double_click(&mut h, corner);
         assert!(h.state().view().unwrap().ruler_origin.is_none());
+    }
+
+    #[test]
+    fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
+        for key in [egui::Key::Enter, egui::Key::Tab] {
+            let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+            app.select_tool("type");
+            app.run("text.select", json!({"story": f["story"], "anchor": 1, "focus": 4})).unwrap();
+            assert!(app.session.wants_text());
+            let mut h = harness(app);
+            let size = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some("12 pt")).unwrap();
+            size.focus();
+            h.run_steps(1);
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.run_steps(1);
+            h.event(egui::Event::Text("18".into()));
+            h.run_steps(1);
+            h.key_press(key);
+            h.run_steps(3);
+            let text = h.state_mut().session.execute("story.get", &json!({"story": f["story"]})).unwrap()["text"].clone();
+            assert_eq!(text, "Hello", "{key:?} confirms the field and leaves the story alone");
+            let size = crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["size"].clone();
+            assert_eq!(size, 18.0, "{key:?} applies the typed size");
+        }
+    }
+
+    #[test]
+    fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let original = app.session.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap().bounds();
+        app.run("edit.copy", json!({})).unwrap();
+        let clip = app.pending_clipboard_text.clone().expect("the copy's placeholder text");
+        let mut h = harness(app);
+        let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
+            // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+            // modifiers are released within the same frame.
+            let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
+            let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
+            h.input_mut().events.extend([egui::Event::ModifiersChanged(modifiers), egui::Event::Paste(clip.clone()), release, none]);
+            h.run_steps(2);
+            let st = h.state().session.doc().unwrap();
+            let pasted = *st.selection.items.first().expect("the copy is selected");
+            assert_ne!(pasted.0, id);
+            st.doc.item(pasted).unwrap().bounds()
+        };
+        let linux = egui::Modifiers { alt: true, ctrl: !cfg!(target_os = "macos"), shift: true, mac_cmd: cfg!(target_os = "macos"), command: true };
+        assert_eq!(paste(&mut h, linux), original, "Paste in Place");
+        let moved = paste(&mut h, egui::Modifiers::COMMAND);
+        assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
+        // The modifiers went down in an earlier frame than the paste.
+        h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+        h.run_steps(2);
+        let st = h.state().session.doc().unwrap();
+        let pasted = *st.selection.items.first().expect("the copy is selected");
+        assert_eq!(st.doc.item(pasted).unwrap().bounds(), original);
     }
 }
 

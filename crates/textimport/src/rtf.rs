@@ -216,7 +216,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "ul" => restyle(&|s| s.underline = on),
                     "ulnone" => restyle(&|s| s.underline = false),
                     "strike" => restyle(&|s| s.strike = on),
-                    "fs" => restyle(&|s| s.size = param.map(|p| p as f64 / 2.0)),
+                    // Half-points; sizes outside the engine's 0.1–1296 pt range fall back to the default.
+                    "fs" => restyle(&|s| {
+                        s.size = param.map(|p| p as f64 / 2.0).filter(|pt| (0.1..=1296.0).contains(pt));
+                    }),
                     "plain" => restyle(&|s| {
                         s.bold = false;
                         s.italic = false;
@@ -231,9 +234,12 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     }
                     "u" => {
                         if let Some(n) = param {
-                            let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
-                            if let Some(ch) = units.push(unit) {
-                                buf.push(ch);
+                            // RTF allows -32768..=65535; anything else is dropped.
+                            if (-32768..=65535).contains(&n) {
+                                let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
+                                if let Some(ch) = units.push(unit) {
+                                    buf.push(ch);
+                                }
                             }
                             pending = stack.last().map_or(1, |s| s.uc);
                         }
@@ -280,6 +286,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn out_of_range_unicode_escape_is_dropped() {
+        assert_eq!(import(br"{\rtf1 a\u4294967361?b}").unwrap().story.text, "ab");
+        assert_eq!(import(br"{\rtf1 a\u-4294967231?b}").unwrap().story.text, "ab");
+    }
+
+    #[test]
     fn imports_rtf_text_and_formatting() {
         let rtf = br"{\rtf1\ansi{\fonttbl{\f0 Times;}}{\colortbl;\red0\green0\blue0;}{\*\generator Test;}
 \f0\fs24 Hello {\b bold} and {\i italic\i0  plain}\par
@@ -295,6 +307,18 @@ Caf\'e9 \u8364? price\tab tab\line next\par
         assert_eq!(st.format_after(st.text.find("plain").unwrap()).over.font_style, None);
         assert_eq!(st.format_after(0).over.size, Some(12.0));
         assert!(!st.text.contains("Times"), "font table skipped");
+    }
+
+    /// `\fs` sizes outside the engine's 0.1–1296 pt character size range are not stored.
+    #[test]
+    fn font_size_out_of_range_is_not_stored() {
+        let i = import(br"{\rtf1\ansi\fs0 A\fs-8 B\fs999999999 C\fs24 D}").unwrap();
+        let st = &i.story;
+        for ch in ["A", "B", "C"] {
+            let size = st.format_after(st.text.find(ch).unwrap()).over.size;
+            assert!(size.is_none_or(|s| (0.1..=1296.0).contains(&s)), "{ch}: {size:?}");
+        }
+        assert_eq!(st.format_after(st.text.find('D').unwrap()).over.size, Some(12.0));
     }
 
     /// A '-' right after a control word is text unless a digit follows it (then it is a negative

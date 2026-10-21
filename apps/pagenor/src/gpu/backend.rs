@@ -389,6 +389,19 @@ mod tests {
         assert_eq!(c.record.failed, &[Backend::Vulkan]);
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn failed_non_candidate_gl_stays_disabled_after_a_successful_start() {
+        const MAC: &[Backend] = &[Backend::Metal];
+        let c = choose(MAC, &record(Some(Backend::Gl), &[]), V, &[]).unwrap();
+        assert_eq!(c.backend, Backend::Metal);
+        assert_eq!(c.record.failed, &[Backend::Gl]);
+        assert!(!instance_backends(c.backend, &c.record.failed).contains(wgpu::Backends::GL));
+        let c = choose(MAC, &record(None, &[Backend::Gl]), V, &[]).unwrap();
+        assert_eq!(c.record.failed, &[Backend::Gl], "retain Pagenor's conservative failure history");
+        assert!(!instance_backends(c.backend, &c.record.failed).contains(wgpu::Backends::GL));
+    }
+
     /// A restart that found no adapter of DirectX 12 names the backend in its skip list: that start
     /// takes the next candidate, with or without a record, and the record doesn't keep it as failed
     /// (a later launch tries it again).

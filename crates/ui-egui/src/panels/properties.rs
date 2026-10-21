@@ -4,8 +4,8 @@
 
 use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use pagenor_doc::{Align, Arrowhead, Cap, Join, StrokeAlign, StrokeType};
-use pagenor_geom::Unit;
 use pagenor_geom::corners::CornerShape;
+use pagenor_geom::{Unit, units};
 use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
@@ -53,11 +53,36 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
     }
     match info {
         None => crate::i18n::tr(&app.ui.language, "No Selection").into(),
-        Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
+        // Several objects, named as InDesign names them: "Text Frames", "Linked Files" or "Frames"
+        // (empty graphic frames) when all are of that kind, "Mixed Objects" when the kinds differ.
+        Some(i) if i.count > 1 => {
+            let kind = |it: &pagenor_doc::Item| {
+                if it.object_style == pagenor_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, pagenor_doc::Content::Unassigned) {
+                    "<graphic frame>"
+                } else {
+                    it.default_label()
+                }
+            };
+            let mut kinds = st.selection.items.iter().map(|id| st.doc.item(*id).map(kind));
+            let first = kinds.next().flatten();
+            let title = match first {
+                _ if !kinds.all(|k| k == first) => "Mixed Objects",
+                Some("<text frame>") => "Text Frames",
+                Some("<image>") => "Linked Files",
+                Some("<graphic frame>") => "Frames",
+                _ => "Multiple Objects",
+            };
+            crate::i18n::tr(&app.ui.language, title).into()
+        }
         Some(i) => match i.kind {
             "<text frame>" => crate::i18n::tr(&app.ui.language, "Text Frame").into(),
             "<group>" => crate::i18n::tr(&app.ui.language, "Group").into(),
-            "<image>" => crate::i18n::tr(&app.ui.language, "Image").into(),
+            // A picture placed from a file is a "Linked File"; an embedded one is an image.
+            "<image>" => {
+                let linked = st.selection.items.first().and_then(|id| st.doc.item(*id)).and_then(|it| it.graphic());
+                let linked = linked.and_then(|g| st.doc.assets.get(&g.asset)).is_some_and(|a| a.link.is_some());
+                crate::i18n::tr(&app.ui.language, if linked { "Linked File" } else { "Image" }).into()
+            }
             "<rectangle>" => crate::i18n::tr(&app.ui.language, "Rectangle").into(),
             "<ellipse>" => crate::i18n::tr(&app.ui.language, "Ellipse").into(),
             "<polygon>" => crate::i18n::tr(&app.ui.language, "Polygon").into(),
@@ -135,6 +160,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
+    if i.count > 1 {
+        distribute_rows(app, ui);
+    }
     divider(ui);
     if i.count > 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Pathfinder"), true);
@@ -162,7 +190,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let _ = app.run("object.fit", json!({"mode": mode}));
                     }
                 }
+                // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
+                if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
+                    crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+                }
             });
+            // Auto-Fit: the graphic is refitted whenever its frame is resized.
+            let mut auto = app
+                .session
+                .active()
+                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+                .and_then(|it| it.graphic())
+                .is_some_and(|g| g.auto_fit != pagenor_doc::Fitting::None);
+            if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
+                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+            }
             divider(ui);
         }
         section(ui, crate::i18n::tr(&app.ui.language, "Text Wrap"), true);
@@ -182,6 +224,9 @@ pub(crate) const PAGE_PRESETS: &[(&str, f64, f64)] = &[
     ("Tabloid", 792.0, 1224.0),
     ("Letter - Half", 396.0, 612.0),
     ("Legal - Half", 504.0, 612.0),
+    ("A0", 841.0 * units::PT_PER_MM, 1189.0 * units::PT_PER_MM),
+    ("A1", 594.0 * units::PT_PER_MM, 841.0 * units::PT_PER_MM),
+    ("A2", 420.0 * units::PT_PER_MM, 594.0 * units::PT_PER_MM),
     ("A3", 841.89, 1190.55),
     ("A4", 595.276, 841.89),
     ("A5", 419.528, 595.276),
@@ -754,6 +799,10 @@ pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: Corn
 fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    // Every selected object is a text frame: the popups offer Apply To Frame or Text, for one
+    // frame or several, as InDesign's do.
+    let text_frames =
+        i.is_text && app.session.active().is_some_and(|st| st.selection.items.iter().all(|id| doc.item(*id).is_some_and(|it| it.is_text_frame())));
     // Fill.
     let b = block(ui, FIELD_H);
     let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
@@ -766,7 +815,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         egui::Popup::close_all(ui.ctx());
         appearance_picker(app, ui, &doc, &i.fill, false, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.fill, false, i.is_text && i.count == 1, false);
+        swatch_menu(app, &resp, &doc, &i.fill, false, text_frames, false);
     }
     crate::rtl::paint(
         ui.painter(),
@@ -790,7 +839,7 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         egui::Popup::close_all(ui.ctx());
         appearance_picker(app, ui, &doc, &i.stroke, true, i.is_text && i.count == 1);
     } else {
-        swatch_menu(app, &resp, &doc, &i.stroke, true, i.is_text && i.count == 1, false);
+        swatch_menu(app, &resp, &doc, &i.stroke, true, text_frames, false);
     }
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
         app.ui.open_panel = Some("stroke".into());
@@ -951,12 +1000,23 @@ fn swatch_menu(app: &mut DesignApp, resp: &egui::Response, doc: &pagenor_doc::Do
     }
 }
 
+/// The Align To button's glyph shows what the objects align to, as InDesign's.
+fn align_to_icon(to: &str) -> &'static str {
+    match to {
+        "keyObject" => "align-to-key",
+        "margins" => "align-to-margins",
+        "page" => "align-to-page",
+        "spread" => "align-to-spread",
+        _ => "align-to",
+    }
+}
+
 fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let to = app.ui.align_to.clone();
-        let resp = icon_toggle(ui, "align-to", false, &format!("Align To: {to}"));
+        let resp = icon_toggle(ui, align_to_icon(&to), false, &format!("Align To: {to}"));
         egui::Popup::menu(&resp).show(|ui| {
             for (label, id) in [
                 ("Align to Selection", "selection"),
@@ -988,6 +1048,64 @@ fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     });
 }
 
+/// Properties › Align with several objects selected, as InDesign's: Distribute Objects (by an
+/// edge or the centres) and Distribute Spacing (equal gaps), each with Use Spacing and its
+/// amount in the document's units.
+fn distribute_rows(app: &mut DesignApp, ui: &mut Ui) {
+    let lang = app.ui.language.clone();
+    let unit = units(app);
+    let mut run = None;
+    let groups: [(&str, &str, &[(&str, &str, &str)]); 2] = [
+        (
+            "Distribute Objects:",
+            "props_distribute_objects",
+            &[
+                ("dist-top", "top", "Distribute top edges"),
+                ("dist-vcenter", "vcenter", "Distribute vertical centers"),
+                ("dist-bottom", "bottom", "Distribute bottom edges"),
+                ("dist-left", "left", "Distribute left edges"),
+                ("dist-hcenter", "hcenter", "Distribute horizontal centers"),
+                ("dist-right", "right", "Distribute right edges"),
+            ],
+        ),
+        (
+            "Distribute Spacing:",
+            "props_distribute_spacing",
+            &[("object-distribute-v", "vertical", "Distribute vertical space"), ("object-distribute-h", "horizontal", "Distribute horizontal space")],
+        ),
+    ];
+    for (title, key, buttons) in groups {
+        let id = egui::Id::new(key);
+        let (mut on, mut amount): (bool, f64) = ui.data(|d| d.get_temp(id)).unwrap_or((false, 0.0));
+        ui.add_space(6.0);
+        widgets::caption(ui, crate::i18n::tr(&lang, title));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for (icon, what, tip) in buttons {
+                if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                    let mut p = if key == "props_distribute_objects" { json!({"edge": what}) } else { json!({"axis": what, "by": "spacing"}) };
+                    if on {
+                        p["spacing"] = json!(amount);
+                    }
+                    run = Some(p);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            widgets::checkbox(ui, &mut on, crate::i18n::tr(&lang, "Use Spacing"));
+            ui.add_enabled_ui(on, |ui| {
+                if let Some(v) = widgets::spin_measure(ui, &format!("{key}_amount"), Some(amount), unit, 84.0) {
+                    amount = v;
+                }
+            });
+        });
+        ui.data_mut(|d| d.insert_temp(id, (on, amount)));
+    }
+    if let Some(p) = run {
+        let _ = app.run("object.distribute", p);
+    }
+}
+
 fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.0;
@@ -1010,8 +1128,61 @@ fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
             let _ = app.run("object.textWrap", json!({"mode": i.wrap, "invert": inv}));
         }
     });
+    wrap_offsets(app, ui, i);
     if more_options(ui, &app.ui.language).clicked() {
         app.ui.open_panel = Some("textWrap".into());
+    }
+}
+
+/// The wrap offsets under the wrap buttons, as InDesign's Properties panel shows them: Top and
+/// Bottom, the link that makes all four the same, then Left and Right. Greyed with no wrap.
+fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let u = units(app);
+    let enabled = i.wrap != "none";
+    let offsets = i.wrap_offsets;
+    ui.add_space(4.0);
+    let b = block(ui, 2.0 * FIELD_H + 5.0);
+    let mut set = None;
+    ui.add_enabled_ui(enabled, |ui| {
+        // Linked while the four are the same, until the link is clicked.
+        let linked = temp_bool(ui, "prop_wrap_linked", offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-9));
+        // Offsets are [top, left, bottom, right].
+        for (k, key, icon, tip, x, y) in [
+            (0, "wrapTop", "margin-top", "Top", 0.0, 0.0),
+            (2, "wrapBottom", "margin-bottom", "Bottom", 0.0, FIELD_H + 5.0),
+            (1, "wrapLeft", "margin-inside", "Left", 140.0, 0.0),
+            (3, "wrapRight", "margin-outside", "Right", 140.0, FIELD_H + 5.0),
+        ] {
+            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
+            icons::paint(ui.painter(), ir, icon, if enabled { t.icon } else { t.text_dim });
+            ui.interact(ir, ui.id().with(("prop_wrap_off", k)), Sense::hover()).on_hover_ui(|ui| {
+                crate::rtl::label(ui, tr(tip));
+            });
+            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
+                NumField::measure(key, Some(offsets[k]), u).width(76.0).spinner().range(-8000.0, 8000.0).enabled(enabled).show(ui)
+            });
+            if let Some(v) = nv {
+                let mut o = offsets;
+                if linked {
+                    o = [v; 4];
+                } else {
+                    o[k] = v;
+                }
+                set = Some(o);
+            }
+        }
+        if place(ui, sub(b, 106.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H), |ui| {
+            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
+                .clicked()
+        }) {
+            set_temp_bool(ui, "prop_wrap_linked", !linked);
+        }
+    });
+    if let Some(o) = set {
+        let _ = app.run("object.textWrap", json!({"mode": i.wrap, "offset": o}));
     }
 }
 
@@ -1860,6 +2031,12 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         super::cell_stroke::panel(app, ui);
         return;
     }
+    if super::colors_affect_text(app)
+        && let Some(a) = text_attrs(app)
+    {
+        text_stroke_panel(app, ui, &a["chars"]);
+        return;
+    }
     let Some(i) = sel_info(app) else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
@@ -1976,6 +2153,23 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
         super::swatch_picker(app, ui, "spick", Some(i.stroke.clone()), |app, n| {
             let _ = app.run("object.stroke", json!({"swatch": n}));
+        });
+        ui.end_row();
+    });
+}
+
+/// Stroke panel while text is selected: the text's supported outline colour and weight.
+fn text_stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui, c: &Value) {
+    let swatch = c["stroke"].as_str().unwrap_or(pagenor_color::swatch::NONE).to_string();
+    egui::Grid::new("text_stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
+        if let Some(v) = number(ui, "tsw_panel", c["strokeWeight"].as_f64(), " pt", 60.0, 3) {
+            let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
+        }
+        ui.end_row();
+        caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
+        super::swatch_picker(app, ui, "tspick", Some(swatch), |app, n| {
+            let _ = super::apply_swatch(app, true, &n, None);
         });
         ui.end_row();
     });
@@ -2670,6 +2864,32 @@ mod tests {
         }
     }
 
+    /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
+    #[test]
+    fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                stroke_panel(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert!(h.query_by_label("Select an object.").is_none());
+        h.get_by_label("Weight:");
+        h.get_by_label("Color:");
+        assert!(h.query_by_label("Stroke Behind Fill").is_none(), "do not expose a control without renderer/model support");
+    }
+
     /// As InDesign's: Edit Page takes the Page tool to the page in view, and Properties sets that
     /// page alone; Back returns to the document.
     #[test]
@@ -2939,6 +3159,120 @@ mod color_picker_tests {
     }
 
     #[test]
+    fn several_objects_are_named_as_indesign_names_them() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let text = |app: &mut DesignApp, x: u64| {
+            app.run("frame.create", json!({"rect": [x, 72, x + 100, 140], "content": "text", "text": "75%"})).unwrap()["id"].as_u64().unwrap()
+        };
+        let (a, b) = (text(&mut app, 72), text(&mut app, 200));
+        let rect = app.run("frame.create", json!({"rect": [72, 200, 172, 300]})).unwrap()["id"].as_u64().unwrap();
+        let title = |app: &mut DesignApp, ids: Vec<u64>| {
+            app.run("selection.set", json!({ "ids": ids })).unwrap();
+            selection_title(app, &super::super::sel_info(app))
+        };
+        assert_eq!(title(&mut app, vec![a, b]), "Text Frames");
+        // A number, its text and the square under it: the tutorial's column.
+        assert_eq!(title(&mut app, vec![a, b, rect]), "Mixed Objects");
+        assert_eq!(title(&mut app, vec![a]), "Text Frame");
+        // Empty graphic frames, as the tutorial's slanted row: "Frames".
+        let frames: Vec<u64> = (0..2)
+            .map(|k| {
+                app.run("frame.create", json!({"rect": [72 + 120 * k, 400, 172 + 120 * k, 480], "content": "graphic"})).unwrap()["id"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(title(&mut app, frames.clone()), "Frames");
+        let shape = app.run("frame.create", json!({"rect": [72, 500, 172, 580], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(title(&mut app, vec![frames[0], shape]), "Mixed Objects", "a frame and a drawn rectangle");
+        // Placed images, as the tutorial's three pictures.
+        let png = pagenor_render::Rendered { width: 40, height: 40, pixels: vec![200u8; 40 * 40 * 4] }.to_png();
+        let b64 = pagenor_engine::cmd::base64_encode(&png);
+        let mut pics = vec![];
+        for x in [300, 420] {
+            let f = app.run("frame.create", json!({"rect": [x, 200, x + 100, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+            app.run("file.place", json!({"base64": b64, "name": "a.png", "frame": f})).unwrap();
+            pics.push(f);
+        }
+        assert_eq!(title(&mut app, pics.clone()), "Linked Files");
+        // One embedded picture is an image; one placed from a file, as in the tutorial, a linked file.
+        assert_eq!(title(&mut app, vec![pics[0]]), "Image");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snowflake.png");
+        std::fs::write(&path, &png).unwrap();
+        let f = app.run("frame.create", json!({"rect": [300, 320, 400, 420], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": f})).unwrap();
+        assert_eq!(title(&mut app, vec![f]), "Linked File");
+    }
+
+    #[test]
+    fn apply_to_text_colours_the_text_of_several_text_frames() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut ids = vec![];
+        let mut stories = vec![];
+        for x in [72, 250, 430] {
+            let r = app.run("frame.create", json!({"rect": [x, 72, x + 150, 140], "content": "text", "text": "75%"})).unwrap();
+            ids.push(r["id"].as_u64().unwrap());
+            stories.push(pagenor_doc::StoryId(r["story"].as_u64().unwrap()));
+        }
+        app.run("selection.set", json!({"ids": ids})).unwrap();
+        let mut h = panel(app);
+        h.get_by_label("Fill swatch").click();
+        h.run_steps(3);
+        // Three text frames, as one: Apply To is offered.
+        assert!(h.query_by_label("Apply To:").is_some());
+        h.get_by_label("Text").click();
+        h.run_steps(3);
+        h.get_by_label(CYAN).click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        for (id, story) in ids.iter().zip(&stories) {
+            assert_eq!(doc.story(*story).unwrap().char_format_at(0).over.fill.as_deref(), Some(CYAN), "every frame's text is cyan");
+            assert_eq!(doc.item(pagenor_doc::ids::ItemId(*id)).unwrap().fill.swatch, "[None]", "the frames aren't");
+        }
+    }
+
+    /// Several objects: Properties › Align shows InDesign's Distribute Objects and Distribute
+    /// Spacing rows; a button spreads the objects, and Use Spacing sets the distance.
+    #[test]
+    fn several_objects_can_be_distributed_from_properties() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let ids: Vec<u64> = [72.0, 100.0, 300.0]
+            .iter()
+            .map(|y| app.run("frame.create", json!({"rect": [72.0, *y, 132.0, y + 20.0]})).unwrap()["id"].as_u64().unwrap())
+            .collect();
+        app.run("selection.set", json!({ "ids": ids })).unwrap();
+        let top = |app: &DesignApp, id: u64| app.session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().bounds().y0;
+        let mut h = panel(app);
+        let _ = h.get_by_label("Distribute Objects:");
+        let _ = h.get_by_label("Distribute Spacing:");
+        h.get_by_label("Distribute top edges").click();
+        h.run_steps(3);
+        assert_eq!(top(h.state(), ids[1]), 186.0, "the middle one halfway between the others");
+        // Use Spacing ticked under Distribute Spacing, with 0: the frames touch. (The checkbox is
+        // set through its state; #1394 makes checkboxes visible to assistive technology.)
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("props_distribute_spacing"), (true, 0.0f64)));
+        h.run_steps(2);
+        h.state_mut().run("selection.set", json!({ "ids": ids })).unwrap();
+        h.get_by_label("Distribute vertical space").click();
+        h.run_steps(3);
+        assert_eq!(top(h.state(), ids[1]) - top(h.state(), ids[0]), 20.0, "Use Spacing with 0: the frames touch");
+    }
+
+    /// The Align To button shows the target picked in its menu.
+    #[test]
+    fn the_align_to_button_shows_its_target() {
+        assert_eq!(align_to_icon("selection"), "align-to");
+        assert_eq!(align_to_icon("keyObject"), "align-to-key");
+        assert_eq!(align_to_icon("margins"), "align-to-margins");
+        assert_eq!(align_to_icon("page"), "align-to-page");
+        assert_eq!(align_to_icon("spread"), "align-to-spread");
+    }
+
+    #[test]
     fn transform_flips_and_rotates_from_properties() {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -2990,6 +3324,82 @@ mod color_picker_tests {
         let r = items[0].bounds();
         assert!((r.x0 - 200.0).abs() < 0.5 && (r.y1 - 200.0).abs() < 0.5 && (r.x1 - 300.0).abs() < 0.5, "{r:?}");
     }
+    /// Properties › Text Wrap shows the four offsets under the wrap buttons, as InDesign's
+    /// Properties panel does: linked at first, so one value sets all four; unlinked, one side.
+    #[test]
+    fn properties_text_wrap_shows_and_sets_the_offsets() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        app.run("object.textWrap", json!({"mode": "boundingBox", "offset": 0})).unwrap();
+        let offsets = |app: &DesignApp| app.session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().wrap.offsets;
+        let mut h = panel(app);
+        // The fields between the Text Wrap heading and Quick Actions: Top, Left, Bottom, Right.
+        let fields = |h: &Harness<'_, DesignApp>| {
+            let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+            let mut v: Vec<egui::Rect> = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .map(|n| n.rect())
+                .filter(|r| r.center().y > top && r.center().y < bottom)
+                .collect();
+            v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
+            v
+        };
+        let f = fields(&h);
+        assert_eq!(f.len(), 4, "four offsets: {f:?}");
+        let type_in = |h: &mut Harness<'_, DesignApp>, at: egui::Rect, text: &str| {
+            h.hover_at(at.center());
+            h.drag_at(at.center());
+            h.drop_at(at.center());
+            h.run_steps(2);
+            h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            h.event(egui::Event::Text(text.into()));
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+        };
+        // Linked: the top offset sets all four.
+        type_in(&mut h, f[0], "12pt");
+        assert_eq!(offsets(h.state()), [12.0; 4]);
+        // Unlinked: the bottom one alone.
+        let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
+        h.get_all_by_label("Make all settings the same").find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
+        h.run_steps(2);
+        let f = fields(&h);
+        type_in(&mut h, f[2], "6pt");
+        assert_eq!(offsets(h.state()), [12.0, 12.0, 6.0, 12.0], "[top, left, bottom, right]");
+    }
+
+    /// Properties › Frame Fitting has Auto-Fit and an Options button, as InDesign's: ticking
+    /// Auto-Fit makes the picture refit when its frame is resized.
+    #[test]
+    fn properties_frame_fitting_sets_auto_fit_and_opens_its_options() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let png = pagenor_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        app.run("file.place", json!({"base64": pagenor_engine::cmd::base64_encode(&png), "name": "p.png", "frame": id})).unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let graphic = |app: &DesignApp| app.session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().graphic().unwrap().clone();
+        assert_eq!(graphic(&app).auto_fit, pagenor_doc::Fitting::None);
+        let mut h = panel(app);
+        // A checkbox its section disables says so: Invert, with no text wrap.
+        use egui_kittest::kittest::NodeT;
+        assert!(h.get_by_label("Invert").accesskit_node().is_disabled());
+        assert!(!h.get_by_label("Auto-Fit").accesskit_node().is_disabled());
+        h.get_by_label("Auto-Fit").click();
+        h.run_steps(3);
+        assert_ne!(graphic(h.state()).auto_fit, pagenor_doc::Fitting::None, "Auto-Fit is on");
+        // The frame resized: the picture follows it.
+        h.state_mut().run("transform.resize", json!({"from": [72, 72, 272, 172], "to": [72, 72, 372, 272]})).unwrap();
+        let g = graphic(h.state());
+        let r = g.xf.transform_rect_bbox(pagenor_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        assert!(r.width() > 250.0, "refitted to the larger frame: {r:?}");
+        h.get_by_label("Options").click();
+        h.run_steps(3);
+        assert!(h.state().ui.dialog.is_some(), "Frame Fitting Options opens");
+    }
+
     const CYAN: &str = "C=100 M=0 Y=0 K=0";
 
     #[test]

@@ -240,15 +240,27 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
         let sid = if let Some(t) = caret {
             // The first inserted paragraph inherits the surviving destination paragraph.
             let r = t.range();
-            let first = {
+            let (first, blank) = {
                 let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
+                let blank = r.is_empty() && story.para_ranges().get(story.para_at(r.start)).is_some_and(|x| x.is_empty());
                 super::text::prepare_formatted_insert(story, r.start, &imp.story.text);
                 super::text::delete_preserving_eof(story, r.clone(), imp.story.text.is_empty());
-                story.paras.get(story.para_at(r.start)).cloned().ok_or_else(|| bad("file.place", "text insertion paragraph"))?
+                (story.paras.get(story.para_at(r.start)).cloned().ok_or_else(|| bad("file.place", "text insertion paragraph"))?, blank)
             };
             resolve_markdown_emphasis(&mut imp, &emphasis, &d.styles, Some(&first))?;
             let story = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
+            // An insertion point in an empty paragraph takes the first imported paragraph's style
+            // (insert_story would keep the empty paragraph's own, losing the styleMap result).
+            let p0 = story.para_at(r.start);
             let end = story.insert_story(r.start, &imp.story);
+            if blank
+                && !imp.story.text.is_empty()
+                && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0))
+                && *first != ParaFormat::default()
+            {
+                // Explicit imported paragraph styles do not erase genuine local defaults.
+                *p = ParaFormat { chars: p.chars.clone(), eof_inherited_chars: p.eof_inherited_chars.clone(), table: p.table, ..first.clone() };
+            }
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             t.story
         } else {
@@ -816,6 +828,19 @@ mod pdf_page_tests {
         // Redefine: the imported definition replaces the document's.
         s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleConflicts": "redefine", "rect": [72, 400, 300, 500]})).unwrap();
         assert_eq!(s.doc().unwrap().doc.styles.para("Body").unwrap().chars.size, Some(10.0));
+    }
+    #[test]
+    fn word_first_paragraph_into_empty_caret_keeps_mapped_style() {
+        // Regression (#1208): placing into a new text frame (which leaves its caret selected) left the first paragraph unstyled.
+        let b64 = crate::cmd::base64_encode(&word_file());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline"})).unwrap();
+        let fr = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text"})).unwrap();
+        let sid = fr["story"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "frame": fr["id"], "styleMap": {"Title": "Headline"}})).unwrap();
+        let st = s.doc().unwrap().doc.story(pagenor_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(st.paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Headline", "Body"]);
     }
 }
 

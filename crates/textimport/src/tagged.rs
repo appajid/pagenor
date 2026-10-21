@@ -25,6 +25,31 @@ fn escape(out: &mut String, c: char) {
     }
 }
 
+/// A tag value with '<', '>' and '\\' escaped by a backslash, so it keeps the tag intact.
+fn escape_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        if matches!(c, '<' | '>' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A tag value with backslash escapes removed.
+fn unescape_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut it = v.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' => out.extend(it.next()),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `story` as Tagged Text.
 pub fn tagged_text(doc: &Document, story: &Story) -> String {
     let mut out = String::from("<ASCII-WIN>\r\n<Version:7>\r\n");
@@ -34,7 +59,7 @@ pub fn tagged_text(doc: &Document, story: &Story) -> String {
             out.push_str("\r\n");
         }
         let pf = story.paras.get(i).cloned().unwrap_or_default();
-        let _ = write!(out, "<ParaStyle:{}>", pf.style.replace(['<', '>', ':'], ""));
+        let _ = write!(out, "<ParaStyle:{}>", escape_value(&pf.style));
         for (rr, f) in story.runs() {
             let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
             if a >= b {
@@ -45,7 +70,7 @@ pub fn tagged_text(doc: &Document, story: &Story) -> String {
             }
             let mut open = Vec::new();
             if f.style != NO_CHAR_STYLE {
-                let _ = write!(out, "<CharStyle:{}>", f.style.replace(['<', '>', ':'], ""));
+                let _ = write!(out, "<CharStyle:{}>", escape_value(&f.style));
                 open.push("CharStyle");
             }
             if let Some(v) = &f.over.font_family {
@@ -153,7 +178,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     }
                     "ParaStyle" => {
                         started = true;
-                        let v = value.trim().to_string();
+                        let v = unescape_value(value.trim());
                         if !v.is_empty() && !para_styles.contains(&v) {
                             para_styles.push(v.clone());
                         }
@@ -162,15 +187,15 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                         }
                     }
                     "CharStyle" => {
-                        let v = value.trim();
-                        fmt.style = if v.is_empty() { NO_CHAR_STYLE.into() } else { v.to_string() };
-                        if !v.is_empty() && !char_styles.contains(&v.to_string()) {
-                            char_styles.push(v.to_string());
+                        let v = unescape_value(value.trim());
+                        fmt.style = if v.is_empty() { NO_CHAR_STYLE.into() } else { v.clone() };
+                        if !v.is_empty() && !char_styles.contains(&v) {
+                            char_styles.push(v);
                         }
                     }
                     "cFont" => fmt.over.font_family = (!value.is_empty()).then(|| value.to_string()),
                     "cTypeface" => fmt.over.font_style = (!value.is_empty()).then(|| value.to_string()),
-                    "cSize" => fmt.over.size = value.trim().parse().ok(),
+                    "cSize" => fmt.over.size = value.trim().parse().ok().filter(|s: &f64| s.is_finite()),
                     "DefineParaStyle" | "DefineCharStyle" => {
                         let nm = value.split('=').next().unwrap_or("").trim().to_string();
                         let list = if name == "DefineParaStyle" { &mut para_styles } else { &mut char_styles };
@@ -245,6 +270,17 @@ mod tests {
         assert_eq!(import("<ASCII-WIN>\r\n<ParaStyle:Body>A<0xD83D>B<0xDE00>C".as_bytes()).unwrap().story.text, "ABC");
     }
 
+    /// `f64::from_str` accepts "NaN" and "inf"; a non-finite size must not reach the story.
+    #[test]
+    fn non_finite_char_size_is_ignored() {
+        for v in ["NaN", "inf", "infinity", "-inf"] {
+            let src = format!("<ASCII-WIN>\r\n<ParaStyle:Body><cSize:{v}>big<cSize:>");
+            let i = import(src.as_bytes()).unwrap();
+            let size = i.story.char_format_at(i.story.text.find("big").unwrap() + 1).over.size;
+            assert!(size.is_none_or(f64::is_finite), "{v}: size {size:?}");
+        }
+    }
+
     #[test]
     fn tagged_text_keeps_a_leading_empty_paragraph() {
         let doc = Document::new(&pagenor_doc::build::NewDocument::default());
@@ -255,6 +291,25 @@ mod tests {
         let back = import(tagged_text(&doc, &story).as_bytes()).unwrap();
         assert_eq!(back.story.text, story.text);
         assert_eq!(back.story.paras, story.paras);
+    }
+
+    /// Style names with ':', '<', '>' or '\' were written with those characters dropped, so
+    /// re-import gave the paragraphs a different style.
+    #[test]
+    fn style_names_with_tag_characters_round_trip() {
+        let doc = Document::new(&pagenor_doc::build::NewDocument::default());
+        for name in ["Body: Indent", "A<b>c", "x\\y", "end\\"] {
+            let mut story = Story::new(StoryId(0));
+            story.insert_with(0, "Text", CharFormat { style: name.into(), ..Default::default() });
+            story.paras[0].style = name.into();
+            let out = tagged_text(&doc, &story);
+            let back = import(out.as_bytes()).unwrap();
+            assert_eq!(back.story.text, "Text", "{out}");
+            assert_eq!(back.story.paras[0].style, name, "{out}");
+            assert_eq!(back.story.char_format_at(1).style, name, "{out}");
+            assert_eq!(back.para_styles.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), [name]);
+            assert_eq!(back.char_styles.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), [name]);
+        }
     }
 
     #[test]

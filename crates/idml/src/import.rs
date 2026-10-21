@@ -99,6 +99,7 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     }
     let mut im = Importer::new(read_link);
     im.run(&root, &top)?;
+    warnings.extend(im.warnings.iter().cloned());
     let document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
@@ -218,6 +219,7 @@ struct ItemCtx {
 }
 
 struct Importer<'r> {
+    warnings: Vec<String>,
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     next_id: u64,
     settings: DocSettings,
@@ -317,6 +319,12 @@ fn mojikumi_row(e: &El) -> Result<pagenor_doc::cjk::MojikumiAki> {
 
 fn nums(s: &str) -> Vec<f64> {
     s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
+}
+
+/// Like [`nums`], but empty when any number is NaN or infinite.
+fn finite_nums(s: &str) -> Vec<f64> {
+    let v = nums(s);
+    if v.iter().all(|x| x.is_finite()) { v } else { Vec::new() }
 }
 
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
@@ -431,6 +439,7 @@ impl<'r> Importer<'r> {
         // Built-ins are replaced by the file's definitions when present.
         styles.paragraph.iter_mut().for_each(|s| s.based_on = None);
         Importer {
+            warnings: Vec::new(),
             read_link,
             next_id: 0,
             settings: DocSettings::default(),
@@ -514,11 +523,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            pagenor_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
@@ -852,12 +867,16 @@ impl<'r> Importer<'r> {
         // Custom stroke styles.
         for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let nums = |k: &str| e.get(k).unwrap_or("").split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<_>>();
             let kind = match e.local() {
                 "StripedStrokeStyle" => pagenor_doc::StrokeType::Stripes {
-                    bands: nums("StripeArray").as_chunks::<2>().0.iter().map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0)).collect(),
+                    bands: finite_nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
                 },
-                "DashedStrokeStyle" => pagenor_doc::StrokeType::Dashed { pattern: nums("DashArray") },
+                "DashedStrokeStyle" => pagenor_doc::StrokeType::Dashed { pattern: finite_nums(e.get("DashArray").unwrap_or("")) },
                 _ => pagenor_doc::StrokeType::Dotted,
             };
             // Only the complete generated identity is a concrete table dash resource.
@@ -1595,7 +1614,7 @@ impl<'r> Importer<'r> {
             for li in tl.find_all("ListItem") {
                 let get = |k: &str| li.find(k).map(|x| x.text_content());
                 tabs.push(TabStop {
-                    position: get("Position").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+                    position: get("Position").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0),
                     align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
                     leader: get("Leader").unwrap_or_default(),
                     align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
@@ -1929,8 +1948,8 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = (ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize).min(nr - r);
-            let cs = (ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize).min(nc - c);
+            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
+            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
             let mut cell = t.cell(r, c).cloned().unwrap_or_default();
             let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| pagenor_doc::NO_CELL_STYLE.into());
             if cell_style != pagenor_doc::NO_CELL_STYLE {
@@ -2321,7 +2340,7 @@ impl<'r> Importer<'r> {
         if let Some(c) = color {
             s.swatch = self.swatch_ref(&c);
         }
-        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse().ok()) {
+        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.weight = w;
         }
         if let Some(t) = g(self, "StrokeTint").and_then(|v| v.parse().ok()) {
@@ -2339,7 +2358,7 @@ impl<'r> Importer<'r> {
         if let Some(v) = g(self, "EndJoin") {
             s.join = names::join_in(&v);
         }
-        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse().ok()) {
+        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.miter_limit = v;
         }
         if let Some(v) = g(self, "LeftLineEnd") {
@@ -2404,7 +2423,7 @@ impl<'r> Importer<'r> {
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| finite_nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
                 && len > 0.0
             {
@@ -2824,6 +2843,11 @@ fn overlay(base: &mut El, top: &El, depth: usize) {
     }
 }
 
+/// A cell span count; an infinite span is kept so it clamps to the table edge.
+fn span(e: &El, k: &str) -> f64 {
+    e.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0)
+}
+
 fn finite(v: Option<f64>) -> Option<f64> {
     v.filter(|v| v.is_finite())
 }
@@ -3082,7 +3106,7 @@ impl Prefs<'_> {
         self.0.iter().find_map(|e| e.get(k))
     }
     fn num(&self, k: &str) -> Option<f64> {
-        self.get(k).and_then(|v| v.trim().parse().ok())
+        self.get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())
     }
 }
 

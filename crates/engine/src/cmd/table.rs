@@ -1154,14 +1154,14 @@ fn parse_alt(v: &Value) -> Option<AltFills> {
     }
     let d = AltFills::default();
     Some(AltFills {
-        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| x as u32),
+        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         first_color: color_param(v, "firstColor").unwrap_or(d.first_color),
         first_tint: v.get("firstTint").and_then(Value::as_f64).map_or(d.first_tint, |x| x as f32),
-        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| x as u32),
+        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         next_color: color_param(v, "nextColor").unwrap_or(d.next_color),
         next_tint: v.get("nextTint").and_then(Value::as_f64).map_or(d.next_tint, |x| x as f32),
-        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| x as u32),
-        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| x as u32),
+        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
+        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
     })
 }
 
@@ -2021,6 +2021,30 @@ mod sort_tests {
         s.execute("table.options", &json!({"headerRows": u64::MAX, "footerRows": u64::MAX})).unwrap();
         let t = table(&s);
         assert_eq!((t.header_rows(), t.footer_rows(), t.nrows()), (100, 100, 201));
+    }
+    #[test]
+    fn move_row_cannot_move_a_header_row_out_of_place() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        assert!(s.execute("table.moveRow", &json!({"from": 0, "to": 2})).is_err());
+        s.doc().unwrap().doc.check().unwrap();
+        // Dragging the selected header row onto the last body row is refused too.
+        let d = s.doc().unwrap().doc.clone();
+        let (sid, tid) = d.stories.values().find_map(|st| st.tables.keys().next().map(|k| (st.id, *k))).unwrap();
+        let fid = d.stories[&sid].frames[0];
+        let cs = s.cache.get(&d, sid, None);
+        let cells = &cs.frames[0].tables[0].cells;
+        let centre = |r: usize| {
+            let c = cells.iter().find(|c| c.row == r && c.col == 0).unwrap().rect.center();
+            d.text_xf(d.item(fid).unwrap()) * c
+        };
+        let (from, to) = (centre(0), centre(2));
+        s.execute("table.select", &json!({"story": sid.0, "table": tid, "rows": [0, 0], "what": "row"})).unwrap();
+        assert!(s.execute("table.dropCells", &json!({"frame": fid.0, "from": [from.x, from.y], "to": [to.x, to.y]})).is_err());
+        s.doc().unwrap().doc.check().unwrap();
     }
 }
 

@@ -238,3 +238,18 @@ fn validate_pdf_reports_checks_in_json_and_uses_failure_exit_status() {
     assert!(String::from_utf8_lossy(&help.stdout).contains("validate-pdf FILE.pdf"));
     std::fs::remove_dir_all(dir).unwrap();
 }
+/// `--scale 0`, a negative value or `nan` wrote a 1×1 PNG and exited 0; `inf` said "no such page".
+#[test]
+fn run_scale_that_is_not_finite_and_positive_is_an_error() {
+    let dir = std::env::temp_dir().join(format!("pagenor-cli-scale-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("a.png");
+    for scale in ["nan", "0", "-2", "inf", "-inf"] {
+        let out = cli().args(["run", "--sample", "--scale", scale, "--export", png.to_str().unwrap()]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "--scale {scale}: {err}");
+        assert!(err.contains("bad --scale"), "--scale {scale}: {err}");
+    }
+    assert!(!png.exists(), "nothing is exported when the scale is wrong");
+    let _ = std::fs::remove_dir_all(&dir);
+}

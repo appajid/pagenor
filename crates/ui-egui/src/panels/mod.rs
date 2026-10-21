@@ -47,6 +47,7 @@ pub struct SelInfo {
     /// Uniform corner (shape, size) — the first corner.
     pub corner: (pagenor_geom::corners::CornerShape, f64),
     pub wrap_invert: bool,
+    pub wrap_offsets: [f64; 4],
     /// Text wrap side and contour type ids (`bothSides`, `sameAsClipping`, …).
     pub wrap_side: String,
     pub wrap_contour: String,
@@ -72,6 +73,19 @@ pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
     }
     let i = sel_info(app)?;
     Some((i.fill, sel_tint(app, false), i.stroke, sel_tint(app, true)))
+}
+
+/// [`color_target`], or with nothing selected the colours new shapes get (the Color and Swatches
+/// panels then edit those, as InDesign's do).
+pub fn color_target_or_defaults(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
+    color_target(app).or_else(|| {
+        let state = app.session.active()?;
+        if !state.selection.items.is_empty() || state.selection.text.is_some() || state.selection.cells.is_some() {
+            return None;
+        }
+        let colors = &state.doc.settings.new_object;
+        Some((colors.fill.clone(), colors.fill_tint, colors.stroke.clone(), colors.stroke_tint))
+    })
 }
 
 /// Apply a swatch (and tint) to the fill or stroke of what colour edits apply to.
@@ -157,6 +171,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
             .unwrap_or_else(|| "solid".into()),
         corner: (first.corners.corners[0].shape, first.corners.corners[0].size),
         wrap_invert: tw.invert,
+        wrap_offsets: tw.offsets,
         wrap_side: serde_json::to_value(tw.side).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         wrap_contour: serde_json::to_value(tw.contour).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         locked: first.locked,

@@ -986,3 +986,21 @@ twenty WASM packages. Six synthetic offscreen views are inspected. A separate
 optimized local Mac arm64 GUI/CLI bundle has artifact-side signature/version/icon,
 four-page PDF and native-format/older-reader-guard evidence. Native Windows/Linux
 execution and publication remain pending. The owner app session stays open.
+
+## 21 October 2026 — P11.20 / local 0.10.0
+
+Screened 476 updated open/closed PR records through #1463 after the local 0.9.0
+checkpoint. Inspected 68 candidate patch/file scopes: 49 compatible adaptations,
+two covered, one not applicable, sixteen queued. All 68 heads rechecked unchanged.
+The [adoption log](docs/pagenor/UPSTREAM_ADOPTION_0100.md) pins authors/SHAs and
+explains deliberate differences, including persistent OpenGL failure history,
+paragraph-default/EOF preservation, bounded CDATA and supported text outlines.
+No private fonts, documents, maps, new translations or unsafe Rust were added.
+Native format stays 6; external lock entries are unchanged.
+
+All seven gates pass: 2,875 tests, zero failures, 7 existing ignores; twenty
+WASM packages. Seven offscreen views were inspected. Separate optimized local
+Mac GUI/CLI build/report follows the source commit; artifact-side evidence records
+reader compatibility and signatures.
+Native Windows/Linux execution and publication remain pending; the owner’s open
+app session is preserved.

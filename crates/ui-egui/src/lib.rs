@@ -251,6 +251,8 @@ pub struct UiState {
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
+    /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
+    pub style_preview: bool,
     /// View › Separations Preview: a process plate (0–3) and/or an ink limit (total, 0–4).
     #[serde(skip)]
     pub separation: Option<u8>,
@@ -297,6 +299,10 @@ pub struct UiState {
     /// Font menu sample choice and size.
     pub font_sample: String,
     pub font_preview_size: u8,
+    /// File › New › Document: the units of the last print document made, which the window and its
+    /// built-in print presets show next time (`None`: each preset's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_document_units: Option<Unit>,
     /// File › New › Document › Recent: the settings of the last documents made, newest first.
     pub recent_new_documents: Vec<pagenor_doc::build::NewDocument>,
     /// Transform reference point (0..8, row-major; 0 = top-left).
@@ -392,6 +398,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
+            style_preview: false,
             separation: None,
             ink_limit: None,
             display_quality: pagenor_render::DisplayQuality::High,
@@ -416,6 +423,7 @@ impl Default for UiState {
             custom_workspaces: Vec::new(),
             font_sample: "selected".into(),
             font_preview_size: 1,
+            new_document_units: None,
             recent_new_documents: Vec::new(),
             ref_point: 0,
             align_to: "selection".into(),
@@ -723,7 +731,11 @@ impl DesignApp {
         self.pane = pane;
     }
     pub fn view_info(&self) -> ViewInfo {
-        ViewInfo { zoom: self.view().map(|v| v.zoom).unwrap_or(1.0), snap: self.ui.snap_view(), unit: self.ui.units }
+        ViewInfo {
+            zoom: self.view().map(|v| v.zoom).unwrap_or(1.0),
+            snap: self.ui.snap_view(),
+            unit: self.session.active().map_or(self.ui.units, |st| st.doc.settings.horizontal_units),
+        }
     }
 
     pub fn status(&mut self, s: impl Into<String>) {
@@ -1519,6 +1531,7 @@ impl DesignApp {
         if welcome || presenting || self.ui.hidden_panels != 0 {
             panel_docking::cancel_gesture(self, &ctx);
         }
+        canvas::begin_frame(&ctx);
         let dbg = std::env::var_os("PAGENOR_DEBUG_LAYOUT").is_some();
         if dbg {
             eprintln!("root start {:?}", ui.available_rect_before_wrap());
@@ -1771,6 +1784,17 @@ pub fn drop_key_name_text(raw: &mut egui::RawInput, text_field_focused: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tool readouts measured in picas whatever the document's units (the UI's unit is never set):
+    /// they follow the active document's ruler units.
+    #[test]
+    fn tool_readouts_measure_in_the_documents_units() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Services::default());
+        assert_eq!(app.view_info().unit, Unit::Picas, "no document: the UI's default");
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "millimeters"})).unwrap();
+        assert_eq!(app.view_info().unit, Unit::Inches);
+    }
 
     /// An app with one document that has an unsaved edit.
     fn app_with_unsaved_document() -> DesignApp {
@@ -3118,7 +3142,7 @@ mod browser_import_tests {
             let request = app.import_request("place");
             deliver(&mut app, request, "three.pdf", pdf());
             app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
-            // The native dialog clamps zero to one; positive invalid pages must fail.
+            // The backend rejects zero too; positive invalid pages consume/cancel the staged payload.
             if page == 0 {
                 assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
             } else {
@@ -3213,6 +3237,18 @@ mod browser_import_tests {
         assert!(dialogs::confirm(&mut app).is_err());
         assert!(app.pending_pdf.is_none());
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
+    }
+    #[test]
+    fn pdf_options_refuse_a_page_range_instead_of_placing_page_one() {
+        for spec in ["4-5", "2,5", "2-3", "1.5", "0", "-1", "nan", "inf"] {
+            let mut app = app();
+            let request = app.import_request("place");
+            deliver(&mut app, request, "three.pdf", pdf());
+            app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(spec));
+            assert!(dialogs::confirm(&mut app).is_err(), "{spec}");
+            assert!(app.session.doc().unwrap().doc.assets.is_empty(), "{spec}");
+            assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfImport", "{spec}");
+        }
     }
 }
 

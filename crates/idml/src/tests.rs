@@ -2674,3 +2674,34 @@ fn too_many_entries_are_refused() {
     let Err(err) = import_idml(&w.finish().unwrap().into_inner()) else { panic!("a package with 100 001 entries imported") };
     assert!(err.to_string().contains("entries"), "{err}");
 }
+/// Q is `Q` in IDML, as InDesign writes it (`U` is another unit). Units Pagenor lacks are
+/// read as points, and the import report says so.
+#[test]
+fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
+    use pagenor_geom::Unit;
+    let mut d = Document::new(&NewDocument::default());
+    for (h, v) in [(Unit::Q, Unit::Ha), (Unit::Ha, Unit::Q), (Unit::Millimeters, Unit::Points)] {
+        (d.settings.horizontal_units, d.settings.vertical_units) = (h, v);
+        let bytes = export_idml(&d);
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!((back.settings.horizontal_units, back.settings.vertical_units), (h, v));
+    }
+    d.settings.horizontal_units = Unit::Q;
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"HorizontalMeasurementUnits="Q""#), "{prefs}");
+
+    let prefs =
+        PREFS.replace("<MarginPreference", r#"<ViewPreference HorizontalMeasurementUnits="U" VerticalMeasurementUnits="Q"/><MarginPreference"#);
+    let zip = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", &prefs),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
+    assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
+}

@@ -1,5 +1,10 @@
 //! The menu bar tree (InDesign order), UI-only commands, keyboard shortcuts and Quick Apply.
 
+#[cfg(test)]
+pub(crate) const SETTINGS_SHORTCUT: &str = if cfg!(target_os = "macos") { "Cmd+," } else { "Cmd+K" };
+#[cfg(test)]
+pub(crate) const EDGES_SHORTCUT: &str = if cfg!(target_os = "macos") { "Ctrl+Cmd+H" } else { "Cmd+H" };
+
 use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode};
@@ -683,7 +688,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         #[cfg(not(target_arch = "wasm32"))]
         "app.quit" => app.request_quit(),
         "app.newDocumentDialog" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            let mut d = crate::dialogs::Dialog::new("newDocument", json!({}));
+            crate::new_document::use_print_units(app, &mut d);
+            app.ui.dialog = Some(d);
             Ok(Value::Null)
         }
         "app.openDialog" => app.pick_and_open("open"),
@@ -1316,6 +1323,20 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             }
             Ok(Value::Null)
         }
+        "window.collapseToIcons" => {
+            let collapsed = match p.get("collapsed") {
+                None => true,
+                Some(v) => match v.as_bool() {
+                    Some(v) => v,
+                    None => return Some(Err("collapsed must be a boolean".into())),
+                },
+            };
+            app.ui.dock_expanded = !collapsed;
+            if collapsed {
+                app.ui.open_panel = None;
+            }
+            Ok(json!({"collapsed": collapsed}))
+        }
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
             if panel == "tabs" {
@@ -1810,10 +1831,24 @@ pub fn shortcut_text(sc: &str) -> String {
         None => ("", sc),
     };
     let has = |m: &str| mods.split('+').any(|x| x == m);
+    if mac {
+        let mut out = String::new();
+        for (m, sym) in [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Cmd", "⌘")] {
+            if has(m) {
+                out += sym;
+            }
+        }
+        return out + key;
+    }
+    // Windows and Linux, as InDesign writes them: Ctrl (Cmd's key here) first, then Alt, Shift.
     let mut out = String::new();
-    for (m, sym, word) in [("Ctrl", "⌃", "Ctrl+"), ("Alt", "⌥", "Alt+"), ("Shift", "⇧", "Shift+"), ("Cmd", "⌘", "Ctrl+")] {
-        if has(m) && !(m == "Cmd" && !mac && has("Ctrl")) {
-            out += if mac { sym } else { word };
+    if has("Cmd") || has("Ctrl") {
+        out += "Ctrl+";
+    }
+    for m in ["Alt", "Shift"] {
+        if has(m) {
+            out += m;
+            out += "+";
         }
     }
     out + key
@@ -2636,6 +2671,20 @@ fn shortcut_modifiers_match(required: egui::Modifiers, actual: egui::Modifiers, 
         && required.ctrl == (mac && actual.ctrl)
         && required.shift == actual.shift
         && required.alt == actual.alt
+}
+
+/// The command a paste event stands for besides plain Paste. egui-winit turns every ⌘+V chord into
+/// `Event::Paste` with the clipboard's text and drops the key press, so the shortcut table never
+/// sees Paste in Place's chord; the modifiers held when it went down tell them apart. `None` when
+/// the chord is another one, or the native menu's accelerator takes it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Option<&'static str> {
+    let id = "edit.pasteInPlace";
+    if app.native_menu && !app.ui.shortcuts.contains_key(id) {
+        return None;
+    }
+    let (m, k) = shortcut_of(app, id).as_deref().and_then(parse_shortcut)?;
+    (k == egui::Key::V && shortcut_modifiers_match(m, modifiers, cfg!(target_os = "macos"))).then_some(id)
 }
 
 /// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
@@ -3552,9 +3601,25 @@ mod tests {
     }
 
     #[test]
+    fn platform_shortcuts_leave_mac_system_keys_free() {
+        let app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let keys = effective_shortcuts(&app);
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+,"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Ctrl+Cmd+H"));
+            assert!(!keys.iter().any(|(_, sc)| sc == "Cmd+H" || sc == "Cmd+K" || sc == "Cmd+M" || sc == "Cmd+Alt+H"));
+        } else {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Cmd+H"));
+        }
+        assert!(parse_shortcut(SETTINGS_SHORTCUT).is_some());
+        assert!(parse_shortcut(EDGES_SHORTCUT).is_some());
+    }
+
+    #[test]
     fn custom_shortcuts_override_defaults() {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
-        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some(SETTINGS_SHORTCUT));
         let r = run_ui(&mut app, "window.setShortcut", &json!({"id": "app.preferences", "shortcut": "Cmd+Alt+Shift+9"})).unwrap().unwrap();
         assert_eq!(r["shortcut"], "Cmd+Alt+Shift+9");
         assert!(effective_shortcuts(&app).contains(&("app.preferences".into(), "Cmd+Alt+Shift+9".into())));
@@ -3574,7 +3639,12 @@ mod tests {
             assert_eq!(shortcut_text("Cmd+Alt+3"), "⌥⌘3");
             assert_eq!(shortcut_text("Cmd+Shift+."), "⇧⌘.");
         } else {
-            assert_eq!(shortcut_text("Cmd+Alt+3"), "Alt+Ctrl+3");
+            // InDesign's order on Windows: Ctrl+Alt+Shift+.
+            assert_eq!(shortcut_text("Cmd+Alt+3"), "Ctrl+Alt+3");
+            assert_eq!(shortcut_text("Cmd+Alt+Shift+C"), "Ctrl+Alt+Shift+C");
+            assert_eq!(shortcut_text("Cmd+Shift+E"), "Ctrl+Shift+E");
+            assert_eq!(shortcut_text("Ctrl+Cmd+Q"), "Ctrl+Q");
+            assert_eq!(shortcut_text("Cmd+-"), "Ctrl+-");
         }
     }
 

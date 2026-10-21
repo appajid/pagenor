@@ -223,9 +223,28 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind:…}, cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
             has_doc,
             |s, p| {
+                let kind: Option<pagenor_doc::StrokeType> = p
+                    .get("type")
+                    .map(|v| {
+                        if let Some(fields) = v.as_object() {
+                            let field = match v.get("kind").and_then(Value::as_str) {
+                                Some("dashed") => Some("pattern"),
+                                Some("stripes") => Some("bands"),
+                                Some("style") => Some("name"),
+                                _ => None,
+                            };
+                            for key in fields.keys() {
+                                if key != "kind" && Some(key.as_str()) != field {
+                                    return Err(bad("object.stroke", format!("type: unknown field `{key}`")));
+                                }
+                            }
+                        }
+                        serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
+                    })
+                    .transpose()?;
                 for key in ["swatch", "gapSwatch"] {
                     if let Some(name) = p.get(key).and_then(Value::as_str) {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
@@ -261,7 +280,7 @@ pub fn specs() -> Vec<CommandSpec> {
                             st.swatch = v.into();
                         }
                         if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v as f32;
+                            st.tint = v.clamp(0.0, 1.0) as f32;
                         }
                         if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
                             st.weight = v.max(0.0);
@@ -273,16 +292,18 @@ pub fn specs() -> Vec<CommandSpec> {
                             st.gap_swatch = v.into();
                         }
                         if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v as f32;
+                            st.gap_tint = v.clamp(0.0, 1.0) as f32;
                         }
                         if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
                             st.gap_overprint = v;
                         }
-                        for (k, apply) in [("align", 0), ("type", 1), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
+                        if let Some(kind) = &kind {
+                            st.kind = kind.clone();
+                        }
+                        for (k, apply) in [("align", 0), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
                             if let Some(v) = p2.get(k).cloned() {
                                 let _ = match apply {
                                     0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    1 => serde_json::from_value(v).map(|x| st.kind = x),
                                     2 => serde_json::from_value(v).map(|x| st.cap = x),
                                     3 => serde_json::from_value(v).map(|x| st.join = x),
                                     4 => serde_json::from_value(v).map(|x| st.start = x),
@@ -656,7 +677,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Distribute",
             ["Window", "Object & Layout", "Align"],
             None,
-            "{axis: horizontal|vertical, by?: centers|spacing, spacing?: points, ids?}",
+            "{axis: horizontal|vertical, by?: centers|spacing, edge?: top|vcenter|bottom|left|hcenter|right (Distribute Objects: that line of each object, evenly between the outermost ones or `spacing` apart from the first; `axis` follows from it), spacing?: points, ids?}",
             has_selection,
             distribute
         ),
@@ -669,7 +690,7 @@ pub fn specs() -> Vec<CommandSpec> {
             super::always,
             |s, p| {
                 if let Some(n) = p.get("sides").and_then(Value::as_u64) {
-                    s.prefs.polygon_sides = (n as u32).clamp(3, 100);
+                    s.prefs.polygon_sides = n.clamp(3, 100) as u32;
                 }
                 if let Some(v) = p.get("starInset").and_then(Value::as_f64) {
                     s.prefs.star_inset = (v / 100.0).clamp(0.0, 1.0);
@@ -933,7 +954,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
     let caret = bool_or(p, "caret", content == "text");
     let vertical = bool_or(p, "vertical", false);
-    let sides = p.get("sides").and_then(Value::as_u64).map_or(s.prefs.polygon_sides, |v| v as u32).clamp(3, 100);
+    let sides = p.get("sides").and_then(Value::as_u64).unwrap_or(u64::from(s.prefs.polygon_sides)).clamp(3, 100) as u32;
     let inset = p.get("starInset").and_then(Value::as_f64).map_or(s.prefs.star_inset, |v| v / 100.0).clamp(0.0, 1.0);
     let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
     s.edit(|d, sel| {
@@ -2823,6 +2844,9 @@ fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.len() < 3 && p.get("spacing").is_none() {
         return Err(bad("object.distribute", "select at least three objects"));
     }
+    if let Some(edge) = str_param(p, "edge") {
+        return distribute_by_edge(s, &ids, edge, p.get("spacing").and_then(Value::as_f64));
+    }
     let horizontal = str_param(p, "axis") != Some("vertical");
     let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
     let fixed = p.get("spacing").and_then(Value::as_f64);
@@ -2863,6 +2887,59 @@ fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 let v = if horizontal { Vec2::new(delta, 0.0) } else { Vec2::new(0.0, delta) };
                 it.xf = Affine::translate(v) * it.xf;
+            }
+        }
+        ok()
+    })
+}
+
+/// Distribute Objects by a line of each object, as InDesign's six buttons: its top, vertical
+/// centre or bottom (or left, horizontal centre, right), evenly between the outermost objects'
+/// lines, or `spacing` apart from the first one's.
+fn distribute_by_edge(s: &mut Session, ids: &[ItemId], edge: &str, spacing: Option<f64>) -> Result<Value> {
+    const ID: &str = "object.distribute";
+    let (horizontal, at) = match edge {
+        "left" => (true, 0.0),
+        "hcenter" => (true, 0.5),
+        "right" => (true, 1.0),
+        "top" => (false, 0.0),
+        "vcenter" => (false, 0.5),
+        "bottom" => (false, 1.0),
+        other => return Err(bad(ID, format!("unknown edge `{other}`"))),
+    };
+    if spacing.is_some_and(|v| !v.is_finite()) {
+        return Err(bad(ID, "spacing must be a finite number"));
+    }
+    s.edit(|d, _| {
+        let line = |r: &Rect| if horizontal { r.x0 + (r.x1 - r.x0) * at } else { r.y0 + (r.y1 - r.y0) * at };
+        let mut items: Vec<(ItemId, f64)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, line(&it.bounds())))).collect();
+        items.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let n = items.len();
+        let (Some(&(_, first)), Some(&(_, last))) = (items.first(), items.last()) else { return ok() };
+        if n < 2 {
+            return ok();
+        }
+        let mut moves = Vec::with_capacity(n);
+        for (k, (id, cur)) in items.iter().enumerate() {
+            let Some(it) = d.item(*id) else { continue };
+            if it.locked || d.layer(it.layer).is_some_and(|layer| layer.locked) {
+                continue;
+            }
+            let target = match spacing {
+                Some(gap) => first + gap * k as f64,
+                None => first + (last - first) * (k as f64 / (n - 1) as f64),
+            };
+            let delta = target - cur;
+            let v = if horizontal { Vec2::new(delta, 0.0) } else { Vec2::new(0.0, delta) };
+            let xf = Affine::translate(v) * it.xf;
+            if !xf.as_coeffs().iter().all(|v| v.is_finite()) {
+                return Err(bad(ID, "spacing produces an out-of-range transform"));
+            }
+            moves.push((*id, xf));
+        }
+        for (id, xf) in moves {
+            if let Some(it) = d.item_mut(id) {
+                it.xf = xf;
             }
         }
         ok()
@@ -3018,6 +3095,21 @@ mod polygon_tests {
             .as_u64()
             .unwrap();
         assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.subpaths[0].anchors.len(), 3);
+    }
+
+    #[test]
+    fn polygon_sides_clamp_before_narrowing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("tool.polygonSettings", &json!({"sides": 4294967301u64})).unwrap();
+        assert_eq!(r["sides"], 100);
+        let r = s.execute("tool.polygonSettings", &json!({"sides": 4294967297u64})).unwrap();
+        assert_eq!(r["sides"], 100);
+        let id =
+            s.execute("frame.create", &json!({"rect": [0, 0, 50, 50], "shape": "polygon", "sides": 4294967301u64, "starInset": 0})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.subpaths[0].anchors.len(), 100);
     }
 }
 
@@ -3838,6 +3930,64 @@ mod copy_ids_tests {
 }
 
 #[cfg(test)]
+mod stroke_type_tests {
+    use serde_json::json;
+
+    #[test]
+    fn malformed_stroke_types_return_bad_params_without_editing() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].clone();
+        for (kind, hint) in [
+            (json!({"kind": "dashed", "dash": [8, 2.5]}), "dash"),
+            (json!({"kind": "zigzag"}), "zigzag"),
+            (json!({"kind": "solid", "dash": [8, 2.5]}), "dash"),
+            (json!({"kind": "dashed", "pattern": [8, 2.5], "dash": [1, 2]}), "dash"),
+            (json!({"kind": "dashed"}), "pattern"),
+            (json!({"kind": "dashed", "pattern": "bad"}), "type"),
+            (json!({"kind": "stripes", "bands": [[0, "bad"]]}), "type"),
+            (json!({"kind": "style"}), "name"),
+            (json!({}), "kind"),
+            (json!("solid"), "type"),
+            (json!(null), "type"),
+        ] {
+            let before = s.doc().unwrap().doc.clone();
+            let error = s.execute("object.stroke", &json!({"ids": [id], "weight": 5, "type": kind})).unwrap_err();
+            assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+            assert!(error.to_string().contains(hint), "{kind}: {error}");
+            assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{kind}: nothing changed");
+        }
+    }
+
+    #[test]
+    fn stroke_types_apply_all_supported_variants() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        for kind in [
+            json!({"kind": "solid"}),
+            json!({"kind": "dashed", "pattern": [8, 2.5]}),
+            json!({"kind": "dotted"}),
+            json!({"kind": "thickThin"}),
+            json!({"kind": "thinThick"}),
+            json!({"kind": "thinThin"}),
+            json!({"kind": "thickThick"}),
+            json!({"kind": "thinThickThin"}),
+            json!({"kind": "thickThinThick"}),
+            json!({"kind": "wavy"}),
+            json!({"kind": "hashed"}),
+            json!({"kind": "stripes", "bands": [[0, 0.3], [0.7, 0.3]]}),
+            json!({"kind": "style", "name": "Rails"}),
+        ] {
+            let result = s.execute("object.stroke", &json!({"ids": [id], "type": kind})).unwrap();
+            assert_eq!(result["changed"], 1);
+            let item = s.doc().unwrap().doc.item(pagenor_doc::ItemId(id)).unwrap();
+            assert_eq!(item.stroke.kind, serde_json::from_value::<pagenor_doc::StrokeType>(kind).unwrap());
+        }
+    }
+}
+
+#[cfg(test)]
 mod swatch_name_tests {
     use serde_json::json;
 
@@ -4646,5 +4796,48 @@ mod new_object_color_regressions {
         let it = reopened.doc().unwrap().doc.item(ItemId(second)).unwrap();
         assert_eq!((it.fill.swatch.as_str(), it.fill.tint), ("[Paper]", 0.5));
         assert!(reopened.execute("object.fill", &json!({"swatch":"not a swatch"})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod distribute_edge_tests {
+    use super::*;
+    /// Distribute Objects by an edge: the tops evenly between the outermost ones, or a set
+    /// distance apart (two objects suffice then); a centre line works the same.
+    #[test]
+    fn distribute_objects_by_their_edges_or_a_spacing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let ids: Vec<u64> = [(72.0, 72.0, 40.0), (200.0, 90.0, 80.0), (320.0, 300.0, 20.0)]
+            .iter()
+            .map(|(x, y, h)| s.execute("frame.create", &json!({"rect": [x, y, x + 60.0, y + h]})).unwrap()["id"].as_u64().unwrap())
+            .collect();
+        let top = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds().y0;
+        let mid = |s: &Session, id: u64| {
+            let r = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+            (r.y0 + r.y1) / 2.0
+        };
+        s.execute("object.distribute", &json!({"edge": "top", "ids": ids})).unwrap();
+        assert_eq!([top(&s, ids[0]), top(&s, ids[1]), top(&s, ids[2])], [72.0, 186.0, 300.0], "the tops evenly spaced");
+        s.execute("object.distribute", &json!({"edge": "vcenter", "ids": ids})).unwrap();
+        let m = [mid(&s, ids[0]), mid(&s, ids[1]), mid(&s, ids[2])];
+        assert!((m[1] - m[0] - (m[2] - m[1])).abs() < 1e-9, "the centres evenly spaced: {m:?}");
+        s.execute("object.distribute", &json!({"edge": "top", "spacing": 50, "ids": [ids[0], ids[1]]})).unwrap();
+        assert_eq!(top(&s, ids[1]) - top(&s, ids[0]), 50.0, "Use Spacing: two objects, 50 pt apart");
+        assert!(s.execute("object.distribute", &json!({"edge": "middle", "ids": ids})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod distribution_safety_tests {
+    use super::*;
+    #[test]
+    fn extreme_distribution_spacing_is_rejected_without_editing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let ids: Vec<_> = (0..3).map(|i| s.execute("frame.create", &json!({"rect": [i * 50, 0, i * 50 + 20, 20]})).unwrap()["id"].clone()).collect();
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("object.distribute", &json!({"edge": "left", "spacing": f64::MAX, "ids": ids})).is_err());
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
     }
 }

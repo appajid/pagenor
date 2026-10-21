@@ -62,3 +62,10 @@ separately to format 5. Published 0.6.0 artifacts remain immutable. The 0.7.0
 desktop preview is published after native Mac/Windows/Linux and Rust 1.95 gates,
 package/installer checks and all 20 payload checksums pass. Further source-only
 documentation records preserve these immutable binaries.
+
+The 21 October 2026 local UI/import milestone advances **0.9.0 → 0.10.0**
+(P11.20). This is a minor application version for the grouped editor controls
+and import reliability changes. Native capability stays **6**; 0.9.0 readers
+remain compatible with the unchanged model. Published previews stay immutable.
+The new build remains local; native Windows/Linux package validation and
+publication are separate pending steps. See [the adoption log](UPSTREAM_ADOPTION_0100.md).

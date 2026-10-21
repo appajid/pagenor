@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+- P11.20: local **0.10.0** screens 476 updated upstream PR records through #1463
+  and inspects 68 candidates: 49 supply compatible adaptations, two are covered,
+  one has no matching input path and sixteen remain queued. Adds paper presets,
+  remembered units, Properties wrap/distribution/fitting controls, swatch ink/mode
+  columns, style-preview persistence, angle dials and safer import/export inputs.
+  Retains inline Indic IME, scoped/lazy fonts, explicit book masters, EOF/default
+  formatting, grouped panels and native format 6. All seven gates pass: 2,875
+  tests, zero failures, 7 existing ignores; twenty WASM packages. Seven offscreen
+  views are inspected; the separate local Mac GUI/CLI build/report follows the commit.
+  Native Windows/Linux execution and publication remain pending.
+  [Source pins, adaptation choices and queued work](docs/pagenor/UPSTREAM_ADOPTION_0100.md).
+
 - P11.19: local **0.9.0** reviews 25 new proposals through #1081 plus two older
   heads; 22 new proposals and incremental #325 are adapted, #1071 is covered,
   two require missing prerequisites and #400 remains excluded. Adds page Properties,

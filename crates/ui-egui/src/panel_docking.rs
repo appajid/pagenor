@@ -210,6 +210,22 @@ pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<R
     Some(change(app, operation, params))
 }
 
+/// The height of a window a docked panel floats into: as InDesign's, a panel-sized window rather
+/// than the dock column it came from.
+pub(crate) const FLOAT_HEIGHT: f32 = 400.0;
+
+/// A docked panel floated from the UI (its tab dragged out, or Float Panel) takes the width of
+/// its dock group and at most [`FLOAT_HEIGHT`]: the docking surface sizes it as the whole group,
+/// as tall as the dock column. A panel moved out of a floating group keeps that group's size.
+fn panel_sized(app: &DesignApp, action: Action<String>) -> Action<String> {
+    match action {
+        Action::Float { panel, rect } if app.ui.docking.as_ref().is_none_or(|layout| layout.location(&panel).is_ok_and(|l| l.floating.is_none())) => {
+            Action::Float { panel, rect: [rect[0], rect[1], rect[2], rect[3].min(FLOAT_HEIGHT)] }
+        }
+        action => action,
+    }
+}
+
 // UI output and automation share this atomic dispatcher. The application owns the registry
 // and saved return locations; craft-ui owns tree validation and structural changes.
 fn apply_action(app: &mut DesignApp, action: Action<String>) -> Result<Value, String> {
@@ -447,6 +463,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
             &mut PanelContent(app, raise.clone()),
         )
     };
+    let mut collapse = false;
     let output = if layout.root.is_some() {
         egui::Panel::right("shared-panel-dock")
             .default_size(310.0)
@@ -454,6 +471,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
             .resizable(true)
             .frame(egui::Frame::NONE.fill(t.panel))
             .show(ui, |ui| {
+                collapse = crate::dock::dock_header(ui, &t, "»").clicked();
                 if let Some(height) = stack_height {
                     let viewport_height = ui.available_height();
                     egui::ScrollArea::vertical()
@@ -486,6 +504,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
         ui.ctx().data_mut(|data| data.remove::<LegacyDrag>(egui::Id::new("pagenor-panel-docking").with("legacy-origin")));
     }
     for action in output.actions {
+        let action = panel_sized(app, action);
         if let Err(error) = app.run("window.panel.layout", json!({"action": action})) {
             app.ui.status = error;
         }
@@ -498,6 +517,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) -> bool {
             app.status(error);
         }
     }
+    if collapse {
+        let _ = app.run("window.collapseToIcons", json!({}));
+    }
     icon_rail(app, ui);
     true
 }
@@ -509,6 +531,9 @@ fn icon_rail(app: &mut DesignApp, ui: &mut egui::Ui) {
         .resizable(false)
         .frame(egui::Frame::NONE.fill(t.panel))
         .show(ui, |ui| {
+            if crate::dock::dock_header(ui, &t, "«").clicked() {
+                let _ = app.run("window.collapseToIcons", json!({"collapsed": false}));
+            }
             crate::dock::icon_groups(app, ui);
         })
         .response

@@ -12,13 +12,43 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
     let text = super::colors_affect_text(app);
-    let fill_cur = super::color_target(app).map(|t| t.0);
+    let target = super::color_target_or_defaults(app);
+    let stroke_id = egui::Id::new("color_panel_stroke");
+    let mut stroke_front: bool = ui.data(|d| d.get_temp(stroke_id)).unwrap_or(false);
+    ui.horizontal(|ui| {
+        for (stroke, label) in [(false, "Fill"), (true, "Stroke")] {
+            if ui.selectable_label(stroke_front == stroke, crate::i18n::tr(&app.ui.language, label)).clicked() {
+                stroke_front = stroke;
+            }
+        }
+        if let Some((fill, fill_tint, stroke, stroke_tint)) = &target {
+            ui.label(crate::i18n::tr(&app.ui.language, "Tint"));
+            let tint = f64::from(if stroke_front { *stroke_tint } else { *fill_tint }) * 100.0;
+            if let Some(v) = crate::widgets::NumField::number("swatches_tint", Some(tint), "%", 0).width(62.0).range(0.0, 100.0).show(ui) {
+                let name = if stroke_front { stroke } else { fill };
+                if let Err(e) = super::apply_swatch(app, stroke_front, name, Some((v / 100.0) as f32)) {
+                    app.status(e);
+                }
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(stroke_id, stroke_front));
+    let fill_cur = target.map(|t| if stroke_front { t.2 } else { t.0 });
     ui.horizontal(|ui| {
         crate::rtl::label(
             ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, if text { "Applies to text" } else { "Applies to fill" }))
-                .size(11.0)
-                .color(t.text_dim),
+            egui::RichText::new(crate::i18n::tr(
+                &app.ui.language,
+                if text {
+                    "Applies to text"
+                } else if stroke_front {
+                    "Applies to stroke"
+                } else {
+                    "Applies to fill"
+                },
+            ))
+            .size(11.0)
+            .color(t.text_dim),
         );
     });
     // Unnamed colours (mixed in the Color panel) aren't listed until Add to Swatches; swatches in
@@ -131,6 +161,127 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
 }
 
+/// What a Swatches panel row marks on its right, as InDesign's columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowMarks {
+    /// [None], [Registration] and [Black] can't be edited ([Paper] can).
+    not_editable: bool,
+    kind: Option<ColorType>,
+    mode: Option<RowMode>,
+}
+
+/// The colour-mode column: the ink model, or the special swatches' own glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowMode {
+    Cmyk,
+    Rgb,
+    Gray,
+    None,
+    Registration,
+}
+
+fn row_marks(sw: &pagenor_color::swatch::Swatch) -> RowMarks {
+    use pagenor_color::Color;
+    let not_editable = sw.locked && sw.name != pagenor_color::swatch::PAPER;
+    match &sw.value {
+        SwatchValue::Color { color, color_type } => {
+            let mode = match color {
+                Color::Cmyk { .. } => RowMode::Cmyk,
+                Color::Rgb { .. } => RowMode::Rgb,
+                Color::Gray { .. } => RowMode::Gray,
+            };
+            RowMarks { not_editable, kind: Some(*color_type), mode: Some(mode) }
+        }
+        SwatchValue::None => RowMarks { not_editable, kind: None, mode: Some(RowMode::None) },
+        SwatchValue::Registration => RowMarks { not_editable, kind: None, mode: Some(RowMode::Registration) },
+        _ => RowMarks { not_editable, kind: None, mode: None },
+    }
+}
+
+/// A pencil with a stroke through it: the swatch can't be edited. Drawn in code.
+fn paint_not_editable(p: &egui::Painter, r: egui::Rect, ink: egui::Color32) {
+    // The pencil: its tip at the lower left, its body up to the right.
+    let tip = r.left_bottom() + vec2(1.5, -1.5);
+    let d = vec2(1.0, -1.0).normalized();
+    let n = vec2(d.y, -d.x) * 1.9;
+    let (b0, b1) = (tip + d * 3.4, tip + d * 12.5);
+    p.add(egui::Shape::convex_polygon(vec![tip, b0 + n, b0 - n], ink, egui::Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![b0 + n, b1 + n, b1 - n, b0 - n], ink, egui::Stroke::NONE));
+    // The stroke through it, with a gap of the panel's colour around it so it reads on the body.
+    let (s0, s1) = (r.left_top() + vec2(1.5, 1.5), r.right_bottom() - vec2(1.5, 1.5));
+    p.line_segment([s0, s1], egui::Stroke::new(3.2, egui::Color32::from_black_alpha(140)));
+    p.line_segment([s0, s1], egui::Stroke::new(1.2, ink));
+}
+
+/// The colour type: a process colour is a halftone square, a spot colour a disc in a square.
+fn paint_color_type(p: &egui::Painter, r: egui::Rect, kind: ColorType, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(10.0, 10.0));
+    p.rect_filled(sq, 0.0, ink);
+    if kind == ColorType::Spot {
+        p.circle_filled(sq.center(), 3.2, egui::Color32::from_black_alpha(110));
+    } else {
+        // A fine halftone: a grey square with a light dot screen.
+        let dot = egui::Color32::from_black_alpha(70);
+        for i in 0..4u8 {
+            for j in 0..4u8 {
+                let o = if j % 2 == 0 { 1.5 } else { 2.6 };
+                p.circle_filled(sq.min + vec2(o + 2.2 * f32::from(i), 1.6 + 2.3 * f32::from(j)), 0.6, dot);
+            }
+        }
+    }
+}
+
+/// The colour mode: CMYK's four inks meeting in the middle, RGB's three primaries, a grey ramp,
+/// [None]'s red slash and [Registration]'s target.
+fn paint_mode(p: &egui::Painter, r: egui::Rect, mode: RowMode, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(11.0, 11.0));
+    let c = sq.center();
+    let rgb = egui::Color32::from_rgb;
+    match mode {
+        RowMode::Cmyk => {
+            let corners = [sq.left_top(), sq.right_top(), sq.right_bottom(), sq.left_bottom()];
+            // Top, right, bottom, left: magenta, yellow, black, cyan.
+            let inks = [rgb(236, 0, 140), rgb(255, 230, 0), rgb(30, 30, 30), rgb(0, 174, 239)];
+            for (k, colour) in inks.into_iter().enumerate() {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                p.add(egui::Shape::convex_polygon(vec![a, b, c], colour, egui::Stroke::NONE));
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Rgb => {
+            let w = sq.width() / 3.0;
+            for (k, colour) in [rgb(230, 40, 40), rgb(40, 190, 60), rgb(40, 90, 230)].into_iter().enumerate() {
+                let x = sq.min.x + w * k as f32;
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)), 0.0, colour);
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Gray => {
+            let w = sq.width() / 4.0;
+            for k in 0..4u8 {
+                let x = sq.min.x + w * f32::from(k);
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)),
+                    0.0,
+                    egui::Color32::from_gray(255 - 70 * k),
+                );
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::None => {
+            p.rect_filled(sq, 0.0, egui::Color32::WHITE);
+            p.line_segment([sq.left_bottom(), sq.right_top()], egui::Stroke::new(1.5, rgb(220, 30, 30)));
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Registration => {
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+            p.circle_stroke(c, 3.0, egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(4.5, 0.0), c + vec2(4.5, 0.0)], egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(0.0, 4.5), c + vec2(0.0, 4.5)], egui::Stroke::new(1.0, ink));
+        }
+    }
+}
+
 /// One Swatches panel row: chip, name, type; click applies to the fill (of the frames or their
 /// text, see [`super::colors_affect_text`]), the context menu to the stroke, colour groups and delete.
 fn swatch_row(
@@ -152,27 +303,36 @@ fn swatch_row(
     let (c, g) = crate::widgets::swatch_colors(doc, &sw.name, 1.0);
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0 + indent, 3.0), vec2(16.0, 16.0));
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
-    ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
-    // Type indicators: spot dot / process square, colour mode.
-    let kind = match &sw.value {
-        SwatchValue::Color { color, color_type } => {
-            let m = match color {
-                pagenor_color::Color::Cmyk { .. } => "CMYK",
-                pagenor_color::Color::Rgb { .. } => "RGB",
-                pagenor_color::Color::Gray { .. } => crate::i18n::tr(&app.ui.language, "Gray"),
-            };
-            format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
-        }
-        SwatchValue::Gradient { .. } => "Gradient".into(),
+    let name_clip = egui::Rect::from_min_max(row.min, egui::pos2((row.max.x - 63.0).max(row.min.x), row.max.y));
+    ui.painter().with_clip_rect(name_clip).text(
+        row.min + vec2(28.0 + indent, 11.0),
+        egui::Align2::LEFT_CENTER,
+        &sw.name,
+        egui::FontId::proportional(12.5),
+        t.text,
+    );
+    // InDesign's columns on the right: not editable, colour type, colour mode.
+    let marks = row_marks(sw);
+    let col = |k: f32| egui::Rect::from_min_size(egui::pos2(row.max.x - 19.0 - 18.0 * k, row.min.y + 4.5), vec2(13.0, 13.0));
+    if marks.not_editable {
+        paint_not_editable(ui.painter(), col(2.0), t.text_dim);
+    }
+    if let Some(kind) = marks.kind {
+        paint_color_type(ui.painter(), col(1.0), kind, t.text_dim);
+    }
+    if let Some(mode) = marks.mode {
+        paint_mode(ui.painter(), col(0.0), mode, t.text_dim);
+    }
+    let label = match &sw.value {
+        SwatchValue::Gradient { .. } => crate::i18n::tr(&app.ui.language, "Gradient").to_string(),
         SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
         _ => String::new(),
     };
-    if sw.locked {
-        icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(row.max.x - 64.0, row.min.y + 4.0), vec2(13.0, 13.0)), "lock", t.text_dim);
+    if !label.is_empty() {
+        ui.painter().text(row.right_center() - vec2(65.0, 0.0), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(10.5), t.text_dim);
     }
-    ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
     if resp.clicked() && !resp.double_clicked() {
-        let _ = super::apply_swatch(app, false, &sw.name, None);
+        let _ = super::apply_swatch(app, ui.data(|d| d.get_temp(egui::Id::new("color_panel_stroke"))).unwrap_or(false), &sw.name, None);
     }
     // Double-click: Swatch Options (the first click has applied the swatch).
     if resp.double_clicked() {
@@ -225,7 +385,8 @@ pub enum ColorMode {
 /// swatch), the spectrum ramp, Add to Swatches. Edits apply unnamed colours (`object.color`).
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = super::color_target(app) else {
+    let target = super::color_target_or_defaults(app);
+    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = target else {
         ui.label(crate::rtl::widget(
             ui,
             egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object or text to color its fill or stroke.")).color(t.text_dim),
@@ -402,6 +563,7 @@ fn cmyk_ramp(k: usize, x: f32) -> egui::Color32 {
 /// The spectrum ramp: hue across, light to dark down; click to apply.
 fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr(&app.ui.language, "Color spectrum")));
     let at = |u: f32, v: f32| -> [f32; 3] {
         let c = egui::ecolor::Hsva::new(u, (v * 2.0).min(1.0), (2.0 - v * 2.0).min(1.0), 1.0).to_rgb();
         [c[0], c[1], c[2]]
@@ -426,6 +588,92 @@ fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
             "object.color",
             json!({"color": [(c[0] * 255.0).round(), (c[1] * 255.0).round(), (c[2] * 255.0).round()], "target": target, "text": text}),
         );
+    }
+}
+
+#[cfg(test)]
+mod color_panel_defaults_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn color_panel_with_no_selection_edits_future_shapes_without_recoloring_existing_ones() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let old =
+            pagenor_doc::ItemId(app.run("frame.create", json!({"rect":[72,72,200,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let original = app.session.active().unwrap().doc.item(old).unwrap().stroke.clone();
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        app.run("window.panel", json!({"panel":"color"})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("color_panel_stroke"), true));
+        h.run_steps(2);
+        assert!(h.query_by_label("Select an object or text to color its fill or stroke.").is_none());
+        let ramp = h.get_by_label("Color spectrum").rect();
+        crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() / 3.0, ramp.center().y));
+        let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
+        assert_ne!(defaults.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
+        h.state_mut().app.run("selection.set", json!({"ids":[old.0]})).unwrap();
+        assert_eq!(crate::panels::color_target(&mut h.state_mut().app).unwrap().2, original.swatch);
+        h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
+        let new = pagenor_doc::ItemId(
+            h.state_mut().app.run("frame.create", json!({"rect":[240,72,368,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(new).unwrap().stroke.swatch, defaults.stroke);
+        // Two undo steps: the new frame, then the spectrum click's default stroke.
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().app.session.active().unwrap().doc.settings.new_object.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
+        // With the Fill box in front, the ramp sets the default fill instead.
+        let original_fill = h.state().app.session.active().unwrap().doc.item(old).unwrap().fill.clone();
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("color_panel_stroke"), false));
+        h.run_steps(2);
+        let ramp = h.get_by_label("Color spectrum").rect();
+        crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() * 2.0 / 3.0, ramp.center().y));
+        let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
+        assert_ne!(defaults.fill, original_fill.swatch);
+        assert_eq!(defaults.stroke, original.swatch, "the stroke default is left alone");
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().fill, original_fill);
+    }
+
+    /// The Swatches panel shows the same defaults: its Tint field reads the default fill's tint,
+    /// and a click on a swatch row sets the default fill, not an existing frame's.
+    #[test]
+    fn swatches_panel_with_no_selection_shows_and_edits_future_shape_colors() {
+        use egui::accesskit::Role;
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let old =
+            pagenor_doc::ItemId(app.run("frame.create", json!({"rect":[72,72,200,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let original = app.session.active().unwrap().doc.item(old).unwrap().fill.clone();
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        app.run("object.fill", json!({"swatch": "[Black]", "tint": 0.4})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(320.0, 480.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                // The panel's fonts are installed on the first frame and used from the next.
+                let id = egui::Id::new("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let fields = h.query_all_by(|n| matches!(n.role(), Role::SpinButton | Role::TextInput)).filter_map(|n| n.value()).collect::<Vec<_>>();
+        assert!(fields.iter().any(|v| v.starts_with("40")), "the Tint field shows the default fill's 40 %: {fields:?}");
+        let row = h.get_by_label("[Paper]").rect().center();
+        h.hover_at(row);
+        h.drag_at(row);
+        h.drop_at(row);
+        h.run_steps(3);
+        let defaults = h.state().session.active().unwrap().doc.settings.new_object.clone();
+        assert_eq!((defaults.fill.as_str(), defaults.fill_tint), ("[Paper]", 1.0));
+        assert_eq!(h.state().session.active().unwrap().doc.item(old).unwrap().fill, original);
     }
 }
 
@@ -610,5 +858,34 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.gradient", json!({"stops": stops}));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod row_mark_tests {
+    use pagenor_color::swatch::{Swatch, default_swatches};
+    use pagenor_color::{Color, ColorType, SwatchValue};
+
+    use super::{RowMarks, RowMode, row_marks};
+
+    /// The Swatches panel's right-hand columns, as InDesign's: [None], [Registration] and [Black]
+    /// can't be edited, [Paper] can; colours show their type and mode.
+    #[test]
+    fn swatch_rows_mark_type_mode_and_whether_they_can_be_edited() {
+        let all = default_swatches();
+        let marks = |name: &str| row_marks(all.iter().find(|s| s.name == name).unwrap());
+        assert_eq!(marks("[None]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::None) });
+        assert_eq!(marks("[Registration]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::Registration) });
+        assert_eq!(marks("[Paper]"), RowMarks { not_editable: false, kind: None, mode: None });
+        assert_eq!(marks("[Black]"), RowMarks { not_editable: true, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let cyan = all.iter().find(|s| matches!(&s.value, SwatchValue::Color { .. }) && !s.locked).unwrap();
+        assert_eq!(row_marks(cyan), RowMarks { not_editable: false, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let spot = Swatch {
+            name: "PANTONE".into(),
+            value: SwatchValue::Color { color: Color::Rgb { r: 1.0, g: 0.0, b: 0.0 }, color_type: ColorType::Spot },
+            locked: false,
+            ..cyan.clone()
+        };
+        assert_eq!(row_marks(&spot), RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Rgb) });
     }
 }
