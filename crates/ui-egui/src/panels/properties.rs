@@ -59,6 +59,8 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
             let kind = |it: &pagenor_doc::Item| {
                 if it.object_style == pagenor_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, pagenor_doc::Content::Unassigned) {
                     "<graphic frame>"
+                } else if it.graphic().and_then(|g| st.doc.assets.get(&g.asset)).is_some_and(|a| a.link.is_some()) {
+                    "<linked image>"
                 } else {
                     it.default_label()
                 }
@@ -68,7 +70,8 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
             let title = match first {
                 _ if !kinds.all(|k| k == first) => "Mixed Objects",
                 Some("<text frame>") => "Text Frames",
-                Some("<image>") => "Linked Files",
+                Some("<linked image>") => "Linked Files",
+                Some("<image>") => "Images",
                 Some("<graphic frame>") => "Frames",
                 _ => "Multiple Objects",
             };
@@ -161,7 +164,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Align"), true);
     align_row(app, ui);
     if i.count > 1 {
-        distribute_rows(app, ui);
+        distribute_rows(app, ui, i.count);
     }
     divider(ui);
     if i.count > 1 {
@@ -1051,7 +1054,7 @@ fn align_row(app: &mut DesignApp, ui: &mut Ui) {
 /// Properties › Align with several objects selected, as InDesign's: Distribute Objects (by an
 /// edge or the centres) and Distribute Spacing (equal gaps), each with Use Spacing and its
 /// amount in the document's units.
-fn distribute_rows(app: &mut DesignApp, ui: &mut Ui) {
+fn distribute_rows(app: &mut DesignApp, ui: &mut Ui, count: usize) {
     let lang = app.ui.language.clone();
     let unit = units(app);
     let mut run = None;
@@ -1079,10 +1082,14 @@ fn distribute_rows(app: &mut DesignApp, ui: &mut Ui) {
         let (mut on, mut amount): (bool, f64) = ui.data(|d| d.get_temp(id)).unwrap_or((false, 0.0));
         ui.add_space(6.0);
         widgets::caption(ui, crate::i18n::tr(&lang, title));
+        // Two objects are distributed only by a spacing, as in InDesign: without Use Spacing the
+        // buttons need three or more.
+        let enabled = on || count >= 3;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for (icon, what, tip) in buttons {
-                if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                let b = ui.add_enabled_ui(enabled, |ui| icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip))).inner;
+                if b.on_disabled_hover_text(crate::i18n::tr(&lang, "Select three or more objects, or use spacing.")).clicked() {
                     let mut p = if key == "props_distribute_objects" { json!({"edge": what}) } else { json!({"axis": what, "by": "spacing"}) };
                     if on {
                         p["spacing"] = json!(amount);
@@ -1125,7 +1132,7 @@ fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         let enabled = i.wrap != "none";
         let r = ui.add_enabled_ui(enabled, |ui| widgets::checkbox(ui, &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))).inner;
         if r.changed() {
-            let _ = app.run("object.textWrap", json!({"mode": i.wrap, "invert": inv}));
+            let _ = app.run("object.textWrap", json!({"mode": null, "invert": inv}));
         }
     });
     wrap_offsets(app, ui, i);
@@ -1146,9 +1153,14 @@ fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ui.add_space(4.0);
     let b = block(ui, 2.0 * FIELD_H + 5.0);
     let mut set = None;
+    // The link's state belongs to the selection: another selection starts linked again when its
+    // four offsets are the same.
+    let selected: Vec<u64> = app.session.active().map(|st| st.selection.items.iter().map(|i| i.0).collect()).unwrap_or_default();
+    let link_id = egui::Id::new(("prop_wrap_linked", app.session.active().map(|st| st.uid), selected));
     ui.add_enabled_ui(enabled, |ui| {
         // Linked while the four are the same, until the link is clicked.
-        let linked = temp_bool(ui, "prop_wrap_linked", offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-9));
+        let same = offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-9);
+        let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
         // Offsets are [top, left, bottom, right].
         for (k, key, icon, tip, x, y) in [
             (0, "wrapTop", "margin-top", "Top", 0.0, 0.0),
@@ -1165,11 +1177,12 @@ fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
                 NumField::measure(key, Some(offsets[k]), u).width(76.0).spinner().range(-8000.0, 8000.0).enabled(enabled).show(ui)
             });
             if let Some(v) = nv {
-                let mut o = offsets;
+                // Linked, all four; else this side alone, each object keeping its other offsets.
+                let mut o = [None; 4];
                 if linked {
-                    o = [v; 4];
+                    o = [Some(v); 4];
                 } else {
-                    o[k] = v;
+                    o[k] = Some(v);
                 }
                 set = Some(o);
             }
@@ -1178,11 +1191,12 @@ fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
             widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
                 .clicked()
         }) {
-            set_temp_bool(ui, "prop_wrap_linked", !linked);
+            ui.data_mut(|d| d.insert_temp(link_id, !linked));
         }
     });
     if let Some(o) = set {
-        let _ = app.run("object.textWrap", json!({"mode": i.wrap, "offset": o}));
+        // Each object keeps its own mode: only the offsets change.
+        let _ = app.run("object.textWrap", json!({"mode": null, "offset": o}));
     }
 }
 
@@ -3195,15 +3209,27 @@ mod color_picker_tests {
             app.run("file.place", json!({"base64": b64, "name": "a.png", "frame": f})).unwrap();
             pics.push(f);
         }
-        assert_eq!(title(&mut app, pics.clone()), "Linked Files");
-        // One embedded picture is an image; one placed from a file, as in the tutorial, a linked file.
+        // Embedded pictures (placed from bytes) are images; ones placed from files, as in the
+        // tutorial, linked files; some of each, mixed.
+        assert_eq!(title(&mut app, pics.clone()), "Images");
         assert_eq!(title(&mut app, vec![pics[0]]), "Image");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snowflake.png");
-        std::fs::write(&path, &png).unwrap();
-        let f = app.run("frame.create", json!({"rect": [300, 320, 400, 420], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
-        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": f})).unwrap();
-        assert_eq!(title(&mut app, vec![f]), "Linked File");
+        // A different raster keeps linked and embedded assets distinct: the importer
+        // deduplicates identical bytes, so reusing `png` makes all frames share link metadata.
+        let linked_png = pagenor_render::Rendered { width: 1, height: 1, pixels: vec![255, 0, 0, 255] }.to_png();
+        std::fs::write(&path, &linked_png).unwrap();
+        let linked: Vec<u64> = [320, 440]
+            .into_iter()
+            .map(|y| {
+                let f = app.run("frame.create", json!({"rect": [300, y, 400, y + 100], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+                app.run("file.place", json!({"path": path.to_string_lossy(), "frame": f})).unwrap();
+                f
+            })
+            .collect();
+        assert_eq!(title(&mut app, vec![linked[0]]), "Linked File");
+        assert_eq!(title(&mut app, linked.clone()), "Linked Files");
+        assert_eq!(title(&mut app, vec![linked[0], pics[0]]), "Mixed Objects");
     }
 
     #[test]
@@ -3492,5 +3518,28 @@ mod color_picker_tests {
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!(doc.story(story).unwrap().char_format_at(0).over.fill.as_deref(), result["swatch"].as_str());
         assert_eq!(doc.item(pagenor_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]");
+    }
+    /// Two objects: the Distribute buttons need Use Spacing (the command spreads three or more
+    /// otherwise), so they are off until it is ticked, and then spread the two by it.
+    #[test]
+    fn two_objects_are_distributed_only_by_a_spacing() {
+        use egui_kittest::kittest::NodeT;
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let ids: Vec<u64> = [72.0, 300.0]
+            .iter()
+            .map(|y| app.run("frame.create", json!({"rect": [72.0, *y, 132.0, y + 20.0]})).unwrap()["id"].as_u64().unwrap())
+            .collect();
+        app.run("selection.set", json!({ "ids": ids })).unwrap();
+        let top = |app: &DesignApp, id: u64| app.session.active().unwrap().doc.item(pagenor_doc::ids::ItemId(id)).unwrap().bounds().y0;
+        let mut h = panel(app);
+        let off = |h: &Harness<'_, DesignApp>, l: &str| h.get_by_label(l).accesskit_node().is_disabled();
+        assert!(off(&h, "Distribute top edges") && off(&h, "Distribute vertical space"), "two objects need a spacing");
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("props_distribute_spacing"), (true, 10.0f64)));
+        h.run_steps(2);
+        assert!(!off(&h, "Distribute vertical space") && off(&h, "Distribute top edges"), "Use Spacing turns its own row on");
+        h.get_by_label("Distribute vertical space").click();
+        h.run_steps(3);
+        assert_eq!(top(h.state(), ids[1]) - top(h.state(), ids[0]), 30.0, "a 10 pt gap between the two");
     }
 }

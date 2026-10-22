@@ -1004,3 +1004,15 @@ Mac GUI/CLI build/report follows the source commit; artifact-side evidence recor
 reader compatibility and signatures.
 Native Windows/Linux execution and publication remain pending; the owner’s open
 app session is preserved.
+
+## 22 October 2026 — P11.21 / local 0.11.0
+
+The open/closed updated-PR scan screens 186 records through #1573; 38 candidate
+and revised scopes receive compatibility review. Twenty supply adaptations,
+eight are covered, one has no matching control, nine remain queued. Every reviewed
+head is rechecked unchanged. The local source preserves native format 6 and
+existing external pins, scoped fonts, inline Indic input, book masters and EOF
+policies. Vectnor is untouched. All seven workspace gates pass: 2,894 tests, zero failures, seven existing skips; twenty WASM packages. Six synthetic offscreen views are inspected.
+A separate local Mac GUI/CLI bundle follows the source commit; native Windows/Linux
+execution and publication remain pending.
+[Per-PR authors, immutable heads, decisions and safeguards](docs/pagenor/UPSTREAM_ADOPTION_0110.md).

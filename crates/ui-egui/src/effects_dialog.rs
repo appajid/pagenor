@@ -263,6 +263,7 @@ fn angle(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], enabled: bool, global
 /// InDesign's angle dial: a circle with a radius pointing where the light comes from (0° to the
 /// right, counter-clockwise). A click or a drag on it points it at the pointer.
 fn angle_dial(ui: &mut egui::Ui, deg: f64, enabled: bool) -> Option<f64> {
+    use egui::accesskit::{Action, ActionData};
     let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
     let (r, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), sense);
     resp.widget_info(|| egui::WidgetInfo::slider(enabled, deg, "Angle"));
@@ -271,10 +272,58 @@ fn angle_dial(ui: &mut egui::Ui, deg: f64, enabled: bool) -> Option<f64> {
     ui.painter().circle_stroke(c, rad, egui::Stroke::new(1.2, col));
     let a = deg.to_radians() as f32;
     ui.painter().line_segment([c, c + egui::vec2(a.cos(), -a.sin()) * rad], egui::Stroke::new(1.4, col));
-    if enabled && (resp.dragged() || resp.clicked()) {
-        return resp.interact_pointer_pos().and_then(|p| dial_angle(c, p));
+    if resp.has_focus() {
+        ui.painter().circle_stroke(c, rad + 2.0, ui.visuals().selection.stroke);
     }
-    None
+    if !enabled {
+        return None;
+    }
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_min_numeric_value(-180.0);
+        node.set_max_numeric_value(180.0);
+        node.set_numeric_value_step(1.0);
+        node.add_action(Action::SetValue);
+        node.add_action(Action::Increment);
+        node.add_action(Action::Decrement);
+    });
+    let mut next = None;
+    let mut steps = 0i64;
+    if resp.has_focus() {
+        // The arrows turn the dial instead of moving the focus.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(resp.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
+        });
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    let dir = match key {
+                        egui::Key::ArrowRight | egui::Key::ArrowUp => 1,
+                        egui::Key::ArrowLeft | egui::Key::ArrowDown => -1,
+                        _ => 0,
+                    };
+                    steps += dir * if modifiers.shift { 10 } else { 1 };
+                }
+            }
+        });
+    }
+    ui.input(|i| {
+        steps += i.num_accesskit_action_requests(resp.id, Action::Increment) as i64;
+        steps -= i.num_accesskit_action_requests(resp.id, Action::Decrement) as i64;
+        for request in i.accesskit_action_requests(resp.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(v)) = request.data {
+                next = Some(v);
+            }
+        }
+    });
+    if steps != 0 {
+        next = Some(deg + steps as f64);
+    }
+    if (resp.dragged() || resp.clicked())
+        && let Some(a) = resp.interact_pointer_pos().and_then(|p| dial_angle(c, p))
+    {
+        next = Some(a);
+    }
+    next.filter(|v| v.is_finite()).map(wrap_angle)
 }
 
 /// The angle a dial at `c` points at for the pointer at `p`, in whole degrees (−180 to 180,
@@ -307,15 +356,15 @@ fn swatch(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
         }
         v.as_str().unwrap_or("[Black]").to_string()
     };
-    let names: Vec<String> = app
-        .session
-        .active()
-        .map_or_else(Vec::new, |st| st.doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
-    egui::ComboBox::from_id_salt(("fx_swatch", path.join("."))).selected_text(&cur).width(150.0).show_ui(ui, |ui| {
-        for n in names {
-            if ui.selectable_label(n == cur, &n).clicked() {
-                set(d, path, json!(n));
-            }
+    let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+    // The colour itself beside its name, and a chip per swatch in the menu, as the swatch menus
+    // elsewhere: a list of bare names hid what the shadow was coloured with.
+    ui.horizontal(|ui| {
+        let (c, g) = crate::widgets::swatch_colors(doc, &cur, 1.0);
+        let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        crate::widgets::paint_chip(ui.painter(), r, c, g);
+        if let Some(n) = crate::dialogs::swatch_menu(ui, doc, ("fx_swatch", path.join(".")), &cur, 128.0) {
+            set(d, path, json!(n));
         }
     });
 }
@@ -786,4 +835,91 @@ mod tests {
         assert!(confirm(&mut app, &d).is_err());
         assert!(std::sync::Arc::ptr_eq(&app.session.doc().unwrap().doc, &other));
     }
+}
+
+#[cfg(test)]
+mod swatch_chip_tests {
+    use super::*;
+    fn app_with_frame() -> (DesignApp, u64) {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect":[72,72,144,144]})).unwrap();
+        let id = f["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids":[id]})).unwrap();
+        (app, id)
+    }
+    #[test]
+    fn the_shadow_colour_shows_its_swatch_beside_the_name() {
+        let (mut app, _) = app_with_frame();
+        app.run("swatch.create", json!({"name": "Shade", "color": "#12ab34"})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let shade = crate::widgets::swatch_colors(&app.session.doc().unwrap().doc, "Shade", 1.0).0.unwrap();
+        // Does the dialog, once faded in, paint a chip of the colour `c`?
+        let mut time = 0.0;
+        let mut painted = |app: &mut DesignApp, c: egui::Color32| {
+            let mut found = false;
+            for _ in 0..20 {
+                time += 0.1;
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
+                out.textures_delta.clear();
+                fn walk(s: &egui::epaint::Shape, c: egui::Color32) -> bool {
+                    match s {
+                        egui::epaint::Shape::Rect(r) => r.fill == c,
+                        egui::epaint::Shape::Vec(v) => v.iter().any(|s| walk(s, c)),
+                        _ => false,
+                    }
+                }
+                found = out.shapes.iter().any(|s| walk(&s.shape, c));
+            }
+            found
+        };
+        open(&mut app, "dropShadow");
+        assert!(!painted(&mut app, shade), "not the shadow's colour yet");
+        set(app.ui.dialog.as_mut().unwrap(), &["dropShadow", "color"], json!("Shade"));
+        assert!(painted(&mut app, shade), "the chosen swatch's colour is shown, not only its name");
+        assert_eq!(params(app.ui.dialog.as_ref().unwrap())["effects"]["dropShadow"]["color"], "Shade");
+    }
+}
+
+fn wrap_angle(deg: f64) -> f64 {
+    let a = (deg + 180.0).rem_euclid(360.0) - 180.0;
+    if a <= -180.0 { 180.0 } else { a }
+}
+
+#[test]
+fn the_angle_dial_turns_with_the_keyboard() {
+    let ctx = egui::Context::default();
+    let key = |key, shift| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE },
+    };
+    let mut deg = 175.0;
+    let frame = |events: Vec<egui::Event>, deg: &mut f64| {
+        let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            if let Some(a) = angle_dial(ui, *deg, true) {
+                *deg = a;
+            }
+        });
+        out.textures_delta.clear();
+    };
+    frame(vec![], &mut deg);
+    frame(vec![key(egui::Key::Tab, false)], &mut deg);
+    frame(vec![key(egui::Key::ArrowRight, false)], &mut deg);
+    assert_eq!(deg, 176.0);
+    frame(vec![key(egui::Key::ArrowUp, true)], &mut deg);
+    assert_eq!(deg, -174.0, "past 180° it comes round to −174°");
+    frame(vec![key(egui::Key::ArrowLeft, true)], &mut deg);
+    frame(vec![key(egui::Key::ArrowDown, false)], &mut deg);
+    assert_eq!(deg, 175.0);
+    assert_eq!(wrap_angle(-180.0), 180.0);
+    assert_eq!(wrap_angle(540.0), 180.0);
 }

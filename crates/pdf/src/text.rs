@@ -119,6 +119,23 @@ fn cluster_chars(members: &[PlacedGlyph], cluster: &str) -> Option<Vec<(usize, c
     own.into_iter().map(|k| chars.get(k?).copied()).collect()
 }
 
+fn text_rules(cs: &ComposedStory, ft: &FrameText) -> Vec<(pagenor_compose::Rule, Rect)> {
+    let mut deco: Vec<(pagenor_compose::Rule, Rect)> = Vec::new();
+    for l in &ft.lines {
+        // Underline / strikethrough, merged per style along the line.
+        for g in l.glyphs.iter().filter(|g| g.spans_rules()) {
+            let st = &cs.styles[g.style as usize];
+            for (rule, r) in st.rules(g.x, g.x + g.adv, l.baseline) {
+                match deco.last_mut() {
+                    Some((last_rule, last)) if *last_rule == *rule && (last.y0 - r.y0).abs() < 1e-6 && (r.x0 - last.x1).abs() < 0.5 => last.x1 = r.x1,
+                    _ => deco.push((rule.clone(), r)),
+                }
+            }
+        }
+    }
+    deco
+}
+
 impl Exporter<'_> {
     pub(crate) fn font(&mut self, face: &FontFace) -> Option<Font> {
         self.fonts
@@ -191,7 +208,7 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
-        let mut deco: Vec<(pagenor_compose::Rule, Rect)> = Vec::new();
+        let deco = text_rules(cs, ft);
         for l in &ft.lines {
             let gs = &l.glyphs;
             let mut i = 0;
@@ -214,18 +231,6 @@ impl Exporter<'_> {
                 let j = run_end(ft, gs, i);
                 self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
                 i = j;
-            }
-            // Underline / strikethrough, merged per style along the line.
-            for g in gs.iter().filter(|g| g.visible) {
-                let st = &cs.styles[g.style as usize];
-                for (rule, r) in st.rules(g.x, g.x + g.adv, l.baseline) {
-                    match deco.last_mut() {
-                        Some((last_rule, last)) if *last_rule == *rule && (last.y0 - r.y0).abs() < 1e-6 && (r.x0 - last.x1).abs() < 0.5 => {
-                            last.x1 = r.x1
-                        }
-                        _ => deco.push((rule.clone(), r)),
-                    }
-                }
             }
         }
         self.as_artifact(s, |me, s| {
@@ -308,9 +313,10 @@ impl Exporter<'_> {
                     s.set_fill(None);
                     continue;
                 }
+                let dashes = kind.dashes(st.weight).filter(|p| pagenor_doc::StrokeType::expandable_dashes(p, seg.a.distance(seg.b)));
                 let (cap, dash) = match &kind {
-                    pagenor_doc::StrokeType::Dashed { pattern } if pagenor_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) => {
-                        let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
+                    pagenor_doc::StrokeType::Dashed { .. } if dashes.is_some() => {
+                        let mut pat: Vec<f32> = dashes.unwrap_or_default().iter().map(|v| v.max(0.0) as f32).collect();
                         if pat.len() % 2 == 1 {
                             pat.extend(pat.clone());
                         }
@@ -509,5 +515,41 @@ impl Exporter<'_> {
         s.set_fill(Some(solid_fill(color, 1.0)));
         s.draw_glyphs(Point::from_xy(at.0 as f32, at.1 as f32), &glyphs, font, text, size as f32, false);
         s.set_fill(None);
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use pagenor_compose::Cache;
+    use pagenor_doc::{Document, ParaFormat, SpreadRef};
+    use pagenor_geom::Rect;
+
+    /// A tab draws nothing but advances to its stop, and the underline runs across it, as it does
+    /// on screen: a form's fill-in lines are underlined tabs (#1466).
+    #[test]
+    fn an_underline_runs_across_a_tab() {
+        let mut doc = Document::new(&Default::default());
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = Some(true);
+        }
+        let layer = doc.default_layer();
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 300.0), layer, "Name\tCity", ParaFormat::default()).unwrap();
+        let cs = Cache::new().get(&doc, sid, None);
+        let line = &cs.frames[0].lines[0];
+        let tab = line.glyphs.iter().find(|g| g.rendered_char == '\t').expect("the tab is placed on the line");
+        let bars = text_rules(&cs, &cs.frames[0]);
+        assert_eq!(bars.len(), 1, "one bar across the line, not one before the tab and one after: {bars:?}");
+        let bar = bars[0].1;
+        assert!(bar.x0 <= tab.x + 0.5 && bar.x1 >= tab.x + tab.adv - 0.5, "the bar covers the tab: {bar:?}, tab {} + {}", tab.x, tab.adv);
+        // The strikethrough of the same text behaves the same way.
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = None;
+            style.chars.strikethrough = Some(true);
+        }
+        let cs = Cache::new().get(&doc, sid, None);
+
+        assert_eq!(text_rules(&cs, &cs.frames[0]).len(), 1, "one strike across the line");
     }
 }

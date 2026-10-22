@@ -624,7 +624,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool, ids?}",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (null keeps each object’s mode; boundingBox when absent, unless side or contour is given), offset?: number|[t,l,b,r] (null sides keep each object’s offset), invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool, ids?}",
             has_selection,
             text_wrap
         ),
@@ -1971,12 +1971,13 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let mode: Option<WrapMode> = match p.get("mode") {
+        Some(Value::Null) => None,
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
         None if side.is_some() || contour.is_some() => None,
         None => Some(WrapMode::BoundingBox),
     };
-    let off = match p.get("offset") {
-        Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
+    let off: Option<[Option<f64>; 4]> = match p.get("offset") {
+        Some(Value::Number(n)) => Some([n.as_f64(); 4]),
         Some(v) => serde_json::from_value(v.clone()).ok(),
         None => None,
     };
@@ -1995,7 +1996,11 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
                 w.mode = m;
             }
             if let Some(o) = off {
-                w.offsets = o;
+                for (side, value) in w.offsets.iter_mut().zip(o) {
+                    if let Some(value) = value {
+                        *side = value;
+                    }
+                }
             }
             if let Some(v) = invert {
                 w.invert = v;
@@ -2288,7 +2293,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
             if let Some(v) = p.get("columns").and_then(Value::as_u64) {
-                o.columns = (v as u32).clamp(1, 40);
+                o.columns = v.clamp(1, 40) as u32;
             }
             if let Some(v) = p.get("gutter").and_then(Value::as_f64) {
                 o.gutter = v.max(0.0);
@@ -2841,15 +2846,18 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    if ids.len() < 3 && p.get("spacing").is_none() {
+    let fixed = match p.get("spacing") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad("object.distribute", "spacing must be a finite number"))?),
+    };
+    if ids.len() < 3 && fixed.is_none() {
         return Err(bad("object.distribute", "select at least three objects"));
     }
     if let Some(edge) = str_param(p, "edge") {
-        return distribute_by_edge(s, &ids, edge, p.get("spacing").and_then(Value::as_f64));
+        return distribute_by_edge(s, &ids, edge, fixed);
     }
     let horizontal = str_param(p, "axis") != Some("vertical");
-    let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
-    let fixed = p.get("spacing").and_then(Value::as_f64);
+    let by_spacing = str_param(p, "by") == Some("spacing") || fixed.is_some();
     s.edit(|d, _| {
         let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, it.bounds()))).collect();
         let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
@@ -3757,6 +3765,21 @@ mod column_rule_tests {
         // One undo step.
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(opts(&s), before);
+    }
+
+    /// A column count past `u32::MAX` was cast to `u32` before the clamp, so
+    /// 2^32 + 1 wrapped to 1 column instead of clamping to the maximum, 40.
+    #[test]
+    fn huge_column_count_clamps_to_the_maximum() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text"})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        let columns = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.columns;
+        for (given, want) in [(4_294_967_297_u64, 40), (u64::MAX, 40), (0, 1)] {
+            s.execute("object.textFrameOptions", &json!({"ids": [id.0], "columns": given})).unwrap();
+            assert_eq!(columns(&s), want, "columns {given}");
+        }
     }
 }
 
@@ -4838,6 +4861,39 @@ mod distribution_safety_tests {
         let ids: Vec<_> = (0..3).map(|i| s.execute("frame.create", &json!({"rect": [i * 50, 0, i * 50 + 20, 20]})).unwrap()["id"].clone()).collect();
         let before = s.doc().unwrap().doc.clone();
         assert!(s.execute("object.distribute", &json!({"edge": "left", "spacing": f64::MAX, "ids": ids})).is_err());
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    }
+}
+
+#[cfg(test)]
+mod incremental_wrap_distribution_tests {
+    use super::*;
+    #[test]
+    fn partial_wrap_edits_preserve_other_objects_values_and_modes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let mut ids = Vec::new();
+        for (y, mode, offset) in [(20, "boundingBox", [1, 2, 3, 4]), (100, "contour", [5, 6, 7, 8])] {
+            let id = s.execute("frame.create", &json!({"rect":[20,y,120,y+50]})).unwrap()["id"].as_u64().unwrap();
+            s.execute("object.textWrap", &json!({"ids":[id],"mode":mode,"offset":offset})).unwrap();
+            ids.push(id);
+        }
+        s.execute("object.textWrap", &json!({"ids":ids,"mode":null,"offset":[9,null,null,null],"invert":true})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let a = &d.item(ItemId(ids[0])).unwrap().wrap;
+        let b = &d.item(ItemId(ids[1])).unwrap().wrap;
+        assert_eq!(a.offsets, [9., 2., 3., 4.]);
+        assert_eq!(b.offsets, [9., 6., 7., 8.]);
+        assert_eq!(a.mode, pagenor_doc::WrapMode::BoundingBox);
+        assert_eq!(b.mode, pagenor_doc::WrapMode::Contour);
+        assert!(a.invert && b.invert);
+        let before = s.doc().unwrap().doc.clone();
+        for spacing in [json!("50"), json!(true), json!([1])] {
+            for edge in [json!("top"), Value::Null] {
+                let e = s.execute("object.distribute", &json!({"ids":ids,"edge":edge,"spacing":spacing})).unwrap_err();
+                assert!(e.to_string().contains("spacing must be a finite number"));
+            }
+        }
         assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
     }
 }

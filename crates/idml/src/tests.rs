@@ -2705,3 +2705,42 @@ fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
     assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
     assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
 }
+
+#[test]
+fn style_names_with_a_literal_colon_survive_a_round_trip() {
+    use pagenor_doc::styles::{CellStyle, CharacterStyle, ObjectStyle, ParagraphStyle, TableStyle};
+    let names = ["Title: Big", "Group/Child: X", "Back\\slash: \\:"];
+    let mut d = small_doc();
+    for n in names {
+        let st = d.styles_mut();
+        st.paragraph.push(ParagraphStyle {
+            name: n.into(),
+            based_on: None,
+            next_style: None,
+            para: Default::default(),
+            chars: Default::default(),
+            shortcut: String::new(),
+        });
+        st.character.push(CharacterStyle { name: n.into(), based_on: None, chars: Default::default(), shortcut: String::new() });
+        st.cell.push(CellStyle { name: n.into(), ..Default::default() });
+        st.table.push(TableStyle { name: n.into(), ..Default::default() });
+        st.object.push(ObjectStyle { name: n.into(), ..Default::default() });
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for n in names {
+        assert!(
+            back.styles.paragraph.iter().any(|s| s.name == n),
+            "paragraph {n:?}: {:?}",
+            back.styles.paragraph.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(back.styles.character.iter().any(|s| s.name == n), "character {n:?}");
+        assert!(back.styles.cell.iter().any(|s| s.name == n), "cell {n:?}");
+        assert!(back.styles.table.iter().any(|s| s.name == n), "table {n:?}");
+        assert!(back.styles.object.iter().any(|s| s.name == n), "object {n:?}");
+    }
+    // A group is still written as an IDML `:` group path.
+    assert_eq!(names::style_name_out(names::PARA_BUILTINS, "Group/Child"), "Group:Child");
+    for n in names {
+        assert_eq!(names::style_name_in(names::PARA_BUILTINS, &names::style_name_out(names::PARA_BUILTINS, n)), n);
+    }
+}

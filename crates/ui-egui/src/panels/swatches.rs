@@ -182,7 +182,7 @@ enum RowMode {
 
 fn row_marks(sw: &pagenor_color::swatch::Swatch) -> RowMarks {
     use pagenor_color::Color;
-    let not_editable = sw.locked && sw.name != pagenor_color::swatch::PAPER;
+    let not_editable = sw.locked && !matches!(sw.value, SwatchValue::Paper { .. });
     match &sw.value {
         SwatchValue::Color { color, color_type } => {
             let mode = match color {
@@ -887,5 +887,8 @@ mod row_mark_tests {
             ..cyan.clone()
         };
         assert_eq!(row_marks(&spot), RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Rgb) });
+        let paper = all.iter().find(|s| s.name == pagenor_color::swatch::PAPER).unwrap();
+        let renamed = Swatch { name: "Papier".into(), ..paper.clone() };
+        assert!(!row_marks(&renamed).not_editable);
     }
 }

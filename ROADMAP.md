@@ -1,5 +1,15 @@
 # Pagenor roadmap
 
+- P11.21: local **0.11.0** reviews 186 updated open/closed upstream PR records
+  through #1573 and checks 38 candidate/revised scopes: twenty supply adaptations,
+  eight are covered, one has no matching control and nine remain queued. Improves
+  appearance/Tools preferences, Effects chips and accessible angle dials, multi-item
+  wrap/distribution/image labels, dashed strokes and underlined tabs, export overset
+  diagnostics, IDML style names and page/table/link/anchor validation. Native format
+  6 and external dependency pins stay unchanged. All seven workspace gates pass: 2,894 tests, zero failures, seven existing skips; twenty WASM packages. Six synthetic offscreen views are inspected.
+  Native Windows/Linux execution and publication remain pending.
+  [Source pins and compatibility choices](docs/pagenor/UPSTREAM_ADOPTION_0110.md).
+
 - P11.20: local **0.10.0** screens 476 updated upstream PR records through #1463
   and inspects 68 candidates: 49 supply compatible adaptations, two are covered,
   one has no matching input path and sixteen remain queued. Adds paper presets,

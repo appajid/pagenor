@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),
         cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: Pagenor's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
+        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: Pagenor's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default false, as PowerPoint's own save does; true embeds the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
         has_doc, export_pptx),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
@@ -119,7 +119,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
         title: str_param(p, "title").map(str::to_string),
         author: str_param(p, "author").map(str::to_string),
         created: None,
-        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(true),
+        embed_fonts: p.get("embedFonts").and_then(Value::as_bool).unwrap_or(false),
     };
     // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
     // stays text: a picture of it would drop the rest of its story).
@@ -132,6 +132,8 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     if rasterized > 0 {
         r.warnings.push(format!("{rasterized} object(s) went in as images"));
     }
+    // A slide has no room for the overset text either (#1465).
+    r.warnings.extend(super::preflight::overset_warnings(s, opts.pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -251,13 +253,19 @@ fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usiz
         Some(Value::String(s)) => Some(pagenor_pdf::parse_page_range(s, page_count).map_err(|e| bad(id, e.to_string()))?),
         Some(Value::Array(a)) => {
             let mut v = Vec::new();
+            let mut seen = std::collections::HashSet::new();
             for x in a {
                 let n = x
                     .as_u64()
                     .and_then(|n| usize::try_from(n).ok())
                     .filter(|n| *n >= 1 && *n <= page_count)
                     .ok_or_else(|| bad(id, format!("bad page {x}")))?;
-                v.push(n - 1);
+                // A page named twice is one page, as `"2,2"` already is: the list says which
+                // pages to export, not how many times. `[2, 2]` exported two copies of page 2
+                // while `"2,2"` exported one.
+                if seen.insert(n - 1) {
+                    v.push(n - 1);
+                }
             }
             Some(v)
         }
@@ -737,6 +745,8 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     {
         r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
     }
+    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
+    r.warnings.extend(super::preflight::overset_warnings(s, opts.pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -1111,11 +1121,20 @@ mod pptx_tests {
         assert!(read(&mut z, "ppt/slides/slide1.xml").contains("<p:pic>"));
         let text: String = read(&mut z, "ppt/slides/slide2.xml").split("<a:t>").skip(1).filter_map(|t| t.split("</a:t>").next()).collect();
         assert!(text.contains("Notes on the Grid"), "{text}");
-        assert!(read(&mut z, "ppt/presentation.xml").contains("<p:embeddedFontLst>"));
-
-        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": false, "lineBreaks": "reflow"})).unwrap();
-        assert_eq!(r["slides"], 2);
+        // Fonts are not embedded unless asked (PowerPoint's own default), and the export says so.
+        let pres = read(&mut z, "ppt/presentation.xml");
+        assert!(!pres.contains("<p:embeddedFontLst>") && !pres.contains("embedTrueTypeFonts=\"1\""), "{pres}");
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
+
+        // Asking for embedding is what writes the faces.
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "embedFonts": true, "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        let pres = read(&mut z, "ppt/presentation.xml");
+        assert!(pres.contains("embedTrueTypeFonts=\"1\"") && pres.contains("<p:embeddedFontLst>"), "{pres}");
+
+        let r = s.execute("file.exportPptx", &json!({"pages": "2-3", "lineBreaks": "reflow"})).unwrap();
+        assert_eq!(r["slides"], 2);
         assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
         assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
     }
@@ -1137,6 +1156,118 @@ mod pptx_tests {
     }
 }
 
+#[cfg(test)]
+mod overset_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A page-based export leaves out the text its frames have no room for, and said nothing
+    /// about it: an imported 58-page form lost whole sentences — a data-consent clause, a
+    /// statutory rule, the last row of two tables — with `warnings` empty while preflight
+    /// reported 19 overset stories (#1465).
+    #[test]
+    fn an_export_warns_about_the_text_the_pages_had_no_room_for() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 2, "facingPages": false, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 60], "content": "text", "text": text})).unwrap();
+        let (id, sid) = (frame["id"].as_u64().unwrap(), frame["story"].clone());
+
+        // What preflight says about the same frame, for the warning to agree with.
+        let issues = s.execute("preflight.run", &json!({})).unwrap();
+        let overset = issues["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "overset").expect("preflight reports it").clone();
+        assert_eq!(overset["message"], "Overset text: 76 characters");
+
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            let r = s.execute(command, &json!({})).unwrap();
+            let warnings = r["warnings"].as_array().expect("warnings").clone();
+            let about: Vec<&str> = warnings.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).collect();
+            assert_eq!(about.len(), 1, "{command}: {warnings:?}");
+            let w = about[0];
+            assert!(w.contains("page 1"), "{command}: the page it is on: {w}");
+            assert!(w.contains("76 character"), "{command}: the count preflight gives: {w}");
+            assert!(w.contains(&format!("frame {id}")), "{command}: the frame: {w}");
+        }
+
+        // The pages being exported are the ones reported on: page 2 has no overset frame.
+        let r = s.execute("file.exportPdf", &json!({"pages": [2]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+
+        // A reflowable export carries the whole story, so it has nothing to report.
+        let r = s.execute("file.exportHtml", &json!({})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        assert!(r["text"].as_str().unwrap().contains("must not vanish"), "the HTML has the text the PDF left out");
+
+        // `overset` is the index where the text stops fitting; `oversetChars` is how much is left,
+        // which is the number preflight reports. The two were read as the same thing.
+        let story = s.execute("story.get", &json!({"story": sid})).unwrap();
+        assert_eq!(story["overset"], json!(68), "{story}");
+        assert_eq!(story["oversetChars"], json!(76), "{story}");
+
+        // A frame the text fits: nothing is reported anywhere.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 1, "facingPages": false, "margins": 0})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 180], "content": "text", "text": "Short."})).unwrap();
+        for command in ["file.exportPdf", "file.exportPptx"] {
+            let exported = s.execute(command, &json!({})).unwrap();
+            assert!(
+                !exported["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("not in the export")),
+                "{command}: {exported}"
+            );
+        }
+        let story = s.execute("story.get", &json!({"story": frame["story"].clone()})).unwrap();
+        assert!(story["overset"].is_null() && story["oversetChars"].is_null(), "{story}");
+    }
+}
+#[cfg(test)]
+mod page_list_tests {
+    use serde_json::{Value, json};
+
+    use crate::Session;
+
+    fn doc(pages: u64) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 200, "height": 200, "pages": pages, "facingPages": false, "margins": 0})).unwrap();
+        s
+    }
+
+    /// The same selection written two ways exported different files: `"2,2"` is one page, because
+    /// `parse_page_range` keeps the first of a repeat, while `[2, 2]` was two copies of page 2.
+    /// The list says which pages to export, not how many times.
+    #[test]
+    fn a_page_named_twice_is_exported_once_either_way() {
+        let mut s = doc(4);
+        for (pages, want) in [
+            (json!("2,2"), 1),
+            (json!([2, 2]), 1),
+            (json!([2, 2, 2]), 1),
+            (json!("2-2,2"), 1),
+            (json!([1, 2, 1]), 2),
+            (json!("1,2,1"), 2),
+            (json!([4, 1]), 2),
+            (json!("4,1"), 2),
+            (json!("all"), 4),
+        ] {
+            let r = s.execute("file.exportPdf", &json!({"pages": pages.clone()})).unwrap();
+            assert_eq!(r["pages"].as_u64(), Some(want), "pdf {pages}");
+            let r = s.execute("file.exportPptx", &json!({"pages": pages.clone()})).unwrap();
+            assert_eq!(r["slides"].as_u64(), Some(want), "pptx {pages}");
+        }
+        // The two forms now agree byte for byte, and the pages come out in the document's order
+        // whichever order the list names them in (which is how the export already behaved).
+        let mut file = |pages: Value| {
+            let r = s.execute("file.exportPdf", &json!({"pages": pages})).unwrap();
+            r["base64"].as_str().unwrap_or_default().to_string()
+        };
+        assert_eq!(file(json!([4, 1])), file(json!("4,1")), "the array and the string agree");
+        assert_eq!(file(json!([4, 1])), file(json!([1, 4])), "pages 1 and 4, in the document's order");
+        assert_eq!(file(json!([2, 2])), file(json!("2")), "a repeat is the single page");
+        // A page that does not exist is still refused, and an empty list still exports nothing.
+        assert!(s.execute("file.exportPdf", &json!({"pages": [5]})).is_err());
+        assert!(s.execute("file.exportPdf", &json!({"pages": []})).is_err());
+    }
+}
 #[cfg(test)]
 mod grouped_thread_export_tests {
     use super::*;

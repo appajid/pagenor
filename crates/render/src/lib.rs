@@ -701,8 +701,10 @@ impl Renderer {
         let kind = f.doc.stroke_kind(&st.kind);
         let length = pagenor_doc::path_length_bound(bp);
         match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
-                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+            StrokeType::Dashed { .. } => {
+                if let Some(pattern) = kind.dashes(st.weight).filter(|p| StrokeType::expandable_dashes(p, length)) {
+                    stroke = stroke.with_dashes(0.0, pattern);
+                }
             }
             StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => stroke = dotted_stroke(stroke, st.weight),
             _ => {}
@@ -1568,6 +1570,41 @@ mod tests {
         // Rounded corner centred at (120, 120): ink between radii 10 and 20, paper outside the arc
         // and inside the band.
         assert!(paper(103, 103) && ink(108, 108) && paper(114, 114));
+    }
+
+    /// An IDML `StrokeStyle/$ID/Dashed` names no dash array, and `type: "dashed"` on a cell
+    /// stroke sets none either, so the stroke drew **solid** — a dashed rule came back solid from
+    /// an IDML round trip (#1467). With no pattern of its own it draws three weights on, two off,
+    /// which is what a dashed paragraph border and a cell stroke already resolved to.
+    #[test]
+    fn a_dashed_stroke_without_a_pattern_draws_dashed() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let mut line = |y: f64, kind: pagenor_doc::StrokeType| {
+            let id = pagenor_doc::ItemId(d.alloc());
+            let path = pagenor_geom::shapes::line(pagenor_geom::Point::new(100.0, y), pagenor_geom::Point::new(400.0, y));
+            let mut it = Item::new(id, lid, pagenor_doc::Shape::GraphicLine, path);
+            it.stroke = pagenor_doc::Stroke { swatch: pagenor_color::swatch::BLACK.into(), weight: 2.0, kind, ..Default::default() };
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        };
+        // Weight 2, so the dashes are 6 pt on and 4 pt off from x = 100.
+        line(200.0, pagenor_doc::StrokeType::Dashed { pattern: vec![] });
+        line(300.0, pagenor_doc::StrokeType::Dashed { pattern: vec![6.0, 4.0] });
+        line(400.0, pagenor_doc::StrokeType::Solid);
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |x: u32, y: u32| img.pixel(x, y)[0] < 64;
+        let paper = |x: u32, y: u32| img.pixel(x, y)[0] > 192;
+        for y in [200, 300] {
+            assert!(ink(102, y), "{y}: the first dash");
+            assert!(paper(108, y), "{y}: the first gap");
+            assert!(ink(112, y), "{y}: the second dash");
+            assert!(paper(118, y), "{y}: the second gap");
+        }
+        // The solid line has no gaps, which is how the dashed ones looked before.
+        assert!(ink(102, 400) && ink(108, 400) && ink(112, 400) && ink(118, 400));
     }
 
     #[test]

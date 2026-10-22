@@ -36,6 +36,7 @@ or omitted features produce warnings after export. Groups containing threaded te
 retain their text flow and warn about effects that cannot be represented. Failed exports keep options open
 with an error. Command `file.exportPptx` and CLI `.pptx` export use the same backend.
 
+Font embedding is opt-in (`embedFonts: true` or the export dialog checkbox).
 Only accessible static TrueType outlines with appropriate OS/2 metadata are embedded;
 collections, variable/CFF fonts, restricted and preview/print-only faces are omitted
 with warnings. No-subsetting faces are embedded whole. Bitmap-only permissions are
@@ -53,3 +54,8 @@ Original MIT OR Apache-2.0 proposals #150/#170 are adapted with Pagenor identifi
 Owner artwork and generated contributor metadata are retained; provenance is in
 `PAGENOR_UPSTREAM.md`. Tests use synthetic graphics and package/XML inspection.
 Native PowerPoint and cross-platform GUI execution remain milestone checks.
+
+PDF and PowerPoint exports now report overset/unplaced story characters omitted
+from page output, with page/frame details and selected-page filtering. Reflowable
+text/HTML/EPUB workflows keep their full-story behavior. Repeated positions in
+an export array include the page once, matching range-string syntax.

@@ -69,3 +69,10 @@ and import reliability changes. Native capability stays **6**; 0.9.0 readers
 remain compatible with the unchanged model. Published previews stay immutable.
 The new build remains local; native Windows/Linux package validation and
 publication are separate pending steps. See [the adoption log](UPSTREAM_ADOPTION_0100.md).
+
+The 2026-10-22 editor/publishing group advances **0.10.0 → 0.11.0** (P11.21).
+Appearance/tool preferences, accessible effects controls, multi-selection fixes,
+typographic rendering, export diagnostics and interchange validation form the
+local feature milestone. Native document capability stays 6. No external pins
+change. The published desktop preview remains 0.7.0; native Windows/Linux
+validation and publication remain separate. See UPSTREAM_ADOPTION_0110.md.

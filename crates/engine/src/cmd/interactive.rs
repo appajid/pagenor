@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "hyperlink.list", "Hyperlinks", [], None, "{}", has_doc, |s, _| Ok(serde_json::to_value(&s.doc()?.doc.hyperlinks).unwrap_or_default())),
         cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based)}", has_doc, |s, p| {
             let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("hyperlink.edit", "missing id"))?;
-            let dest = dest_param(p);
+            let dest = dest_param("hyperlink.edit", &s.doc()?.doc, p)?;
             let name = str_param(p, "name").map(str::to_string);
             s.edit(|d, _| {
                 let h = d.hyperlinks.iter_mut().find(|h| h.id == id).ok_or_else(|| bad("hyperlink.edit", format!("no hyperlink {id}")))?;
@@ -90,19 +90,30 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn dest_param(p: &Value) -> Option<HyperlinkDest> {
+fn dest_param(id: &str, doc: &pagenor_doc::Document, p: &Value) -> Result<Option<HyperlinkDest>> {
     if let Some(u) = str_param(p, "url") {
-        Some(HyperlinkDest::Url(u.to_string()))
-    } else if let Some(e) = str_param(p, "email") {
-        Some(HyperlinkDest::Email(e.to_string()))
-    } else {
-        p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1)))
+        return Ok(Some(HyperlinkDest::Url(u.to_string())));
+    }
+    if let Some(e) = str_param(p, "email") {
+        return Ok(Some(HyperlinkDest::Email(e.to_string())));
+    }
+    match p.get("page").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => {
+            let pages = doc.page_count();
+            let n = v
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=pages).contains(n))
+                .ok_or_else(|| bad(id, format!("page {v}: the document has {pages} page(s), numbered from 1")))?;
+            Ok(Some(HyperlinkDest::Page(n - 1)))
+        }
     }
 }
 
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
-    let dest = dest_param(p).ok_or_else(|| bad("hyperlink.create", "give `url`, `email` or `page`"))?;
     let st = s.doc()?;
+    let dest = dest_param("hyperlink.create", &st.doc, p)?.ok_or_else(|| bad("hyperlink.create", "give `url`, `email` or `page`"))?;
     let sources: Vec<HyperlinkSource> = if let Some(ids) = super::ids_param(p, "ids") {
         ids.into_iter().map(|id| HyperlinkSource::Item { id }).collect()
     } else if let Some(t) = st.selection.text.filter(|t| !t.is_caret()) {
@@ -154,5 +165,25 @@ mod panel_tests {
         s.execute("bookmark.add", &json!({"page": 2})).unwrap();
         s.execute("bookmark.rename", &json!({"index": 0, "name": "Back"})).unwrap();
         assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["name"], "Back");
+    }
+}
+
+#[cfg(test)]
+mod page_dest_tests {
+    use super::*;
+    #[test]
+    fn invalid_page_destinations_do_not_create_or_change_links() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages":2})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[20,20,120,80]})).unwrap();
+        let link = s.execute("hyperlink.create", &json!({"page":2,"ids":[frame["id"]]})).unwrap()["ids"][0].clone();
+        let before = s.execute("hyperlink.list", &json!({})).unwrap();
+        for page in [json!(0), json!(-1), json!(1.5), json!(3), json!(u64::MAX), json!("two")] {
+            assert!(s.execute("hyperlink.create", &json!({"page":page,"ids":[frame["id"]]})).is_err());
+            assert!(s.execute("hyperlink.edit", &json!({"id":link,"page":page,"name":"changed"})).is_err());
+            assert_eq!(s.execute("hyperlink.list", &json!({})).unwrap(), before);
+        }
+        s.execute("hyperlink.edit", &json!({"id":link,"page":1})).unwrap();
+        assert_eq!(s.execute("hyperlink.list", &json!({})).unwrap()[0]["dest"], json!({"kind":"page","value":0}));
     }
 }

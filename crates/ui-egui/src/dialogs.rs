@@ -90,7 +90,7 @@ impl Dialog {
         let defaults = match id {
             "newDocument" => crate::new_document::defaults(),
             "goToPage" => json!({"page": "1"}),
-            "exportPptx" => json!({"pages":"", "lineBreaks":"keep", "rasterize":true, "embedFonts":true, "title":"", "author":""}),
+            "exportPptx" => json!({"pages":"", "lineBreaks":"keep", "rasterize":true, "embedFonts":false, "title":"", "author":""}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
@@ -1302,6 +1302,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
         &[
             ("general", "General"),
             ("interface", "Interface"),
+            ("uiScaling", "UI Scaling"),
             ("type", "Type"),
             ("advancedType", "Advanced Type"),
             ("composition", "Composition"),
@@ -1322,6 +1323,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
         &[
             ("general", "General"),
             ("interface", "Interface"),
+            ("uiScaling", "UI Scaling"),
             ("type", "Type"),
             ("composition", "Composition"),
             ("spelling", "Spelling"),
@@ -1530,6 +1532,13 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                 }
                 "interface" => {
                     crate::appearance::preferences_rows(&app.ui.language, ui, d);
+                    crate::rtl::label(ui, egui::RichText::new("Panels").font(semibold(12.0)));
+                    ui.horizontal(|ui| {
+                        crate::rtl::label(ui, "Tools Panel:");
+                        translated_combo(&app.ui.language, ui, d, "toolsColumns", &[("single", "Single Column"), ("double", "Double Column")]);
+                    });
+                }
+                "uiScaling" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "UI Scaling")).font(semibold(12.0)));
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "UI Size:"));
@@ -2502,6 +2511,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             });
         });
     });
+    if let Some(b) = d.fields.remove("applyBrightness")
+        && let Err(e) = app.run("window.brightness", json!({"brightness": b}))
+    {
+        d.fields.insert("status".into(), json!(e));
+    }
     app.ui.dialog = Some(d);
     match result {
         Some(true) => {
@@ -3049,6 +3063,10 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             };
             app.run(view, json!({}))?;
             app.run("window.richBlack", json!({"on": d.b("richBlack")}))?;
+            // Apply the Tools column choice; the existing theme/favorite path follows below.
+            if d.fields.contains_key("toolsColumns") {
+                app.run("window.toolsDoubleColumn", json!({"on": d.s("toolsColumns") == "double"}))?;
+            }
             if let Some(v) = d.n("uiScale") {
                 app.run("window.uiScale", json!({"scale": v / 100.0}))?;
             }
@@ -4280,7 +4298,7 @@ fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &s
 
 /// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
 /// picked.
-fn swatch_menu(ui: &mut egui::Ui, doc: &pagenor_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+pub(crate) fn swatch_menu(ui: &mut egui::Ui, doc: &pagenor_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
     let mut picked = None;
     egui::ComboBox::from_id_salt(id).selected_text(current).width(width).show_ui(ui, |ui| {
         for w in doc.swatches.iter().filter(|w| !w.hidden) {
@@ -7033,7 +7051,7 @@ mod pptx_options_tests {
         app.run("app.exportPptx", json!({})).unwrap();
         let d = app.ui.dialog.as_mut().unwrap();
         assert_eq!(d.id, "exportPptx");
-        assert_eq!(d.fields["embedFonts"], true);
+        assert_eq!(d.fields["embedFonts"], false);
         d.fields.insert("pages".into(), json!("0"));
         assert!(confirm(&mut app).is_err());
         assert_eq!(app.ui.dialog.as_ref().unwrap().id, "exportPptx");
@@ -8290,6 +8308,11 @@ const STYLE_PREVIEWED: &str = "_stylePreviewed";
 
 pub fn cancel(app: &mut DesignApp) {
     if let Some(d) = app.ui.dialog.take() {
+        if d.id == "preferences"
+            && let Some(b) = d.fields.get("openedBrightness").and_then(Value::as_str).filter(|b| *b != app.ui.brightness.id())
+        {
+            let _ = app.run("window.brightness", json!({"brightness": b}));
+        }
         if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") {
             let mut d = d.clone();
             suspend_style_preview(app, &mut d);
@@ -8570,5 +8593,39 @@ mod preview_document_regressions {
         app.run("file.activate", json!({"index":0})).unwrap();
         assert_eq!(app.session.doc().unwrap().doc, before);
         assert!(app.session.doc().unwrap().interaction.is_none());
+    }
+}
+
+#[cfg(test)]
+mod appearance_preferences_tests {
+    use super::*;
+    #[test]
+    fn appearance_preview_cancel_and_explicit_tool_columns() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("window.brightness", json!({"brightness":"system"})).unwrap();
+        app.run("app.preferences", json!({})).unwrap();
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("section".into(), json!("interface"));
+        d.fields.insert("brightness".into(), json!("light"));
+        d.fields.insert("applyBrightness".into(), json!("light"));
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 760.0))), ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| show(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.ui.brightness.id(), "light");
+        cancel(&mut app);
+        assert_eq!(app.ui.brightness.id(), "system");
+        app.run("app.preferences", json!({})).unwrap();
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("brightness".into(), json!("dark"));
+        d.fields.insert("toolsColumns".into(), json!("double"));
+        confirm(&mut app).unwrap();
+        assert_eq!(app.ui.brightness.id(), "dark");
+        assert!(app.ui.tools_double_column);
+        assert_eq!(app.run("window.toolsDoubleColumn", json!({"on":false})).unwrap(), json!(false));
+        assert_eq!(app.run("window.toolsDoubleColumn", json!({"on":false})).unwrap(), json!(false));
+        assert_eq!(app.run("window.toolsDoubleColumn", json!({})).unwrap(), json!(true));
     }
 }

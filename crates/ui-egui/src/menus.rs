@@ -1111,6 +1111,8 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
             f["brightness"] = json!(app.ui.brightness.id());
             f["themeFavorites"] = json!(app.ui.theme_favorites);
+            f["openedBrightness"] = json!(app.ui.brightness.id());
+            f["toolsColumns"] = json!(if app.ui.tools_double_column { "double" } else { "single" });
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
@@ -1507,7 +1509,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.pending_urls.push(url.clone());
             Ok(json!({"url": url}))
         }
-        "window.toolsDoubleColumn" => flag(&mut app.ui.tools_double_column),
+        "window.toolsDoubleColumn" => {
+            app.ui.tools_double_column = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.tools_double_column);
+            Ok(json!(app.ui.tools_double_column))
+        }
         "window.panelsDoubleColumn" => flag(&mut app.ui.panels_double_column),
         "window.newWorkspace" => {
             let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {

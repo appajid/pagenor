@@ -254,7 +254,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
     ),
-    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{}"),
+    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{on?: bool (default: toggle)}"),
     ("window.panelsDoubleColumn", "Right Toolbar: Double Column", None, "{} — toggle one/two columns of panel icons"),
     (
         "window.workspace",

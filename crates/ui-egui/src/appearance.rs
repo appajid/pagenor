@@ -52,6 +52,7 @@ pub fn preferences_rows(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
             ui.painter().line_segment([r.left_center() + vec2(5.0, 2.0), r.right_center() - vec2(5.0, -2.0)], Stroke::new(1.0, tokens.text));
             if ui.radio(b == current, crate::rtl::widget(ui, crate::i18n::tr(lang, b.label()))).clicked() {
                 d.fields.insert("brightness".into(), json!(b.id()));
+                d.fields.insert("applyBrightness".into(), json!(b.id()));
             }
             if b != Brightness::System {
                 let hovered = ui.rect_contains_pointer(ui.max_rect());
