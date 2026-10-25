@@ -93,7 +93,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: last), parent?: \"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: last; past end appends), before?: page index (instead of after; 0 inserts first), parent?: master id|prefix|label|null}",
             has_doc,
             |s, p| {
                 let count = match p.get("count").filter(|v| !v.is_null()) {
@@ -106,10 +106,27 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let st = s.doc()?;
                 let n = st.doc.page_count();
-                let after = p.get("after").and_then(Value::as_u64).map(|v| usize::try_from(v).unwrap_or(usize::MAX)).unwrap_or(n.saturating_sub(1));
-                let parent = parent_ref(&st.doc, p.get("parent")).unwrap_or_else(|| st.doc.default_parent());
+                if p.get("after").is_some() && p.get("before").is_some() {
+                    return Err(bad("layout.pages.insert", "give after or before, not both"));
+                }
+                let index = |key: &str| -> crate::Result<Option<usize>> {
+                    match p.get(key) {
+                        None => Ok(None),
+                        Some(v) => v
+                            .as_u64()
+                            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+                            .filter(|i| key == "after" || *i < n)
+                            .map(Some)
+                            .ok_or_else(|| bad("layout.pages.insert", format!("{key}: expected a page index, got {v}"))),
+                    }
+                };
+                let after = match (index("after")?, index("before")?) {
+                    (_, Some(b)) => b.checked_sub(1),
+                    (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
+                };
+                let parent = parent_ref(&st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.default_parent());
                 s.edit(|d, _| {
-                    let ids = d.insert_pages(Some(after), count, parent)?;
+                    let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
                 })
             }
@@ -227,6 +244,27 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"id": id.0, "prefix": prefix}))
             })
         }),
+        cmd!(
+            "layout.parents.delete",
+            "Delete Master",
+            [],
+            None,
+            "{id: parent spread id} — unapply the parent and keep local overrides as ordinary items",
+            has_doc,
+            |s, p| {
+                let id = p.get("id").and_then(Value::as_u64).map(SpreadId).ok_or_else(|| bad("layout.parents.delete", "missing parent id"))?;
+                s.edit(|d, sel| {
+                    d.delete_parent(id)?;
+                    *sel = Default::default();
+                    ok()
+                })?;
+                let st = s.doc_mut()?;
+                if st.doc.parents.is_empty() {
+                    st.editing_parents = false;
+                }
+                ok()
+            }
+        ),
         cmd!(noundo "layout.parents.edit", "Edit Masters", [], None, "{on: bool} — show parent spreads on the canvas", has_doc, |s, p| {
             let st = s.doc_mut()?;
             st.editing_parents = p.get("on").and_then(Value::as_bool).unwrap_or(!st.editing_parents);
@@ -771,12 +809,25 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// `"A"` → that parent's id; `null` → Some(None) (= [None]); missing → None (use default).
-fn parent_ref(d: &pagenor_doc::Document, v: Option<&Value>) -> Option<Option<SpreadId>> {
-    match v? {
-        Value::Null => Some(None),
-        Value::String(s) if s == "[None]" => Some(None),
-        Value::String(s) => Some(d.parents.iter().find(|p| p.parent.as_ref().is_some_and(|i| i.prefix == *s || i.label() == *s)).map(|p| p.id)),
-        _ => None,
+fn parent_ref(d: &pagenor_doc::Document, v: Option<&Value>) -> crate::Result<Option<Option<SpreadId>>> {
+    let Some(v) = v else { return Ok(None) };
+    if v.is_null() || v.as_str() == Some("[None]") {
+        return Ok(Some(None));
+    }
+    let matches: Vec<_> = d
+        .parents
+        .iter()
+        .filter(|parent| match v {
+            Value::Number(_) => v.as_u64() == Some(parent.id.0),
+            Value::String(name) => parent.parent.as_ref().is_some_and(|p| p.prefix == *name || p.label() == *name),
+            _ => false,
+        })
+        .map(|p| p.id)
+        .collect();
+    match matches.as_slice() {
+        [id] => Ok(Some(Some(*id))),
+        [] => Err(bad("layout.pages.insert", format!("no master {v}"))),
+        _ => Err(bad("layout.pages.insert", format!("ambiguous master {v}; use its id"))),
     }
 }
 
@@ -1384,5 +1435,110 @@ mod insert_count_tests {
         // The positions it does have still work: after the first page of three.
         let r = s.execute("layout.pages.insert", &json!({"count": 2, "after": 0})).unwrap();
         assert_eq!((r["pages"].as_u64(), r["total"].as_u64()), (Some(2), Some(6)));
+    }
+}
+
+#[cfg(test)]
+mod insert_placement_tests {
+    use super::*;
+    #[test]
+    fn pages_go_in_before_a_page_or_at_the_start() {
+        let mut s = Session::new();
+        // Facing: [1] [2 3].
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |s: &Session| -> Vec<u64> {
+            let d = &s.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let parent = |s: &Session, i: usize| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        let old = ids(&s);
+        s.execute("layout.pages.insert", &json!({"before": 0, "parent": "B"})).unwrap();
+        let now = ids(&s);
+        assert_eq!(now.len(), 4);
+        assert_eq!(now[1..], old[..], "the old pages follow the new first page");
+        assert_eq!(parent(&s, 0), Some(b));
+        // Before page 4 (index 3, the old page 3): two pages without a parent.
+        s.execute("layout.pages.insert", &json!({"before": 3, "count": 2, "parent": null})).unwrap();
+        let then = ids(&s);
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3]);
+        assert_eq!(then[5], old[2]);
+        assert_eq!((parent(&s, 3), parent(&s, 4)), (None, None));
+        // Refused without a change or an undo step: both placements, even one of them null, and a
+        // placement that isn't a page index.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [
+            json!({"after": 0, "before": 1}),
+            json!({"after": 0, "before": null}),
+            json!({"after": null, "before": 1}),
+            json!({"before": -1}),
+            json!({"before": "0"}),
+            json!({"before": null}),
+            json!({"after": 1.5}),
+            json!({"before": 6}),
+            json!({"before": 99}),
+        ] {
+            assert!(s.execute("layout.pages.insert", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo, "{bad}");
+            assert_eq!(ids(&s), then, "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "parent_delete_tests.rs"]
+mod parent_delete_tests;
+
+#[cfg(test)]
+mod stable_master_tests {
+    use super::*;
+    #[test]
+    fn insert_uses_chosen_default_and_refuses_missing_or_ambiguous_masters_atomically() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages":3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix":"B","name":"Book","applyAll":true})).unwrap()["id"].as_u64().unwrap();
+        s.execute("layout.pages.insert", &json!({"before":0})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page(0).unwrap().parent, Some(SpreadId(b)));
+        let before = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        for parent in [json!(999999), json!("Missing"), json!({}), json!(true)] {
+            assert!(s.execute("layout.pages.insert", &json!({"parent":parent})).is_err());
+            assert_eq!(s.doc().unwrap().doc, before);
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+        }
+        s.edit(|d, _| {
+            std::sync::Arc::make_mut(&mut d.parents[0]).parent.as_mut().unwrap().prefix = "B".into();
+            Ok(())
+        })
+        .unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let undo = s.doc().unwrap().history.undo.len();
+        assert!(s.execute("layout.pages.insert", &json!({"parent":"B"})).unwrap_err().to_string().contains("ambiguous"));
+        assert_eq!(s.doc().unwrap().doc, before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+        s.execute("layout.pages.insert", &json!({"before":0,"parent":b})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page(0).unwrap().parent, Some(SpreadId(b)));
+        let after = s.doc().unwrap().doc.clone();
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &Value::Null).unwrap();
+        assert_eq!(s.doc().unwrap().doc, after);
+        after.check().unwrap();
+    }
+    #[test]
+    fn deleting_master_preserves_other_default_and_undo_restores_deleted_default() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages":4})).unwrap();
+        let a = s.doc().unwrap().doc.parents[0].id;
+        let b = SpreadId(s.execute("layout.parents.new", &json!({"prefix":"B","applyAll":true})).unwrap()["id"].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.settings.default_parent, Some(b));
+        s.execute("layout.parents.delete", &json!({"id":a.0})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.default_parent, Some(b));
+        s.execute("layout.parents.delete", &json!({"id":b.0})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.default_parent, None);
+        s.execute("edit.undo", &Value::Null).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.default_parent, Some(b));
+        s.doc().unwrap().doc.check().unwrap();
     }
 }

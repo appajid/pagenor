@@ -468,17 +468,29 @@ fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     // Page.
     section(ui, crate::i18n::tr(&app.ui.language, "Page"), true);
     let b = block(ui, FIELD_H);
-    let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, &names[cur.min(names.len().saturating_sub(1))], 93.0, &names, Some(cur))
-    });
-    if let Some(pg) = picked {
-        crate::canvas::go_to_page(app, pg);
+    if let Some(pb) = crate::canvas::page_box(app) {
+        let picked =
+            place(ui, sub(b, 0.0, 0.0, 150.0, FIELD_H), |ui| widgets::dropdown_list(ui, pb.current_name(), 150.0, &pb.names, Some(pb.current)));
+        if let Some(i) = picked
+            && let Err(e) = crate::canvas::page_box_go(app, &pb, i)
+        {
+            app.status(e);
+        }
     }
     let (add, del) = place(ui, sub(b, 172.0, 0.0, 50.0, FIELD_H), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let a = widgets::icon_toggle_sized(ui, "style-new", false, "Insert Page", vec2(22.0, 21.0)).clicked();
-        let d = widgets::icon_toggle_sized(ui, "trash", false, "Delete Page", vec2(22.0, 21.0)).clicked();
+        let a = ui
+            .add_enabled_ui(!app.session.active().is_some_and(|s| s.editing_parents), |ui| {
+                widgets::icon_toggle_sized(ui, "style-new", false, "Insert Page", vec2(22.0, 21.0))
+            })
+            .inner
+            .clicked();
+        let d = ui
+            .add_enabled_ui(!app.session.active().is_some_and(|s| s.editing_parents), |ui| {
+                widgets::icon_toggle_sized(ui, "trash", false, "Delete Page", vec2(22.0, 21.0))
+            })
+            .inner
+            .clicked();
         (a, d)
     });
     if add {

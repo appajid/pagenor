@@ -1016,3 +1016,13 @@ policies. Vectnor is untouched. All seven workspace gates pass: 2,894 tests, zer
 A separate local Mac GUI/CLI bundle follows the source commit; native Windows/Linux
 execution and publication remain pending.
 [Per-PR authors, immutable heads, decisions and safeguards](docs/pagenor/UPSTREAM_ADOPTION_0110.md).
+
+## 25 October 2026 — P11.22 / local 0.12.0
+
+Continue the reviewed queue with five compatible proposals: #1083, #1136,
+#1505, #1508 and #1521. Their immutable heads are rechecked unchanged. Retain
+Pagenor’s grouped Layers, explicit left/right masters, enlarged status bar,
+chosen default master, transactional style preview and document-owned views.
+Native format stays 6; external lock entries are unchanged. All seven workspace gates pass: 2,907 tests, zero failures, 7 existing skips; twenty WASM packages. 8 synthetic offscreen views are inspected.
+The owner's open app session and Vectnor remain untouched. No upload/publication.
+[Per-PR authors, source pins, adaptations and remaining queue](docs/pagenor/UPSTREAM_ADOPTION_0120.md).

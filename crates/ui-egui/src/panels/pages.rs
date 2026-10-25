@@ -219,6 +219,16 @@ fn master_menu(app: &mut DesignApp, ui: &mut egui::Ui, index: usize, prefix: &st
         let _ = app.run("layout.pages.applyParent", json!({"parent":prefix,"pages":[current_page]}));
         ui.close();
     }
+    ui.separator();
+    if ui.button("Delete Master").clicked() {
+        if let Some(id) = app.session.active().and_then(|st| st.doc.parents.get(index)).map(|p| p.id)
+            && app.run("layout.parents.delete", json!({"id":id.0})).is_ok()
+            && let Some(v) = app.view_mut()
+        {
+            v.fitted = false;
+        }
+        ui.close();
+    }
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -605,7 +615,7 @@ fn empty_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let item = |ui: &mut egui::Ui, label: &str| ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).clicked();
     if item(ui, "Insert Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.insert", json!({"after": cur, "count": 1})));
+        crate::dialogs::open_insert_pages(app, cur);
         ui.close();
     }
     if item(ui, "Move Pages…") {
@@ -633,6 +643,10 @@ pub fn open_panel_options(app: &mut DesignApp) {
 }
 
 fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &pagenor_doc::Document, abs: usize, si: usize) {
+    if ui.button("Insert Pages…").clicked() {
+        crate::dialogs::open_insert_pages(app, abs);
+        ui.close();
+    }
     if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Insert Page After"))).clicked() {
         let _ = app.run("layout.pages.insert", json!({"after": abs, "count": 1}));
         ui.close();

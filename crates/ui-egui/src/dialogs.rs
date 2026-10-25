@@ -245,6 +245,55 @@ pub(crate) fn open_text_frame_options(app: &mut DesignApp) {
     app.ui.dialog = Some(text_frame_options_dialog(app, Value::Null));
 }
 
+pub(crate) fn open_insert_pages(app: &mut DesignApp, abs: usize) {
+    let Some(st) = app.session.active() else { return };
+    let abs = abs.min(st.doc.page_count().saturating_sub(1));
+    let parent = st.doc.page(abs).and_then(|p| p.parent).map_or_else(String::new, |id| id.0.to_string());
+    crate::dialogs::cancel(app);
+    let uid = app.session.active().map(|st| st.uid);
+    app.ui.dialog = Some(Dialog::new("insertPages", json!({"count": 1, "insert": "after", "page": abs, "parent": parent, "documentUid":uid})));
+}
+
+fn insert_pages_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let Some(st) = app.session.active() else { return };
+    let pages: Vec<String> = (0..st.doc.page_count()).map(|i| app.session.page_label(i)).collect();
+    let mut parents = vec![(String::new(), crate::i18n::tr(&lang, "[None]").to_string())];
+    parents.extend(st.doc.parents.iter().map(|p| (p.id.0.to_string(), p.parent.as_ref().map(|i| i.label()).unwrap_or_default())));
+    egui::Grid::new("insert_pages").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Pages:"));
+        let mut n = d.n("count").unwrap_or(1.0).clamp(1.0, 9999.0) as u32;
+        if ui.add(egui::DragValue::new(&mut n).range(1..=9999)).changed() {
+            d.fields.insert("count".into(), json!(n));
+        }
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Insert:"));
+        ui.horizontal(|ui| {
+            let wheres = [("after", "After Page"), ("before", "Before Page"), ("start", "At Start of Document"), ("end", "At End of Document")];
+            translated_combo(&lang, ui, d, "insert", &wheres);
+            // The page, by name: At Start and At End need none.
+            ui.add_enabled_ui(matches!(d.s("insert").as_str(), "after" | "before"), |ui| {
+                let cur = (d.n("page").unwrap_or(0.0).max(0.0) as usize).min(pages.len().saturating_sub(1));
+                egui::ComboBox::from_id_salt("insert_page").selected_text(pages.get(cur).cloned().unwrap_or_default()).width(64.0).show_ui(
+                    ui,
+                    |ui| {
+                        for (i, name) in pages.iter().enumerate() {
+                            if ui.selectable_label(i == cur, name).clicked() {
+                                d.fields.insert("page".into(), json!(i));
+                            }
+                        }
+                    },
+                );
+            });
+        });
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Master:"));
+        let opts: Vec<(&str, &str)> = parents.iter().map(|(v, l)| (v.as_str(), l.as_str())).collect();
+        combo(ui, d, "parent", &opts);
+        ui.end_row();
+    });
+}
+
 fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
     text_field_with_label(ui, d, key, w, None);
 }
@@ -1747,6 +1796,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
+        "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "exportPptx" => crate::i18n::tr(&app.ui.language, "Export PowerPoint"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Create Table"),
@@ -1807,6 +1857,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let frame_margin = egui::Frame::popup(ui.style()).total_margin().sum();
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
+            "insertPages"=>440.0,
             crate::effects_dialog::ID => 680.0,
             "colorPicker" => 580.0,
             "alert" => 440.0,
@@ -2301,6 +2352,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             }
             "masterNew" | "masterSettings" | "masterText" => masters::form(app, ui, &mut d),
             id if id.starts_with("cmd:") => command_form(app, ui, &mut d),
+            "insertPages" => {insert_pages_dialog(app, ui, &mut d);if let Some(status)=d.fields.get("status").and_then(Value::as_str){ui.colored_label(crate::theme::Tokens::get(ui.ctx()).text,status);}},
             "goToPage" => {
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page"));
@@ -2752,6 +2804,15 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             )
         }
         "ruby" => app.run("type.ruby", json!({"text": d.s("text")})),
+        "insertPages" => {
+            let result = confirm_insert_pages(app, &d);
+            if let Err(e) = &result {
+                let mut d = d;
+                d.fields.insert("status".into(),json!(e));
+                app.ui.dialog=Some(d);
+            }
+            result
+        }
         "goToPage" => {
             // A page name ("iv", "A-3"), a number, or "+n" for an absolute position.
             let typed = match d.fields.get("page") {
@@ -4276,18 +4337,32 @@ fn para_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &
 /// edited side stores the whole array.
 fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, field: &dyn Fn(&mut egui::Ui, &str, Option<f64>) -> Option<f64>) {
     let mut sides: [f64; 4] = serde_json::from_value(para_value(d, pv, key)).unwrap_or_default();
+    let linked = linked(d, key, sides.iter().all(|v| (v - sides[0]).abs() < 1e-9));
     let mut changed = false;
-    egui::Grid::new(("pssides", key)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+    // As InDesign's: Top and Bottom, the link, Left and Right.
+    egui::Grid::new(("pssides", key)).num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, label) in ["Top:", "Left:", "Bottom:", "Right:"].into_iter().enumerate() {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
-            if let Some(side) = sides.get_mut(i)
-                && let Some(v) = field(ui, &format!("ps{key}{i}"), Some(*side))
-            {
-                *side = v;
+            if let Some(v) = field(ui, &format!("ps{key}{i}"), sides.get(i).copied()) {
+                // Linked, a side typed in sets all four.
+                if linked {
+                    sides = [v; 4];
+                } else if let Some(side) = sides.get_mut(i) {
+                    *side = v;
+                }
                 changed = true;
             }
-            if i % 2 == 1 {
-                ui.end_row();
+            match i {
+                // Linked again, the four take Top's value.
+                0 if link_toggle(lang, ui, d, key, linked) => {
+                    sides = [sides[0]; 4];
+                    changed = true;
+                }
+                0 => {}
+                2 => {
+                    ui.label("");
+                }
+                _ => ui.end_row(),
             }
         }
     });
@@ -4296,8 +4371,24 @@ fn para_sides(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &s
     }
 }
 
-/// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
-/// picked.
+/// Whether the four values of `key` are linked ("Make all settings the same"): as the user left
+/// the link, else when the four are the same, as InDesign starts it.
+fn linked(d: &Dialog, key: &str, same: bool) -> bool {
+    d.fields.get(&format!("_linked.{key}")).and_then(Value::as_bool).unwrap_or(same)
+}
+
+/// The link button between a border's or shading's four sides or corners; true when it was
+/// clicked to link them, and the caller makes the four the same.
+fn link_toggle(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, key: &str, linked: bool) -> bool {
+    let tip = crate::i18n::tr(lang, "Make all settings the same");
+    let clicked = crate::widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, egui::vec2(22.0, 21.0)).clicked();
+    if clicked {
+        d.fields.insert(format!("_linked.{key}"), json!(!linked));
+    }
+    clicked && !linked
+}
+
+/// A swatch menu with a colour chip per swatch (hidden swatches left out).
 pub(crate) fn swatch_menu(ui: &mut egui::Ui, doc: &pagenor_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
     let mut picked = None;
     egui::ComboBox::from_id_salt(id).selected_text(current).width(width).show_ui(ui, |ui| {
@@ -4350,14 +4441,16 @@ fn border_type_menu(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, d
 fn para_corners(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: &str, units: Unit) {
     use pagenor_geom::corners::{Corner, CornerShape};
     let mut corners: [Corner; 4] = serde_json::from_value(para_value(d, pv, key)).unwrap_or_default();
-    let mut changed = false;
-    egui::Grid::new(("pscorners", key)).num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
+    let linked = linked(d, key, corners.iter().all(|c| *c == corners[0]));
+    let mut changed = None;
+    let mut relinked = false;
+    egui::Grid::new(("pscorners", key)).num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, label) in ["Top Left:", "Top Right:", "Bottom Right:", "Bottom Left:"].into_iter().enumerate() {
             let Some(c) = corners.get_mut(i) else { continue };
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             if let Some(v) = crate::widgets::measure(ui, &format!("ps{key}{i}"), Some(c.size), units, 70.0) {
                 c.size = if v.is_finite() { v.clamp(0.0, 10_000.0) } else { 0.0 };
-                changed = true;
+                changed = Some(i);
             }
             egui::ComboBox::from_id_salt(("pscornershape", key, i))
                 .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, c.shape.label())))
@@ -4366,14 +4459,26 @@ fn para_corners(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, key: 
                     for shape in CornerShape::ALL {
                         if ui.selectable_label(c.shape == shape, crate::rtl::widget(ui, crate::i18n::tr(lang, shape.label()))).clicked() {
                             c.shape = shape;
-                            changed = true;
+                            changed = Some(i);
                         }
                     }
                 });
+            // Linked again, the four take Top Left's size and shape.
+            if i == 0 && link_toggle(lang, ui, d, key, linked) {
+                relinked = true;
+            }
             ui.end_row();
         }
     });
-    if changed {
+    if relinked {
+        corners = [corners[0]; 4];
+        changed = Some(0);
+    }
+    if let Some(i) = changed {
+        // Linked, the corner changed sets all four.
+        if linked {
+            corners = [corners[i]; 4];
+        }
         para_set(d, key, serde_json::to_value(corners).unwrap_or_default());
     }
 }
@@ -7408,7 +7513,7 @@ mod paragraph_rules_dialog_tests {
     }
 
     /// A paragraph styled "Ruled Child", whose Rule Below comes from its parent "Ruled".
-    fn ruled_paragraph() -> (DesignApp, Value) {
+    pub(super) fn ruled_paragraph() -> (DesignApp, Value) {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let rule = json!({"on": true, "weight": 3.0, "color": "[Black]", "tint": 0.5, "columnWidth": false, "offset": 4.0, "leftIndent": 6.0, "rightIndent": 2.0});
@@ -8627,5 +8732,201 @@ mod appearance_preferences_tests {
         assert_eq!(app.run("window.toolsDoubleColumn", json!({"on":false})).unwrap(), json!(false));
         assert_eq!(app.run("window.toolsDoubleColumn", json!({"on":false})).unwrap(), json!(false));
         assert_eq!(app.run("window.toolsDoubleColumn", json!({})).unwrap(), json!(true));
+    }
+}
+
+#[cfg(test)]
+mod linked_border_tests {
+    #[test]
+    fn linked_border_preview_cancel_and_confirm_preserve_history() {
+        let (mut app, _) = ruled_paragraph();
+        let before = app.session.doc().unwrap().doc.clone();
+        let undo = app.session.doc().unwrap().history.undo.len();
+        open_style_options(&mut app, true, "Ruled Child");
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("section".into(), json!("border"));
+        d.fields.insert("preview".into(), json!(true));
+        d.fields.insert("p.borderOn".into(), json!(true));
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        retype_beside(&mut h, "Top:", 0, "7");
+        assert_eq!(h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").unwrap().para.border_weights, Some([7.0; 4]));
+        cancel(&mut h.state_mut().app);
+        h.run_steps(3);
+        assert_eq!(h.state().app.session.doc().unwrap().doc, before);
+        assert_eq!(h.state().app.session.doc().unwrap().history.undo.len(), undo);
+        open_style_options(&mut h.state_mut().app, true, "Ruled Child");
+        let d = h.state_mut().app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("section".into(), json!("shading"));
+        d.fields.insert("preview".into(), json!(true));
+        d.fields.insert("p.shadingOn".into(), json!(true));
+        h.run_steps(4);
+        retype_beside(&mut h, "Top:", 0, "0p6");
+        confirm(&mut h.state_mut().app).unwrap();
+        assert_eq!(h.state().app.session.doc().unwrap().history.undo.len(), undo + 1);
+        assert_eq!(h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").unwrap().para.shading_offsets, Some([6.0; 4]));
+        h.state_mut().app.run("edit.undo", Value::Null).unwrap();
+        assert_eq!(h.state().app.session.doc().unwrap().doc, before);
+    }
+    use super::paragraph_rules_dialog_tests::ruled_paragraph;
+    use super::*;
+    /// Replace the text of the field beside the `nth` label `label` (on its row, to its right) with
+    /// `new`, and leave the field.
+    fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, label: &str, nth: usize, new: &str) {
+        use egui_kittest::kittest::Queryable;
+        let l = h.get_all_by_label(label).nth(nth).unwrap_or_else(|| panic!("no label {label} #{nth}")).rect();
+        let field = h
+            .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
+            .map(|n| n.rect())
+            .filter(|r| r.center().x > l.max.x && (r.center().y - l.center().y).abs() < l.height().max(8.0))
+            .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .unwrap_or_else(|| panic!("no field beside {label} #{nth}"))
+            .center();
+        crate::test_window::click_at(h, field);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text(new.into()));
+        h.run_steps(1);
+        // Tab leaves the field (Enter would be the dialog's OK).
+        h.key_press(egui::Key::Tab);
+        h.run_steps(3);
+    }
+
+    /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
+    /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
+    /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
+    #[test]
+    fn paragraph_border_sides_and_corners_link_as_indesigns() {
+        use egui_kittest::kittest::Queryable;
+        let (app, _) = ruled_paragraph();
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        h.state_mut().app.ui.dialog =
+            Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
+        h.run_steps(4);
+        let field = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, key: &str| {
+            h.state().app.ui.dialog.as_ref().and_then(|d| d.fields.get(&format!("p.{key}")).cloned()).unwrap_or_default()
+        };
+        // The four weights start the same, so linked: Top sets them all.
+        retype_beside(&mut h, "Top:", 0, "3");
+        assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
+        // Unlinked, Left alone takes 10 pt.
+        // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
+        // scrolls as fields take focus.
+        let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
+            let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+            assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
+            links[n].center()
+        };
+        let at = link(&h, 0);
+        crate::test_window::click_at(&mut h, at);
+        retype_beside(&mut h, "Left:", 0, "10");
+        assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
+        // Linked again, the four take Top's weight; unlinked once more for the thick left side.
+        let at = link(&h, 0);
+        crate::test_window::click_at(&mut h, at);
+        assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
+        let at = link(&h, 0);
+        crate::test_window::click_at(&mut h, at);
+        retype_beside(&mut h, "Left:", 0, "10");
+        assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
+        // The corners start the same too: Top Left's size goes to all four.
+        retype_beside(&mut h, "Top Left:", 0, "0p4");
+        let corners = field(&h, "borderCorners");
+        assert!((0..4).all(|i| corners[i]["size"] == json!(4.0)), "{corners}");
+        // Unlinked, Top Right alone takes 0p8; linked again, all four take Top Left's 4 pt.
+        let at = link(&h, 1);
+        crate::test_window::click_at(&mut h, at);
+        retype_beside(&mut h, "Top Right:", 0, "0p8");
+        assert_eq!(field(&h, "borderCorners")[1]["size"], json!(8.0));
+        assert_eq!(field(&h, "borderCorners")[0]["size"], json!(4.0));
+        let at = link(&h, 1);
+        crate::test_window::click_at(&mut h, at);
+        let corners = field(&h, "borderCorners");
+        assert!((0..4).all(|i| corners[i] == corners[0] && corners[i]["size"] == json!(4.0)), "{corners}");
+        confirm(&mut h.state_mut().app).unwrap();
+        let style = h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+        assert_eq!(style.para.border_weights, Some([3.0, 10.0, 3.0, 3.0]));
+    }
+}
+
+fn confirm_insert_pages(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    if d.fields.get("documentUid").and_then(Value::as_u64) != Some(st.uid) {
+        return Err("The original document is no longer active. Reopen Insert Pages.".into());
+    }
+    let count = d
+        .n("count")
+        .filter(|n| n.is_finite() && n.fract() == 0.0 && (1.0..=9999.0).contains(n))
+        .ok_or("Pages: enter a whole number from 1 to 9999")? as u64;
+    let n = st.doc.page_count();
+    let page = d
+        .n("page")
+        .filter(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0)
+        .map(|v| (v as usize).min(n.saturating_sub(1)))
+        .ok_or("Choose a page")?;
+    let mut p = json!({"count":count});
+    match d.s("insert").as_str() {
+        "before" => p["before"] = json!(page),
+        "after" => p["after"] = json!(page),
+        "start" => p["before"] = json!(0),
+        "end" => p["after"] = json!(n.saturating_sub(1)),
+        _ => return Err("Choose where to insert pages".into()),
+    }
+    let parent = d.s("parent");
+    p["parent"] = if parent.is_empty() { Value::Null } else { json!(parent.parse::<u64>().map_err(|_| "Choose a master")?) };
+    app.run("layout.pages.insert", p)
+}
+
+#[cfg(test)]
+mod insert_pages_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+    #[test]
+    fn insert_dialog_cancel_validation_and_owner_guard() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages":3})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        crate::menus::activate(&mut app, "layout.pages.insert", &Value::Null);
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "insertPages");
+        cancel(&mut app);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        open_insert_pages(&mut app, 2);
+        app.ui.dialog.as_mut().unwrap().fields.insert("count".into(), json!(1.5));
+        assert!(confirm(&mut app).is_err());
+        assert!(app.ui.dialog.is_some());
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        app.ui.dialog.as_mut().unwrap().fields.insert("count".into(), json!(2));
+        app.ui.dialog.as_mut().unwrap().fields.insert("insert".into(), json!("start"));
+        confirm(&mut app).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.page_count(), 5);
+        app.run("edit.undo", Value::Null).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        open_insert_pages(&mut app, 0);
+        let d = app.ui.dialog.clone().unwrap();
+        app.run("file.new", json!({})).unwrap();
+        let other = app.session.doc().unwrap().doc.clone();
+        assert!(confirm_insert_pages(&mut app, &d).is_err());
+        assert_eq!(app.session.doc().unwrap().doc, other);
+    }
+    #[test]
+    fn insert_dialog_offers_start_end_and_stable_master_choices() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages":3})).unwrap();
+        let master = app.run("layout.parents.new", json!({"prefix":"B","name":"Book"})).unwrap()["id"].as_u64().unwrap();
+        open_insert_pages(&mut app, 1);
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some("After Page")).click();
+        h.run_steps(2);
+        h.get_by_label("At Start of Document").click();
+        h.run_steps(2);
+        h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some("A-Master")).click();
+        h.run_steps(2);
+        h.get_by_label("B-Book").click();
+        h.run_steps(2);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("parent"), master.to_string());
+        h.get_by_label("  OK  ").click();
+        h.run_steps(4);
+        assert!(h.state().app.ui.dialog.is_none());
+        let st = h.state().app.session.doc().unwrap();
+        assert_eq!(st.doc.page_count(), 4);
+        assert_eq!(st.doc.page(0).unwrap().parent, Some(pagenor_doc::SpreadId(master)));
     }
 }

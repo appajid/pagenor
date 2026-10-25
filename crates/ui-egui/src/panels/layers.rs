@@ -221,6 +221,7 @@ const MAX_DEPTH: usize = 32;
 
 /// Per-frame inputs shared by the object rows.
 struct Listing<'a> {
+    uid: u64,
     doc: &'a Document,
     language: &'a str,
     selected: &'a [ItemId],
@@ -261,14 +262,25 @@ fn object_rows(
             tri_clicked = ui.interact(tri, ui.id().with(("gtri", it.id.0)), Sense::click()).clicked();
         }
         let name = item_label(ls.doc, it);
-        let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
-        ui.painter().with_clip_rect(clip).text(
-            row.min + vec2(2.0 * COL_W + 30.0 + indent, ROW_H / 2.0),
-            egui::Align2::LEFT_CENTER,
-            &name,
-            egui::FontId::proportional(11.0),
-            if it.hidden { t.text_dim } else { t.text },
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_sel, &name));
+        let field = Rect::from_min_max(
+            row.min + vec2(2.0 * COL_W + 30.0 + indent, 2.0),
+            pos2((row.max.x - 26.0).max(row.min.x + 2.0 * COL_W + 31.0 + indent), row.max.y - 2.0),
         );
+        let (renaming, renamed) = rename_field(ui, field, ls.uid, it.id, &it.name);
+        if let Some(name) = renamed {
+            cmds.push(("object.rename", json!({"id":it.id.0,"name":name})));
+        }
+        let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
+        if !renaming {
+            ui.painter().with_clip_rect(clip).text(
+                row.min + vec2(2.0 * COL_W + 30.0 + indent, ROW_H / 2.0),
+                egui::Align2::LEFT_CENTER,
+                &name,
+                egui::FontId::proportional(11.0),
+                if it.hidden { t.text_dim } else { t.text },
+            );
+        }
         let sq = selection_square(ui, ls.language, row, ls.layer_color, is_sel, true, ("item", it.id.0)).clicked();
         // Dragging a selected row drags the selected objects that share its parent (top-level
         // rows: those on this layer).
@@ -278,7 +290,9 @@ fn object_rows(
         } else {
             vec![it.id]
         };
-        resp.dnd_set_drag_payload(LayersDrag::Objects { ids: dragged, group });
+        if !renaming {
+            resp.dnd_set_drag_payload(LayersDrag::Objects { ids: dragged, group });
+        }
         if resp.dragged() {
             super::pages::drag_ghost(ui, &name, &t);
         }
@@ -288,9 +302,21 @@ fn object_rows(
             cmds.push(("object.setFlags", json!({"ids": [it.id.0], "locked": !it.locked})));
         } else if tri_clicked {
             ui.data_mut(|d| d.insert_temp(open_id, !open));
-        } else if sq || resp.clicked() {
-            let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-            cmds.push(("selection.set", json!({"ids": [it.id.0], "add": add})));
+        } else if !renaming && (sq || resp.clicked()) {
+            let (now, add) = ui.input(|i| (i.time, i.modifiers.shift || i.modifiers.command));
+            let key = egui::Id::new(("layers_last_click", ls.uid, it.id.0));
+            let last: Option<f64> = ui.data(|d| d.get_temp(key));
+            ui.data_mut(|d| d.insert_temp(key, now));
+            let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+            let slow = !sq && !add && !resp.double_clicked() && last.is_some_and(|t| now - t > delay && now - t < 1.5);
+            if slow && ls.selected == [it.id] {
+                let text = if it.name.is_empty() { name.trim_start_matches('<').trim_end_matches('>').to_string() } else { it.name.clone() };
+                ui.data_mut(|d| {
+                    d.insert_temp(egui::Id::new(("layers_rename", ls.uid)), RenameEdit { id: it.id, original: it.name.clone(), text, focus: true })
+                });
+            } else {
+                cmds.push(("selection.set", json!({"ids":[it.id.0],"add":add})));
+            }
         }
         let at = rows.len();
         rows.push(Row {
@@ -311,6 +337,39 @@ fn object_rows(
     }
 }
 
+#[derive(Clone)]
+struct RenameEdit {
+    id: ItemId,
+    original: String,
+    text: String,
+    focus: bool,
+}
+fn rename_field(ui: &mut Ui, rect: Rect, uid: u64, id: ItemId, current: &str) -> (bool, Option<String>) {
+    let key = egui::Id::new(("layers_rename", uid));
+    let Some(mut edit) = ui.data(|d| d.get_temp::<RenameEdit>(key)).filter(|e| e.id == id) else { return (false, None) };
+    if edit.original != current {
+        ui.data_mut(|d| d.remove::<RenameEdit>(key));
+        return (false, None);
+    }
+    let field_id = ui.id().with(("rename", id.0));
+    // Escape may clear focus before widgets run. An active rename must cancel rather than
+    // treating that focus loss as a commit.
+    let cancel = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let response = ui.put(rect, egui::TextEdit::singleline(&mut edit.text).id(field_id).font(egui::FontId::proportional(11.0)));
+    if edit.focus {
+        response.request_focus();
+        edit.focus = false;
+    }
+    let commit = (response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))) || response.lost_focus();
+    if cancel || commit {
+        ui.data_mut(|d| d.remove::<RenameEdit>(key));
+        response.surrender_focus();
+        return (true, (!cancel && edit.text != current).then_some(edit.text));
+    }
+    ui.data_mut(|d| d.insert_temp(key, edit));
+    (true, None)
+}
+
 /// A disclosure triangle in `r`: pointing down when open.
 fn disclosure(ui: &Ui, r: Rect, open: bool, color: Color32) {
     let c = r.center();
@@ -326,6 +385,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
+    let uid = st.uid;
     let active = st.active_layer;
     let selected: Vec<ItemId> = st.selection.items.clone();
     let sel_layers: Vec<_> = selected.iter().filter_map(|i| doc.item(*i).map(|it| it.layer)).collect();
@@ -433,6 +493,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         // The layer's objects keep their spread order; the panel lists them topmost first.
         let on_layer: Vec<std::sync::Arc<Item>> = spread_items.iter().filter(|i| i.layer == l.id).cloned().collect();
         let ls = Listing {
+            uid,
             doc: &doc,
             language: &language,
             selected: &selected,
@@ -618,5 +679,43 @@ mod tests {
         h.drag_at(p);
         h.drop_at(p);
         h.run_steps(3);
+    }
+    #[test]
+    fn slow_second_click_renames_unicode_and_escape_cancels() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app();
+        let id = ItemId(app.run("frame.create", json!({"rect":[0,0,20,20]})).unwrap()["id"].as_u64().unwrap());
+        let uid = app.session.doc().unwrap().uid;
+        let mut h = egui_kittest::Harness::builder()
+            .with_step_dt(0.02)
+            .with_size(vec2(320.0, 400.0))
+            .build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
+        h.run_steps(3);
+        click(&mut h, row(1, 0.5, false));
+        click(&mut h, row(1, 0.5, false));
+        assert!(h.ctx.data(|d| d.get_temp::<RenameEdit>(egui::Id::new(("layers_rename", uid)))).is_none(), "quick double click selects");
+        h.run_steps(25);
+        click(&mut h, row(1, 0.5, false));
+        h.run_steps(3);
+        assert!(h.ctx.data(|d| d.get_temp::<RenameEdit>(egui::Id::new(("layers_rename", uid)))).is_some());
+        h.get_by_role(egui::accesskit::Role::TextInput).click();
+        h.run_steps(1);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("తెలుగు శీర్షిక".into()));
+        h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.item(id).unwrap().name, "తెలుగు శీర్షిక");
+        h.state_mut().run("edit.undo", serde_json::Value::Null).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.item(id).unwrap().name, "");
+        h.run_steps(25);
+        click(&mut h, row(1, 0.5, false));
+        h.run_steps(25);
+        click(&mut h, row(1, 0.5, false));
+        h.run_steps(2);
+        h.event(egui::Event::Text("discard".into()));
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().doc.item(id).unwrap().name, "");
     }
 }

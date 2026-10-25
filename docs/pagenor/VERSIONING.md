@@ -76,3 +76,11 @@ typographic rendering, export diagnostics and interchange validation form the
 local feature milestone. Native document capability stays 6. No external pins
 change. The published desktop preview remains 0.7.0; native Windows/Linux
 validation and publication remain separate. See UPSTREAM_ADOPTION_0110.md.
+
+The 25 October 2026 queued editor/master workflow group advances **0.11.0 →
+0.12.0** (P11.22): inline object renaming, page/master navigation, Insert Pages,
+master deletion and linked paragraph controls. Native capability remains 6 and
+external dependency pins do not change. The local Mac bundle is separate from
+the owner’s running app. Published 0.7.0 artifacts remain immutable; native
+Windows/Linux package validation and publication remain pending. See
+[the adoption log](UPSTREAM_ADOPTION_0120.md).

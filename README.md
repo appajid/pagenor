@@ -15,7 +15,7 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current local milestone: **0.11.0** — editor refinements and publishing diagnostics.
+Current local milestone: **0.12.0** — master/page workflows and editor controls.
 See the [review and validation notes](docs/pagenor/UPSTREAM_ADOPTION_0110.md).
 The published desktop preview remains 0.7.0; native Windows/Linux validation for
 this local milestone is pending.

@@ -187,6 +187,82 @@ pub fn current_master_page(app: &DesignApp) -> Option<(usize, usize)> {
     Some((index, st.doc.parents.get(index)?.page_at_x(c.x)?))
 }
 
+/// A transient navigation menu for the active document. Master sides remain independent.
+pub struct PageBox {
+    pub names: Vec<String>,
+    pub current: usize,
+    pub pages: usize,
+    uid: u64,
+    targets: Vec<PageTarget>,
+}
+#[derive(Clone, Copy)]
+enum PageTarget {
+    Page(pagenor_doc::PageId),
+    Master(pagenor_doc::SpreadId, Option<pagenor_doc::PageId>),
+}
+impl PageBox {
+    pub fn current_name(&self) -> &str {
+        self.names.get(self.current).map_or("", String::as_str)
+    }
+}
+pub fn page_box(app: &DesignApp) -> Option<PageBox> {
+    let st = app.session.active()?;
+    let pages = st.doc.page_count();
+    let mut names: Vec<_> = (0..pages).map(|i| app.session.page_label(i)).collect();
+    let mut targets: Vec<_> = st.doc.pages().map(|(_, _, p)| PageTarget::Page(p.id)).collect();
+    let mut current = current_page(app).unwrap_or(0).min(pages.saturating_sub(1));
+    let shown = current_master_page(app);
+    let spread = current_spread(app);
+    for (i, master) in st.doc.parents.iter().enumerate() {
+        let label = master.parent.as_ref().map(|p| p.label()).unwrap_or_default();
+        let index = names.len();
+        names.push(label.clone());
+        targets.push(PageTarget::Master(master.id, None));
+        if spread == Some(SpreadRef::Parent(i)) {
+            current = index;
+        }
+        if master.pages.len() > 1 {
+            // Stable visual left/right ordering even in right-to-left books.
+            let mut sides: Vec<_> = master.pages.iter().enumerate().collect();
+            sides.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+            for (pi, page) in sides {
+                let side = match page.side {
+                    pagenor_doc::PageSide::Left => "Left Master",
+                    pagenor_doc::PageSide::Right => "Right Master",
+                    _ => "Master",
+                };
+                let index = names.len();
+                names.push(format!("{label} · {side}"));
+                targets.push(PageTarget::Master(master.id, Some(page.id)));
+                if shown == Some((i, pi)) {
+                    current = index;
+                }
+            }
+        }
+    }
+    Some(PageBox { names, current, pages, uid: st.uid, targets })
+}
+pub fn page_box_go(app: &mut DesignApp, b: &PageBox, index: usize) -> Result<(), String> {
+    let st = app.session.active().ok_or("no document")?;
+    if st.uid != b.uid {
+        return Err("The original document is no longer active.".into());
+    }
+    match b.targets.get(index).ok_or("no such navigation entry")? {
+        PageTarget::Page(id) => {
+            let page = st.doc.pages().position(|(_, _, p)| p.id == *id).ok_or("The page no longer exists.")?;
+            go_to_page(app, page);
+        }
+        PageTarget::Master(id, side) => {
+            let i = st.doc.parent_index(*id).ok_or("The master no longer exists.")?;
+            let side = side
+                .map(|id| st.doc.parents.get(i).and_then(|p| p.pages.iter().position(|p| p.id == id)).ok_or("The master page no longer exists."))
+                .transpose()?;
+            app.run("app.editMaster", json!({"index":i,"page":side}))?;
+        }
+    }
+    Ok(())
+}
+
 /// Scroll so absolute page `abs` is centred (keeps zoom).
 pub fn go_to_page(app: &mut DesignApp, abs: usize) {
     if app.session.active().is_some_and(|st| st.editing_parents) {
@@ -4129,6 +4205,60 @@ mod pending_paper_regressions {
         for abs in 0..st.doc.page_count() {
             let want = xf.rect(layout.page_rect(&st.doc, abs).unwrap());
             assert!(paper.iter().any(|r| (r.min - want.min).length() < 0.01 && (r.max - want.max).length() < 0.01), "page {abs}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod navigation_box_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+    #[test]
+    fn navigation_tracks_page_ids_and_rejects_another_document() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages":3,"facingPages":false})).unwrap();
+        app.canvas_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 800.0)));
+        let b = page_box(&app).unwrap();
+        let old = app.session.doc().unwrap().doc.page(2).unwrap().id;
+        app.run("layout.pages.insert", json!({"before":0})).unwrap();
+        page_box_go(&mut app, &b, 2).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.page(current_page(&app).unwrap()).unwrap().id, old);
+        app.run("file.new", json!({"pages":2})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        assert!(page_box_go(&mut app, &b, 2).is_err());
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+    #[test]
+    fn status_navigation_lists_both_master_sides_and_returns_to_document() {
+        for rtl in [false, true] {
+            let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"pages":6})).unwrap();
+            app.run("layout.parents.new", json!({"prefix":"B","name":"Book"})).unwrap();
+            if rtl {
+                app.run("layout.documentSetup", json!({"binding":"rightToLeft"})).unwrap();
+            }
+            let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+            let b = page_box(&h.state().app).unwrap();
+            let left = b.names.iter().position(|s| s == "B-Book · Left Master").unwrap();
+            let right = b.names.iter().position(|s| s == "B-Book · Right Master").unwrap();
+            assert!(left < right);
+            // Exercise the actual status menu, including the return path.
+            let at = h.get_all_by_label("Page").find(|n| n.rect().top() > 800.0).unwrap().rect().center();
+            crate::test_window::click_at(&mut h, at);
+            h.get_by_label("B-Book · Right Master").click();
+            h.run_steps(4);
+            let (mi, pi) = current_master_page(&h.state().app).unwrap();
+            assert_eq!(h.state().app.session.doc().unwrap().doc.parents[mi].pages[pi].side, pagenor_doc::PageSide::Right);
+            let b = page_box(&h.state().app).unwrap();
+            page_box_go(&mut h.state_mut().app, &b, left).unwrap();
+            h.run_steps(4);
+            let (mi, pi) = current_master_page(&h.state().app).unwrap();
+            assert_eq!(h.state().app.session.doc().unwrap().doc.parents[mi].pages[pi].side, pagenor_doc::PageSide::Left);
+            let b = page_box(&h.state().app).unwrap();
+            page_box_go(&mut h.state_mut().app, &b, 4).unwrap();
+            h.run_steps(4);
+            assert!(!h.state().app.session.doc().unwrap().editing_parents);
+            assert_eq!(current_page(&h.state().app), Some(4));
         }
     }
 }

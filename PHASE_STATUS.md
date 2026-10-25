@@ -1,7 +1,14 @@
 # Pagenor development phases
 
-Current local version: **0.11.0** (P11.21); published desktop preview remains **0.7.0** (P11.13).
+Current local version: **0.12.0** (P11.22); published desktop preview remains **0.7.0** (P11.13).
 0.6.0 and v0.3.0 packages remain intact.
+
+P11.22: local **0.12.0** adapts five queued upstream proposals: Layers inline
+  object renaming, shared page/left-right-master navigation, dedicated Insert Pages,
+  safe master deletion and linked paragraph border/shading controls. Native format 6
+  and external dependency pins stay unchanged. All seven workspace gates pass: 2,907 tests, zero failures, 7 existing skips; twenty WASM packages. 8 synthetic offscreen views are inspected.
+  Native Windows/Linux execution and publication remain pending.
+  [Source pins, safeguards and remaining queue](docs/pagenor/UPSTREAM_ADOPTION_0120.md).
 
 P11.21: local **0.11.0** reviews 186 updated open/closed upstream PR records
   through #1573 and checks 38 candidate/revised scopes: twenty supply adaptations,

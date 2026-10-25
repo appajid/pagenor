@@ -708,47 +708,69 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 });
                 ui.add_space(8.0);
-                if app.session.active().is_some_and(|st| st.editing_parents) {
-                    let label = crate::canvas::current_spread(app)
-                        .and_then(|r| app.session.active()?.doc.spread(r))
-                        .and_then(|sp| sp.parent.as_ref())
-                        .map(|i| format!("{} · Master", i.label()))
-                        .unwrap_or_else(|| "Master Pages".into());
-                    ui.label(egui::RichText::new(label).font(small.clone()));
-                    if ui.small_button("Back to document").clicked() {
-                        let _ = app.run("layout.parents.edit", json!({"on":false}));
+                let editing = app.session.active().is_some_and(|st| st.editing_parents);
+                let n = app.session.active().map_or(1, |st| st.doc.page_count());
+                let cur = crate::canvas::current_page(app).unwrap_or(0);
+                let mut nav = None;
+                ui.add_enabled_ui(!editing, |ui| {
+                    for (icon, page, tip) in [("first", 0, "First Spread"), ("prev", cur.saturating_sub(1), "Previous Spread")] {
+                        if icons::button(ui, icon, 22.0, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                            nav = Some(page);
+                        }
                     }
-                } else {
-                    let n = app.session.active().map(|d| d.doc.page_count()).unwrap_or(1);
-                    let cur = crate::canvas::current_page(app).unwrap_or(0);
-                    if icons::button(ui, "first", 22.0, false, crate::i18n::tr(&app.ui.language, "First Spread")).clicked() {
-                        crate::canvas::go_to_page(app, 0);
-                    }
-                    if icons::button(ui, "prev", 22.0, false, crate::i18n::tr(&app.ui.language, "Previous Spread")).clicked() {
-                        crate::canvas::go_to_page(app, cur.saturating_sub(1));
-                    }
-                    let name = app.session.page_label(cur);
-                    let (fr, fresp) = ui.allocate_exact_size(vec2(80.0, 22.0), Sense::click());
-                    ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                    ui.painter().text(fr.left_center() + vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, &name, small.clone(), t.text);
-                    ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
+                });
+                let pb = crate::canvas::page_box(app);
+                let name = pb.as_ref().map_or("", |b| b.current_name()).to_string();
+                let (fr, fresp) = ui.allocate_exact_size(vec2(if editing { 190.0 } else { 80.0 }, 22.0), Sense::click());
+                ui.painter().rect(fr, 0.0, t.input, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                ui.painter().with_clip_rect(egui::Rect::from_min_max(fr.min, egui::pos2(fr.max.x - 14.0, fr.max.y))).text(
+                    fr.left_center() + vec2(5.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    &name,
+                    small.clone(),
+                    t.text,
+                );
+                ui.painter().text(fr.right_center() - vec2(5.0, 0.0), egui::Align2::RIGHT_CENTER, "▾", small.clone(), t.text);
+                fresp.widget_info(|| {
+                    let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Page");
+                    info.current_text_value = Some(name.clone());
+                    info
+                });
+                let mut picked = None;
+                if let Some(b) = &pb {
                     egui::Popup::menu(&fresp).show(|ui| {
-                        let names: Vec<String> = (0..n).map(|i| app.session.page_label(i)).collect();
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                            for (i, nm) in names.iter().enumerate() {
-                                if ui.button(nm).clicked() {
-                                    crate::canvas::go_to_page(app, i);
+                            for (i, nm) in b.names.iter().enumerate() {
+                                if i == b.pages && i > 0 {
+                                    ui.separator();
+                                }
+                                if ui.selectable_label(i == b.current, nm).clicked() {
+                                    picked = Some(i);
                                     ui.close();
                                 }
                             }
                         });
                     });
-                    if icons::button(ui, "next", 22.0, false, crate::i18n::tr(&app.ui.language, "Next Spread")).clicked() {
-                        crate::canvas::go_to_page(app, (cur + 1).min(n - 1));
+                }
+                if let (Some(b), Some(i)) = (&pb, picked)
+                    && let Err(e) = crate::canvas::page_box_go(app, b, i)
+                {
+                    app.status(e);
+                }
+                ui.add_enabled_ui(!editing, |ui| {
+                    for (icon, page, tip) in
+                        [("next", (cur + 1).min(n.saturating_sub(1)), "Next Spread"), ("last", n.saturating_sub(1), "Last Spread")]
+                    {
+                        if icons::button(ui, icon, 22.0, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                            nav = Some(page);
+                        }
                     }
-                    if icons::button(ui, "last", 22.0, false, crate::i18n::tr(&app.ui.language, "Last Spread")).clicked() {
-                        crate::canvas::go_to_page(app, n - 1);
-                    }
+                });
+                if let Some(page) = nav {
+                    crate::canvas::go_to_page(app, page);
+                }
+                if editing && ui.small_button("Back to document").clicked() {
+                    let _ = app.run("layout.parents.edit", json!({"on":false}));
                 }
                 ui.add_space(12.0);
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
