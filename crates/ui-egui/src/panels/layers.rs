@@ -455,6 +455,10 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
                 cmds.push(("app.layerOptionsDialog", json!({"id": l.id.0})));
                 ui.close();
             }
+            if ui.button("Duplicate Layer").clicked() {
+                cmds.push(("layer.duplicate", json!({"id":l.id.0})));
+                ui.close();
+            }
             ui.separator();
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&language, "Delete Layer"))).clicked() {
                 cmds.push(("layer.delete", json!({"id": l.id.0})));

@@ -128,6 +128,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     // The Page tool with no objects selected: the page's own settings, as InDesign's.
     if info.is_none() && app.session.tool_id() == "page" {
+        if app.session.active().is_some_and(|st| st.editing_parents) {
+            master_page_sections(app, ui);
+            return;
+        }
+
         let page = app
             .ui
             .page_edit
@@ -1997,6 +2002,12 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Composer"));
         let single = p["composer"].as_str() == Some("singleLine");
+        for (id, label) in [("worldReady", "World-Ready Paragraph"), ("worldReadySingleLine", "World-Ready Single-line")] {
+            if ui.selectable_label(p["composer"].as_str() == Some(id), label).clicked() {
+                let _ = app.run("type.para", json!({"attrs":{"composer":id}}));
+            }
+        }
+
         if ui.selectable_label(!single, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Paragraph"))).clicked() {
             let _ = app.run("type.para", json!({"attrs": {"composer": "paragraph"}}));
         }
@@ -2411,24 +2422,101 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let Some(st) = app.session.active() else { return };
     let t = Tokens::get(ui.ctx());
-    // The list checks files on disk: refresh it at most twice a second.
-    let key = egui::Id::new("links_panel");
-    let now = ui.input(|i| i.time);
+    // Network paths may take an operating-system timeout. Native builds check them on one bounded
+    // worker and keep drawing the last completed result; web builds have no filesystem access.
+    #[cfg(not(target_arch = "wasm32"))]
+    let refresh = app.links_worker.rows(
+        ui.ctx(),
+        crate::links_worker::Snapshot {
+            key: crate::links_worker::Key::new(st.uid, &st.doc, st.path.as_deref()),
+            doc: std::sync::Arc::clone(&st.doc),
+            cache: std::sync::Arc::clone(&app.session.cache),
+            document: st.path.as_ref().map(std::path::PathBuf::from),
+        },
+    );
     let rev = (st.uid, st.revision);
-    let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
-    let rows = match cached {
-        Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
-        _ => {
-            let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-            ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
-            rows
+    let sel_key = egui::Id::new(("links_panel_sel", st.uid));
+    #[cfg(not(target_arch = "wasm32"))]
+    let rows = if !refresh.current {
+        // Update edited/embedded metadata immediately, while the worker checks external files.
+        // This bounded preview is memoized by allocation identity and never reads linked files.
+        let key = egui::Id::new(("links_current_metadata", st.uid));
+        type Preview = (std::sync::Weak<pagenor_doc::Document>, std::sync::Arc<Vec<Value>>);
+        let cached: Option<Preview> = ui.data(|data| data.get_temp(key));
+        match cached {
+            Some((owner, rows)) if std::sync::Weak::ptr_eq(&owner, &std::sync::Arc::downgrade(&st.doc)) => rows,
+            _ => {
+                let used = st.doc.used_assets();
+                let rows: std::sync::Arc<Vec<Value>> = std::sync::Arc::new(
+                    st.doc
+                        .assets
+                        .values()
+                        .filter(|asset| used.contains(&asset.id))
+                        .map(|asset| {
+                            let mut row = refresh
+                                .values
+                                .iter()
+                                .find(|row| row["asset"].as_u64() == Some(asset.id.0))
+                                .cloned()
+                                .unwrap_or(json!({"asset":asset.id.0,"uses":[]}));
+                            row["name"] = json!(asset.name);
+                            row["path"] = json!(asset.link);
+                            row["pixels"] = json!(asset.pixels);
+                            row["status"] = json!(if asset.link.is_some() { "checking" } else { "embedded" });
+                            row["colorMode"] = json!(pagenor_images::color_mode(&asset.data));
+                            row
+                        })
+                        .collect(),
+                );
+                ui.data_mut(|data| data.insert_temp(key, (std::sync::Arc::downgrade(&st.doc), rows.clone())));
+                rows
+            }
         }
+    } else {
+        refresh.values.clone()
     };
+    #[cfg(target_arch = "wasm32")]
+    let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Keep the rows stationary while a background check starts or finishes.
+        let status = if refresh.checking {
+            "Checking links…"
+        } else if refresh.unavailable {
+            "Link status is unavailable."
+        } else {
+            " "
+        };
+        ui.add_sized([ui.available_width(), 16.0], egui::Label::new(egui::RichText::new(status).color(t.text_dim).size(11.0)));
+    }
     if rows.is_empty() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
         return;
     }
-    let sel_key = egui::Id::new("links_panel_sel");
+    let missing = rows.iter().filter(|r| r["status"] == "missing").count();
+    let modified = rows.iter().filter(|r| r["status"] == "modified").count();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(format!("{} files · {modified} modified · {missing} missing", rows.len())).size(11.0).color(t.text_dim));
+        if ui.small_button("Update All Links").clicked() {
+            let _ = app.run("links.update", json!({}));
+        }
+    });
+    let search_key = egui::Id::new(("links_search", rev.0));
+    let mut search: String = ui.data(|d| d.get_temp(search_key)).unwrap_or_default();
+    ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search links").desired_width(ui.available_width()));
+    ui.data_mut(|d| d.insert_temp(search_key, search.clone()));
+    let query = search.to_lowercase();
+    let filtered: Vec<_> = rows
+        .iter()
+        .filter(|r| {
+            query.is_empty()
+                || r["name"].as_str().unwrap_or("").to_lowercase().contains(&query)
+                || r["path"].as_str().unwrap_or("").to_lowercase().contains(&query)
+        })
+        .collect();
+    if filtered.is_empty() {
+        ui.label("No links match.");
+    }
     let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
     let name_width = (ui.available_width() - 200.0).clamp(60.0, 160.0);
     egui::Grid::new("links_grid").num_columns(4).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
@@ -2437,7 +2525,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Color Mode")).color(t.text_dim).size(11.0));
         ui.end_row();
-        for r in &rows {
+        for r in filtered {
             let aid = r["asset"].as_u64().unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
             let response = ui
@@ -2465,6 +2553,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
                 "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
                 "embedded" => ("Embedded", t.text_dim),
+                "checking" => ("Checking…", t.text_dim),
                 _ => ("OK", t.text_dim),
             };
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, txt)).color(col).size(11.0));
@@ -2496,12 +2585,25 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let cached: Option<(((u64, u64), u64), Value)> = ui.data(|d| d.get_temp(key));
         let info = match cached {
             Some((id, value)) if id == identity => Some(value),
-            _ => app.session.execute("links.info", &json!({"asset":c})).ok().inspect(|value| {
+            _ => app.session.execute("links.details", &json!({"asset":c})).ok().inspect(|value| {
                 ui.data_mut(|d| d.insert_temp(key, (identity, value.clone())));
             }),
         };
         if let Some(info) = info {
             ui.add_space(6.0);
+            egui::CollapsingHeader::new("File Information").default_open(true).show(ui, |ui| {
+                ui.label(format!("Type: {}", info["type"].as_str().unwrap_or("Unknown")));
+                if let Some(bytes) = info["bytes"].as_u64() {
+                    ui.label(format!("Stored size: {:.1} KiB", bytes as f64 / 1024.0));
+                }
+                if let Some(px) = info["pixels"].as_array().filter(|p| p.len() == 2) {
+                    ui.label(format!("Pixels: {} × {}", px.first().unwrap_or(&Value::Null), px.get(1).unwrap_or(&Value::Null)));
+                }
+                if let Some(crop) = info["pdfCrop"].as_str() {
+                    ui.label(format!("PDF crop: {crop}"));
+                }
+            });
+
             crate::rtl::label(
                 ui,
                 format!("{}: {}", crate::i18n::tr(&app.ui.language, "Color Mode"), info["colorMode"].as_str().unwrap_or("Unknown")),
@@ -2528,10 +2630,15 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Choose a link.")).color(t.text_dim).size(11.0));
             return;
         };
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-        {
-            let _ = app.run("links.relink", json!({"asset": aid, "path": path}));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
+            let _ = app
+                .ask_open("relink", crate::file_dialogs::Bound::Document, move |app, path| app.run("links.relink", json!({"asset":aid,"path":path})));
+        }
+        if ui.small_button("Copy Path").clicked() {
+            let _ = app.run("links.copyPath", json!({"asset":aid}));
+        }
+        if ui.add_enabled(app.services.reveal.is_some(), egui::Button::new("Show in Folder")).clicked() {
+            let _ = app.run("links.reveal", json!({"asset":aid}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", json!({"asset": aid}));
@@ -2551,13 +2658,13 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
             })
             .clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-            && let Some(dir) = std::path::Path::new(&path).parent()
         {
-            let r = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()}));
-            if let Ok(v) = r {
-                app.status(format!("Relinked {}", v["relinked"]));
-            }
+            let _ = app.ask_open("relink", crate::file_dialogs::Bound::Document, |app, path| {
+                let dir = std::path::Path::new(&path).parent().ok_or("No parent folder")?;
+                let result = app.run("links.relinkFolder", json!({"dir":dir.to_string_lossy()}))?;
+                app.status(format!("Relinked {}", result["relinked"]));
+                Ok(result)
+            });
         }
     });
 }
@@ -3553,5 +3660,68 @@ mod color_picker_tests {
         h.get_by_label("Distribute vertical space").click();
         h.run_steps(3);
         assert_eq!(top(h.state(), ids[1]) - top(h.state(), ids[0]), 30.0, "a 10 pt gap between the two");
+    }
+}
+
+/// Master page controls pin the stable master/page IDs rather than an absolute document-page number.
+fn master_page_sections(app: &mut DesignApp, ui: &mut Ui) {
+    let Some((page_id, _)) = crate::canvas::viewed_page(app) else { return };
+    let Some(st) = app.session.active() else { return };
+    let doc = st.doc.clone();
+    let Some((si, pi)) = doc.parents.iter().enumerate().find_map(|(si, sp)| sp.pages.iter().position(|p| p.id == page_id).map(|pi| (si, pi))) else {
+        return;
+    };
+    let Some(spread) = doc.parents.get(si) else { return };
+    let Some(page) = spread.pages.get(pi) else { return };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Master Page").strong());
+        if ui.button("Back").clicked() {
+            app.select_tool("selection");
+        }
+    });
+    ui.separator();
+    let names: Vec<_> = spread
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(index, page)| match page.side {
+            pagenor_doc::PageSide::Left => "Left Master".to_string(),
+            pagenor_doc::PageSide::Right => "Right Master".to_string(),
+            _ => format!("Master Page {}", index + 1),
+        })
+        .collect();
+    let mut chosen = pi;
+    egui::ComboBox::from_id_salt("master_page_side").selected_text(names.get(pi).map_or("", String::as_str)).show_ui(ui, |ui| {
+        for (index, name) in names.iter().enumerate() {
+            ui.selectable_value(&mut chosen, index, name);
+        }
+    });
+    if chosen != pi {
+        if let Err(error) = crate::canvas::go_to_master(app, si, Some(chosen)) {
+            app.status(error);
+        }
+        return;
+    }
+    section(ui, "Page Size", true);
+    let mut size = None;
+    for (key, label, value, unit) in
+        [("width", "W:", page.width, doc.settings.horizontal_units), ("height", "H:", page.height, doc.settings.vertical_units)]
+    {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            if let Some(value) =
+                NumField::measure(&format!("master_page_{key}"), Some(value), unit).width(100.0).spinner().range(1.0, 15552.0).show(ui)
+            {
+                size = Some((key, value));
+            }
+        });
+    }
+    if let Some((key, value)) = size {
+        let mut params = json!({"parent":spread.id.0,"page":pi});
+        params[key] = json!(value);
+        let _ = app.run("layout.parentPageSize", params);
+    }
+    if ui.button("Margins and Columns…").clicked() {
+        let _ = app.run("app.masterSettings", json!({"index":si}));
     }
 }

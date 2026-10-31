@@ -271,7 +271,17 @@ impl Tokens {
 
 /// Install built-in UI faces immediately, then installed fallbacks once their worker is ready.
 /// The returned generation changes when activated fonts are refreshed.
+/// Install one observer per egui context; loading itself stays on the existing font worker.
 pub fn install_fonts(ctx: &egui::Context, lang: &str) -> Option<u64> {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("ui-font-watch-language"), lang.to_string()));
+    let installed = ctx.data(|data| data.get_temp::<bool>(egui::Id::new("ui-font-watch-installed"))).unwrap_or(false);
+    if !installed {
+        ctx.add_plugin(UiFontWatch::default());
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("ui-font-watch-installed"), true));
+    }
+    set_ui_fonts(ctx, lang)
+}
+fn set_ui_fonts(ctx: &egui::Context, lang: &str) -> Option<u64> {
     let mut fonts = font_definitions(pagenor_fonts::CRAFT_FONTS, lang);
     let snapshot = system_ui_fonts(lang);
     if let Some((_, system)) = &snapshot {
@@ -290,15 +300,28 @@ struct SystemFont {
 impl SystemFont {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn from_face(face: &pagenor_fonts::FontFace) -> Self {
-        let data = FontData { index: face.index(), tweak: baseline_tweak(face.data(), face.index()), ..FontData::from_owned(face.data().to_vec()) };
-        Self { name: format!("system-ui-{}", face.id()), data: Arc::new(data) }
+        static DATA: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, std::sync::Weak<FontData>>>> = std::sync::OnceLock::new();
+        let mut cached = DATA.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        cached.retain(|_, data| data.strong_count() > 0);
+        let id = u64::from(face.id());
+        let data = cached.get(&id).and_then(std::sync::Weak::upgrade).unwrap_or_else(|| {
+            let data = Arc::new(FontData {
+                index: face.index(),
+                tweak: baseline_tweak(face.data(), face.index()),
+                ..FontData::from_owned(face.data().to_vec())
+            });
+            cached.insert(id, Arc::downgrade(&data));
+            data
+        });
+        Self { name: format!("system-ui-{}", face.id()), data }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct UiFontCache {
-    ready: Option<(u64, String, Vec<SystemFont>)>,
+    ready: Vec<(u64, String, u64, u64, Vec<SystemFont>)>,
+    next_token: u64,
     running: bool,
 }
 
@@ -324,22 +347,32 @@ fn system_ui_fonts(lang: &str) -> Option<(u64, Vec<SystemFont>)> {
             return None;
         }
         let generation = db.scan_generation();
+        let (needed_revision, needed) = {
+            let needed = ui_needed_scripts().lock().unwrap_or_else(|e| e.into_inner());
+            (needed.0, needed.1.clone())
+        };
         let mut cache = ui_font_cache().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((ready_generation, ready_lang, faces)) = &cache.ready
-            && *ready_generation == generation
-            && ready_lang == lang
+        let lang = if lang.is_empty() { "en" } else { lang };
+        if let Some((_, _, _, token, faces)) =
+            cache.ready.iter().find(|(g, language, needed, _, _)| *g == generation && language == lang && *needed == needed_revision)
         {
-            return Some((generation, faces.clone()));
+            return Some((*token, faces.clone()));
         }
         if !cache.running {
             cache.running = true;
             let lang = lang.to_owned();
             if let Err(e) = std::thread::Builder::new().name("ui-fonts".into()).spawn(move || {
-                let faces = installed_ui_fonts(db, pagenor_fonts::CRAFT_FONTS, &lang);
+                let faces = installed_ui_fonts_needed(db, pagenor_fonts::CRAFT_FONTS, &lang, Some(&needed));
                 let mut cache = ui_font_cache().lock().unwrap_or_else(|e| e.into_inner());
                 // A later catalogue update will cause another pass; never label stale faces
                 // with a newer generation.
-                cache.ready = Some((generation, lang, faces));
+                cache.next_token = cache.next_token.wrapping_add(1);
+                cache.ready.retain(|(g, _, needed, _, _)| *g == generation && *needed == needed_revision);
+                if cache.ready.len() >= 16 {
+                    cache.ready.remove(0);
+                }
+                let token = cache.next_token;
+                cache.ready.push((generation, lang, needed_revision, token, faces));
                 cache.running = false;
             }) {
                 cache.running = false;
@@ -357,7 +390,6 @@ pub fn system_font_generation(lang: &str) -> Option<u64> {
 
 // Installed families for scripts absent from the optional bundled fonts. Check a letter and
 // dependent vowel together for Indic scripts; an ASCII/legacy font of the same name is skipped.
-#[cfg(any(test, not(target_arch = "wasm32")))]
 const SYSTEM_UI_FONTS: &[(&str, &str, &[&str])] = &[
     ("Taml", "தி", &["Tamil Sangam MN", "Tamil MN", "Nirmala UI", "Latha", "Noto Sans Tamil", "Noto Sans Tamil UI", "Lohit Tamil"]),
     ("Deva", "कि", &["Kohinoor Devanagari", "Devanagari Sangam MN", "Nirmala UI", "Mangal", "Noto Sans Devanagari", "Lohit Devanagari"]),
@@ -380,11 +412,21 @@ const SYSTEM_UI_FONTS: &[(&str, &str, &[&str])] = &[
 ];
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 fn installed_ui_fonts(db: &pagenor_fonts::FontDb, craft: &[pagenor_fonts::CraftFont], lang: &str) -> Vec<SystemFont> {
+    installed_ui_fonts_needed(db, craft, lang, None)
+}
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn installed_ui_fonts_needed(
+    db: &pagenor_fonts::FontDb,
+    craft: &[pagenor_fonts::CraftFont],
+    lang: &str,
+    needed: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<SystemFont> {
     let mut faces = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // Preserve the existing local-build CJK fallback policy.
-    if craft.is_empty() {
+    if craft.is_empty() && needed.is_none_or(|scripts| ["Hani", "Hira", "Kana", "Hang"].iter().any(|script| scripts.contains(*script))) {
         for c in ['中', 'あ', '한'] {
             if let Some(face) = db.fallback_for(c, u32::MAX, Some(lang))
                 && seen.insert(face.id())
@@ -394,6 +436,9 @@ fn installed_ui_fonts(db: &pagenor_fonts::FontDb, craft: &[pagenor_fonts::CraftF
         }
     }
     for (script, sample, families) in SYSTEM_UI_FONTS {
+        if needed.is_some_and(|scripts| !scripts.contains(*script)) {
+            continue;
+        }
         if craft.iter().any(|f| f.scripts.contains(script)) {
             continue;
         }
@@ -687,5 +732,91 @@ mod installed_ui_font_tests {
         assert!((af + 0.5 * (hp - hf) + tweak.y_offset_factor - ap).abs() < 1e-4);
         assert_eq!(baseline_tweak(ui, 0).y_offset_factor, 0.0);
         assert_eq!(baseline_tweak(b"broken", 0).y_offset_factor, 0.0);
+    }
+}
+
+/// Script demand is a process-local union of painted interface text, not document font selection.
+fn ui_needed_scripts() -> &'static std::sync::Mutex<(u64, std::collections::BTreeSet<String>)> {
+    static NEEDED: std::sync::OnceLock<std::sync::Mutex<(u64, std::collections::BTreeSet<String>)>> = std::sync::OnceLock::new();
+    NEEDED.get_or_init(Default::default)
+}
+#[derive(Default)]
+struct UiFontWatch {
+    token: Option<u64>,
+}
+impl egui::Plugin for UiFontWatch {
+    fn debug_name(&self) -> &'static str {
+        "Pagenor interface font demand"
+    }
+    fn output_hook(&mut self, ctx: &egui::Context, output: &mut egui::FullOutput) {
+        use unicode_script::UnicodeScript;
+        fn observe(shape: &egui::epaint::Shape, scripts: &mut std::collections::BTreeSet<String>, depth: usize, budget: &mut usize) {
+            if depth > 32 || *budget == 0 {
+                return;
+            }
+            match shape {
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        observe(shape, scripts, depth + 1, budget);
+                    }
+                }
+                egui::epaint::Shape::Text(text) => {
+                    for c in text.galley.job.text.chars().take(*budget) {
+                        *budget = budget.saturating_sub(1);
+                        if c.is_ascii() {
+                            continue;
+                        }
+                        let script = c.script().short_name();
+                        if SYSTEM_UI_FONTS.iter().any(|(known, ..)| *known == script) || matches!(script, "Hani" | "Hira" | "Kana" | "Hang") {
+                            scripts.insert(script.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut scripts = std::collections::BTreeSet::new();
+        let mut budget = 16_384;
+        for shape in &output.shapes {
+            observe(&shape.shape, &mut scripts, 0, &mut budget);
+        }
+        let changed = {
+            let mut needed = ui_needed_scripts().lock().unwrap_or_else(|e| e.into_inner());
+            let before = needed.1.len();
+            needed.1.extend(scripts);
+            if needed.1.len() != before {
+                needed.0 = needed.0.wrapping_add(1);
+                true
+            } else {
+                false
+            }
+        };
+        let lang: String = ctx.data(|data| data.get_temp(egui::Id::new("ui-font-watch-language"))).unwrap_or_default();
+        if let Some(token) = system_font_generation(&lang) {
+            if self.token != Some(token) {
+                self.token = set_ui_fonts(ctx, &lang);
+                ctx.request_repaint();
+            }
+        } else {
+            #[cfg(not(test))]
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        if changed {
+            ctx.request_repaint();
+        }
+    }
+}
+
+#[cfg(test)]
+mod demand_review31_tests {
+    use super::*;
+    #[test]
+    fn interface_fonts_are_only_read_when_their_script_is_needed() {
+        let db = pagenor_fonts::FontDb::with_font_dirs(Vec::new());
+        db.add_font(pagenor_fonts::testing::font_with("Nirmala UI", &['క', 'ి']).unwrap());
+        let needed = std::collections::BTreeSet::new();
+        assert!(installed_ui_fonts_needed(&db, &[], "en", Some(&needed)).is_empty());
+        let needed = std::collections::BTreeSet::from(["Telu".to_string()]);
+        assert_eq!(installed_ui_fonts_needed(&db, &[], "en", Some(&needed)).len(), 1);
     }
 }

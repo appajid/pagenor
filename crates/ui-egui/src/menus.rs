@@ -5,6 +5,7 @@ pub(crate) const SETTINGS_SHORTCUT: &str = if cfg!(target_os = "macos") { "Cmd+,
 #[cfg(test)]
 pub(crate) const EDGES_SHORTCUT: &str = if cfg!(target_os = "macos") { "Ctrl+Cmd+H" } else { "Cmd+H" };
 
+use crate::file_dialogs::{Bound, with_path};
 use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode};
@@ -17,6 +18,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
         "File",
         &[
             "ui:app.newDocumentDialog",
+            "ui:app.newCover",
             "ui:app.openDialog",
             ">Open Recent",
             "<",
@@ -29,10 +31,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
+            "ui:app.contactSheet",
             "-",
+            ">Export",
             "ui:app.exportPdf",
-            "ui:app.packageDialog",
-            "ui:app.printBooklet",
             "ui:app.exportPng",
             "ui:app.exportIdml",
             "ui:app.exportEpub",
@@ -42,9 +44,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.exportPptx",
             "ui:app.exportXml",
             "ui:app.exportText",
-            ">Export",
             "cmd:snippet.export",
             "<",
+            "ui:app.packageDialog",
+            "ui:app.printBooklet",
+            "ui:app.resizeCover",
             "-",
             "cmd:layout.documentSetup",
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
@@ -136,9 +140,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:view.nextSpread",
             "ui:view.previousSpread",
             "ui:view.goToPage",
+            "ui:view.goBack",
+            "ui:view.goForward",
             "-",
             "cmd:layout.section",
-            "cmd:toc.generate",
+            "ui:app.tocDialog",
             "cmd:toc.update",
             ">Index",
             "cmd:index.addReference",
@@ -703,22 +709,17 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.openRecentDocument" => app.open_recent_document(p),
         "app.placeDialog" => app.pick_and_open("place"),
         "app.placeWithOptions" => {
-            // Word/RTF Import Options: style mapping and conflicts before the text lands.
-            let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
-            let l = path.to_lowercase();
-            if !(l.ends_with(".docx") || l.ends_with(".rtf") || l.ends_with(".md") || l.ends_with(".markdown")) {
-                return Some(app.open_file("file.place", json!({"path": path})));
-            }
-            let info = match app.run("place.styles", json!({"path": path})) {
-                Ok(v) => v,
-                Err(e) => return Some(Err(e)),
-            };
-            app.ui.dialog = Some(crate::dialogs::Dialog::new(
-                "importOptions",
-                json!({"path": path, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {}}),
-            ));
-            Ok(Value::Null)
+            app.ask_open("place", Bound::Document, |app, path| {
+                let l = path.to_ascii_lowercase();
+                if !(l.ends_with(".docx") || l.ends_with(".rtf") || l.ends_with(".md") || l.ends_with(".markdown")) {
+                    return app.open_file("file.place", json!({"path":path}));
+                }
+                let info = app.run("place.styles", json!({"path":path}))?;
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("importOptions", json!({"path":path, "styles":info["paragraph"], "charStyles":info["character"], "conflicts":info["conflicts"], "styleConflicts":"useExisting", "removeStyles":false,"map":{}})));
+                Ok(Value::Null)
+            })
         }
+
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
@@ -727,18 +728,12 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => {
-            let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
-            if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                return Some(app.run("file.saveAs", json!({"path": path})));
-            }
-            Ok(Value::Null)
+            let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).ok_or("no document");
+            match name { Ok(name) => app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveAs", json!({"path":path}))), Err(e) => Err(e.into()) }
         }
         "app.saveCopyDialog" => {
-            let name = app.session.active().map(|d| format!("{} copy.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
-            if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                return Some(app.run("file.saveACopy", json!({"path": path})));
-            }
-            Ok(Value::Null)
+            let name = app.session.active().map(|d| format!("{} copy.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).ok_or("no document");
+            match name { Ok(name) => app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path":path}))), Err(e) => Err(e.into()) }
         }
         "app.exportPng" => export_png(app, p),
         "app.exportIdml" => export_idml(app, p),
@@ -819,20 +814,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
         "app.packageDialog" => {
             let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
-            match app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                Some(dir) => {
-                    let r = app.run("file.package", json!({"dir": dir}));
-                    if let Ok(v) = &r {
-                        app.status(format!(
-                            "Packaged {} files into {}",
-                            v["files"].as_array().map_or(0, |f| f.len()),
-                            v["dir"].as_str().unwrap_or("")
-                        ));
-                    }
-                    r
-                }
-                None => Ok(Value::Null),
-            }
+            app.ask_save(&name, Bound::Document, |app, dir| {
+                let result = app.run("file.package", json!({"dir":dir}))?;
+                app.status(format!("Packaged {} files into {}", result["files"].as_array().map_or(0, Vec::len), result["dir"].as_str().unwrap_or("")));
+                Ok(result)
+            })
         }
         "app.language" => {
             let v = p.get("lang").and_then(Value::as_str).unwrap_or("");
@@ -850,24 +836,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.flattener = v.to_string();
             Ok(json!(v))
         }
-        "app.graphicCell" => {
-            let Some(pick) = app.services.pick_open.as_mut() else { return Some(Err("needs a file picker".into())) };
-            match pick("place") {
-                Some(path) => app.run("table.placeGraphic", json!({"path": path})),
-                None => Ok(Value::Null),
-            }
-        }
+        "app.graphicCell" => app.ask_open("place", Bound::Document, |app, path| app.run("table.placeGraphic", json!({"path":path}))),
         "effects.dialog" => {
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
         "app.loadSwatches" => {
-            if let Some(pick) = app.services.pick_open.as_mut() {
-                return Some(match pick("swatches") {
-                    Some(path) => app.run("swatch.load", json!({"path": path})),
-                    None => Ok(Value::Null),
-                });
-            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if app.services.open_async.is_none() { return Some(app.ask_open("swatches", Bound::Document, |app, path| app.run("swatch.load", json!({"path":path})))); }
             let request = app.import_request("swatches");
             if let Some(open) = app.services.open_async.as_mut() {
                 open(request);
@@ -875,11 +851,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(Value::Null)
         }
         "app.saveSwatches" => {
-            let path = match p.get("path").and_then(Value::as_str) {
-                Some(s) => Some(s.to_string()),
-                None => app.services.pick_save.as_mut().and_then(|f| f("Swatches.ase")),
+            let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_owned) else {
+                let params = p.clone();
+                return Some(app.ask_save("Swatches.ase", Bound::Document, move |app, path| app.run("app.saveSwatches", with_path(&params, "path", path))));
             };
-            let Some(path) = path else { return Some(Ok(Value::Null)) };
             let r = match app.run("swatch.save", json!({})) {
                 Ok(r) => r,
                 Err(e) => return Some(Err(e)),
@@ -1314,6 +1289,68 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             crate::canvas::step_spread(app, if id == "view.nextSpread" { 1 } else { -1 });
             Ok(Value::Null)
         }
+        "links.copyPath" => {
+            (|| {
+                let st=app.session.active().ok_or("Open a document first")?;
+                let id=p.get("asset").and_then(Value::as_u64).ok_or("Choose a link")?;
+                let path=st.doc.assets.get(&pagenor_doc::AssetId(id)).and_then(|a|a.link.clone()).ok_or("The graphic is embedded and has no linked file")?;
+                app.pending_clipboard_text=Some(path.clone());
+                Ok(json!({"path":path}))
+            })()
+        }
+        "links.reveal" => {
+            (|| {
+                let st = app.session.active().ok_or("Open a document first.")?;
+                let id = p.get("asset").and_then(Value::as_u64).ok_or("Choose a link.")?;
+                let asset = st.doc.assets.get(&pagenor_doc::AssetId(id)).ok_or("No such graphic.")?;
+                let path = asset.link.as_ref().ok_or("The graphic is embedded and has no linked file.")?;
+                let mut path = std::path::PathBuf::from(path);
+                if path.is_relative() {
+                    let folder = st
+                        .path
+                        .as_deref()
+                        .and_then(|path| std::path::Path::new(path).parent())
+                        .ok_or("Save the document before revealing a relative link.")?;
+                    path = folder.join(path);
+                }
+                let path = path.to_string_lossy().to_string();
+                let reveal = app.services.reveal.as_mut().ok_or("Show in Folder isn't available in this build.")?;
+                reveal(&path)?;
+                Ok(json!({"path":path}))
+            })()
+        }
+        "app.tocDialog" => {
+            match app.session.active() {
+                None => Err("no document".into()),
+                Some(st) => {
+                    let definition=st.doc.toc.clone();
+                    let fields=json!({"documentUid":st.uid,"title":definition.as_ref().map(|t|t.title.as_str()).unwrap_or("Contents"),"scope":definition.as_ref().map(|t|t.scope).unwrap_or_default(),"pageNumbers":definition.as_ref().is_none_or(|t|t.page_numbers),"entries":definition.as_ref().map(|t|t.entries.clone()).unwrap_or_default(),"page":"1"});
+                    let mut dialog=crate::dialogs::Dialog::new("toc",fields);
+                    let styles=app.run("toc.styles",json!({"scope":dialog.s("scope")}));
+                    match styles {Ok(styles)=>{dialog.fields.insert("styles".into(),styles);}, Err(error)=>{dialog.fields.insert("error".into(),json!(error));}}
+                    app.ui.dialog=Some(dialog);Ok(Value::Null)
+                }
+            }
+        }
+        "app.contactSheet" => {
+            if app.session.loaded.is_none() {Err("Load images with File → Place first".into())}
+            else {
+                app.ui.dialog=Some(crate::dialogs::Dialog::new("contactSheet",json!({"documentUid":app.session.active().map(|d|d.uid),"columns":"3","rows":"4","gutter":"6 pt","margin":"36 pt"})));
+                Ok(Value::Null)
+            }
+        }
+        "app.newCover" | "app.resizeCover" => {
+            let dialog = if id == "app.newCover" { "newCover" } else { "coverResize" };
+            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                dialog,
+                json!({"printer":"other","trimWidth":"6 in","trimHeight":"9 in","pages":"224","spine":"0.5 in","safe":"0.5 in","bleed":"0.125 in","page":"1","oldSpine":"0.5 in","newSpine":"0.5 in","oldPages":"224","newPages":"240"}),
+            ));
+            Ok(Value::Null)
+        }
+        "view.goBack" | "view.goForward" => {
+            crate::canvas::go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
+            Ok(Value::Null)
+        }
         "view.goToPage" => {
             match p.get("page") {
                 Some(Value::Number(n)) => crate::canvas::go_to_page(app, (n.as_u64().unwrap_or(1) as usize).saturating_sub(1)),
@@ -1645,6 +1682,12 @@ fn download_document(app: &mut DesignApp) -> Result<Value, String> {
 }
 
 fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.png", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_png(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let page = crate::control::page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count())?;
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
@@ -1664,7 +1707,7 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}-p{}.png", st.doc.title, page + 1);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1677,12 +1720,18 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 /// File › Export IDML…: ask for a path, export through `file.exportIdml` and write the bytes with
 /// the platform writer (a download on the web).
 fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.idml", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_idml(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}.idml", st.doc.title);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1697,12 +1746,18 @@ fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.{ext}", st.doc.title);
+        let (params, ext, cmd) = (p.clone(), ext.to_owned(), cmd.to_owned());
+        return app.ask_save(&name, Bound::Document, move |app, path| export_bytes(app, &with_path(&params, "path", path), &ext, &cmd));
+    }
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}.{ext}", st.doc.title);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1726,6 +1781,12 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
 pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.pdf", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_pdf(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let name = format!("{}.pdf", st.doc.title);
     let browser = app.services.download.is_some() && app.services.pick_save.is_none();
@@ -1734,7 +1795,7 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
     } else {
         let path = match p.get("path").and_then(Value::as_str) {
             Some(s) => Some(s.to_string()),
-            None => app.services.pick_save.as_mut().and_then(|f| f(&name)),
+            None => Some(name),
         };
         let Some(path) = path else { return Ok(Value::Null) };
         path
@@ -1762,6 +1823,16 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.contactSheet" {
+        return app.session.active().is_some() && app.session.loaded.is_some();
+    }
+    if id == "app.tocDialog" {
+        return enabled(app, "toc.generate");
+    }
+    if id == "app.resizeCover" {
+        return enabled(app, "layout.coverResize");
+    }
+
     if id == "object.textFrameOptions" {
         return !crate::dialogs::text_frame_options_targets(app).is_empty();
     }
@@ -2155,6 +2226,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if matches!(id, "view.goBack" | "view.goForward") {
+        return crate::canvas::can_go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
+    }
     if id == "app.justificationDialog" {
         return enabled(app, "type.para");
     }
@@ -2475,7 +2549,7 @@ const CONTEXT_OBJECT: &[&str] = &[
     "-",
 ];
 /// Added to the object menu when a graphic frame is selected.
-const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting"];
+const CONTEXT_FITTING: &[&str] = &["menu:Object/Fitting"];
 const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
 /// Added to the object menu when a text frame is selected.
 const CONTEXT_TEXT_FRAME: &[&str] = &["-", "cmd:type.fillWithPlaceholder", "cmd:object.textFrameOptions"];
@@ -2529,8 +2603,8 @@ fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
                 (items().any(|it| matches!(it.content, pagenor_doc::Content::Graphic(_))), items().any(|it| it.is_text_frame()))
             });
             let mut v = CONTEXT_OBJECT.to_vec();
-            if graphic {
-                v.extend(CONTEXT_GRAPHIC_FRAME);
+            if graphic || text {
+                v.extend(CONTEXT_FITTING);
             }
             v.extend(CONTEXT_OBJECT_TAIL);
             if text {
@@ -4486,7 +4560,7 @@ mod tests {
     #[test]
     fn context_menus_hold_commands_and_menu_bar_submenus() {
         let tree = menu_tree();
-        for entries in [CONTEXT_OBJECT, CONTEXT_GRAPHIC_FRAME, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT_FRAME, CONTEXT_TEXT, CONTEXT_CANVAS] {
+        for entries in [CONTEXT_OBJECT, CONTEXT_FITTING, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT_FRAME, CONTEXT_TEXT, CONTEXT_CANVAS] {
             for path in entries.iter().filter_map(|e| e.strip_prefix("menu:")) {
                 assert!(menu_bar_submenu(&tree, path).is_some(), "no menu bar submenu {path}");
             }

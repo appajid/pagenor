@@ -109,16 +109,8 @@ pub fn timestamp(t: SystemTime) -> String {
 /// Days since 1970-01-01 to a proleptic Gregorian (year, month, day) (Howard Hinnant's
 /// `civil_from_days`, unsigned because `timestamp` clamps at the epoch).
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + u64::from(m <= 2);
-    (y, m, d)
+    let (y, m, d) = pagenor_engine::doc::time::civil_from_days(i64::try_from(days).unwrap_or(i64::MAX));
+    (y.max(0) as u64, u64::from(m), u64::from(d))
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {

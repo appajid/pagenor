@@ -1,5 +1,25 @@
 # Pagenor changelog
 
+## 0.13.0 — local milestone, 2026-10-31
+
+- Adapt 38 reviewed proposal scopes, including six older queued editor items.
+- Add formatting Find/Change and bounded GREP, background link checks and richer
+  link details, Copy Path, Show in Folder and warning-frame navigation.
+- Add document-bound asynchronous native file dialogs and safe deferred Save/Quit.
+- Add master-side resizing, page history, World-Ready composer identities,
+  Duplicate Layer and independent nested copy identifiers.
+- Improve existing-page Autoflow, spanning tables, footnotes and composition caching.
+- Add native book TOCs, stale-export checks, chapter reordering, book covers and
+  spine resizing; add queued image placement, grids and contact sheets.
+- Bound raster decoding/proxy/thumbnail caches, release encoded bytes after closing
+  documents, load UI fallback fonts on demand and avoid unchanged recovery writes.
+- Advance native capability to 7 while retaining older document reading, `.pgnr`,
+  Pagenor icons, Indic input and scoped/lazy fonts.
+- All seven local gates pass: 3,053 tests, zero failures, seven existing skips;
+  twenty WASM packages and twenty-two inspected offscreen views. Native
+  Windows/Linux execution and interactive OS dialog validation remain pending.
+- [Source pins, adaptation notes and limits](docs/upstream-adoption-20261031.md).
+
 Version 0.6.0 is a desktop development preview with native Windows/Linux packages
 and a universal Mac build. GitHub release notes record the available artifacts,
 completed checks and remaining interactive/signing validation.

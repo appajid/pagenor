@@ -326,6 +326,8 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
             let d = if id == "textFrameOptions" {
                 crate::dialogs::text_frame_options_dialog(app, fields)
+            } else if id == "frameSize" {
+                crate::dialogs::frame_size_dialog(app, fields)
             } else {
                 let mut dialog = crate::dialogs::Dialog::new(id, fields);
                 dialog.unit = app.session.active().map_or(pagenor_geom::Unit::Picas, |s| s.doc.settings.horizontal_units);

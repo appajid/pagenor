@@ -33,14 +33,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Library…"))).clicked() {
-            let path = app.services.pick_save.as_mut().and_then(|f| f("Library.plib"));
-            let _ = app.run("library.new", json!({"path": path}));
+            let _ = app.ask_save("Library.plib", crate::file_dialogs::Bound::App, |app, path| app.run("library.new", json!({"path":path})));
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("library"))
-            && let Err(e) = app.run("library.open", json!({"path": path}))
-        {
-            app.status(format!("Library: {e}"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked() {
+            let _ = app.ask_open("library", crate::file_dialogs::Bound::App, |app, path| app.run("library.open", json!({"path": path})));
         }
     });
     let Ok(items) = app.session.execute("library.list", &json!({})) else {
@@ -89,17 +85,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked()
-            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.pbook"))
-            && let Err(e) = app.run("book.new", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked() {
+            let _ = app.ask_save("Book.pbook", crate::file_dialogs::Bound::App, |app, path| app.run("book.new", json!({"path": path})));
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("book"))
-            && let Err(e) = app.run("book.open", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked() {
+            let _ = app.ask_open("book", crate::file_dialogs::Bound::App, |app, path| app.run("book.open", json!({"path": path})));
         }
     });
     let Ok(info) = app.session.execute("book.list", &json!({})) else {
@@ -133,6 +123,16 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             crate::rtl::label(ui, egui::RichText::new(format!("{first}–{}", first + pages.saturating_sub(1))).size(10.5).color(t.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_enabled(i > 0, egui::Button::new("↑")).on_hover_text("Move chapter up").clicked() {
+                    let _ = app.run("book.move", json!({"from":i,"to":i.saturating_sub(1)}));
+                }
+                if ui
+                    .add_enabled(i + 1 < info["documents"].as_array().map_or(0, Vec::len), egui::Button::new("↓"))
+                    .on_hover_text("Move chapter down")
+                    .clicked()
+                {
+                    let _ = app.run("book.move", json!({"from":i,"to":i+1}));
+                }
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Remove"))).clicked() {
                     let _ = app.run("book.remove", json!({"index": i}));
                 }
@@ -141,23 +141,20 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     ui.separator();
     ui.horizontal_wrapped(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open"))
-            && let Err(e) = app.run("book.add", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked() {
+            let _ = app.ask_open("open", crate::file_dialogs::Bound::App, |app, path| app.run("book.add", json!({"path": path})));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
             let _ = app.run("book.paginate", json!({}));
         }
+        if ui.button("Refresh Table of Contents").clicked() {
+            let _ = app.run("book.refreshToc", json!({}));
+        }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
             let _ = app.run("book.syncStyles", json!({}));
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked()
-            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.pdf"))
-            && let Err(e) = app.run("book.exportPdf", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked() {
+            let _ = app.ask_save("Book.pdf", crate::file_dialogs::Bound::Document, |app, path| app.run("book.exportPdf", json!({"path": path})));
         }
     });
 }
@@ -193,19 +190,19 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
             sel = app.ui.scripts.len() - 1;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("script"))
-        {
-            #[cfg(not(target_arch = "wasm32"))]
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
-                    app.ui.scripts.push((name, text));
-                    sel = app.ui.scripts.len() - 1;
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked() {
+            let _ = app.ask_open("script", crate::file_dialogs::Bound::App, |app, path| {
+                let bytes = app.services.read.as_mut().ok_or("no reader")?(&path)?;
+                if bytes.len() > 4 * 1024 * 1024 {
+                    return Err("Script exceeds 4 MiB".into());
                 }
-                Err(e) => app.status(format!("Scripts: {e}")),
-            }
+                let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
+                app.ui.scripts.push((name, text));
+                Ok(serde_json::Value::Null)
+            });
         }
+
         if ui
             .add_enabled(!app.ui.scripts.is_empty(), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))))
             .clicked()

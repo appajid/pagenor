@@ -20,9 +20,13 @@ pub mod dock;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
+#[cfg(not(target_arch = "wasm32"))]
+mod links_worker;
 pub mod menus;
 mod new_document;
 mod object_control;
+mod page_history;
+mod page_thumbnails;
 mod panel_docking;
 pub mod panels;
 mod prefs;
@@ -84,6 +88,8 @@ pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
 /// Platform services injected by the host (desktop or web).
 #[derive(Default)]
 pub struct Services {
+    /// Select a linked source in the native file manager.
+    pub reveal: Option<Box<dyn FnMut(&str) -> Result<(), String>>>,
     /// Optional desktop appearance reader (Linux portal). Native hosts otherwise use egui input.
     pub system_theme: Option<SystemThemeFn>,
     /// Open-file dialog for a purpose (`open`, `place`) → path.
@@ -196,6 +202,7 @@ impl Default for PdfExportSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    pub last_save_folder: Option<String>,
     /// Recent local files; unsaved/open document identities last only for this session.
     pub recent_documents: recent_documents::RecentDocuments,
     /// Bounded first-page images for local recent files (not full documents).
@@ -360,7 +367,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
-            recent_documents: Default::default(),
+            last_save_folder: None,            recent_documents: Default::default(),
             recent_thumbnails: Default::default(),
             home: false,
             ai: ai::WindowState::default(),
@@ -493,6 +500,7 @@ impl Default for View {
 /// What the canvas texture currently shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shown {
+    pub images: u64,
     /// (doc uid, doc pointer, revision, preview).
     pub doc: (u64, u64, u64, bool),
     /// Canvas point at the texture's top-left, zoom, and texture size in screen points.
@@ -557,7 +565,17 @@ pub struct Perf {
     pub fps: f64,
 }
 
+mod file_dialogs;
+
 pub struct DesignApp {
+    #[cfg(not(target_arch = "wasm32"))]
+    file_dialogs: file_dialogs::Dialogs,
+    #[cfg(not(target_arch = "wasm32"))]
+    asked: Vec<file_dialogs::AskKey>,
+    #[cfg(not(target_arch = "wasm32"))]
+    held_answers: Vec<file_dialogs::Held>,
+    #[cfg(not(target_arch = "wasm32"))]
+    dialog_wake: std::sync::Arc<std::sync::OnceLock<egui::Context>>,
     canvas_ime: canvas_ime::Composition,
     recent_previews: recent_previews::Previews,
     pending_pdf: Option<ImportedFile>,
@@ -566,8 +584,13 @@ pub struct DesignApp {
     pub ui: UiState,
     pub services: Services,
     pub views: HashMap<u64, View>,
+    pub(crate) page_histories: HashMap<u64, page_history::PageHistory>,
+    pub(crate) replaying_page_history: bool,
+    pub(crate) page_thumbnails: page_thumbnails::Thumbnails,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) links_worker: links_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
@@ -637,7 +660,17 @@ impl DesignApp {
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.
         pagenor_fonts::FontDb::global().scan_in_background();
+        #[cfg(not(target_arch = "wasm32"))]
+        let dialog_wake = std::sync::Arc::new(std::sync::OnceLock::new());
         DesignApp {
+            #[cfg(not(target_arch = "wasm32"))]
+            file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
+            #[cfg(not(target_arch = "wasm32"))]
+            asked: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            held_answers: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            dialog_wake,
             canvas_ime: Default::default(),
             recent_previews: Default::default(),
             pending_pdf: None,
@@ -646,7 +679,12 @@ impl DesignApp {
             ui: UiState::default(),
             services,
             views: HashMap::new(),
+            page_histories: HashMap::new(),
+            replaying_page_history: false,
+            page_thumbnails: page_thumbnails::Thumbnails::default(),
             canvas: CanvasCache::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            links_worker: links_worker::State::default(),
             canvas_rect: None,
             split: false,
             second_window: false,
@@ -746,7 +784,15 @@ impl DesignApp {
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         if matches!(
             id,
-            "file.new" | "file.newSample" | "file.activate" | "file.close" | "file.open" | "file.openIdml" | "file.openBytes" | "file.recovery.open"
+            "file.new"
+                | "file.newCover"
+                | "file.newSample"
+                | "file.activate"
+                | "file.close"
+                | "file.open"
+                | "file.openIdml"
+                | "file.openBytes"
+                | "file.recovery.open"
         ) && self
             .ui
             .dialog
@@ -840,8 +886,17 @@ impl DesignApp {
             if id == "file.close" && self.session.active().is_none() {
                 self.ui.home = true;
             }
-            if matches!(id, "file.new" | "file.newSample" | "file.open" | "file.openIdml" | "file.openBytes" | "file.activate" | "file.recovery.open")
-            {
+            if matches!(
+                id,
+                "file.new"
+                    | "file.newCover"
+                    | "file.newSample"
+                    | "file.open"
+                    | "file.openIdml"
+                    | "file.openBytes"
+                    | "file.activate"
+                    | "file.recovery.open"
+            ) {
                 self.ui.home = false;
                 if id == "file.recovery.open" {
                     self.sync_recent_documents();
@@ -854,6 +909,9 @@ impl DesignApp {
             {
                 self.ui.recent_documents.remember(doc, None);
             }
+        }
+        if r.is_ok() && matches!(id, "file.close" | "file.revert") {
+            self.page_thumbnails.retain_documents(self.session.documents().iter().map(|st| st.uid));
         }
         if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes") {
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findFont") {
@@ -868,14 +926,29 @@ impl DesignApp {
             }
         }
         if let Ok(result) = &r
-            && let Some(warnings) = result["importWarnings"].as_array().filter(|w| !w.is_empty())
+            && matches!(id, "file.open" | "file.openIdml" | "file.openBytes")
         {
-            let message = warnings.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
-            self.status(&message);
-            if let Some(dialog) = self.ui.dialog.as_mut() {
-                dialog.fields.insert("importWarnings".into(), json!(message));
-            } else {
-                self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title":"Import Warnings","message":message})));
+            let warnings: Vec<_> = result["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|w| !w.is_empty()).collect();
+            let general: Vec<_> =
+                result["importWarnings"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|w| !w.is_empty()).collect();
+            if !warnings.is_empty() || !general.is_empty() {
+                let message = warnings.iter().chain(&general).copied().collect::<Vec<_>>().join("\n");
+                self.status(&message);
+                let items = result["warningItems"].as_array();
+                let lines: Vec<_> = warnings
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| json!({"text":w,"item":items.and_then(|a|a.get(i)).cloned().unwrap_or(Value::Null)}))
+                    .chain(general.iter().map(|w| json!({"text":w,"item":null})))
+                    .collect();
+                if let Some(dialog) = self.ui.dialog.as_mut() {
+                    dialog.fields.insert("importWarnings".into(), json!(message));
+                } else {
+                    self.ui.dialog = Some(dialogs::Dialog::new(
+                        "alert",
+                        json!({"title":"Import Warnings","message":message,"lines":lines,"documentUid":self.session.active().map(|d|d.uid)}),
+                    ));
+                }
             }
         }
         if r.is_ok()
@@ -969,6 +1042,8 @@ impl DesignApp {
                 UiRequest::Dialog { id, params } => {
                     self.ui.dialog = Some(if id == "textFrameOptions" {
                         dialogs::text_frame_options_dialog(self, params)
+                    } else if id == "frameSize" {
+                        dialogs::frame_size_dialog(self, params)
                     } else {
                         dialogs::Dialog::new(&id, params)
                     });
@@ -1008,11 +1083,56 @@ impl DesignApp {
                 None => Ok(Value::Null),
             };
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.services.open_async.is_none() {
+            if purpose == "place" {
+                return self.ask_open_many(purpose, file_dialogs::Bound::Document, |app, paths| app.place_paths(paths));
+            }
+            return self.ask_open(purpose, file_dialogs::Bound::App, move |app, path| app.open_file(cmd, json!({"path":path})));
+        }
         let request = self.import_request(purpose);
         if let Some(open) = self.services.open_async.as_mut() {
             open(request);
         }
         Ok(Value::Null)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn place_paths(&mut self, paths: Vec<String>) -> Result<Value, String> {
+        if paths.is_empty() {
+            return Ok(Value::Null);
+        }
+        if paths.len() > 1000 {
+            return Err("Select at most 1000 images".into());
+        }
+        if paths.len() > 1 {
+            if !paths.iter().all(|p| is_graphic_path(p)) {
+                return Err("Select only graphics for multi-image placement; place text or layout documents separately".into());
+            }
+            return self.run("place.load", json!({"files":paths.into_iter().map(|path|json!({"path":path})).collect::<Vec<_>>()}));
+        }
+        let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+        if path.to_ascii_lowercase().ends_with(".pdf") {
+            let pages = self.services.read.as_mut().and_then(|read| read(&path).ok()).and_then(|b| pagenor_render::pdf_page_count(&b)).unwrap_or(1);
+            if pages > 1 {
+                self.ui.dialog = Some(dialogs::Dialog::new(
+                    "pdfImport",
+                    json!({"path":path,"page":"1","pages":pages,"target":self.session.active().map(|d|d.uid)}),
+                ));
+                return Ok(Value::Null);
+            }
+        }
+        let selected_frame = self.session.active().is_some_and(|d| {
+            d.selection
+                .items
+                .iter()
+                .any(|id| d.doc.item(*id).is_some_and(|i| matches!(i.content, pagenor_doc::Content::Graphic(_) | pagenor_doc::Content::Unassigned)))
+        });
+        if is_graphic_path(&path) && !selected_frame {
+            self.run("place.load", json!({"path":path}))
+        } else {
+            self.open_file("file.place", json!({"path":path}))
+        }
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
@@ -1187,10 +1307,17 @@ impl DesignApp {
             menus::shortcuts(self, ctx);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.open_dropped(&p);
+        {
+            let paths: Vec<_> = ctx
+                .input(|i| i.raw.dropped_files.iter().take(1001).map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect());
+            if paths.len() > 1 && paths.iter().all(|p| is_graphic_path(p)) {
+                if let Err(error) = self.place_paths(paths) {
+                    self.status(error);
+                }
+            } else {
+                for path in paths {
+                    let _ = self.open_dropped(&path);
+                }
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1246,7 +1373,7 @@ impl DesignApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_quit(&mut self) -> Result<Value, String> {
-        if self.quit_confirming || self.quit_requested || self.closing {
+        if self.quit_confirming || self.quit_requested || self.closing || self.file_dialogs_pending() {
             return Ok(Value::Null);
         }
         if self
@@ -1472,6 +1599,11 @@ impl DesignApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = self.dialog_wake.set(ctx.clone());
+            self.handle_file_dialog_answers();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if self.closing {
             self.handle_close_request(&ctx);
@@ -1826,6 +1958,7 @@ mod tests {
     #[test]
     fn closing_without_saving_discards_the_document() {
         let mut app = app_with_unsaved_document();
+        app.services.pick_save = Some(Box::new(|_| None));
         menus::close_document(&mut app, None);
         app.ui.dialog.as_mut().unwrap().fields.insert("discard".into(), json!(true));
         dialogs::confirm(&mut app).unwrap();
@@ -1849,7 +1982,7 @@ mod tests {
     }
 
     /// Save on a document that has no file opens the file picker; cancelling it must not close the
-    /// document. (No picker service here: the same as cancelling.)
+    /// document. The picker explicitly answers Cancel.
     #[test]
     fn a_cancelled_save_keeps_the_document_open() {
         let mut app = app_with_unsaved_document();
@@ -2162,6 +2295,7 @@ mod tests {
     #[test]
     fn cancelled_save_or_failed_save_stops_quitting_without_losing_document() {
         let (mut app, _, dir) = recovery_app("quit-save-cancel");
+        app.services.pick_save = Some(Box::new(|_| None));
         app.run("file.new", json!({})).unwrap();
         let uid = app.session.doc().unwrap().uid;
         app.run("app.quit", json!({})).unwrap();
@@ -3298,3 +3432,13 @@ mod tests_appearance;
 
 #[cfg(test)]
 mod clipboard_output_review16_tests;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_graphic_path(path: &str) -> bool {
+    std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "psd" | "svg" | "pdf" | "ai" | "eps"
+        )
+    })
+}

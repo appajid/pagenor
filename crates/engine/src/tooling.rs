@@ -59,6 +59,10 @@ impl Session {
             return;
         }
         self.tool = pagenor_tools::create(id);
+        if id != "placeGun" {
+            self.loaded = None;
+            self.loaded_queue.clear();
+        }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
             && let Some(st) = self.active_mut()

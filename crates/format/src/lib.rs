@@ -22,7 +22,8 @@ pub use pagenor_doc::file_type::MIME;
 /// Format 2 changed paragraph defaults; format 3 adds retained EPS source rendering;
 /// format 4 retains placed-graphic clipping paths that older readers would otherwise discard.
 // Format 6 retains document colors for future shapes; prior readers must reject it.
-pub const VERSION: u32 = 6;
+// Format 7 retains World-Ready composer enum values and book TOC scope.
+pub const VERSION: u32 = 7;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;

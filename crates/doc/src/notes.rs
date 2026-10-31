@@ -221,16 +221,47 @@ impl Story {
 
 impl crate::Document {
     /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
+    /// Measure first frames in one traversal, carrying group transforms into page selection.
+    fn story_order(&self) -> impl Fn(&Story) -> (usize, u64) {
+        let wanted: std::collections::HashSet<_> = self.stories.values().filter_map(|st| st.frames.first().copied()).collect();
+        let mut pages = std::collections::HashMap::new();
+        fn visit(
+            it: &crate::Item,
+            parent: pagenor_geom::Affine,
+            sp: &crate::Spread,
+            first: usize,
+            wanted: &std::collections::HashSet<crate::ItemId>,
+            pages: &mut std::collections::HashMap<crate::ItemId, usize>,
+            depth: usize,
+        ) {
+            if depth > 64 {
+                return;
+            }
+            if wanted.contains(&it.id) {
+                let b = parent.transform_rect_bbox(it.bounds());
+                pages.insert(it.id, first + sp.page_at_x(b.center().x).unwrap_or(0));
+            }
+            for child in it.children() {
+                visit(child, parent * it.xf, sp, first, wanted, pages, depth + 1);
+            }
+        }
+        let mut first = 0;
+        for spread in &self.spreads {
+            for item in &spread.items {
+                visit(item, pagenor_geom::Affine::IDENTITY, spread, first, &wanted, &mut pages, 0);
+            }
+            first += spread.pages.len();
+        }
+        move |story: &Story| (story.frames.first().and_then(|id| pages.get(id).copied()).unwrap_or(usize::MAX), story.id.0)
+    }
+
     /// numbering carries on; a fresh count for lists that don't continue across stories.
     pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
         let mut n = crate::ListCounter::default();
         if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
             return n;
         }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
+        let key = self.story_order();
         let Some(me) = self.story(sid) else { return n };
         let mine = key(me);
         let mut before: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|st| st.id != sid && key(st) < mine).collect();
@@ -253,10 +284,7 @@ impl crate::Document {
         if o.restart != NoteRestart::Never {
             return o.start_at;
         }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
+        let key = self.story_order();
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
         let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();

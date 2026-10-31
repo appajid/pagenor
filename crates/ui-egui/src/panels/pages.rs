@@ -1,39 +1,14 @@
 //! Pages panel: parents at the top, document spreads with live thumbnails below.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
 use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-type ThumbKey = (u64, u64, bool, usize, usize, u32);
-
-static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
-
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, abs: usize, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let key = (st.uid, st.revision, false, abs, 0, h.to_bits());
-    let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
-    let map = g.get_or_insert_with(HashMap::new);
-    if let Some(t) = map.get(&key) {
-        return Some(t.clone());
-    }
-    let page = st.doc.page(abs)?;
-    let scale = (h as f64 * ctx.pixels_per_point() as f64) / page.height;
-    let mut r = pagenor_render::Renderer::new();
-    r.threads = 0;
-    let img =
-        r.render_page(&st.doc, &app.session.cache, abs, scale, false, &pagenor_render::RenderOptions { printing_only: true, ..Default::default() })?;
-    let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-    let tex = crate::widgets::load_texture(ctx, format!("thumb{abs}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    // Drop thumbnails of older revisions.
-    let (uid, rev) = (st.uid, st.revision);
-    map.retain(|k, _| !(k.0 == uid && k.1 != rev));
-    map.insert(key, tex.clone());
-    Some(tex)
+    app.page_thumbnails.get(ctx, st.uid, st.doc.clone(), app.session.cache.clone(), crate::page_thumbnails::Target::Page(abs), h)
 }
 
 /// Thumbnail sizes of the Pages panel (Panel Options › Size), InDesign's six.
@@ -174,32 +149,9 @@ const BADGE: Color32 = Color32::from_rgb(0x2f, 0x73, 0xe0);
 const THUMB_H: f32 = 37.0;
 const ROW_H: f32 = 29.0;
 /// Live master thumbnail, cropped to its selected side.
-fn master_thumb(app: &mut DesignApp, ctx: &egui::Context, index: usize, pi: usize, h: f32) -> Option<egui::TextureHandle> {
+fn master_thumb(app: &mut DesignApp, ctx: &egui::Context, index: usize, page: usize, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let key = (st.uid, st.revision, true, index, pi, h.to_bits());
-    let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
-    let map = g.get_or_insert_with(HashMap::new);
-    if let Some(t) = map.get(&key) {
-        return Some(t.clone());
-    }
-    let page = st.doc.parents.get(index)?.pages.get(pi)?;
-    let scale = (h as f64 * ctx.pixels_per_point() as f64) / page.height.max(1.0);
-    let mut renderer = pagenor_render::Renderer::new();
-    renderer.threads = 0;
-    let image = renderer.render(
-        &st.doc,
-        &app.session.cache,
-        &[pagenor_render::Placed { spread: pagenor_doc::SpreadRef::Parent(index), xf: pagenor_geom::Affine::IDENTITY }],
-        (page.width * scale).ceil() as u32,
-        (page.height * scale).ceil() as u32,
-        pagenor_geom::Affine::scale(scale) * pagenor_geom::Affine::translate((-page.x, 0.0)),
-        &pagenor_render::RenderOptions { printing_only: true, ..Default::default() },
-    );
-    let ci = egui::ColorImage::from_rgba_premultiplied([image.width as usize, image.height as usize], &image.pixels);
-    let tex = crate::widgets::load_texture(ctx, format!("master{index}-{pi}"), ci, egui::TextureOptions::LINEAR);
-    map.retain(|k, _| !(k.0 == st.uid && k.1 != st.revision));
-    map.insert(key, tex.clone());
-    Some(tex)
+    app.page_thumbnails.get(ctx, st.uid, st.doc.clone(), app.session.cache.clone(), crate::page_thumbnails::Target::Master(index, page), h)
 }
 
 fn master_menu(app: &mut DesignApp, ui: &mut egui::Ui, index: usize, prefix: &str, current_page: usize) {

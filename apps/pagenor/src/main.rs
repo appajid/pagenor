@@ -24,6 +24,7 @@ mod native_input;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
+mod reveal;
 
 use egui_winit::winit::raw_window_handle::HasDisplayHandle;
 use pagenor_engine::Session;
@@ -120,9 +121,10 @@ impl eframe::App for App {
         }
         self.app.raw_input_hook(raw);
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.startup.enter();
         ui_with_clipboard_paste(&mut self.app, ui, &mut self.paste_completions);
+        self.app.show_file_dialogs(Some(&*frame));
         self.app.handle_close_request(ui.ctx());
         self.startup.leave();
     }
@@ -182,11 +184,14 @@ fn save_prefs(app: &DesignApp) {
 }
 
 /// One file-type row in an open dialog. `open_filters` is what `pick_open` applies.
+#[cfg(test)]
 struct OpenFilter {
+    #[allow(dead_code)] // The production filters live in the UI dialog host.
     name: &'static str,
     extensions: &'static [&'static str],
 }
 
+#[cfg(test)]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
@@ -232,22 +237,9 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
 
 fn services() -> Services {
     Services {
-        pick_open: Some(Box::new(|purpose: &str| {
-            let mut dialog = rfd::FileDialog::new();
-            for filter in open_filters(purpose) {
-                dialog = dialog.add_filter(filter.name, filter.extensions);
-            }
-            dialog.pick_file().map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_save: Some(Box::new(|name: &str| {
-            let mut dialog = rfd::FileDialog::new().set_file_name(name);
-            if pagenor_engine::doc::file_type::is_native_name(name) {
-                dialog = dialog.add_filter("Pagenor", &[pagenor_engine::doc::file_type::EXTENSION]);
-            }
-            dialog.save_file().map(|p| p.to_string_lossy().to_string())
-        })),
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        reveal: Some(Box::new(reveal::reveal)),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok())),
         ..Default::default()
     }

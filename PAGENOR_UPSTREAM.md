@@ -1026,3 +1026,22 @@ chosen default master, transactional style preview and document-owned views.
 Native format stays 6; external lock entries are unchanged. All seven workspace gates pass: 2,907 tests, zero failures, 7 existing skips; twenty WASM packages. 8 synthetic offscreen views are inspected.
 The owner's open app session and Vectnor remain untouched. No upload/publication.
 [Per-PR authors, source pins, adaptations and remaining queue](docs/pagenor/UPSTREAM_ADOPTION_0120.md).
+
+## 31 October 2026 — P11.23 / local 0.13.0
+
+The local milestone adapts 38 reviewed upstream proposal scopes through
+#2086, including the six older queued items. Adds formatting Find/Change, native
+asynchronous dialogs, Links controls, master-side sizing and page history,
+spanning tables/footnotes, book-wide TOCs and covers, multi-image placement,
+demand-loaded UI fonts, variable-instance identities, image proxies and owned
+thumbnails. Retains Indic input, lazy/scoped fonts, `.pgnr`, owner icons and
+left/right masters. Native format advances to 7 for composer/TOC metadata.
+All seven workspace gates pass: 3,053 tests, zero failures, seven existing skips;
+  twenty WASM packages. Twenty-two synthetic offscreen views were inspected. Native Windows/Linux execution and publication
+remain pending. The owner's app session and Vectnor remain untouched.
+[Per-proposal source pins, safeguards and scope](docs/upstream-adoption-20261031.md).
+
+All 38 original source authors and immutable heads are recorded in the linked
+ledger. MIT OR Apache-2.0 notices are retained. Pagenor-specific code adapts native
+dialog continuations, book snapshots, ownership/budgets and current model fields;
+whole upstream branches, translation packs and CJK-only features are excluded.

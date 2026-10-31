@@ -14,6 +14,7 @@ mod kind;
 mod macos;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
+mod psname;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 #[cfg(any(target_os = "linux", target_os = "freebsd", all(test, unix)))]
@@ -691,5 +692,26 @@ mod coverage_recommendation_tests {
         assert_eq!(scope.face("Traditional Arabic", "Regular").family, "Geeza Pro");
         assert_eq!(scope.replacement_face("Traditional Arabic", "Regular", &['ع', '“']).family, "Al Bayan");
         assert!(!scope.has_family("Traditional Arabic"));
+    }
+}
+
+#[cfg(test)]
+mod ribbi_missing_regular_review31 {
+    use super::*;
+    #[test]
+    fn another_face_s_legacy_regular_does_not_stand_for_a_missing_regular() {
+        // Only the Black face is installed: a document's "Regular" is a missing style, drawn in
+        // the nearest weight, not satisfied by Black's RIBBI subfamily name.
+        let bytes = testing::with_names(
+            &testing::font_with("Legacy Sans", &['A']).unwrap(),
+            &[(3, 1, 0x409, 1, "Legacy Sans Black"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x409, 16, "Legacy Sans"), (3, 1, 0x409, 17, "Black")],
+        )
+        .unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(bytes);
+        let scope = db.scoped(0);
+        assert!(scope.has_family("Legacy Sans"));
+        assert!(!scope.has_style("Legacy Sans", "Regular"));
+        assert!(scope.has_style("Legacy Sans", "Black"));
     }
 }

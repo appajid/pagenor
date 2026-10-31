@@ -90,18 +90,44 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         Stroke::NONE,
                                     ));
                                 }
+                                let mods = ui.input(|i| {
+                                    i.events
+                                        .iter()
+                                        .rev()
+                                        .find_map(|event| match event {
+                                            egui::Event::PointerButton {
+                                                pos,
+                                                button: egui::PointerButton::Primary,
+                                                pressed: false,
+                                                modifiers,
+                                                ..
+                                            } if resp.rect.contains(*pos) || i.pointer.press_origin().is_some_and(|p| resp.rect.contains(p)) => {
+                                                Some(*modifiers)
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or(i.modifiers)
+                                });
+                                let modified = mods.alt || mods.shift || mods.ctrl || mods.command;
+                                let previous_key = egui::Id::new(("tool-click-mod", gi));
+                                let previous_modified = ui.data(|d| d.get_temp::<bool>(previous_key)).unwrap_or(false);
                                 if resp.clicked() {
-                                    chosen = Some(shown.id);
+                                    chosen = Some(if mods.alt && g.len() > 1 {
+                                        let next = (g.iter().position(|tl| tl.id == current).unwrap_or(0) + 1) % g.len();
+                                        g.get(next).map_or(shown.id, |tl| tl.id)
+                                    } else {
+                                        shown.id
+                                    });
+                                    ui.data_mut(|d| d.insert_temp(previous_key, modified));
                                 }
+                                let plain_double = resp.double_clicked() && !modified && !previous_modified;
                                 // Double-click a polygon tool: Polygon Settings.
-                                if resp.double_clicked() && matches!(shown.id, "polygon" | "polygonFrame") {
+                                if plain_double && matches!(shown.id, "polygon" | "polygonFrame") {
                                     let cur = app.session.execute("tool.polygonSettings", &json!({})).unwrap_or_default();
                                     app.ui.dialog = Some(crate::dialogs::Dialog::new("polygonSettings", cur));
                                 }
                                 // Double-click a transform tool: its Object › Transform dialog.
-                                if resp.double_clicked()
-                                    && let Some(cmd) = transform_dialog_of(shown.id)
-                                {
+                                if plain_double && let Some(cmd) = transform_dialog_of(shown.id) {
                                     crate::menus::activate(app, cmd, &Value::Null);
                                 }
                                 if g.len() > 1

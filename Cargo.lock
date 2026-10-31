@@ -958,6 +958,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-dialogs"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=1a11a4897865f7410c40d25ca6e452ce399a1a2c#1a11a4897865f7410c40d25ca6e452ce399a1a2c"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "rfd",
+]
+
+[[package]]
 name = "craft-print"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=d991bf6792f8ade99c51358bf3c1d902c8cd96b5#d991bf6792f8ade99c51358bf3c1d902c8cd96b5"
@@ -1402,7 +1415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1450,6 +1463,17 @@ dependencies = [
  "log",
  "scopeguard",
  "uuid",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]
@@ -2828,7 +2852,7 @@ dependencies = [
  "once_cell",
  "png",
  "thiserror 2.0.21",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2924,7 +2948,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3434,7 +3458,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "arboard",
  "async-channel",
@@ -3462,7 +3486,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ai"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -3479,11 +3503,11 @@ dependencies = [
 
 [[package]]
 name = "pagenor-archive"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "pagenor-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3499,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-color"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "kurbo",
  "moxcms",
@@ -3512,8 +3536,9 @@ dependencies = [
 
 [[package]]
 name = "pagenor-compose"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
+ "fancy-regex",
  "log",
  "miniz_oxide 0.8.9",
  "pagenor-color",
@@ -3530,7 +3555,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-doc"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-color",
  "pagenor-geom",
@@ -3542,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-engine"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "caseless",
  "craft-print",
@@ -3582,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-epub"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-color",
  "pagenor-doc",
@@ -3591,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-fonts"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "core-text",
  "fontconfig",
@@ -3607,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-format"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3619,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-geom"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -3632,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-idml"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-color",
@@ -3648,8 +3673,9 @@ dependencies = [
 
 [[package]]
 name = "pagenor-images"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
+ "flate2",
  "image",
  "pagenor-color",
  "pagenor-fonts",
@@ -3659,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-indd"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3668,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-mcp"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "image",
  "log",
@@ -3681,7 +3707,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pdf"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "hayro-cmap",
  "hayro-interpret",
@@ -3703,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pptx"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3721,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-render"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "hayro",
  "image",
@@ -3739,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-textimport"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3750,7 +3776,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-tools"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3762,8 +3788,9 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ui-egui"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
+ "craft-dialogs",
  "craft-ui",
  "egui",
  "egui_kittest",
@@ -3780,6 +3807,7 @@ dependencies = [
  "pagenor-images",
  "pagenor-render",
  "pagenor-tools",
+ "raw-window-handle",
  "regex",
  "serde",
  "serde_json",
@@ -3787,12 +3815,13 @@ dependencies = [
  "toml",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-script",
  "unicode-segmentation",
 ]
 
 [[package]]
 name = "pagenor-web"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "eframe",
  "egui",
@@ -4222,7 +4251,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4661,7 +4690,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5137,7 +5166,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5247,10 +5276,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5614,7 +5643,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6381,7 +6410,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6727,7 +6756,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6858,7 +6887,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "resvg",
  "serde_json",

@@ -154,3 +154,16 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+Native dialogs and GREP additions (Pagenor 0.13.0)
+------------------------------------------------
+craft-dialogs from storytold/craft-libs, pinned at
+1a11a4897865f7410c40d25ca6e452ce399a1a2c, is MIT OR Apache-2.0.
+https://github.com/storytold/craft-libs
+fancy-regex 0.16.2 is MIT licensed.
+https://github.com/fancy-regex/fancy-regex
+The original upstream proposal authors and inspected source revisions are listed
+in docs/upstream-adoption-20261031.md; applicable upstream notices remain above.
+
+The complete licence texts for these additions are in docs/licenses/
+(craft-dialogs-MIT.txt, craft-dialogs-APACHE.txt and fancy-regex-MIT.txt).

@@ -1404,6 +1404,8 @@ impl<'a> Ex<'a> {
                 match c {
                     pagenor_doc::Composer::Paragraph => "HL Composer",
                     pagenor_doc::Composer::SingleLine => "HL Single",
+                    pagenor_doc::Composer::WorldReady => "HL Composer Optyca",
+                    pagenor_doc::Composer::WorldReadySingleLine => "HL Single Optyca",
                 },
             );
         }

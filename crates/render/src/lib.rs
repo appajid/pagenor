@@ -123,6 +123,8 @@ impl Rendered {
 /// What to draw.
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
+    /// Screen previews may use a cached proxy while pixels decode in the background.
+    pub defer_images: bool,
     /// Canvas background (premultiplied RGBA8); `None` = transparent.
     pub background: Option<[u8; 4]>,
     /// Fill pages with paper colour.
@@ -186,6 +188,7 @@ impl Default for RenderOptions {
     fn default() -> Self {
         Self {
             background: None,
+            defer_images: false,
             paper: true,
             printing_only: false,
             hidden: vec![],
@@ -838,7 +841,12 @@ impl Renderer {
         let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
         let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
-        let Some(pm) = images::mip_with_scope(&data, asset.page, page_w, on_screen, f.doc.font_scope) else { return };
+        let pixels = if f.opts.defer_images {
+            images::mip_now_with_scope(&data, asset.page, page_w, on_screen, f.doc.font_scope)
+        } else {
+            images::mip_with_scope(&data, asset.page, page_w, on_screen, f.doc.font_scope)
+        };
+        let Some(pm) = pixels else { return };
         let pm = match PLATE.with(|p| p.get()) {
             Some(plate) => plate_pixmap(&pm, plate),
             None => pm,

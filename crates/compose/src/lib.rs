@@ -10,9 +10,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+use pagenor_doc::Composer;
+
 mod bidi;
 pub mod breaker;
 mod cache;
+pub mod grep;
 pub mod hyphen;
 mod mojikumi;
 mod notes;
@@ -32,8 +36,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use pagenor_doc::{
-    Align, Composer, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ListAlign, ListCounter, ParaProps, SpanColumns, StartParagraph,
-    Story, StoryId, TabAlign, TextFrameOptions, VerticalJustification, WrapMode, WrapSide, story,
+    Align, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ListAlign, ListCounter, ParaProps, SpanColumns, StartParagraph, Story, StoryId,
+    TabAlign, TextFrameOptions, VerticalJustification, WrapMode, WrapSide, story,
 };
 use pagenor_fonts::{FontDb, ScopedFonts};
 use pagenor_geom::{Affine, Point, Rect};
@@ -775,13 +779,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut snaps: Vec<Snapshot> = Vec::with_capacity(np);
     let mut info: Vec<ParaInfo> = Vec::with_capacity(np);
     let mut force_col = vec![false; np];
+    let mut force_to: Vec<Option<(usize, usize)>> = vec![None; np];
     let mut line_cap: Vec<Option<usize>> = vec![None; np];
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
     let mut notes = Notes::new(doc, story);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
-    let mut var_cache: std::collections::HashMap<Option<usize>, std::sync::Arc<Vec<String>>> = Default::default();
+    let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
     // in progress, and a budget for the re-lays.
     let mut limits: Rc<Vec<(BandKey, f64)>> = Rc::default();
@@ -813,7 +818,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             && let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget)
         {
             balance_runs += 1;
-            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap, &mut force_to);
             pi = j;
             continue 'paras;
         }
@@ -839,21 +844,158 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             .and_then(|t| t.chars().next_back())
             .and_then(break_start);
         if let Some(t) = story.para_table(pi) {
+            // A paragraph set across the columns moves on to the next frame where others move on to
+            // the next column.
+            let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
+            span_paras[pi] = spanning;
+            // Span space applies where the paragraph spans more than one column; in a one-column frame
+            // a span changes nothing.
+            let spans_in = |fi: usize| spanning && cols.get(fi).is_some_and(|c| c.len() > 1);
+            // Consecutive paragraphs with the same Split Columns settings share a split block; within
+            // it, a paragraph moves on to the next sub-column.
+            let split_cfg = if story.para_table(pi).is_some() { None } else { SplitCfg::of(&pp) };
+            split_paras[pi] = split_cfg.is_some();
+            if cur.split.is_some_and(|s| Some(s.cfg) != split_cfg) {
+                cur.split = None;
+            }
+            let next_column = |cur: &mut Cursor| {
+                if spanning {
+                    cur.next_frame()
+                } else if cur.can_next_sub() {
+                    cur.next_sub()
+                } else {
+                    cur.next_column(&cols)
+                }
+            };
+            // A paragraph start or a break character; Next Column while a paragraph spans columns is
+            // the next frame, as above.
+            let begin_at = |cur: &mut Cursor, start: StartParagraph| match start {
+                StartParagraph::NextColumn => next_column(cur),
+                other => cur.start(other, &cols, frames, doc),
+            };
+            // Paragraph start options.
+            if let Some(start) = after_break
+                && cur.last_baseline.is_some()
+            {
+                begin_at(&mut cur, start);
+            }
+            if force_col[pi] {
+                next_column(&mut cur);
+            }
+            if let Some(dest) = force_to.get(pi).copied().flatten() {
+                while cur.fi < frames.len() && (cur.fi, cur.col) < dest {
+                    next_column(&mut cur);
+                }
+            }
             if cur.last_baseline.is_some() {
-                cur.start(after_break.unwrap_or(pp.start_paragraph), &cols, frames, doc);
+                begin_at(&mut cur, pp.start_paragraph);
+            }
+            // Text in the columns above a spanning paragraph, or a split block starting below text.
+            let mut text_above = cur.split.is_none() && split_cfg.is_some();
+            if spanning && cur.fi < frames.len() {
+                // Close the band: the paragraph goes below the deepest of its columns, which are
+                // balanced first.
+                let key = cur.band_key();
+                let deepest = out.frames[cur.fi]
+                    .lines
+                    .get(cur.band.line0..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|l| (l.baseline, l.descent))
+                    .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)));
+                if let Some((baseline, descent)) = deepest {
+                    let bottom = baseline + descent;
+                    let multi = cols[cur.fi].len() > 1;
+                    let active = trial.as_ref().is_some_and(|t| t.key == key && t.span == pi);
+                    if !active && let Some(t) = trial.take() {
+                        set_limit(&mut limits, t.key, None);
+                    }
+                    if multi && (active || limit_of(&limits, key).is_none() && balance_runs < balance_budget) {
+                        let top = cur.clip(cols[cur.fi][0]).y0;
+                        let mut t = trial.take().unwrap_or(Trial { key, span: pi, lo: top, hi: bottom, tries: 0, done: false });
+                        // This layout fits: its bottom is the best so far.
+                        t.hi = t.hi.min(bottom);
+                        let next = if t.done { t.hi } else { t.next() };
+                        set_limit(&mut limits, key, Some(next));
+                        if !t.done {
+                            trial = Some(t);
+                            balance_runs += 1;
+                            rewind(
+                                key.1,
+                                &snaps,
+                                &note_snaps,
+                                &mut notes,
+                                &mut out,
+                                &mut cur,
+                                &mut list_counter,
+                                &mut force_col,
+                                &mut line_cap,
+                                &mut force_to,
+                            );
+                            pi = key.1;
+                            continue 'paras;
+                        }
+                    }
+                    cur.col = 0;
+                    cur.last_baseline = Some(baseline);
+                    cur.last_descent = descent;
+                    text_above = multi;
+                } else if cur.col != 0 {
+                    cur.col = 0;
+                    cur.resume();
+                }
+            }
+            if cur.last_baseline.is_some() {
+                let same_style =
+                    pi.checked_sub(1).and_then(|p| story.paras.get(p)).is_some_and(|prev| prev.style == pf.style && prev.table.is_none());
+                match pp.same_para_style_spacing {
+                    Some(gap) if same_style && gap.is_finite() && gap >= 0.0 => {
+                        cur.pending = if text_above { gap.max(pp.span_space_before) } else { gap };
+                    }
+                    _ => cur.pending += if text_above { pp.space_before.max(pp.span_space_before) } else { pp.space_before },
+                }
+            }
+            if let Some(cfg) = split_cfg
+                && cur.split.is_none()
+            {
+                let start = cur.state();
+                cur.split = Some(SplitBlock { cfg, sub: 0, sub_lines: 0, part_lines: 0, line0: None, para: pi, start, top: None });
+                cur.split_part();
             }
             let at_top = cur.last_baseline.is_none();
             let start_at = (cur.fi, cur.col);
             let anchor = prange.start + story.text[prange.clone()].find(story::TABLE_ANCHOR).unwrap_or(0);
-            if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, opts) {
+            if !table::place_table(doc, t, anchor, pi, &pp, frames, &cols, &mut cur, &mut out, &mut notes, opts) {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
                     balance_runs += 1;
-                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap, &mut force_to);
                     pi = j;
                     continue 'paras;
                 }
                 out.overset_at = Some(prange.start);
                 break 'paras;
+            }
+            // Table anchors must honour the preceding keep-with-next chain too.
+            if (cur.fi, cur.col) != start_at && pp.keep_all_lines {
+                let mut j = pi;
+                while j > 0 && info.get(j - 1).is_some_and(|p| p.keep_with_next > 0 && p.end == start_at) {
+                    j -= 1;
+                }
+                let dest = (cur.fi, cur.col);
+                // Once replayed at the table's column, the chain goes on again when the table, set
+                // below it, moved on whole to a later column: the column held the table alone.
+                let whole = out.frames.get(cur.fi).and_then(|f| f.tables.last()).is_some_and(|t| t.first && t.last);
+                let again = whole && force_to.get(j).copied().flatten().is_some_and(|d| dest > d);
+                let first = info.get(j).is_some_and(|p| !p.at_top) && !force_col.get(j).copied().unwrap_or(true);
+                if j < pi && (first || again) && restores < 4 * np + 64 {
+                    restores += 1;
+                    force_col[j] = true;
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap, &mut force_to);
+                    // Replay the chain where the table went, not just one column on.
+                    force_to[j] = Some(dest);
+                    pi = j;
+                    continue 'paras;
+                }
             }
             info.push(ParaInfo {
                 start: start_at,
@@ -869,7 +1011,23 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             });
             list_counter = ListCounter::default();
             boxes[pi] = None;
-            cur.pending += pp.space_after;
+            cur.pending += if spans_in(cur.fi) { pp.space_after.max(pp.span_space_after) } else { pp.space_after };
+            if spanning
+                && let Some(ft) = out.frames.get(cur.fi)
+                && let Some(baseline) = cur.last_baseline
+            {
+                cur.band = Band {
+                    para: pi + 1,
+                    line0: ft.lines.len(),
+                    above: Some(Above {
+                        top: baseline + cur.last_descent,
+                        baseline,
+                        descent: cur.last_descent,
+                        reference: cur.last_reference,
+                        pending: cur.pending,
+                    }),
+                };
+            }
             pi += 1;
             continue;
         }
@@ -877,7 +1035,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let cur_frame = frames.get(cur.fi.min(frames.len().saturating_sub(1)));
         let var_values = if var_story {
             let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
-            var_cache.entry(page).or_insert_with(|| std::sync::Arc::new(vars::values(doc, page, opts.running.as_deref()))).clone()
+            {
+                let parent = page.is_none()
+                    && cur_frame.and_then(|f| doc.find(f.id)).is_some_and(|loc| matches!(loc.spread, pagenor_doc::SpreadRef::Parent(_)));
+                var_cache
+                    .entry((page, parent))
+                    .or_insert_with(|| std::sync::Arc::new(vars::values_shown(doc, page, parent, opts.running.as_deref())))
+                    .clone()
+            }
         } else {
             Default::default()
         };
@@ -969,7 +1134,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 apply_desired_spacing(&mut gl, &pp);
                 mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
                 let hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
-                let breaks = if pp.composer == Composer::SingleLine || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
+                let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     let tab = |j: usize, x: f64, i: usize| {
                         let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
                         tab_advance(&pp.tabs, pp.left_indent, ind + x, gl.get(i + 1..).unwrap_or_default()).0
@@ -1153,6 +1318,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         if force_col[pi] {
             next_column(&mut cur);
         }
+        if let Some(dest) = force_to.get(pi).copied().flatten() {
+            while cur.fi < frames.len() && (cur.fi, cur.col) < dest {
+                next_column(&mut cur);
+            }
+        }
         if cur.last_baseline.is_some() {
             begin_at(&mut cur, pp.start_paragraph);
         }
@@ -1186,7 +1356,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     if !t.done {
                         trial = Some(t);
                         balance_runs += 1;
-                        rewind(key.1, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                        rewind(
+                            key.1,
+                            &snaps,
+                            &note_snaps,
+                            &mut notes,
+                            &mut out,
+                            &mut cur,
+                            &mut list_counter,
+                            &mut force_col,
+                            &mut line_cap,
+                            &mut force_to,
+                        );
                         pi = key.1;
                         continue 'paras;
                     }
@@ -1239,7 +1420,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             if cur.fi >= frames.len() {
                 if let Some(j) = trial_failed(&mut trial, &mut limits, balance_runs < balance_budget) {
                     balance_runs += 1;
-                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                    rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap, &mut force_to);
                     pi = j;
                     continue 'paras;
                 }
@@ -1274,7 +1455,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             };
             let rest = &glyphs[g0..];
             let rest_h = &hyph_after[g0..];
-            let breaks: Vec<Break> = if pp.composer == Composer::SingleLine || has_tabs || rest.len() > 4000 {
+            let breaks: Vec<Break> = if pp.composer.single_line() || has_tabs || rest.len() > 4000 {
                 // Where each line starts relative to the tab origin, as `layout_line` places it.
                 let tab = |j: usize, x: f64, i: usize| {
                     let x0 = slots.get(j).map_or(col.x0, |s| s.0);
@@ -1392,7 +1573,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         };
                         if let Some(j) = j {
                             split_runs += 1;
-                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(
+                                j,
+                                &snaps,
+                                &note_snaps,
+                                &mut notes,
+                                &mut out,
+                                &mut cur,
+                                &mut list_counter,
+                                &mut force_col,
+                                &mut line_cap,
+                                &mut force_to,
+                            );
                             pi = j;
                             continue 'paras;
                         }
@@ -1425,7 +1617,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                                     j
                                 }
                             };
-                            rewind(j, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(
+                                j,
+                                &snaps,
+                                &note_snaps,
+                                &mut notes,
+                                &mut out,
+                                &mut cur,
+                                &mut list_counter,
+                                &mut force_col,
+                                &mut line_cap,
+                                &mut force_to,
+                            );
                             pi = j;
                             continue 'paras;
                         }
@@ -1690,7 +1893,18 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         if !t.done {
                             split_trial = Some(t);
                             split_runs += 1;
-                            rewind(key.2, &snaps, &note_snaps, &mut notes, &mut out, &mut cur, &mut list_counter, &mut force_col, &mut line_cap);
+                            rewind(
+                                key.2,
+                                &snaps,
+                                &note_snaps,
+                                &mut notes,
+                                &mut out,
+                                &mut cur,
+                                &mut list_counter,
+                                &mut force_col,
+                                &mut line_cap,
+                                &mut force_to,
+                            );
                             pi = key.2;
                             continue 'paras;
                         }
@@ -1719,7 +1933,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        vertical_justify(ft, f, spanned);
+        vertical_justify(ft, f, spanned, &doc.footnote_options);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -2037,8 +2251,10 @@ fn rewind(
     list_counter: &mut ListCounter,
     force_col: &mut [bool],
     line_cap: &mut [Option<usize>],
+    force_to: &mut [Option<(usize, usize)>],
 ) {
     force_col.iter_mut().skip(j + 1).for_each(|f| *f = false);
+    force_to.iter_mut().skip(j + 1).for_each(|f| *f = None);
     line_cap.iter_mut().skip(j + 1).for_each(|c| *c = None);
     if let Some(s) = snaps.get(j) {
         s.restore(out, cur, list_counter);
@@ -3539,7 +3755,7 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
 }
 
 /// `spanned`: a paragraph spans the frame's columns, so the lines move together.
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &pagenor_doc::FootnoteOptions) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -3552,7 +3768,14 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
         let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
         let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
-        let space = f.area.y1 - bottom;
+        let bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(bottom, f64::max);
+        let limit = ft
+            .notes
+            .iter()
+            .filter(|n| spanned || notes.span_columns || n.column == c)
+            .map(|n| n.rect.y0 - notes.space_before)
+            .fold(f.area.y1, f64::min);
+        let space = limit - bottom;
         if space <= 0.0 {
             continue;
         }

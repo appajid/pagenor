@@ -78,7 +78,9 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 let mut copies = list.clone();
                 let mut stories = std::collections::HashMap::new();
                 for item in &mut copies {
-                    super::object::renumber(d, &items, item, &mut stories);
+                    if !super::object::renumber(d, &items, item, &mut stories) {
+                        return Err(pagenor_doc::DocError::Invalid("Objects nest too deeply to copy".into()).into());
+                    }
                 }
                 let end = super::anchored::anchor_items(d, t.story, r, copies, &Default::default())?;
                 sel.text = Some(pagenor_doc::TextSel { anchor: end, focus: end, ..t });

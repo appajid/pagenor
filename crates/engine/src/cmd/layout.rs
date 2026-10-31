@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
 use crate::{Result, Session};
+mod cover;
 
 /// A start page number parameter: a whole number in 1..=[`pagenor_doc::MAX_PAGE_NUMBER`].
 fn start_number(cmd: &str, key: &str, v: &Value) -> Result<u32> {
@@ -88,6 +89,24 @@ fn dist(r: pagenor_geom::Rect, x: f64) -> f64 {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "layout.parentPageSize",
+            "Master Page Size",
+            [],
+            None,
+            "{parent: spread id, page: 0-based, width?, height?, anchor?: 0–8} — resize one master page in one undo step",
+            has_doc,
+            parent_page_size
+        ),
+        cmd!(
+            "layout.coverResize",
+            "Resize Book Cover",
+            [],
+            None,
+            "{page: 1-based, oldSpine, newSpine} — resize one flat cover and its spine-aware artwork in one undo step",
+            has_doc,
+            cover::cover_resize
+        ),
         cmd!(
             "layout.pages.insert",
             "Insert Pages…",
@@ -689,6 +708,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"id": r.0}))
         }),
         cmd!(
+            "layer.duplicate",
+            "Duplicate Layer",
+            [],
+            None,
+            "{id} → {id} — duplicate the layer's settings, guides and objects above it",
+            has_doc,
+            duplicate_layer
+        ),
+        cmd!(
             "layer.set",
             "Layer Options…",
             [],
@@ -861,55 +889,57 @@ fn page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
 /// Give `pages` (1-based) their own size. Objects stay on their page; pages with a liquid rule
 /// re-flow their objects by it.
 pub(crate) fn resize_pages(d: &mut pagenor_doc::Document, pages: &[usize], w: Option<f64>, h: Option<f64>) {
-    {
-        for page in pages {
-            let Some((si, pi)) = d.page_loc(page - 1) else { continue };
-            let sp = std::sync::Arc::make_mut(&mut d.spreads[si]);
-            let old: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
-            let old_bounds = sp.pages[pi].bounds();
-            let pg = &mut sp.pages[pi];
-            let dw = w.map_or(0.0, |w| w.max(1.0) - pg.width);
-            if let Some(w) = w {
-                pg.width = w.max(1.0);
-            }
-            if let Some(h) = h {
-                pg.height = h.max(1.0);
-            }
-            let left = pg.side == pagenor_doc::PageSide::Left;
-            sp.relayout();
-            // Keep the spine: shift the whole spread back when a left page grows.
-            if left && dw != 0.0 {
-                for q in &mut sp.pages {
-                    q.x -= dw;
-                }
-            }
-            let new: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
-            // Objects follow their page.
-            let shifts: Vec<(f64, f64, f64)> =
-                sp.pages.iter().enumerate().map(|(k, q)| (old[k], old[k] + q.width - if k == pi { dw } else { 0.0 }, new[k] - old[k])).collect();
-            for it in &mut sp.items {
-                let cx = it.bounds().center().x;
-                if let Some((_, _, dx)) = shifts.iter().find(|(a, b, _)| cx >= *a && cx < *b)
-                    && *dx != 0.0
-                {
-                    let it = std::sync::Arc::make_mut(it);
-                    it.xf = pagenor_geom::Affine::translate((*dx, 0.0)) * it.xf;
-                }
-            }
-            // Page guides move with their page.
-            for (k, q) in sp.pages.iter_mut().enumerate() {
-                let dx = new[k] - old[k];
-                if dx != 0.0 {
-                    for g in q.guides.iter_mut().filter(|g| g.orientation == pagenor_doc::Orientation::Vertical) {
-                        g.position += dx;
-                    }
-                }
-            }
-            // Liquid rules: objects were carried along with the page's left edge.
-            let moved = old_bounds + pagenor_geom::Vec2::new(new[pi] - old[pi], 0.0);
-            super::liquid::apply(d, pagenor_doc::SpreadRef::Doc(si), pi, moved);
+    for page in pages {
+        if let Some((si, pi)) = d.page_loc(page.saturating_sub(1)) {
+            resize_spread_page(d, pagenor_doc::SpreadRef::Doc(si), pi, w, h);
         }
     }
+}
+fn resize_spread_page(d: &mut pagenor_doc::Document, target: pagenor_doc::SpreadRef, pi: usize, w: Option<f64>, h: Option<f64>) {
+    let Some(sp) = d.spread_mut(target) else { return };
+    let old: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
+    let old_bounds = sp.pages[pi].bounds();
+    let pg = &mut sp.pages[pi];
+    let dw = w.map_or(0.0, |w| w.max(1.0) - pg.width);
+    if let Some(w) = w {
+        pg.width = w.max(1.0);
+    }
+    if let Some(h) = h {
+        pg.height = h.max(1.0);
+    }
+    let left = pg.side == pagenor_doc::PageSide::Left;
+    sp.relayout();
+    // Keep the spine: shift the whole spread back when a left page grows.
+    if left && dw != 0.0 {
+        for q in &mut sp.pages {
+            q.x -= dw;
+        }
+    }
+    let new: Vec<f64> = sp.pages.iter().map(|x| x.x).collect();
+    // Objects follow their page.
+    let shifts: Vec<(f64, f64, f64)> =
+        sp.pages.iter().enumerate().map(|(k, q)| (old[k], old[k] + q.width - if k == pi { dw } else { 0.0 }, new[k] - old[k])).collect();
+    for it in &mut sp.items {
+        let cx = it.bounds().center().x;
+        if let Some((_, _, dx)) = shifts.iter().find(|(a, b, _)| cx >= *a && cx < *b)
+            && *dx != 0.0
+        {
+            let it = std::sync::Arc::make_mut(it);
+            it.xf = pagenor_geom::Affine::translate((*dx, 0.0)) * it.xf;
+        }
+    }
+    // Page guides move with their page.
+    for (k, q) in sp.pages.iter_mut().enumerate() {
+        let dx = new[k] - old[k];
+        if dx != 0.0 {
+            for g in q.guides.iter_mut().filter(|g| g.orientation == pagenor_doc::Orientation::Vertical) {
+                g.position += dx;
+            }
+        }
+    }
+    // Liquid rules: objects were carried along with the page's left edge.
+    let moved = old_bounds + pagenor_geom::Vec2::new(new[pi] - old[pi], 0.0);
+    super::liquid::apply(d, target, pi, moved);
 }
 
 /// File › Document Setup values.
@@ -1541,4 +1571,182 @@ mod stable_master_tests {
         assert_eq!(s.doc().unwrap().doc.settings.default_parent, Some(b));
         s.doc().unwrap().doc.check().unwrap();
     }
+}
+
+/// Duplicate one layer atomically, keeping the copied stories threaded together.
+fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
+    use pagenor_doc::{HyperlinkSource, Item, ItemId, SpreadRef, StoryId};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    fn map_ids(a: &Item, b: &Item, out: &mut HashMap<ItemId, ItemId>) {
+        out.insert(a.id, b.id);
+        for (a, b) in a.children().iter().zip(b.children()) {
+            map_ids(a, b, out);
+        }
+    }
+    fn map_story_ids(a: &pagenor_doc::Story, b: &pagenor_doc::Story, out: &mut HashMap<ItemId, ItemId>, depth: usize) {
+        if depth >= 64 {
+            return;
+        }
+        for (a, b) in a.objects.iter().zip(&b.objects) {
+            map_ids(&a.item, &b.item, out);
+        }
+        for (a, b) in a.tables.values().zip(b.tables.values()) {
+            for (a, b) in a.cells.iter().zip(&b.cells) {
+                map_story_ids(&a.text, &b.text, out, depth + 1);
+            }
+        }
+        for (a, b) in a.notes.iter().zip(&b.notes).chain(a.endnotes.iter().zip(&b.endnotes)) {
+            map_story_ids(&a.text, &b.text, out, depth + 1);
+        }
+    }
+    fn move_item(it: &mut Item, layer: LayerId, ids: &HashMap<ItemId, ItemId>) {
+        it.layer = layer;
+        it.overrides = it.overrides.and_then(|id| ids.get(&id).copied());
+        if let Some(caption) = &mut it.live_caption
+            && let Some(id) = ids.get(&caption.source)
+        {
+            caption.source = *id;
+        }
+        for child in it.children_mut().into_iter().flatten() {
+            move_item(Arc::make_mut(child), layer, ids);
+        }
+    }
+    let id = LayerId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("layer.duplicate", "missing id"))?);
+    let new = s.edit(|d, _| {
+        let index = d.layers.iter().position(|l| l.id == id).ok_or_else(|| bad("layer.duplicate", "no such layer"))?;
+        let source = d.clone();
+        let mut layer = d.layers.get(index).cloned().ok_or_else(|| bad("layer.duplicate", "no such layer"))?;
+        let new = LayerId(d.alloc());
+        layer.id = new;
+        let base = format!("{} copy", layer.name);
+        layer.name = base.clone();
+        for number in 2..=d.layers.len().saturating_add(2) {
+            if !d.layers.iter().any(|l| l.name.eq_ignore_ascii_case(&layer.name)) {
+                break;
+            }
+            layer.name = format!("{base} {number}");
+        }
+        d.layers.insert(index, layer);
+        let mut stories: HashMap<StoryId, StoryId> = HashMap::new();
+        let mut ids = HashMap::new();
+        let mut copies = Vec::new();
+        for spread in (0..source.parents.len()).map(SpreadRef::Parent).chain((0..source.spreads.len()).map(SpreadRef::Doc)) {
+            let Some(sp) = source.spread(spread) else { continue };
+            for item in sp.items.iter().filter(|item| item.layer == id) {
+                let mut copy = Item::clone(item);
+                if !super::object::renumber(d, &source, &mut copy, &mut stories) {
+                    return Err(bad("layer.duplicate", "objects nest too deeply to copy"));
+                }
+                map_ids(item, &copy, &mut ids);
+                copies.push((spread, copy));
+            }
+        }
+        // Anchored objects and their text frames were copied by the common renumber routine.
+        for (old, new_story) in &stories {
+            if let (Some(a), Some(b)) = (source.story(*old), d.story(*new_story)) {
+                map_story_ids(a, b, &mut ids, 0);
+            }
+        }
+        for (spread, mut item) in copies {
+            move_item(&mut item, new, &ids);
+            d.insert_item(spread, item, None)?;
+        }
+        for (old, new_story) in &stories {
+            if let Some(story) = d.story_mut(*new_story) {
+                story.frames = source.story(*old).map(|st| st.frames.iter().filter_map(|id| ids.get(id).copied()).collect()).unwrap_or_default();
+                if let Some((linked, revision)) = story.link {
+                    story.link = Some((stories.get(&linked).copied().unwrap_or(linked), revision));
+                }
+                story.for_each_text_mut(&mut |st| {
+                    for object in &mut st.objects {
+                        move_item(&mut Arc::make_mut(object).item, new, &ids);
+                    }
+                });
+            }
+        }
+        for spread in d.spreads.iter_mut().chain(&mut d.parents) {
+            let spread = Arc::make_mut(spread);
+            for page in &mut spread.pages {
+                let guides: Vec<_> = page
+                    .guides
+                    .iter()
+                    .filter(|g| g.layer == Some(id))
+                    .cloned()
+                    .map(|mut g| {
+                        g.layer = Some(new);
+                        g
+                    })
+                    .collect();
+                page.guides.extend(guides);
+                let hidden: Vec<_> = page.overridden.iter().filter_map(|id| ids.get(id).copied()).collect();
+                page.overridden.extend(hidden);
+            }
+        }
+        for link in &source.hyperlinks {
+            let target = match &link.source {
+                HyperlinkSource::Item { id } => ids.get(id).map(|id| HyperlinkSource::Item { id: *id }),
+                HyperlinkSource::Text { story, start, end } => {
+                    stories.get(story).map(|id| HyperlinkSource::Text { story: *id, start: *start, end: *end })
+                }
+            };
+            if let Some(target) = target {
+                let mut link = link.clone();
+                link.id = d.alloc();
+                link.source = target;
+                d.hyperlinks.push(link);
+            }
+        }
+        Ok(new)
+    })?;
+    s.doc_mut()?.active_layer = new;
+    Ok(json!({"id":new.0}))
+}
+
+fn parent_page_size(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.parentPageSize";
+    let parent = SpreadId(p.get("parent").and_then(Value::as_u64).ok_or_else(|| bad(ID, "give a master spread id"))?);
+    let si = s.doc()?.doc.parent_index(parent).ok_or_else(|| bad(ID, "no such master spread"))?;
+    let pi = p
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|i| s.doc().is_ok_and(|st| st.doc.parents.get(si).is_some_and(|sp| *i < sp.pages.len())))
+        .ok_or_else(|| bad(ID, "no such master page"))?;
+    let measure = |key: &str| {
+        p.get(key)
+            .map(|v| {
+                v.as_f64().filter(|v| v.is_finite() && *v > 0.0 && *v <= 15552.0).ok_or_else(|| bad(ID, "size must be positive and at most 216 in"))
+            })
+            .transpose()
+    };
+    let (width, height) = (measure("width")?, measure("height")?);
+    if width.is_none() && height.is_none() {
+        return Err(bad(ID, "give width or height"));
+    }
+    let anchor = p.get("anchor").map(|v| v.as_u64().filter(|n| *n <= 8).ok_or_else(|| bad(ID, "anchor must be 0–8"))).transpose()?.unwrap_or(0);
+    s.edit(|doc, _| {
+        let target = pagenor_doc::SpreadRef::Parent(si);
+        let old = doc.parents.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad(ID, "master page disappeared"))?.bounds();
+        let items: Vec<_> =
+            doc.parents.get(si).into_iter().flat_map(|sp| &sp.items).filter(|it| old.contains(it.bounds().center())).map(|it| it.id).collect();
+        resize_spread_page(doc, target, pi, width, height);
+        let page = doc.parents.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad(ID, "master page disappeared"))?;
+        let shift =
+            pagenor_geom::Vec2::new((page.width - old.width()) * (anchor % 3) as f64 / 2.0, (page.height - old.height()) * (anchor / 3) as f64 / 2.0);
+        if shift.x != 0.0 || shift.y != 0.0 {
+            for id in items {
+                if let Some(item) = doc.item_mut(id) {
+                    item.xf = pagenor_geom::Affine::translate(shift) * item.xf;
+                }
+            }
+            if let Some(page) = doc.spread_mut(target).and_then(|sp| sp.pages.get_mut(pi)) {
+                for guide in &mut page.guides {
+                    guide.position += if guide.orientation == pagenor_doc::Orientation::Vertical { shift.x } else { shift.y };
+                }
+            }
+        }
+        doc.sync_parent_settings();
+        Ok(json!({"parent":parent.0,"page":pi}))
+    })
 }

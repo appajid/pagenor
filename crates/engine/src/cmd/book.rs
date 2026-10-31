@@ -10,12 +10,19 @@ use crate::{EngineError, Result, Session};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Book {
+    pub numbering_needs_update: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toc_state: Option<Value>,
     #[serde(skip)]
     pub path: String,
     pub documents: Vec<String>,
     /// Index of the style source document.
     pub style_source: usize,
 }
+
+#[path = "book/toc.rs"]
+mod toc;
+pub(super) use toc::{book_toc_entries, book_toc_styles, update_active_toc};
 
 fn has_book(s: &Session) -> std::result::Result<(), String> {
     if s.book.is_some() { Ok(()) } else { Err("no book open".into()) }
@@ -38,7 +45,7 @@ fn save(_: &Book) -> Result<()> {
 
 fn load(path: &str) -> Result<pagenor_doc::Document> {
     #[cfg(not(target_arch = "wasm32"))]
-    let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = toc::read_bounded(path, 128 << 20)?;
     #[cfg(target_arch = "wasm32")]
     let bytes: Vec<u8> = {
         let _ = path;
@@ -154,6 +161,11 @@ fn paginate(s: &mut Session) -> Result<Value> {
             }
         }
     }
+    if let Some(b) = s.book.as_mut() {
+        b.numbering_needs_update = false;
+        b.toc_state = None;
+        save(b)?;
+    }
     Ok(json!({"pages": next.saturating_sub(1), "chapters": chapters}))
 }
 
@@ -161,6 +173,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "book.new", "New Book", ["File", "New"], None, "{path} — an empty book file (.pbook)", always, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("book.new", "`path` required"))?.to_string();
+            let path=std::path::absolute(&path).map_err(|e|bad("book.new",e.to_string()))?.to_string_lossy().to_string();
             let b = Book { path, ..Default::default() };
             save(&b)?;
             s.book = Some(b);
@@ -169,10 +182,14 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "book.open", "Open Book", [], None, "{path} → {documents}", always, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("book.open", "`path` required"))?.to_string();
             #[cfg(not(target_arch = "wasm32"))]
-            let text = std::fs::read_to_string(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            let text = String::from_utf8(toc::read_bounded(&path,4 << 20)?).map_err(|e|bad("book.open",e.to_string()))?;
             #[cfg(target_arch = "wasm32")]
             let text = String::new();
             let mut b: Book = serde_json::from_str(&text).map_err(|e| bad("book.open", format!("not a book: {e}")))?;
+            if b.documents.len()>4096 { return Err(bad("book.open","at most 4096 chapters are supported")); }
+            let path=document_path(&path).to_string_lossy().to_string();
+            let folder = std::path::Path::new(&path).parent().unwrap_or(std::path::Path::new("."));
+            for chapter in &mut b.documents { if std::path::Path::new(chapter).is_relative() { *chapter=folder.join(&*chapter).to_string_lossy().to_string(); } }
             b.path = path;
             let n = b.documents.len();
             s.book = Some(b);
@@ -185,9 +202,13 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "book.add", "Add Document", [], None, "{path, at?: index}", has_book, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("book.add", "`path` required"))?.to_string();
             load(&path)?;
+            let path=document_path(&path).to_string_lossy().to_string();
             let b = s.book.as_mut().ok_or_else(no_book)?;
             let at = p.get("at").and_then(Value::as_u64).map_or(b.documents.len(), |i| (i as usize).min(b.documents.len()));
+            if b.documents.len()>=4096 { return Err(bad("book.add","at most 4096 chapters are supported")); }
+            if b.documents.iter().any(|p|document_path(p)==document_path(&path)) { return Err(bad("book.add","document is already in the book")); }
             b.documents.insert(at, path);
+            b.numbering_needs_update=true; b.toc_state=None;
             save(b)?;
             ok()
         }),
@@ -198,12 +219,24 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("book.remove", format!("no document {i}")));
             }
             b.documents.remove(i);
+            b.numbering_needs_update=true; b.toc_state=None;
             if b.style_source >= b.documents.len() {
                 b.style_source = 0;
             }
             save(b)?;
             ok()
         }),
+        cmd!(noundo "book.move", "Move Book Document", [], None, "{from:index,to:index}", has_book, |s,p| {
+            let from=p.get("from").and_then(Value::as_u64).and_then(|n|usize::try_from(n).ok()).ok_or_else(||bad("book.move","from required"))?;
+            let to=p.get("to").and_then(Value::as_u64).and_then(|n|usize::try_from(n).ok()).ok_or_else(||bad("book.move","to required"))?;
+            let mut b=s.book.clone().ok_or_else(no_book)?;
+            if from>=b.documents.len() || to>=b.documents.len() { return Err(bad("book.move","no such chapter")); }
+            let style_source=b.documents.get(b.style_source).cloned();
+            let chapter=b.documents.remove(from); b.documents.insert(to,chapter);
+            b.style_source=style_source.and_then(|p|b.documents.iter().position(|x|x==&p)).unwrap_or(0);
+            b.numbering_needs_update=true; b.toc_state=None; save(&b)?; s.book=Some(b); ok()
+        }),
+        cmd!(noundo "book.refreshToc", "Refresh Book Table of Contents", [], None, "{} — save and close book chapters first; bounded layout stabilization and numbering", has_book, |s,_|toc::refresh(s)),
         cmd!(noundo "book.styleSource", "Style Source", [], None, "{index}", has_book, |s, p| {
             let i = p.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
             let b = s.book.as_mut().ok_or_else(no_book)?;
@@ -257,10 +290,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 store(p, &d)?;
                 n += 1;
             }
+            if let Some(b)=s.book.as_mut() { b.toc_state=None; save(b)?; }
             Ok(json!({"synced": n}))
         }),
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
             let b = s.book.clone().ok_or_else(no_book)?;
+            toc::verify_export(s)?;
             let mut parts = Vec::new();
             for path in &b.documents {
                 let mut d = load(path)?;

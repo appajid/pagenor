@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+- P11.23: local **0.13.0** adapts 38 reviewed upstream proposal scopes through
+  #2086, including the six older queued items. Adds formatting Find/Change, native
+  asynchronous dialogs, Links controls, master-side sizing and page history,
+  spanning tables/footnotes, book-wide TOCs and covers, multi-image placement,
+  demand-loaded UI fonts, variable-instance identities, image proxies and owned
+  thumbnails. Retains Indic input, lazy/scoped fonts, `.pgnr`, owner icons and
+  left/right masters. Native format advances to 7 for composer/TOC metadata.
+  All seven workspace gates pass: 3,053 tests, zero failures, seven existing skips;
+  twenty WASM packages. Twenty-two synthetic offscreen views were inspected. Native Windows/Linux execution and publication
+  remain pending. The owner's app session and Vectnor remain untouched.
+  [Per-proposal source pins, safeguards and scope](docs/upstream-adoption-20261031.md).
+
 - P11.22: local **0.12.0** adapts five queued upstream proposals: Layers inline
   object renaming, shared page/left-right-master navigation, dedicated Insert Pages,
   safe master deletion and linked paragraph border/shading controls. Native format 6

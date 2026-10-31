@@ -25,6 +25,7 @@ pagenor-engine = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
 unicode-segmentation = { workspace = true }
+unicode-script = { workspace = true }
 regex = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
@@ -42,3 +43,7 @@ pagenor-fonts = { workspace = true, features = ["testing"] }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "1a11a4897865f7410c40d25ca6e452ce399a1a2c" }
+raw-window-handle = "0.6"

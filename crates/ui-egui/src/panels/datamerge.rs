@@ -523,11 +523,7 @@ fn create_grid(app: &mut DesignApp) {
 }
 
 fn select_source(app: &mut DesignApp) {
-    let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("dataMerge")) else {
-        app.status(tr(&app.ui.language, "Pass csv, rows, json, or bytes from the control channel."));
-        return;
-    };
-    let _ = app.run("data.source.select", json!({"path": path}));
+    let _ = app.ask_open("dataMerge", crate::file_dialogs::Bound::Document, |app, path| app.run("data.source.select", json!({"path":path})));
 }
 
 fn choice(ui: &mut egui::Ui, id: &str, current: &str, options: &[(&str, &str)], lang: &str) -> Option<String> {

@@ -445,6 +445,15 @@ pub enum Composer {
     Paragraph,
     /// Greedy, line by line.
     SingleLine,
+    /// World-Ready paragraph identity for interchange, using Pagenor shaping.
+    WorldReady,
+    /// World-Ready identity with greedy, single-line composition.
+    WorldReadySingleLine,
+}
+impl Composer {
+    pub fn single_line(self) -> bool {
+        matches!(self, Self::SingleLine | Self::WorldReadySingleLine)
+    }
 }
 
 /// What a nested style runs to (Drop Caps and Nested Styles).

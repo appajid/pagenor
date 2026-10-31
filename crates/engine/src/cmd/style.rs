@@ -705,55 +705,10 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = super::text::format_targets_pub(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();
-        let (style_para, _) = styles.resolve_para_style(&name);
         for t in &targets {
             let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                let blank_eof = st.text.ends_with('\n');
-                let end = if r.is_empty() || (r.end == st.len() && blank_eof) { r.end } else { r.end.saturating_sub(1) };
-                let (first, last) = (st.para_at(r.start), st.para_at(end));
-                let eof_index = st.paras.len().saturating_sub(1);
-                let mut pi = first;
-                st.format_paras(r.start..end, |f| {
-                    let final_blank = blank_eof && pi == eof_index;
-                    pi += 1;
-                    f.style = name.clone();
-                    if clear {
-                        f.para = ParaAttrs::default();
-                        f.chars = CharAttrs::default();
-                        f.eof_inherited_chars = None;
-                    } else if !final_blank {
-                        f.para.retain_differences(&style_para);
-                        // Genuine paragraph character defaults remain explicit, even when equal to the new style.
-                    }
-                });
-                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, base) = styles.resolve_para(pf);
-                    let end = range.end.saturating_add(1).min(if blank_eof && !clear { st.len().saturating_sub(1) } else { st.len() });
-                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
-                    if !clear && range.is_empty() {
-                        continue;
-                    }
-                    st.format_chars(range, |f| {
-                        if clear {
-                            f.over = CharAttrs::default();
-                        } else {
-                            let mut inherited = base.clone();
-                            inherited.apply(&styles.char_style_attrs(&f.style));
-                            f.over.retain_differences(&inherited);
-                        }
-                    });
-                }
-                if clear
-                    && t.cell.is_none()
-                    && r.end == st.len()
-                    && st.text.ends_with('\n')
-                    && let Some(pf) = st.paras.last_mut()
-                {
-                    // Clearing an outer EOF still chooses an explicit empty typing format.
-                    pf.eof_inherited_chars = Some(CharAttrs::default());
-                }
+                apply_para_style(st, &styles, &name, r, clear, t.cell.is_none());
             }
         }
         ok()
@@ -774,19 +729,7 @@ fn apply_char(s: &mut Session, p: &Value) -> Result<Value> {
                     st.format_chars(t.range.clone(), |f| f.style = name.clone());
                     continue;
                 }
-                for (pi, range) in st.para_ranges().into_iter().enumerate() {
-                    let range = range.start.max(t.range.start)..range.end.saturating_add(1).min(st.len()).min(t.range.end);
-                    if range.is_empty() {
-                        continue;
-                    }
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, mut inherited) = styles.resolve_para(pf);
-                    inherited.apply(&styles.char_style_attrs(&name));
-                    st.format_chars(range, |f| {
-                        f.style = name.clone();
-                        f.over.retain_differences(&inherited);
-                    });
-                }
+                apply_char_style(st, &styles, &name, &t.range);
             }
         }
         ok()
@@ -2301,5 +2244,78 @@ mod color_target_tests {
         s.execute("text.select", &json!({"story":story,"anchor":0,"focus":0})).unwrap();
         let name = s.execute("object.color", &json!({"ids":[frame],"color":"#654321"})).unwrap()["swatch"].clone();
         assert_eq!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(frame.as_u64().unwrap())).unwrap().fill.swatch, name.as_str().unwrap());
+    }
+}
+
+/// Shared paragraph-style application, preserving Pagenor EOF and paragraph defaults.
+pub(crate) fn apply_para_style(
+    st: &mut pagenor_doc::Story,
+    styles: &pagenor_doc::Styles,
+    name: &str,
+    r: &std::ops::Range<usize>,
+    clear: bool,
+    outer: bool,
+) {
+    let (style_para, _) = styles.resolve_para_style(name);
+    let blank_eof = st.text.ends_with('\n');
+    let end = if r.is_empty() || (r.end == st.len() && blank_eof) { r.end } else { r.end.saturating_sub(1) };
+    let (first, last) = (st.para_at(r.start), st.para_at(end));
+    let eof_index = st.paras.len().saturating_sub(1);
+    let mut pi = first;
+    st.format_paras(r.start..end, |f| {
+        let final_blank = blank_eof && pi == eof_index;
+        pi += 1;
+        f.style = name.to_string();
+        if clear {
+            f.para = ParaAttrs::default();
+            f.chars = CharAttrs::default();
+            f.eof_inherited_chars = None;
+        } else if !final_blank {
+            f.para.retain_differences(&style_para);
+            // Genuine paragraph character defaults remain explicit, even when equal to the new style.
+        }
+    });
+    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, base) = styles.resolve_para(pf);
+        let end = range.end.saturating_add(1).min(if blank_eof && !clear { st.len().saturating_sub(1) } else { st.len() });
+        let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+        if !clear && range.is_empty() {
+            continue;
+        }
+        st.format_chars(range, |f| {
+            if clear {
+                f.over = CharAttrs::default();
+            } else {
+                let mut inherited = base.clone();
+                inherited.apply(&styles.char_style_attrs(&f.style));
+                f.over.retain_differences(&inherited);
+            }
+        });
+    }
+    if clear
+        && outer
+        && r.end == st.len()
+        && st.text.ends_with('\n')
+        && let Some(pf) = st.paras.last_mut()
+    {
+        // Clearing an outer EOF still chooses an explicit empty typing format.
+        pf.eof_inherited_chars = Some(CharAttrs::default());
+    }
+}
+
+pub(crate) fn apply_char_style(st: &mut pagenor_doc::Story, styles: &pagenor_doc::Styles, name: &str, r: &std::ops::Range<usize>) {
+    for (pi, range) in st.para_ranges().into_iter().enumerate() {
+        let range = range.start.max(r.start)..range.end.saturating_add(1).min(st.len()).min(r.end);
+        if range.is_empty() {
+            continue;
+        }
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, mut inherited) = styles.resolve_para(pf);
+        inherited.apply(&styles.char_style_attrs(name));
+        st.format_chars(range, |f| {
+            f.style = name.to_string();
+            f.over.retain_differences(&inherited);
+        });
     }
 }

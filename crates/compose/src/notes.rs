@@ -127,9 +127,10 @@ impl Notes {
     #[allow(clippy::too_many_arguments)]
     pub fn reserve(&mut self, doc: &Document, fi: usize, col: usize, extra: &[usize], w: f64, f: &FrameSpec, opts: &ComposeOptions) -> f64 {
         let o = &doc.footnote_options;
+        let w = if o.span_columns { f.area.width() } else { w };
         let mut n = 0usize;
         let mut h = 0.0;
-        for p in self.placed.iter().filter(|p| p.fi == fi && p.col == col) {
+        for p in self.placed.iter().filter(|p| p.fi == fi && (o.span_columns || p.col == col)) {
             n += 1;
             h += p.h;
         }
@@ -144,6 +145,7 @@ impl Notes {
         if self.placed.iter().any(|p| p.k == k) {
             return;
         }
+        let (w, col) = if doc.footnote_options.span_columns { (f.area.width(), 0) } else { (w, col) };
         let (text, h) = self.compose(doc, k, w, f, opts);
         self.placed.push(Placed { k, fi, col, h, text });
     }
@@ -162,6 +164,7 @@ impl Notes {
             let (Some(_), Some(col)) = (frames.get(fi), cols.get(fi).and_then(|c| c.get(ci))) else { continue };
             let here: Vec<&Placed> = self.placed.iter().filter(|p| p.fi == fi && p.col == ci).collect();
             let total: f64 = here.iter().map(|p| p.h).sum::<f64>() + o.space_between * (here.len() - 1) as f64;
+            let col = if o.span_columns { frames.get(fi).map_or(*col, |f| f.area) } else { *col };
             let top = col.y1 - total;
             let ft = &mut out.frames[fi];
             if o.rule.on && o.rule.weight > 0.0 {

@@ -23,7 +23,36 @@ pub use crate::recovery_runs::run_dir;
 /// Native session state only; never serialized into documents. Canonical directories avoid
 /// opening the same checkpoint twice through different spellings of its path.
 #[derive(Debug, Default)]
-pub(crate) struct Entries(Mutex<BTreeMap<PathBuf, u64>>);
+pub(crate) struct Entries(Mutex<BTreeMap<PathBuf, u64>>, Mutex<Option<Checkpoint>>);
+
+#[derive(Debug)]
+struct Checkpoint {
+    document: std::sync::Weak<pagenor_doc::Document>,
+    path: Option<String>,
+    directory: PathBuf,
+    uid: u64,
+    stamps: [Stamp; 2],
+}
+#[derive(Debug, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    file_id: u64,
+}
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        let metadata = std::fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file())?;
+        #[cfg(unix)]
+        let file_id = std::os::unix::fs::MetadataExt::ino(&metadata);
+        #[cfg(not(unix))]
+        let file_id = 0;
+        Some(Self { size: metadata.len(), modified: metadata.modified().ok(), file_id })
+    }
+}
+fn stamps(dir: &Path, uid: u64) -> Option<[Stamp; 2]> {
+    let (doc, meta) = files(dir, uid);
+    Some([Stamp::of(&doc)?, Stamp::of(&meta)?])
+}
 
 fn io_error(path: &Path, error: impl std::fmt::Display) -> EngineError {
     EngineError::Other(format!("{}: {error}", path.display()))
@@ -174,6 +203,17 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             }
             continue;
         }
+        let current = d.preview_stash.as_ref().unwrap_or(&d.doc);
+        let unchanged = d.recovery_entries.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|last| {
+            last.directory == dir
+                && last.path == d.path
+                && last.document.upgrade().is_some_and(|doc| std::sync::Arc::ptr_eq(&doc, current))
+                && d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&dir) == Some(&last.uid)
+                && stamps(&dir, last.uid).is_some_and(|now| now == last.stamps)
+        });
+        if unchanged {
+            continue;
+        }
         let bytes = pagenor_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| io_error(&dir, e))?;
         let m = json!({"path": d.path, "title": d.title(), "saved": pagenor_doc::vars::now()});
         let mut entries = d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -189,6 +229,11 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             return Err(e);
         }
         entries.insert(dir.clone(), uid);
+        drop(entries);
+        if let Some(stamps) = stamps(&dir, uid) {
+            *d.recovery_entries.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Checkpoint { document: std::sync::Arc::downgrade(current), path: d.path.clone(), directory: dir.clone(), uid, stamps });
+        }
         n += 1;
     }
     Ok(n)

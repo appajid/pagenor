@@ -24,6 +24,12 @@ pub fn specs() -> Vec<CommandSpec> {
             let info = pagenor_images::color_info(&a.data);
             Ok(json!({"colorMode":info.mode,"iccProfile":info.profile,"metadataSource":"storedAsset"}))
         }),
+        cmd!(query "links.details", "Link File Information", [], None, "{asset} → {name, path?, type: MIME, bytes, pixels?, pdfCrop?, colorMode, iccProfile, metadataSource: storedAsset}; describes the stored copy without reading an external file", has_doc, |s, p| {
+            let aid = asset_param(p, "links.details")?;
+            let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.details", "no such graphic"))?;
+            let info = pagenor_images::color_info(&a.data);
+            Ok(json!({"name":a.name,"path":a.link,"type":a.mime,"bytes":a.data.len(),"pixels":a.pixels,"pdfCrop":if a.mime=="application/pdf"{Some(a.pdf_crop.name())}else{None},"colorMode":info.mode,"iccProfile":info.profile,"metadataSource":"storedAsset"}))
+        }),
         cmd!(
             "links.relink",
             "Relink…",
@@ -132,6 +138,58 @@ fn file_matches(path: &str, data: &[u8]) -> std::io::Result<bool> {
 }
 
 fn list(d: &Document) -> Vec<Value> {
+    list_mode(d, &mut LinkListChecks::default(), false)
+}
+
+/// File status checks owned by one worker; byte identity prevents stale reuse after relinking.
+#[derive(Default)]
+pub struct LinkListChecks {
+    graphics: std::collections::HashMap<String, (std::sync::Weak<Vec<u8>>, u64, std::time::SystemTime, &'static str)>,
+}
+
+pub fn preview_document_links(d: &Document, _cache: &pagenor_compose::Cache, _document: Option<&std::path::Path>) -> Vec<Value> {
+    list_mode(d, &mut LinkListChecks::default(), true)
+}
+pub fn list_document_links(
+    d: &Document,
+    _cache: &pagenor_compose::Cache,
+    _document: Option<&std::path::Path>,
+    checks: &mut LinkListChecks,
+) -> Vec<Value> {
+    // Drop obsolete entries as documents are edited or links removed.
+    checks.graphics.retain(|_, (data, ..)| data.strong_count() > 0);
+    list_mode(d, checks, false)
+}
+
+fn cached_status(a: &pagenor_doc::Asset, checks: &mut LinkListChecks) -> &'static str {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = &a.link {
+        let Ok(m) = std::fs::metadata(path) else { return "missing" };
+        if m.len() != a.data.len() as u64 {
+            return "modified";
+        }
+        let Ok(time) = m.modified() else { return status(a) };
+        // Recent timestamps may conceal another same-size write within filesystem precision.
+        let settled = time.elapsed().is_ok_and(|age| age > std::time::Duration::from_secs(2));
+        if settled
+            && let Some((bytes, size, at, status)) = checks.graphics.get(path)
+            && *size == m.len()
+            && *at == time
+            && bytes.upgrade().is_some_and(|bytes| Arc::ptr_eq(&bytes, &a.data))
+        {
+            return status;
+        }
+        let result = status(a);
+        if settled && result != "missing" {
+            checks.graphics.insert(path.clone(), (Arc::downgrade(&a.data), m.len(), time, result));
+        }
+        return result;
+    }
+    let _ = checks;
+    status(a)
+}
+
+fn list_mode(d: &Document, checks: &mut LinkListChecks, preview: bool) -> Vec<Value> {
     let used = d.used_assets();
     d.assets
         .values()
@@ -159,7 +217,7 @@ fn list(d: &Document) -> Vec<Value> {
                 })
                 .collect();
             let pdf_crop = (a.mime == "application/pdf").then(|| a.pdf_crop.name());
-            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": status(a), "pixels": a.pixels, "colorMode": pagenor_images::color_mode(&a.data), "pdfCrop": pdf_crop, "uses": uses})
+            json!({"asset": a.id.0, "name": a.name, "path": a.link, "status": if preview && a.link.is_some() { "checking" } else { cached_status(a, checks) }, "pixels": a.pixels, "colorMode": pagenor_images::color_mode(&a.data), "pdfCrop": pdf_crop, "uses": uses})
         })
         .collect()
 }

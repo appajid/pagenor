@@ -4892,3 +4892,381 @@ fn rule_above_offset_is_measured_from_the_baseline() {
     assert!((rule.height() - 1.5).abs() < 1e-6);
     assert!(rule.y0 > first.baseline, "the rule stays below the row above: {rule:?}, its baseline {}", first.baseline);
 }
+
+#[test]
+fn spanning_table_uses_all_columns_and_body_resumes_below() {
+    let (mut d, sid, fid) = table_doc(Rect::new(0.0, 0.0, 400.0, 700.0), filled(3, 2, 1, 400.0));
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 2;
+    o.gutter = 20.0;
+    let st = d.story_mut(sid).unwrap();
+    st.insert(0, &format!("{LOREM}\n{LOREM}\n"));
+    let pi = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[pi].para.span_columns = Some(SpanColumns::Span(0));
+    let end = st.len();
+    st.insert(end, &format!("\n{}", [LOREM; 6].join("\n")));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    let t = &ft.tables[0];
+    assert!((t.rect.width() - 400.0).abs() < 1e-6, "span width: {}", t.rect.width());
+    assert!(ft.lines.iter().filter(|l| l.para < pi).all(|l| l.baseline + l.descent <= t.rect.y0 + 0.01));
+    let following: Vec<_> = ft.lines.iter().filter(|l| l.para > pi).collect();
+    assert!(following.iter().any(|l| l.column == 1), "exercise both columns below the table");
+    assert!(following.iter().all(|l| l.baseline > t.rect.y1), "every column must resume below the table");
+}
+
+#[test]
+fn spanning_table_continues_in_next_frame_with_repeated_header() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, "", ParaFormat::default()).unwrap();
+    let mut previous = first;
+    for i in 0..4 {
+        let y = 160.0 * (i + 1) as f64;
+        let (next, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 400.0, y + 130.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(previous, next).unwrap();
+        previous = next;
+    }
+    for id in d.story(sid).unwrap().frames.clone() {
+        d.item_mut(id).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    }
+    let mut t = filled(8, 2, 1, 400.0);
+    for row in &mut t.rows {
+        row.height = 30.0;
+        row.mode = pagenor_doc::RowHeightMode::Exactly;
+    }
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(0, t);
+    st.paras.iter_mut().find(|p| p.table.is_some()).unwrap().para.span_columns = Some(SpanColumns::Span(2));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let fragments: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).collect();
+    assert!(fragments.len() > 1);
+    for frag in &fragments {
+        assert!((frag.rect.width() - 400.0).abs() < 1e-6, "span width: {}", frag.rect.width());
+        assert_eq!(frag.column, 0, "a spanning fragment must not continue in column two");
+        assert!(frag.cell(0, 0).is_some(), "repeat the header in each frame");
+    }
+    let rows: Vec<_> = fragments.iter().flat_map(|f| &f.cells).filter(|c| c.col == 0 && c.row > 0).map(|c| c.row).collect();
+    assert_eq!(rows, (1..9).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_table_in_a_split_block_ends_it_and_the_text_after_stays_below() {
+    // A short frame: the second paragraph after the table moves on to the next sub-column, which
+    // must start below the table, not at the top of the block before it.
+    let cfg = (2, 12.0, 0.0);
+    let (mut d, sid, _, first) = split_doc(3, 0, Rect::new(0.0, 0.0, 400.0, 260.0), cfg);
+    let st = d.story_mut(sid).unwrap();
+    let at = st.para_ranges()[first + 1].start;
+    st.insert_table(at, filled(3, 2, 1, 300.0));
+    let ti = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[ti].para.span_columns = Some(SpanColumns::Split(cfg.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let t = &ft.tables[0];
+    let after: Vec<_> = ft.lines.iter().filter(|l| l.para > ti).collect();
+    assert!(after.len() > 1);
+    assert!(after.iter().all(|l| l.baseline > t.rect.y1), "text after the table must stay below it");
+}
+
+#[test]
+fn kept_table_skips_a_column_too_narrow_for_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let filler = (0..8).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &filler, ParaFormat::default()).unwrap();
+    let (narrow, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 150.0, 460.0), lid, "", ParaFormat::default()).unwrap();
+    let (wide, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 480.0, 400.0, 780.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, narrow).unwrap();
+    d.thread(narrow, wide).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = pagenor_doc::Table::new(77, 4, 2, 0, 0, 300.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    assert_eq!(frames, vec![wide], "a kept table moves only to a column wide enough for it");
+}
+
+#[test]
+fn kept_heading_and_table_skip_a_column_that_holds_only_the_table() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let text = [(0..6).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n"), "Synthetic heading".into()].join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &text, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    // Holds the 96 pt table alone, not with the heading above it.
+    let (snug, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 340.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 370.0, 400.0, 670.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, snug).unwrap();
+    d.thread(snug, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = pagenor_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let table_frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    let heading_frames: Vec<_> = cs.frames.iter().filter(|f| f.lines.iter().any(|l| l.para == i - 1)).map(|f| f.frame).collect();
+    assert_eq!(table_frames, vec![tall]);
+    assert_eq!(heading_frames, vec![tall], "heading and table go on together to the first column that holds both");
+}
+
+#[test]
+fn kept_heading_follows_its_table_past_a_short_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let text = [(0..6).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n"), "Synthetic heading".into()].join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &text, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 540.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = pagenor_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let table_frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    let heading_frames: Vec<_> = cs.frames.iter().filter(|f| f.lines.iter().any(|l| l.para == i - 1)).map(|f| f.frame).collect();
+    assert_eq!(table_frames, vec![tall]);
+    assert_eq!(heading_frames, vec![tall], "the kept heading goes where its table went");
+    let _ = short;
+}
+
+#[test]
+fn kept_table_skips_a_frame_too_short_for_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let filler = (0..8).map(|k| format!("Filler {k}")).collect::<Vec<_>>().join("\n");
+    let (first, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 130.0), lid, &filler, ParaFormat::default()).unwrap();
+    let (short, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 160.0, 400.0, 210.0), lid, "", ParaFormat::default()).unwrap();
+    let (tall, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 240.0, 400.0, 540.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, short).unwrap();
+    d.thread(short, tall).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    let mut table = pagenor_doc::Table::new(77, 4, 2, 0, 0, 200.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(end, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let frames: Vec<_> = cs.frames.iter().filter(|f| !f.tables.is_empty()).map(|f| f.frame).collect();
+    assert_eq!(frames, vec![tall], "the whole table goes to the first frame that holds it");
+    assert!(cs.frames.iter().flat_map(|f| &f.tables).all(|t| t.first && t.last));
+}
+
+#[test]
+fn kept_table_moves_whole_with_its_heading() {
+    let (mut d, sid, _) = keep_doc(6, &["Synthetic heading"], 160.0);
+    let st = d.story_mut(sid).unwrap();
+    let anchor = st.text.len();
+    let mut table = pagenor_doc::Table::new(77, 4, 2, 0, 0, 100.0);
+    for row in &mut table.rows {
+        row.height = 24.0;
+    }
+    st.insert_table(anchor, table);
+    let i = st.paras.iter().position(|p| p.table.is_some()).unwrap();
+    st.paras[i].para.keep_all_lines = Some(true);
+    st.paras[i - 1].para.keep_with_next = Some(1);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let fragments: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).collect();
+    assert_eq!(fragments.len(), 1);
+    assert!(fragments[0].first && fragments[0].last);
+    let cols = column_of_para(&cs, i - 1);
+    assert_eq!(cols, vec![fragments[0].column]);
+}
+
+fn justified_content_clears_footnotes(mode: pagenor_doc::VerticalJustification, table: bool) {
+    for span in [false, true] {
+        let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 240.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        d.footnote_options.span_columns = span;
+        d.footnote_options.space_before = 60.0;
+        let st = d.story_mut(sid).unwrap();
+        st.insert_note(5, "Synthetic footnote.", ParaFormat::default());
+        if table {
+            let mut t = pagenor_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+            t.rows[0].mode = pagenor_doc::RowHeightMode::Exactly;
+            t.rows[0].height = 90.0;
+            st.insert_table(st.len(), t);
+        }
+        let top = compose_story(&d, sid, &ComposeOptions::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = mode;
+
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+        assert!(!cs.is_overset());
+        let ft = cs.frame(fid).unwrap();
+        let original = top.frame(fid).unwrap();
+        assert_eq!(ft.notes.len(), 1);
+        assert_eq!(ft.notes[0].rect, original.notes[0].rect, "footnotes must not move");
+        let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+        assert!(ft.lines.iter().all(|l| l.baseline + l.descent <= limit + 0.01), "lines overlap footnotes in {mode:?}, span {span}");
+        assert!(ft.tables.iter().flat_map(|t| &t.cells).all(|c| c.rect.y1 <= limit + 0.01), "cells overlap footnotes in {mode:?}, span {span}");
+        assert!(ft.lines.last().unwrap().baseline > original.lines.last().unwrap().baseline + 0.01, "content must still move down");
+        if table {
+            assert_eq!(ft.tables.len(), 1);
+            assert!(ft.tables[0].rect.y1 > original.tables[0].rect.y1 + 0.01, "table must still move down");
+        }
+    }
+}
+
+#[test]
+fn bottom_justified_paragraphs_clear_footnotes() {
+    justified_content_clears_footnotes(pagenor_doc::VerticalJustification::Bottom, false);
+}
+
+#[test]
+fn bottom_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(pagenor_doc::VerticalJustification::Bottom, true);
+}
+
+#[test]
+fn center_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(pagenor_doc::VerticalJustification::Center, true);
+}
+
+#[test]
+fn vertically_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(pagenor_doc::VerticalJustification::Justify, true);
+}
+
+#[test]
+fn vertical_justification_counts_table_fragment_bottoms() {
+    use pagenor_doc::VerticalJustification::{Bottom, Center, Justify};
+    let (mut d, sid, fid) = doc_with("Reference.", Rect::new(0.0, 0.0, 200.0, 240.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "Synthetic footnote.", ParaFormat::default());
+    let mut table = pagenor_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.rows[0].mode = pagenor_doc::RowHeightMode::Exactly;
+    table.rows[0].height = 120.0;
+    st.insert_table(st.len(), table);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for mode in [Bottom, Center, Justify] {
+        let mut ft = cs.frame(fid).unwrap().clone();
+        let t = &ft.tables[0];
+        let (anchor, bottom, baseline) = (t.line, t.rect.y1, t.rect.y0);
+        // Exercise a fragment extending below its anchor, without a later text line hiding it.
+        ft.lines.truncate(anchor + 1);
+        ft.lines[anchor].baseline = baseline;
+        let mut spec = frame_specs(&d, sid).remove(0);
+        spec.opts.vertical_justification = mode;
+
+        vertical_justify(&mut ft, &spec, false, &d.footnote_options);
+
+        let moved = ft.lines[anchor].baseline - baseline;
+        let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+        assert!(moved > 0.01);
+        assert!(bottom + moved <= limit + 0.01, "fragment overlaps footnotes in {mode:?}");
+    }
+}
+
+#[test]
+fn table_rows_clear_footnotes_and_continue_in_the_next_column() {
+    for span in [false, true] {
+        for row_height in [24.0, 150.0] {
+            let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+            d.footnote_options.span_columns = span;
+            let st = d.story_mut(sid).unwrap();
+            st.insert_note(5, "First synthetic footnote.", ParaFormat::default());
+            st.insert_note(25, "Second synthetic footnote.", ParaFormat::default());
+            let mut table = pagenor_doc::Table::new(77, 8, 1, 0, 0, 180.0);
+            for row in &mut table.rows {
+                row.mode = pagenor_doc::RowHeightMode::Exactly;
+                row.height = row_height;
+            }
+            st.insert_table(st.len(), table);
+            let (next, _) =
+                d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 220.0, 420.0, 1720.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+            d.thread(fid, next).unwrap();
+
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+            assert!(!cs.is_overset());
+            let ft = cs.frame(fid).unwrap();
+            assert_eq!(ft.notes.len(), 2);
+            let top = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+            for frag in &ft.tables {
+                if span || frag.column == 0 {
+                    assert!(frag.cells.iter().all(|c| c.rect.y1 <= top + 0.01), "rows overlap footnotes: {:?}, top {top}", frag.rect);
+                }
+            }
+            assert!(cs.frames.iter().skip(1).any(|f| !f.tables.is_empty()) || ft.tables.iter().any(|t| t.column == 1));
+            let rows: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).flat_map(|t| &t.cells).filter(|c| !c.repeated).map(|c| c.row).collect();
+            assert_eq!(rows, (0..8).collect::<Vec<_>>());
+            if row_height == 150.0 {
+                assert!(!ft.tables.iter().any(|t| t.column == 0), "the whole table moves when no row fits");
+            }
+        }
+    }
+}
+
+#[test]
+fn table_reports_overset_when_every_remaining_column_has_footnotes() {
+    let (mut d, sid, fid) = doc_with("Reference.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.footnote_options.span_columns = true;
+    d.footnote_options.space_before = 40.0;
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "Synthetic spanning footnote.", ParaFormat::default());
+    let mut table = pagenor_doc::Table::new(77, 2, 1, 0, 0, 100.0);
+    for row in &mut table.rows {
+        row.mode = pagenor_doc::RowHeightMode::Exactly;
+        row.height = 90.0;
+    }
+    table.cells[0].row_span = 2;
+    let anchor = st.insert_table(st.len(), table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+    assert!(cs.is_overset());
+    assert_eq!(cs.overset_at, Some(anchor));
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.notes.len(), 1);
+    assert!(ft.notes[0].rect.y0 - d.footnote_options.space_before < 180.0);
+    assert!(cs.frames.iter().all(|f| f.tables.is_empty()), "the unplaced row group must remain overset");
+}
+
+#[test]
+fn table_cell_footnotes_fit_inside_the_row() {
+    let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 200.0, 200.0), ParaAttrs::default());
+    let mut table = pagenor_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    let cell = &mut table.cells[0];
+    cell.text.insert(0, "Cell reference.");
+    cell.text.insert_note(5, "Synthetic cell footnote.", ParaFormat::default());
+    d.story_mut(sid).unwrap().insert_table(0, table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+    let cell = &cs.frames[0].tables[0].cells[0];
+    assert!(!cell.overset);
+    let frame = &cell.text.frames[0];
+    assert_eq!(frame.notes.len(), 1);
+    let note = &frame.notes[0];
+    assert!(cell.origin.y + note.rect.y1 <= cell.clip.y1 + 0.01, "cell footnote must remain within the row");
+    assert!(frame.lines.iter().all(|l| l.baseline + l.descent <= note.rect.y0 - d.footnote_options.space_before + 0.01));
+}

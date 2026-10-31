@@ -15,8 +15,11 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current local milestone: **0.12.0** — master/page workflows and editor controls.
-See the [review and validation notes](docs/pagenor/UPSTREAM_ADOPTION_0110.md).
+Current local milestone: **0.13.0** — typography, native dialogs, book TOCs/covers
+and multi-image placement. All seven local gates pass (3,053 tests; twenty WASM
+packages), with twenty-two inspected offscreen views. Native Windows/Linux execution
+and publication remain pending.
+See the [review and validation notes](docs/upstream-adoption-20261031.md).
 The published desktop preview remains 0.7.0; native Windows/Linux validation for
 this local milestone is pending.
 

@@ -358,6 +358,13 @@ impl FontFace {
     pub fn postscript_name(&self) -> Option<&str> {
         self.postscript.get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| default_postscript_name(&f)) }).as_deref()
     }
+    /// PostScript identity of this named variable-font instance (OpenType TN 5902).
+    pub fn instance_postscript_name(&self) -> Option<String> {
+        if !self.is_variable() {
+            return None;
+        }
+        crate::psname::instance_postscript_name(&self.skrifa()?, &self.coords)
+    }
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
         self.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()).unwrap_or(0)
@@ -682,6 +689,17 @@ fn default_postscript_name(font: &skrifa::FontRef<'_>) -> Option<String> {
     name(font, &[StringId::POSTSCRIPT_NAME])
 }
 
+/// ID 2 names a face within its legacy RIBBI family, not necessarily its typographic family.
+fn style_aliases(f: &skrifa::FontRef<'_>) -> Vec<String> {
+    let differs =
+        name(f, &[StringId::TYPOGRAPHIC_FAMILY_NAME]).zip(name(f, &[StringId::FAMILY_NAME])).is_some_and(|(a, b)| !a.eq_ignore_ascii_case(&b));
+    if differs {
+        aliases(f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME])
+    } else {
+        aliases(f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME])
+    }
+}
+
 fn face_names(f: &skrifa::FontRef<'_>) -> Option<(String, String)> {
     let family = name(f, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME])?;
     let style = name(f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]).unwrap_or_else(|| "Regular".into());
@@ -773,11 +791,7 @@ fn read_file_face_names(path: &std::path::Path) -> std::io::Result<(Vec<ScannedF
                         styles.push(style);
                     }
                 }
-                let style_aliases: Arc<[String]> = if styles.is_empty() {
-                    aliases(&f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]).into()
-                } else {
-                    Arc::from([])
-                };
+                let style_aliases: Arc<[String]> = if styles.is_empty() { style_aliases(&f).into() } else { Arc::from([]) };
                 let styles = if styles.is_empty() { vec![style] } else { styles };
                 Some(
                     styles
@@ -844,8 +858,7 @@ fn native_face_names(data: &[u8]) -> Result<Vec<ScannedFace>, String> {
             add_style(style)?;
         }
     }
-    let style_aliases: Arc<[String]> =
-        if styles.is_empty() { aliases(&font, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]).into() } else { Arc::from([]) };
+    let style_aliases: Arc<[String]> = if styles.is_empty() { style_aliases(&font).into() } else { Arc::from([]) };
     if styles.is_empty() {
         if base_bytes.checked_add(style.len()).is_none_or(|n| n > MAX_NATIVE_NAMES_BYTES) {
             return Err("Native metadata exceeds the face/name limit".into());
@@ -993,7 +1006,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         .or(axis(b"slnt").map(|v| v.abs() > 0.1))
         .unwrap_or(!matches!(a.style, skrifa::attribute::Style::Normal) || style_italic(&style));
     let family_aliases = aliases(&f, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]);
-    let style_aliases = aliases(&f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]);
+    let style_aliases = style_aliases(&f);
     Some(FontFace {
         id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         family,

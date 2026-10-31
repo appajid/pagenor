@@ -656,12 +656,12 @@ mod runtime {
                 let st = app.session.active().ok_or("No document")?;
                 let default =
                     st.path.as_ref().map(|p| std::path::Path::new(p).with_extension("proofreading-report.html").to_string_lossy().to_string());
-                let path = p["path"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or(default)
-                    .or_else(|| app.services.pick_save.as_mut().and_then(|pick| pick("proofreading-report.html")))
-                    .ok_or("No save path selected")?;
+                let Some(path) = p["path"].as_str().map(str::to_owned).or(default) else {
+                    let params = p.clone();
+                    return app.ask_save("proofreading-report.html", crate::file_dialogs::Bound::Document, move |app, path| {
+                        app.run("ai.report.export", crate::file_dialogs::with_path(&params, "path", path))
+                    });
+                };
                 use std::io::Write;
                 let base = std::path::PathBuf::from(path);
                 let mut path = base.clone();

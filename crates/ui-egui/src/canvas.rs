@@ -265,6 +265,7 @@ pub fn page_box_go(app: &mut DesignApp, b: &PageBox, index: usize) -> Result<(),
 
 /// Scroll so absolute page `abs` is centred (keeps zoom).
 pub fn go_to_page(app: &mut DesignApp, abs: usize) {
+    record_history(app, false);
     if app.session.active().is_some_and(|st| st.editing_parents) {
         let _ = app.run("layout.parents.edit", json!({"on": false}));
     }
@@ -275,10 +276,12 @@ pub fn go_to_page(app: &mut DesignApp, abs: usize) {
     if let Some(v) = app.view_mut() {
         v.origin = Point::new(pr.center().x - rect.width() as f64 / 2.0 / v.zoom, pr.center().y - rect.height() as f64 / 2.0 / v.zoom);
     }
+    record_history(app, true);
 }
 
 /// Navigate to the selected master side, preserving the document's own view.
 pub fn go_to_master(app: &mut DesignApp, index: usize, page: Option<usize>) -> Result<(), String> {
+    record_history(app, false);
     let st = app.session.active().ok_or("no document open")?;
     let sp = st.doc.parents.get(index).ok_or("no such master")?;
     if page.is_some_and(|i| sp.pages.get(i).is_none()) {
@@ -299,12 +302,14 @@ pub fn go_to_master(app: &mut DesignApp, index: usize, page: Option<usize>) -> R
         v.origin = Point::new(bounds.center().x - rect.width() as f64 / 2.0 / v.zoom, bounds.center().y - rect.height() as f64 / 2.0 / v.zoom);
         v.fitted = true;
     }
+    record_history(app, true);
     Ok(())
 }
 
 /// Centre the spread `delta` spreads after (or before) the one in view (keeps zoom); stops at the
 /// first and last spread. Parent spreads while they are being edited.
 pub fn step_spread(app: &mut DesignApp, delta: isize) {
+    record_history(app, false);
     let Some(st) = app.session.active() else { return };
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);
     let Some(cur) = current_slot(app, &layout) else { return };
@@ -314,6 +319,7 @@ pub fn step_spread(app: &mut DesignApp, delta: isize) {
     if let Some(v) = app.view_mut() {
         v.origin = Point::new(b.center().x - rect.width() as f64 / 2.0 / v.zoom, b.center().y - rect.height() as f64 / 2.0 / v.zoom);
     }
+    record_history(app, true);
 }
 
 pub fn zoom_at(app: &mut DesignApp, screen: Pos2, factor: f64) {
@@ -627,6 +633,55 @@ fn paint(app: &mut DesignApp, ui: &mut egui::Ui, canvas: &PreparedCanvas) {
         let icon = crate::cursors::show(ui.ctx(), &mut app.cursors, c, p);
         ui.ctx().set_cursor_icon(icon);
         draw_cursor_badge(&painter, p, c, &t);
+        if c == Cursor::LoadedGraphic {
+            draw_loaded_graphic(app, ui.ctx(), &painter, p, &t);
+        }
+    }
+}
+
+/// A small demand-decoded proxy and remaining count, never a second full image decode.
+fn draw_loaded_graphic(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, p: Pos2, t: &Tokens) {
+    let Some((id, _)) = app.session.loaded else { return };
+    let Some(st) = app.session.active() else { return };
+    let Some(asset) = st.doc.assets.get(&id) else { return };
+    let key = egui::Id::new("loaded_graphic_preview");
+    type Preview = (std::sync::Weak<Vec<u8>>, u32, u32, u64, egui::TextureHandle);
+    let generation = pagenor_fonts::FontDb::global().scan_generation();
+    let cached: Option<Preview> = ctx.data(|d| d.get_temp(key));
+    let texture = match cached {
+        Some((data, page, scope, font_revision, texture))
+            if page == asset.page
+                && scope == st.doc.font_scope
+                && font_revision == generation
+                && std::sync::Weak::ptr_eq(&data, &std::sync::Arc::downgrade(&asset.data)) =>
+        {
+            Some(texture)
+        }
+        _ => pagenor_render::images::mip_now_with_scope(&asset.data, asset.page, 40.0, 1.0, st.doc.font_scope).map(|pm| {
+            let image = egui::ColorImage::from_rgba_premultiplied([usize::from(pm.width()), usize::from(pm.height())], pm.data_as_u8_slice());
+            let texture = ctx.load_texture("loaded_image", image, egui::TextureOptions::LINEAR);
+            ctx.data_mut(|d| {
+                d.insert_temp(key, (std::sync::Arc::downgrade(&asset.data), asset.page, st.doc.font_scope, generation, texture.clone()))
+            });
+            texture
+        }),
+    };
+    let at = p + vec2(15.0, 18.0);
+    if let Some(texture) = texture {
+        let size = texture.size_vec2();
+        let k = 40.0 / size.x.max(size.y).max(1.0);
+        let rect = Rect::from_min_size(at, size * k);
+        painter.rect_filled(rect.expand(2.0), 2.0, t.measure_bg);
+        painter.image(texture.id(), rect, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    let remaining = app.session.loaded_queue.len().saturating_add(1);
+    if remaining > 1 {
+        let label = format!("({remaining})");
+        let font = crate::theme::semibold(14.0);
+        let width = painter.layout_no_wrap(label.clone(), font.clone(), t.measure_text).size().x + 10.0;
+        let badge = Rect::from_min_size(at + vec2(44.0, -2.0), vec2(width, 22.0));
+        painter.rect_filled(badge, 3.0, t.measure_bg);
+        painter.text(badge.center(), egui::Align2::CENTER_CENTER, label, font, t.measure_text);
     }
 }
 
@@ -662,6 +717,7 @@ fn draw_cursor_badge(painter: &egui::Painter, p: Pos2, c: Cursor, t: &Tokens) {
 /// Render options for the canvas texture.
 fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f64) -> pagenor_render::RenderOptions {
     pagenor_render::RenderOptions {
+        defer_images: !cfg!(test) && std::env::var_os("PAGENOR_SYNC_RENDER").is_none(),
         printing_only: preview,
         greek_below_px: 3.0 * ppp,
         highlight_missing_fonts: !preview && app.session.prefs.highlight_substituted_fonts,
@@ -718,7 +774,11 @@ fn render_texture(
     let max_side = ctx.input(|i| i.max_texture_side) as f32 / ppp as f32;
     let (ow, oh) =
         ((rect.width() * 0.25).min((max_side - rect.width()) / 2.0).max(0.0), (rect.height() * 0.25).min((max_side - rect.height()) / 2.0).max(0.0));
+    let images = pagenor_render::images::generation();
+    let wake = ctx.clone();
+    pagenor_render::images::set_waker(move || wake.request_repaint());
     let want = |origin: Point| crate::Shown {
+        images,
         doc: doc_key,
         origin: Point::new(origin.x - ow as f64 / xf.zoom, origin.y - oh as f64 / xf.zoom),
         zoom: xf.zoom,
@@ -727,7 +787,7 @@ fn render_texture(
     let target = want(xf.origin);
     // Does the current texture cover the viewport at this zoom and document state?
     let covers = |s: &crate::Shown| {
-        s.doc == doc_key && (s.zoom - xf.zoom).abs() < 1e-9 && {
+        s.doc == doc_key && s.images == images && (s.zoom - xf.zoom).abs() < 1e-9 && {
             let x0 = (xf.origin.x - s.origin.x) * s.zoom;
             let y0 = (xf.origin.y - s.origin.y) * s.zoom;
             x0 >= -0.5 && y0 >= -0.5 && x0 + rect.width() as f64 <= s.size.0 as f64 + 0.5 && y0 + rect.height() as f64 <= s.size.1 as f64 + 0.5
@@ -788,7 +848,7 @@ fn render_texture(
     {
         // Already rendering this view?
         if app.canvas.pending.is_some_and(|(_, p)| {
-            p.doc == doc_key && (p.zoom - xf.zoom).abs() < 1e-9 && {
+            p.doc == doc_key && p.images == images && (p.zoom - xf.zoom).abs() < 1e-9 && {
                 let x0 = (xf.origin.x - p.origin.x) * p.zoom;
                 let y0 = (xf.origin.y - p.origin.y) * p.zoom;
                 x0 >= 0.0 && y0 >= 0.0 && x0 + rect.width() as f64 <= p.size.0 as f64 && y0 + rect.height() as f64 <= p.size.1 as f64
@@ -818,7 +878,7 @@ fn patch_texture(
     preview: bool,
 ) -> bool {
     let (Some(sh), Some(old)) = (app.canvas.shown, app.canvas.shown_doc.clone()) else { return false };
-    if sh.doc.0 != doc_key.0 || sh.doc.3 != doc_key.3 || app.canvas.texture.is_none() {
+    if sh.doc.0 != doc_key.0 || sh.doc.3 != doc_key.3 || sh.images != pagenor_render::images::generation() || app.canvas.texture.is_none() {
         return false;
     }
     let new = doc.clone();
@@ -4261,4 +4321,63 @@ mod navigation_box_tests {
             assert_eq!(current_page(&h.state().app), Some(4));
         }
     }
+}
+
+/// The stable page ID nearest the view center, including an explicitly edited master side.
+pub(crate) fn viewed_page(app: &DesignApp) -> Option<(pagenor_doc::PageId, pagenor_geom::Vec2)> {
+    let st = app.session.active()?;
+    let view = app.view()?;
+    let rect = app.canvas_rect?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let slot = layout.slots.get(current_slot(app, &layout)?)?;
+    let spread = st.doc.spread(slot.spread)?;
+    let center = Point::new(view.origin.x + rect.width() as f64 / 2.0 / view.zoom, view.origin.y + rect.height() as f64 / 2.0 / view.zoom);
+    let local = slot.xf.inverse() * center;
+    let page = spread.pages.get(spread.page_at_x(local.x)?)?;
+    Some((page.id, center - slot.xf * page.bounds().center()))
+}
+fn record_history(app: &mut DesignApp, visit: bool) {
+    if app.replaying_page_history {
+        return;
+    }
+    let Some(uid) = app.session.active().map(|st| st.uid) else { return };
+    let Some((page, offset)) = viewed_page(app) else { return };
+    app.page_histories.retain(|uid, _| app.session.documents().iter().any(|st| st.uid == *uid));
+    let history = app.page_histories.entry(uid).or_default();
+    if visit {
+        history.visit(page, offset);
+    } else {
+        history.leave(page, offset);
+    }
+}
+pub fn can_go_through_history(app: &DesignApp, step: isize) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    app.page_histories
+        .get(&st.uid)
+        .is_some_and(|history| history.can_go(step, |id| st.doc.spreads.iter().chain(&st.doc.parents).any(|sp| sp.pages.iter().any(|p| p.id == id))))
+}
+pub fn go_through_history(app: &mut DesignApp, step: isize) {
+    record_history(app, false);
+    let Some(st) = app.session.active() else { return };
+    let (uid, doc) = (st.uid, st.doc.clone());
+    let Some((id, offset)) = app
+        .page_histories
+        .get_mut(&uid)
+        .and_then(|h| h.go(step, |id| doc.spreads.iter().chain(&doc.parents).any(|sp| sp.pages.iter().any(|p| p.id == id))))
+    else {
+        return;
+    };
+    app.replaying_page_history = true;
+    if let Some(abs) = (0..doc.page_count()).find(|abs| doc.page(*abs).is_some_and(|p| p.id == id)) {
+        go_to_page(app, abs);
+    } else if let Some((parent, page)) = doc.parents.iter().enumerate().find_map(|(i, sp)| sp.pages.iter().position(|p| p.id == id).map(|p| (i, p)))
+        && let Err(error) = go_to_master(app, parent, Some(page))
+    {
+        app.status(error);
+    }
+
+    if let Some(view) = app.view_mut() {
+        view.origin += offset;
+    }
+    app.replaying_page_history = false;
 }

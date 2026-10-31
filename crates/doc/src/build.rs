@@ -651,7 +651,7 @@ impl Document {
                         return None;
                     }
                     let parent = parents.iter().find(|p| Some(p.id) == page.parent)?;
-                    let master = parent.pages.get(parent.parent_page_for_side(page.side)?)?;
+                    let master = parent.pages.get(parent.parent_page_at(page.side, i)?)?;
                     (page.margins != master.margins || page.columns != master.columns).then(|| (i, master.margins, master.columns.clone()))
                 })
                 .collect();
@@ -686,7 +686,7 @@ impl Document {
                 break;
             }
             let Some(parent) = self.parent_index(id).and_then(|i| self.parents.get(i)) else { break };
-            let Some(master) = parent.parent_page_for_side(page.side).and_then(|i| parent.pages.get(i)) else { break };
+            let Some(master) = parent.parent_page_at(page.side, page_index).and_then(|i| parent.pages.get(i)) else { break };
             for g in parent.pages.iter().flat_map(|pg| pg.guides.iter().filter(move |g| pg.id == master.id || g.spread)) {
                 if g.spread && g.orientation == crate::Orientation::Vertical && (g.position < master.x || g.position > master.x + master.width) {
                     continue;
@@ -713,7 +713,8 @@ impl Document {
         let pi = self.parent_index(page.parent?)?;
         let ps = &self.parents[pi];
         // A parent spread can come without pages from a file.
-        Some((pi, ps.parent_page_for_side(page.side)?))
+        let (_, page_index) = self.page_loc(abs)?;
+        Some((pi, ps.parent_page_at(page.side, page_index)?))
     }
 }
 

@@ -34,6 +34,7 @@ pub mod story;
 pub mod styles;
 mod swatch_refs;
 pub mod table;
+pub mod time;
 pub mod vars;
 pub mod xref;
 
@@ -699,9 +700,19 @@ fn one() -> u8 {
     1
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TocScope {
+    #[default]
+    CurrentDocument,
+    EntireBook,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Toc {
+    #[serde(default)]
+    pub scope: TocScope,
     pub story: StoryId,
     pub title: String,
     pub entries: Vec<TocEntry>,

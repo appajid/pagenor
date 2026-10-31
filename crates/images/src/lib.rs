@@ -13,8 +13,10 @@ pub use resvg::usvg;
 mod eps;
 mod metadata;
 mod psd;
+mod resolution;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
 pub use metadata::{ColorInfo, color_info, color_mode};
+pub use resolution::raster_resolution;
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
@@ -166,7 +168,10 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((s.width() as f64 * PT_PER_PX, s.height() as f64 * PT_PER_PX));
     }
     let (w, h) = pixel_size(bytes)?;
-    Some((w as f64, h as f64))
+    match raster_resolution(bytes) {
+        Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
+        _ => Some((w as f64, h as f64)),
+    }
 }
 
 /// Pixel dimensions of a raster.
@@ -185,7 +190,15 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster.
+/// Global decoded raster budget, additional to the tighter untrusted-import limits.
+pub fn too_large_to_decode(bytes: &[u8]) -> bool {
+    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > (1 << 30))
+}
+
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
@@ -330,6 +343,9 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     use tiff::tags::Tag;
     let mut d = tiff_decoder(bytes)?;
     let has_alpha = match d.colortype().ok()? {
@@ -680,3 +696,6 @@ mod tests {
         assert_eq!(decode_rgba(&bmp).unwrap().get_pixel(1, 1).0, [0, 0, 255, 255]);
     }
 }
+
+#[cfg(test)]
+mod review31;

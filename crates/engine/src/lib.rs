@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cmd;
+pub mod cover;
 pub mod dtd;
 pub mod guard;
 pub mod links;
@@ -287,6 +288,7 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor: (asset, natural size in points).
     pub loaded: Option<(pagenor_doc::AssetId, (f64, f64))>,
+    pub loaded_queue: std::collections::VecDeque<(pagenor_doc::AssetId, (f64, f64))>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -302,6 +304,7 @@ pub struct Session {
     pub book: Option<cmd::book::Book>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
+    pub(crate) find_context: Option<cmd::find::FindContext>,
 }
 
 impl Default for Session {
@@ -312,6 +315,10 @@ impl Default for Session {
 
 impl Session {
     /// The name `file.new` gives the next document without a title (New Document shows it).
+    pub fn reset_find_scope(&mut self) {
+        self.find_context = None;
+    }
+
     pub fn next_untitled_title(&self) -> String {
         format!("Untitled-{}", self.untitled.saturating_add(1))
     }
@@ -334,11 +341,13 @@ impl Session {
             object_clipboard_nonce: None,
             ui_requests: vec![],
             loaded: None,
+            loaded_queue: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             typing_format: None,
             library: None,
             conveyor: Vec::new(),
+            find_context: None,
             book: None,
             untitled: 0,
         }
@@ -410,11 +419,15 @@ impl Session {
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() && self.active != Some(i) {
             self.stop_data_preview();
+            self.loaded = None;
+            self.loaded_queue.clear();
             self.active = Some(i);
         }
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
         self.stop_data_preview();
+        self.loaded = None;
+        self.loaded_queue.clear();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
@@ -436,6 +449,8 @@ impl Session {
             recovery::discard_document(d);
         }
         if i < self.docs.len() {
+            self.loaded = None;
+            self.loaded_queue.clear();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
         }
@@ -447,11 +462,24 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let result = self.guarded(id, |s| s.execute_unguarded(id, params));
         cmd::text::retain_pending_typing_format(self);
+        if self.find_context.as_ref().is_some_and(|context| self.active().is_none_or(|st| !context.is_current(st))) {
+            self.reset_find_scope();
+        }
         result
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
+        if !matches!(id, "find.find" | "find.next" | "find.change") && (spec.undoable || spec.journal) {
+            self.reset_find_scope();
+        }
+        if matches!(id, "find.next" | "find.change") {
+            self.stop_data_preview();
+        }
+        if self.find_context.as_ref().is_some_and(|context| self.active().is_none_or(|st| !context.is_current(st))) {
+            self.reset_find_scope();
+        }
+
         if let Err(e) = (spec.enabled)(self) {
             // A command that takes `ids` acts on the objects the call names, so the selection
             // doesn't matter: with a text caret, nothing selected, or a selection the command
@@ -561,7 +589,7 @@ impl Session {
         }
         let mut d = (*st.doc).clone();
         if overset {
-            let _ = cmd::place_text_autoflow(&mut d, sid, 500);
+            let _ = cmd::place_text_autoflow_primary(&mut d, sid, 500);
         }
         // Drop empty trailing frames on the last pages (one frame, nothing else there).
         while let Some(story) = d.story(sid) {

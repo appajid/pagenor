@@ -173,6 +173,9 @@ fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize) {
 
 /// Thread new frames on new pages (margin rectangles) until the story fits. Returns pages added.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
+    flow(d, sid, max_pages, false)
+}
+pub(crate) fn autoflow_primary(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
     let mut added = 0;
     loop {
         let (overset, held, full) = fit(d, sid);
@@ -200,6 +203,100 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Resu
         }
         added += want;
     }
+}
+
+fn flow(d: &mut Document, sid: StoryId, max_pages: usize, primary: bool) -> Result<usize> {
+    let mut added = 0;
+    let mut made = Vec::new();
+    let mut new_pages = Vec::new();
+    loop {
+        let (overset, held, full) = fit(d, sid);
+        let Some(at) = overset else { break };
+        let last = d.story(sid).and_then(|st| st.frames.last()).copied().ok_or_else(|| bad("file.place", "the story has no frame"))?;
+        let page = d.page_of_item(last).ok_or_else(|| bad("file.place", "master-page stories cannot autoflow"))?;
+        let len = d.story(sid).map_or(0, |st| st.len());
+        let forced = d
+            .story(sid)
+            .is_some_and(|st| st.paras.iter().any(|p| d.styles.resolve_para(p).0.start_paragraph != pagenor_doc::StartParagraph::Anywhere));
+        // Explicit start options deliberately leave early frames mostly empty; never extrapolate
+        // their low fill into thousands of new pages. Recompose after one page in this case.
+        let want = if forced { 1 } else { held.checked_div(full).map_or(1, |n| len.saturating_sub(at).div_ceil(n.max(1))).clamp(1, 32) };
+        let mut previous = last;
+        let next = page.saturating_add(1);
+        if !primary {
+            let rects = d.page(page).map(|p| p.column_rects()).unwrap_or_default();
+            let slot = d
+                .item(last)
+                .and_then(|it| rects.iter().position(|r| (it.bounds().x0 - r.x0).abs() < 0.01 && (it.bounds().width() - r.width()).abs() < 0.01));
+            if let Some(slot) = slot
+                && slot + 1 < rects.len()
+            {
+                let (si, _) = d.page_loc(page).ok_or_else(|| bad("file.place", "no page"))?;
+                for rect in rects.iter().skip(slot + 1) {
+                    previous = add_flow_frame(d, si, *rect, previous)?;
+                    made.push(previous);
+                }
+                continue;
+            }
+            if next < d.page_count() {
+                let end = next.saturating_add(want).min(d.page_count());
+                for page in next..end {
+                    let (si, _) = d.page_loc(page).ok_or_else(|| bad("file.place", "no following page"))?;
+                    let rects = d.page(page).map(|p| p.column_rects()).unwrap_or_default();
+                    for rect in rects {
+                        previous = add_flow_frame(d, si, rect, previous)?;
+                        made.push(previous);
+                    }
+                }
+                continue;
+            }
+        }
+        if added >= max_pages {
+            return Err(bad("file.place", format!("autoflow stopped after {max_pages} pages")));
+        }
+        let want = want.min(max_pages - added);
+        let parent = d.page(page).and_then(|p| p.parent);
+        d.insert_pages(Some(page), want, parent)?;
+        new_pages.extend((next..next + want).filter_map(|abs| d.page(abs).map(|page| page.id)));
+        for page in next..next + want {
+            let (si, _) = d.page_loc(page).ok_or_else(|| bad("file.place", "page insert failed"))?;
+            let rects = d.page(page).map(|p| if primary { vec![p.margin_rect()] } else { p.column_rects() }).unwrap_or_default();
+            for rect in rects {
+                previous = add_flow_frame(d, si, rect, previous)?;
+                made.push(previous);
+            }
+        }
+        added += want;
+    }
+    // Estimates can reserve more frames than the story uses; leave no empty tail in the thread.
+    let composed = pagenor_compose::compose_story(d, sid, &Default::default());
+    for id in made.into_iter().rev() {
+        if composed.frames.iter().find(|f| f.frame == id).is_some_and(|f| !f.range.is_empty()) {
+            break;
+        }
+        if d.item(id).is_some() {
+            d.remove_item(id)?;
+        }
+    }
+    // Only pages this operation created can be removed here. Existing blank pages are deliberate.
+    for page in new_pages.into_iter().rev() {
+        let abs = (0..d.page_count()).find(|abs| d.page(*abs).is_some_and(|p| p.id == page));
+        let Some(abs) = abs else { continue };
+        let occupied = d.spreads.iter().flat_map(|sp| &sp.items).any(|it| d.page_of_item(it.id) == Some(abs));
+        if occupied {
+            break;
+        }
+        if d.page_count() > 1 {
+            d.delete_pages(&[abs])?;
+            added = added.saturating_sub(1);
+        }
+    }
+    Ok(added)
+}
+fn add_flow_frame(d: &mut Document, si: usize, rect: Rect, previous: pagenor_doc::ItemId) -> Result<pagenor_doc::ItemId> {
+    let (id, _) = d.add_text_frame(SpreadRef::Doc(si), rect, d.default_layer(), "", ParaFormat::default())?;
+    d.thread(previous, id)?;
+    Ok(id)
 }
 
 pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {

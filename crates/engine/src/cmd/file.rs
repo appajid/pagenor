@@ -15,6 +15,8 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
             "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?}",
             always, file_new),
+        cmd!(noundo "file.newCover", "Book Cover…", ["File","New"], None,
+            "{printer: lulu|hardback|other, trimWidth, trimHeight, pages?, spine?, safe?, bleed?, title?} → a flat back/spine/front cover",always,file_new_cover),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
             let mut presets: Vec<Value> = PRESETS.iter().map(serde_json::to_value).collect::<std::result::Result<_, _>>().map_err(|e| EngineError::Other(e.to_string()))?;
@@ -111,11 +113,22 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Place Cursor",
             [],
             None,
-            "{path | base64, name?} — load a graphic into the place cursor (then click/drag with the placeGun tool)",
+            "{path | base64, name?, files?: [{path | base64, name?}], append?: false} — load up to 1000 graphics (512 MiB total) into the place cursor (then click/drag with the placeGun tool)",
             has_doc,
             place_load
         ),
         cmd!("place.drop", "Place Loaded Graphic", [], None, "{spread?, x, y, rect?: [x0,y0,x1,y1], frame?: id}", has_doc, place_drop),
+        cmd!("place.grid", "Place Image Grid", [], None, "{spread?, rect, columns?:1, rows?:1, gutter?:6}", has_doc, place_grid),
+        cmd!(
+            "place.contactSheet",
+            "Place Contact Sheet",
+            ["File"],
+            None,
+            "{columns?:3, rows?:4, gutter?:6, margin?:36} — queued images on new pages",
+            has_doc,
+            place_contact_sheet
+        ),
+        cmd!(noundo "place.cancel", "Cancel Image Placement", [], None, "{}", has_doc, |s,_| { s.loaded=None; s.loaded_queue.clear(); s.set_tool("selection"); ok() }),
         cmd!(
             "file.place",
             "Place…",
@@ -304,6 +317,7 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 #[cfg(not(target_arch = "wasm32"))]
 fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
     use pagenor_fonts::DOCUMENT_FONTS_FOLDER;
+    let dir = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir };
     let exact = dir.join(DOCUMENT_FONTS_FOLDER);
     if exact.is_dir() {
         return exact;
@@ -620,30 +634,87 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
     Ok(())
 }
 
+const MAX_LOADED_IMAGES: usize = 1000;
+const MAX_LOADED_BYTES: usize = 512 * 1024 * 1024;
+
+fn loaded_count(s: &Session) -> usize {
+    s.loaded_queue.len().saturating_add(usize::from(s.loaded.is_some()))
+}
+
+/// Validate every source before changing the document or its placement cursor.
 fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link) = read_source(p)?;
-    let (pw, ph) = pagenor_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
-    let size = eps_size(&bytes, "place.load")?.or_else(|| pagenor_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
-    let aid = s.edit(|d, _| {
-        let fresh = AssetId(d.alloc());
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
+    let sources = match p.get("files") {
+        Some(v) => v.as_array().ok_or_else(|| bad("place.load", "files must be an array"))?.iter().collect::<Vec<_>>(),
+        None => vec![p],
+    };
+    let existing = if append { loaded_count(s) } else { 0 };
+    if sources.is_empty() || sources.len().saturating_add(existing) > MAX_LOADED_IMAGES {
+        return Err(bad("place.load", "select between 1 and 1000 images in total"));
+    }
+    let mut total = if append {
+        s.loaded
+            .iter()
+            .chain(s.loaded_queue.iter())
+            .filter_map(|(id, _)| s.active()?.doc.assets.get(id))
+            .map(|a| a.data.len())
+            .fold(0usize, usize::saturating_add)
+    } else {
+        0
+    };
+    let mut images = Vec::with_capacity(sources.len());
+    for source in sources {
+        let (bytes, name, link) = read_source(source)?;
+        total = total.saturating_add(bytes.len());
+        if total > MAX_LOADED_BYTES {
+            return Err(bad("place.load", "loaded images exceed the 512 MiB input budget"));
+        }
+        let (pw, ph) = pagenor_render::image_size(&bytes).ok_or_else(|| bad("place.load", format!("unsupported or corrupt image: {name}")))?;
+        let size = eps_size(&bytes, "place.load")?.or_else(|| pagenor_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        validate_placement(size, Rect::new(0.0, 0.0, size.0, size.1), Affine::IDENTITY, "place.load")?;
         let mime = pagenor_render::image_mime(&bytes).to_string();
-        Ok(d.add_asset(Asset {
-            page: 0,
-            id: fresh,
-            name: name.clone(),
-            mime,
-            link: link.clone(),
-            data: Arc::new(bytes),
-            pixels: Some((pw, ph)),
-            ..Default::default()
-        }))
+        images.push((Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() }, size));
+    }
+    let mut queue = s.edit(|d, _| {
+        let mut queue = std::collections::VecDeque::new();
+        for (mut asset, size) in images {
+            asset.id = AssetId(d.alloc());
+            queue.push_back((d.add_asset(asset), size));
+        }
+        Ok(queue)
     })?;
-    s.loaded = Some((aid, size));
+    if append && s.loaded.is_some() {
+        s.loaded_queue.extend(queue);
+    } else {
+        s.loaded = queue.pop_front();
+        s.loaded_queue = queue;
+    }
     s.set_tool("placeGun");
-    Ok(json!({"asset": aid.0, "name": name, "width": pw, "height": ph}))
+    Ok(json!({"loaded":true,"remaining":loaded_count(s),"asset":s.loaded.map(|g|g.0.0)}))
+}
+
+fn validate_place_cursor(s: &mut Session, command: &str) -> Result<()> {
+    if s.loaded.is_none() {
+        return Err(bad(command, "nothing loaded in the place cursor"));
+    }
+    if !s.loaded.iter().chain(s.loaded_queue.iter()).all(|(id, _)| s.active().is_some_and(|d| d.doc.assets.contains_key(id))) {
+        s.loaded = None;
+        s.loaded_queue.clear();
+        s.set_tool("selection");
+        return Err(bad(command, "the loaded graphic is no longer in the document"));
+    }
+    Ok(())
+}
+
+fn advance_place_cursor(s: &mut Session) {
+    s.loaded = s.loaded_queue.pop_front();
+    if s.loaded.is_none() {
+        s.set_tool("selection");
+    }
 }
 
 fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
+    validate_place_cursor(s, "place.drop")?;
     let (aid, (nw, nh)) = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
     let sr = super::spread_param(p, "spread");
     let lid = s.doc()?.active_layer;
@@ -652,7 +723,14 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y) = (super::f64_or(p, "x", 0.0), super::f64_or(p, "y", 0.0));
     let d = &s.doc()?.doc;
     let (frame_rect, xf, auto_fit) = if let Some(fid) = frame {
-        let r = d.item(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.inner_bounds();
+        let item = d.item(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
+        if !matches!(item.content, Content::Unassigned | Content::Graphic(_)) {
+            return Err(bad("place.drop", "choose an empty or graphic frame"));
+        }
+        if item.locked || d.layer(item.layer).is_some_and(|l| l.locked) {
+            return Err(bad("place.drop", "the target frame is locked"));
+        }
+        let r = item.inner_bounds();
         let k = (r.width() / nw).max(r.height() / nh);
         let xf = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
         // Fill once; keep Auto-Fit off so resizing the frame crops the placed image.
@@ -697,9 +775,144 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })?;
-    s.loaded = None;
-    s.set_tool("selection");
+    advance_place_cursor(s);
     Ok(r)
+}
+
+/// Validate bounded grid dimensions and a finite nonnegative gutter.
+fn grid_dimensions(p: &Value, command: &str, default_columns: usize, default_rows: usize) -> Result<(usize, usize, f64)> {
+    let dimension = |key, default| -> Result<usize> {
+        match p.get(key) {
+            None => Ok(default),
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (1..=100).contains(n))
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad(command, "rows and columns must be integers between 1 and 100")),
+        }
+    };
+    let gutter = crate::cmd::f64_or(p, "gutter", 6.0);
+    if !gutter.is_finite() || gutter < 0.0 {
+        return Err(bad(command, "gutter must be finite and nonnegative"));
+    }
+    Ok((dimension("columns", default_columns)?, dimension("rows", default_rows)?, gutter))
+}
+
+/// Calculate row-major cells, rejecting gutters that leave no usable space.
+fn grid_cells(rect: Rect, columns: usize, rows: usize, gutter: f64, command: &str) -> Result<Vec<Rect>> {
+    let (columns, rows) = (columns.max(1), rows.max(1));
+    let w = (rect.width() - gutter * columns.saturating_sub(1) as f64) / columns as f64;
+    let h = (rect.height() - gutter * rows.saturating_sub(1) as f64) / rows as f64;
+    if ![rect.x0, rect.y0, rect.x1, rect.y1, w, h].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return Err(bad(command, "the grid area is too small for its rows, columns and gutter"));
+    }
+    Ok((0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + gutter);
+                let y = rect.y0 + row as f64 * (h + gutter);
+                Rect::new(x, y, x + w, y + h)
+            })
+        })
+        .collect())
+}
+
+/// Insert a proportionally fitted image into one grid cell.
+fn insert_grid_image(
+    d: &mut pagenor_doc::Document,
+    spread: pagenor_doc::SpreadRef,
+    layer: pagenor_doc::LayerId,
+    image: (AssetId, (f64, f64)),
+    rect: Rect,
+    command: &str,
+) -> Result<ItemId> {
+    let (asset, (nw, nh)) = image;
+    if !d.assets.contains_key(&asset) {
+        return Err(bad(command, "a loaded image is no longer in the document"));
+    }
+    let k = (rect.width() / nw).min(rect.height() / nh);
+    let xf = Affine::translate((rect.x0 + (rect.width() - nw * k) / 2.0, rect.y0 + (rect.height() - nh * k) / 2.0)) * Affine::scale(k);
+    validate_placement((nw, nh), rect, xf, command)?;
+    let id = ItemId(d.alloc());
+    let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
+    item.object_style = d.styles.default_graphic_frame.clone();
+    item.content = Content::Graphic(Graphic {
+        asset,
+        size: (nw, nh),
+        xf,
+        auto_fit: pagenor_doc::Fitting::FitProportionally,
+        fit_align: 4,
+        crop: [0.0; 4],
+        clip: None,
+        wrap: Default::default(),
+    });
+    d.insert_item(spread, item, None)?;
+    Ok(id)
+}
+
+/// Place a row-major grid as one undoable edit.
+fn place_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.grid";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 1, 1)?;
+    let rect = crate::cmd::rect_param(p, "rect").ok_or_else(|| bad(ID, "missing rect"))?;
+    let cells = grid_cells(rect, columns, rows, gutter, ID)?;
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().take(cells.len()).collect();
+    if images.is_empty() {
+        return Err(bad(ID, "nothing loaded in the place cursor"));
+    }
+    let layer = s.doc()?.active_layer;
+    let spread = crate::cmd::spread_param(p, "spread");
+    let ids = s.edit(|d, sel| {
+        let mut ids = Vec::with_capacity(images.len());
+        for (image, rect) in images.iter().zip(cells) {
+            ids.push(insert_grid_image(d, spread, layer, *image, rect, ID)?);
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "remaining": loaded_count(s)}))
+}
+
+/// Place all queued images on new pages as one undoable edit.
+fn place_contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.contactSheet";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 3, 4)?;
+    let margin = crate::cmd::f64_or(p, "margin", 36.0);
+    if !margin.is_finite() || margin < 0.0 {
+        return Err(bad(ID, "invalid margin"));
+    }
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().collect();
+    if images.is_empty() {
+        return Err(bad(ID, "load images first using File > Place"));
+    }
+    let layer = s.doc()?.active_layer;
+    let per_page = columns.saturating_mul(rows).max(1);
+    let count = images.len().div_ceil(per_page);
+    let ids = s.edit(|d, sel| {
+        let after = d.page_count().saturating_sub(1);
+        d.insert_pages(Some(after), count, None)?;
+        let mut ids = Vec::with_capacity(images.len());
+        for (page_offset, chunk) in images.chunks(per_page).enumerate() {
+            let index = after.saturating_add(1).saturating_add(page_offset);
+            let (si, pi) = d.page_loc(index).ok_or_else(|| bad(ID, "missing page"))?;
+            let b = d.spreads.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad(ID, "missing page"))?.bounds();
+            let cells = grid_cells(Rect::new(b.x0 + margin, b.y0 + margin, b.x1 - margin, b.y1 - margin), columns, rows, gutter, ID)?;
+            for (image, rect) in chunk.iter().zip(cells) {
+                ids.push(insert_grid_image(d, pagenor_doc::SpreadRef::Doc(si), layer, *image, rect, ID)?);
+            }
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"pages": count, "images": ids.len()}))
 }
 
 /// The selection as `.pgnr` snippet bytes.
@@ -1869,4 +2082,66 @@ mod native_save_tests {
         reopened.execute("file.open", &json!({"path":copy})).unwrap();
         assert_eq!(serde_json::to_value(&reopened.doc().unwrap().doc).unwrap(), serde_json::to_value(&live).unwrap());
     }
+}
+
+/// File › New Book Cover: a blank one-page flat cover (back, spine, front, left to right) sized for
+/// a printer, with the bleed and safe margins set and guides on the two edges of the spine.
+/// The spine comes from the printer's rule for `pages`, or is typed (`spine`, in points).
+fn file_new_cover(s: &mut Session, p: &Value) -> Result<Value> {
+    use crate::cover::{Printer, spine_pt};
+    const ID: &str = "file.newCover";
+    let printer = str_param(p, "printer").and_then(Printer::parse).ok_or_else(|| bad(ID, "`printer`: lulu, hardback or other"))?;
+    let size = |k: &str| {
+        p.get(k)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && (18.0..=4000.0).contains(v))
+            .ok_or_else(|| bad(ID, format!("`{k}` required: 18 to 4000 pt")))
+    };
+    let (trim_w, trim_h) = (size("trimWidth")?, size("trimHeight")?);
+    let pages = p.get("pages").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    // A typed spine that is not a number is refused, not swapped for the printer's own rule.
+    let typed_spine = match p.get("spine") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().ok_or_else(|| bad(ID, "`spine` must be a number of points"))?),
+    };
+    let spine = spine_pt(printer, pages, typed_spine).map_err(|e| bad(ID, e))?;
+    // The safe margin and the bleed are lengths: finite, 0 to 1296 pt (the most a document edge takes),
+    // and the margins must leave a live area.
+    let length = |k: &str, default: f64| -> Result<f64> {
+        match p.get(k) {
+            None | Some(Value::Null) => Ok(default),
+            Some(v) => v
+                .as_f64()
+                .filter(|x| x.is_finite() && (0.0..=1296.0).contains(x))
+                .ok_or_else(|| bad(ID, format!("`{k}` must be a length of 0 to 1296 pt"))),
+        }
+    };
+    let (safe, bleed) = (length("safe", 36.0)?, length("bleed", 9.0)?);
+    if 2.0 * safe >= trim_w.min(trim_h) {
+        return Err(bad(ID, "`safe` is too large for the trim size"));
+    }
+    let settings = json!({
+        "width": 2.0 * trim_w + spine, "height": trim_h, "pages": 1, "facingPages": false, "columns": 1, "primaryTextFrame": false,
+        "margins": safe, "bleed": bleed,
+    });
+    let mut nd = NewDocument::default();
+    apply_settings(&mut nd, &settings);
+    check_size(ID, &nd)?;
+    s.untitled = s.untitled.saturating_add(1);
+    nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
+    let mut d = Document::new(&nd);
+    if let Some(page) = d.spreads.get_mut(0).and_then(|sp| Arc::make_mut(sp).pages.get_mut(0)) {
+        for x in [trim_w, trim_w + spine].into_iter().take(if spine > 0.0 { 2 } else { 1 }) {
+            page.guides.push(pagenor_doc::Guide {
+                orientation: pagenor_doc::Orientation::Vertical,
+                position: x,
+                spread: false,
+                locked: false,
+                layer: None,
+                liquid: false,
+            });
+        }
+    }
+    let i = s.add_document(DocState::new(d, None));
+    Ok(json!({"index": i, "width": 2.0 * trim_w + spine, "height": trim_h, "spine": spine}))
 }

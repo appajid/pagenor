@@ -66,6 +66,7 @@ pub struct Imported {
     /// One line per problem that did not stop the import (a part listed in `designmap.xml` but
     /// absent from the package, …).
     pub warnings: Vec<String>,
+    pub story_ids: HashMap<String, StoryId>,
 }
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
@@ -100,13 +101,14 @@ pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u
     let mut im = Importer::new(read_link);
     im.run(&root, &top)?;
     warnings.extend(im.warnings.iter().cloned());
+    let story_ids = im.story_ids.clone();
     let document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
-    Ok(Imported { document, warnings })
+    Ok(Imported { document, warnings, story_ids })
 }
 
 /// Most entries an IDML package may hold.
@@ -1567,8 +1569,12 @@ impl<'r> Importer<'r> {
                 GridAlign::AllLines
             });
         }
-        a.composer =
-            e.prop("Composer").map(|c| if c.contains("Single") { pagenor_doc::Composer::SingleLine } else { pagenor_doc::Composer::Paragraph });
+        a.composer = e.prop("Composer").map(|c| match (c.contains("Single"), c.trim().ends_with(" Optyca")) {
+            (false, false) => pagenor_doc::Composer::Paragraph,
+            (true, false) => pagenor_doc::Composer::SingleLine,
+            (false, true) => pagenor_doc::Composer::WorldReady,
+            (true, true) => pagenor_doc::Composer::WorldReadySingleLine,
+        });
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");

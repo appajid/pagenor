@@ -393,18 +393,8 @@ fn now_unix() -> Option<i64> {
 
 /// Unix seconds (UTC) → (year, month, day, hour, minute, second), proleptic Gregorian.
 pub(crate) fn civil(t: i64) -> (i64, u8, u8, u8, u8, u8) {
-    let days = t.div_euclid(86_400);
-    let secs = t.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month as u8, day as u8, (secs / 3600) as u8, (secs / 60 % 60) as u8, (secs % 60) as u8)
+    let (y, m, d, h, mi, s) = pagenor_doc::time::utc_parts(t);
+    (y, m as u8, d as u8, h as u8, mi as u8, s as u8)
 }
 
 pub(crate) struct Exporter<'a> {
@@ -1452,6 +1442,9 @@ fn cmyk_tiff(data: &[u8], interpolate: bool) -> Option<Image> {
 
 /// Opaque raster → JPEG (quality 90). `None` when the image has transparency or can't be decoded.
 fn recompress(data: &[u8], interpolate: bool) -> Option<Image> {
+    if pagenor_images::too_large_to_decode(data) {
+        return None;
+    }
     let img = image::load_from_memory(data).ok()?;
     if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
         return None;

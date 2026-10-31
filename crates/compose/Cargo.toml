@@ -21,6 +21,7 @@ pagenor-doc = { workspace = true }
 pagenor-fonts = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
+fancy-regex = "0.16"
 miniz_oxide = "0.8"
 
 [dev-dependencies]

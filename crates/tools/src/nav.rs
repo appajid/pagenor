@@ -110,6 +110,8 @@ impl Tool for ZoomTool {
 /// frame places into it.
 #[derive(Default)]
 pub struct PlaceGun {
+    columns: usize,
+    rows: usize,
     start: Option<Point>,
     cur: Point,
 }
@@ -121,6 +123,8 @@ impl Tool for PlaceGun {
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
             PointerKind::Down => {
+                self.columns = 1;
+                self.rows = 1;
                 self.start = Some(ev.pos);
                 self.cur = ev.pos;
                 vec![]
@@ -139,6 +143,13 @@ impl Tool for PlaceGun {
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
+                if (ev.pos - a).hypot() >= cx.tol(3.0) && (self.columns > 1 || self.rows > 1) {
+                    let r = pagenor_geom::Rect::from_points(sa, b);
+                    return vec![Action::Exec(
+                        "place.grid".into(),
+                        json!({"spread":crate::spread_json(sr),"rect":[r.x0,r.y0,r.x1,r.y1],"columns":self.columns,"rows":self.rows}),
+                    )];
+                }
                 let r = pagenor_geom::Rect::from_points(sa, b);
                 vec![Action::Exec(
                     "place.drop".into(),
@@ -148,15 +159,52 @@ impl Tool for PlaceGun {
             _ => vec![],
         }
     }
-    fn overlays(&self, _cx: &ToolContext) -> Vec<crate::Overlay> {
-        match self.start {
-            Some(a) => vec![crate::Overlay::Marquee(pagenor_geom::Rect::from_points(a, self.cur))],
-            None => vec![],
+    fn busy(&self) -> bool {
+        self.start.is_some()
+    }
+    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
+        use crate::ToolKey;
+        if key == ToolKey::Escape {
+            self.start = None;
+            return vec![Action::Exec("place.cancel".into(), json!({}))];
         }
+        if self.start.is_some() {
+            match key {
+                ToolKey::Right => self.columns = (self.columns + 1).min(100),
+                ToolKey::Left => self.columns = self.columns.saturating_sub(1).max(1),
+                ToolKey::Up => self.rows = (self.rows + 1).min(100),
+                ToolKey::Down => self.rows = self.rows.saturating_sub(1).max(1),
+                _ => {}
+            }
+        }
+        vec![]
+    }
+    fn overlays(&self, _cx: &ToolContext) -> Vec<crate::Overlay> {
+        self.start.map(|a| grid_overlays(pagenor_geom::Rect::from_points(a, self.cur), self.columns, self.rows)).unwrap_or_default()
     }
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
         Cursor::LoadedGraphic
     }
+}
+
+/// The cells of a `columns` × `rows` place grid drawn over `rect`, 6 pt apart, as `place.grid`
+/// lays them out; the whole rect when the cells would vanish.
+fn grid_overlays(rect: pagenor_geom::Rect, columns: usize, rows: usize) -> Vec<crate::Overlay> {
+    let (columns, rows) = (columns.clamp(1, 100), rows.clamp(1, 100));
+    let w = (rect.width() - 6.0 * (columns - 1) as f64) / columns as f64;
+    let h = (rect.height() - 6.0 * (rows - 1) as f64) / rows as f64;
+    if !(w > 0.0 && h > 0.0) {
+        return vec![crate::Overlay::Marquee(rect)];
+    }
+    (0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + 6.0);
+                let y = rect.y0 + row as f64 * (h + 6.0);
+                crate::Overlay::Marquee(pagenor_geom::Rect::new(x, y, x + w, y + h))
+            })
+        })
+        .collect()
 }
 
 /// Page tool (Shift+P): click a page to set its own size.
@@ -171,12 +219,20 @@ impl Tool for PageTool {
         if ev.kind != PointerKind::Up {
             return vec![];
         }
-        let Some((pagenor_doc::SpreadRef::Doc(si), sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
-        let Some(spread) = cx.doc.spreads.get(si) else { return vec![] };
-        let Some(pi) = spread.pages.iter().position(|p| p.bounds().contains(sp)) else { return vec![] };
-        let pg = &spread.pages[pi];
-        let n = cx.doc.first_page_of_spread(si) + pi + 1;
-        vec![Action::Dialog("cmd:layout.pageSize".into(), json!({"pages": [n], "width": pg.width, "height": pg.height}))]
+        let Some((target, point)) = cx.layout.spread_at(ev.pos) else { return vec![] };
+        let Some(spread) = cx.doc.spread(target) else { return vec![] };
+        let Some(pi) = spread.pages.iter().position(|page| page.bounds().contains(point)) else { return vec![] };
+        let Some(page) = spread.pages.get(pi) else { return vec![] };
+        match target {
+            pagenor_doc::SpreadRef::Doc(si) => vec![Action::Dialog(
+                "cmd:layout.pageSize".into(),
+                json!({"pages":[cx.doc.first_page_of_spread(si)+pi+1],"width":page.width,"height":page.height}),
+            )],
+            pagenor_doc::SpreadRef::Parent(_) => vec![Action::Dialog(
+                "cmd:layout.parentPageSize".into(),
+                json!({"parent":spread.id.0,"page":pi,"width":page.width,"height":page.height,"anchor":0}),
+            )],
+        }
     }
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
         Cursor::Arrow

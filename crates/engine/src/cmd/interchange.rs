@@ -9,6 +9,8 @@ use crate::{DocState, EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        // Empty menu: Quick Apply / search use `app.exportIdml` (save dialog). A File › Export
+        // path here would list this engine command first and skip the UI handler.
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
@@ -39,6 +41,13 @@ pub fn import(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<Document> {
 
 /// [`import`], with the problems that did not stop it (parts missing from the package, …).
 pub fn import_report(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<(Document, Vec<String>)> {
+    import_report_targets(bytes, dir).map(|(d, w, _)| (d, w))
+}
+
+fn import_report_targets(
+    bytes: &[u8],
+    dir: Option<&std::path::Path>,
+) -> Result<(Document, Vec<String>, std::collections::HashMap<String, pagenor_doc::StoryId>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -54,7 +63,7 @@ pub fn import_report(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<(Doc
             None
         }
     };
-    let pagenor_idml::Imported { mut document, warnings } =
+    let pagenor_idml::Imported { mut document, warnings, story_ids } =
         pagenor_idml::import_idml_report(bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
     resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
@@ -69,7 +78,7 @@ pub fn import_report(bytes: &[u8], dir: Option<&std::path::Path>) -> Result<(Doc
         resolve_packaged_links(&mut document, dir);
         document
     };
-    Ok((document, warnings))
+    Ok((document, warnings, story_ids))
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -246,7 +255,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         bytes
     };
-    let (mut d, mut warnings) = import_report(&bytes, dir.as_deref())?;
+    let (mut d, mut warnings, story_ids) = import_report_targets(&bytes, dir.as_deref())?;
     if let Some(n) = name {
         d.title = n;
     }
@@ -255,13 +264,26 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
         None => (None, 0, Vec::new()),
     };
     warnings.extend(font_warnings);
+    let warning_items: Vec<_> = warnings.iter().map(|w| warning_item(&d, &story_ids, w, indd).map(|id| id.0)).collect();
     // Never save over the .idml with the native format: the document starts unsaved.
     let mut st = DocState::new(d, None);
     st.fonts = fonts;
     let i = s.add_document(st);
     Ok(
-        json!({"index": i, "documentFonts": faces, "warnings": warnings, "importWarnings": if indd { vec![INDD_WARNING] } else { Vec::<&str>::new() }}),
+        json!({"index": i, "documentFonts": faces, "warnings": warnings, "warningItems":warning_items, "importWarnings": if indd { vec![INDD_WARNING] } else { Vec::<&str>::new() }}),
     )
+}
+
+fn warning_item(
+    d: &Document,
+    ids: &std::collections::HashMap<String, pagenor_doc::StoryId>,
+    warning: &str,
+    indd: bool,
+) -> Option<pagenor_doc::ItemId> {
+    let name = warning.strip_prefix("story ")?.split([':', ' ']).next()?;
+    let source = if indd { name.parse::<u32>().map(|id| format!("u{id}")).unwrap_or_else(|_| name.into()) } else { name.into() };
+    let frame = d.story(*ids.get(&source)?)?.frames.first().copied()?;
+    d.item(frame).map(|_| frame)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -269,6 +291,22 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn review31_warning_navigation_uses_imported_story_identity() {
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        session.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"తెలుగు"})).unwrap();
+        let idml = pagenor_idml::export_idml(&session.doc().unwrap().doc);
+        let (doc, _, ids) = import_report_targets(&idml, None).unwrap();
+        for (name, sid) in &ids {
+            if let Some(frame) = doc.story(*sid).and_then(|s| s.frames.first()).copied() {
+                assert_eq!(warning_item(&doc, &ids, &format!("story {name}: warning"), false), Some(frame));
+            }
+        }
+        assert_eq!(warning_item(&doc, &ids, "story missing: warning", false), None);
+        assert_eq!(warning_item(&doc, &ids, "Missing package file", false), None);
+    }
 
     fn linked_idml(link: &str, embed_images: bool) -> Result<(Vec<u8>, Vec<u8>)> {
         let png = pagenor_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();
