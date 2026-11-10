@@ -925,6 +925,7 @@ fn place_image(
     });
     g.asset = aid;
     if let Some(it) = doc.item_mut(item) {
+        it.empty_fitting = None;
         it.content = Content::Graphic(g);
     }
 }

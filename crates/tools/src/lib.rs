@@ -253,6 +253,18 @@ impl ToolContext<'_> {
         pagenor_doc::hit_descendant(it, sp, self.tol(4.0), &|c| c.is_text_frame()).map(|f| (sr, f))
     }
 
+    /// The frontmost leaf item (non-group) under `p`, looking inside groups.
+    pub fn hit_leaf(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if !matches!(it.content, pagenor_doc::Content::Group { .. }) {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        let leaf = pagenor_doc::hit_descendant(it, sp, self.tol(4.0), &|c| !matches!(c.content, pagenor_doc::Content::Group { .. })).unwrap_or(id);
+        Some((sr, leaf))
+    }
+
     /// The parent item showing (not yet overridden) on the document page under `p`:
     /// (absolute page, parent item).
     pub fn hit_parent_on_page(&self, p: Point) -> Option<(usize, ItemId)> {
@@ -417,6 +429,9 @@ pub trait Tool: Send {
     fn busy(&self) -> bool {
         false
     }
+    /// Restore view-only state when switching tools.
+    fn set_option(&mut self, _key: &str, _value: &Value) {}
+
     /// The tool takes typed text (Type tool with a caret): single-key shortcuts are suppressed.
     fn wants_text(&self, _cx: &ToolContext) -> bool {
         false

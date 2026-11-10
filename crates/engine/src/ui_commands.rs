@@ -114,6 +114,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{tab?: border|shading} — border and shading of the selected paragraphs (type.para)",
     ),
+    (
+        "app.keepOptionsDialog",
+        "Keep Options…",
+        None,
+        "{} — Keep with Next, Keep with Previous and Keep Lines Together of the selected paragraphs (type.para)",
+    ),
     ("app.spanColumnsDialog", "Span Columns…", None, "{} — span or split columns of the selected paragraphs (type.para)"),
     ("app.bulletsNumberingDialog", "Bullets and Numbering…", None, "{} — bullets or numbers of the selected paragraphs (type.para)"),
     ("app.findFontDialog", "Find/Replace Font…", None, "{} — fonts used (missing ones flagged) and replacing them"),

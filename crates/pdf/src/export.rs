@@ -578,25 +578,14 @@ impl Exporter<'_> {
         let Some(sp) = doc.spreads.get(si) else { return };
         let first = doc.first_page_of_spread(si);
         for layer in doc.layers.iter().rev() {
-            if !layer.visible || !layer.printable {
+            if !layer_exported(layer) {
                 continue;
             }
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                let Some((ppi, ppage)) = doc.parent_page_for(first + pi) else { continue };
-                let parent = &doc.parents[ppi];
-                let dx = page.x - parent.pages[ppage].x;
-                for it in &parent.items {
-                    if it.layer != layer.id || page.overridden.contains(&it.id) {
-                        continue;
+            for pi in 0..sp.pages.len() {
+                for (xf, it) in shown_parent_items(doc, si, pi) {
+                    if it.layer == layer.id {
+                        self.top_item(s, it, xf, Some(first + pi), true);
                     }
-                    // Parent items belong to the parent page they sit on.
-                    if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                        continue;
-                    }
-                    self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
                 }
             }
             for it in &sp.items {
@@ -776,7 +765,7 @@ impl Exporter<'_> {
     }
 
     fn item_inner(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
-        if it.hidden || it.nonprinting {
+        if !item_exported(it) {
             return;
         }
         let ds = &it.effects.drop_shadow;
@@ -809,7 +798,7 @@ impl Exporter<'_> {
             if let Some(c) = &clip {
                 s.push_clip_path(c, &FillRule::NonZero);
             }
-            for c in it.children() {
+            for c in drawn_children(it) {
                 self.item(s, c, xf, page);
             }
             if clip.is_some() {
@@ -830,7 +819,7 @@ impl Exporter<'_> {
         if !it.children().is_empty() {
             let into = parent * it.child_space();
             let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
-            for c in it.shown_children() {
+            for c in drawn_children(it) {
                 self.item(s, c, into, page);
             }
             for _ in 0..pushes {
@@ -1454,6 +1443,37 @@ fn recompress(data: &[u8], interpolate: bool) -> Option<Image> {
     let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
     Image::from_jpeg(buf.into(), interpolate).ok()
+}
+
+/// Whether a layer participates in PDF output.
+pub fn layer_exported(layer: &pagenor_doc::Layer) -> bool {
+    layer.visible && layer.printable
+}
+/// Whether this item and its descendants participate, apart from their owning layer.
+pub fn item_exported(it: &Item) -> bool {
+    !it.hidden && !it.nonprinting
+}
+/// All pasted-in objects of a frame, or only a group's displayed state.
+pub fn drawn_children(it: &Item) -> impl Iterator<Item = &Arc<Item>> {
+    let nested = it.has_nested_items();
+    it.children().iter().filter(move |_| nested).chain(it.shown_children().filter(move |_| !nested))
+}
+/// Master-page items a document page actually shows, with their placement offsets.
+pub fn shown_parent_items(doc: &Document, si: usize, pi: usize) -> Vec<(Affine, &Arc<Item>)> {
+    let Some(page) = doc.spreads.get(si).and_then(|sp| sp.pages.get(pi)).filter(|p| p.show_parent_items) else { return vec![] };
+    let Some((ppi, ppage)) = doc.parent_page_for(doc.first_page_of_spread(si) + pi) else { return vec![] };
+    let Some(parent) = doc.parents.get(ppi) else { return vec![] };
+    let Some(ppg) = parent.pages.get(ppage) else { return vec![] };
+    parent
+        .items
+        .iter()
+        .filter(|it| {
+            !page.overridden.contains(&it.id)
+                && doc.layer(it.layer).is_some_and(layer_exported)
+                && (parent.pages.len() <= 1 || parent.page_at_x(it.bounds().center().x) == Some(ppage))
+        })
+        .map(|it| (Affine::translate((page.x - ppg.x, 0.0)), it))
+        .collect()
 }
 
 #[cfg(test)]

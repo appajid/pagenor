@@ -490,6 +490,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         });
         let id = if let Some(fid) = target_frame {
             let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
+            let mut graphic = graphic;
+            if let (Some(f), Content::Graphic(g)) = (it.empty_fitting.take(), &mut graphic) {
+                f.apply(g, frame_rect);
+                validate_placement(g.size, frame_rect, g.xf, "file.place")?;
+            }
             it.content = graphic;
             fid
         } else {
@@ -762,7 +767,13 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
             wrap: Default::default(),
         });
         let id = if let Some(fid) = frame {
-            d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?.content = graphic;
+            let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
+            let mut graphic = graphic;
+            if let (Some(f), Content::Graphic(g)) = (it.empty_fitting.take(), &mut graphic) {
+                f.apply(g, frame_rect);
+                validate_placement(g.size, frame_rect, g.xf, "place.drop")?;
+            }
+            it.content = graphic;
             fid
         } else {
             let id = ItemId(d.alloc());

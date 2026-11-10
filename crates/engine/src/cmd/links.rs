@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use pagenor_doc::{AssetId, Content, Document, ItemId, Selection};
+use pagenor_doc::{AssetId, Content, Document, Item, ItemId, Selection};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
@@ -35,7 +35,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Relink…",
             ["Window", "Links"],
             None,
-            "{asset, path} — use another file for every placement of the graphic; keeps the selected PDF page (error if missing)",
+            "{path, exactly one of asset | item} — asset relinks every placement; item relinks only that placed graphic. Keeps placement geometry and the selected PDF page (error if missing)",
             has_doc,
             relink
         ),
@@ -65,10 +65,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             })
         }),
-        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{asset} — selects the frames showing the graphic", has_doc, |s, p| {
-            let aid = asset_param(p, "links.goTo")?;
-            let st = s.doc_mut()?;
-            let ids = uses(&st.doc, aid);
+        cmd!(noundo "links.goTo", "Go To Link", ["Window", "Links"], None, "{exactly one of asset | item} — selects all placements of a source, or one placed graphic", has_doc, |s, p| {
+            let selector=link_selector(p,"links.goTo")?;
+            let st=s.doc_mut()?;
+            let ids=match selector{LinkSelector::Asset(aid)=>uses(&st.doc,aid),LinkSelector::Item(id)=>{let it=st.doc.item(id).ok_or_else(||bad("links.goTo","no such item"))?;if it.graphic().is_none(){return Err(bad("links.goTo","item is not a placed graphic"));}vec![id]}};
             if ids.is_empty() {
                 return Err(bad("links.goTo", "the graphic isn't placed"));
             }
@@ -77,6 +77,30 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
     ]
+}
+
+#[derive(Clone, Copy)]
+enum LinkSelector {
+    Asset(AssetId),
+    Item(ItemId),
+}
+fn link_selector(p: &Value, cmd: &str) -> Result<LinkSelector> {
+    let id = |key: &str| -> Result<Option<u64>> {
+        match p.get(key) {
+            None => Ok(None),
+            Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an integer id"))),
+        }
+    };
+    let (asset, item) = (id("asset")?, id("item")?);
+    if p.get("story").is_some() {
+        return Err(bad(cmd, "use the story-link commands for linked text; asset and item selectors are mutually exclusive"));
+    }
+    match (asset, item) {
+        (Some(id), None) => Ok(LinkSelector::Asset(AssetId(id))),
+        (None, Some(id)) => Ok(LinkSelector::Item(ItemId(id))),
+        (None, None) => Err(bad(cmd, "give exactly one of `asset` or `item`")),
+        _ => Err(bad(cmd, "`asset` and `item` are mutually exclusive")),
+    }
 }
 
 fn asset_param(p: &Value, cmd: &str) -> Result<AssetId> {
@@ -256,14 +280,75 @@ fn relinked_asset(a: &pagenor_doc::Asset, path: &str) -> Result<Arc<pagenor_doc:
 }
 
 fn relink(s: &mut Session, p: &Value) -> Result<Value> {
-    let aid = asset_param(p, "links.relink")?;
-    let path = str_param(p, "path").ok_or_else(|| bad("links.relink", "missing path"))?;
+    let selector = link_selector(p, "links.relink")?;
+    let path = str_param(p, "path").ok_or_else(|| bad("links.relink", "missing path"))?.to_string();
+
+    if let LinkSelector::Item(iid) = selector {
+        // Validate the target and source asset before reading or allocating anything. A failed
+        // item check must leave both the asset map and the document id counter untouched.
+        let (aid, only_use, fresh) = {
+            let d = &s.doc()?.doc;
+            let it = d.item(iid).ok_or_else(|| bad("links.relink", "no such item"))?;
+            let g = it.graphic().ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
+            let a = d.assets.get(&g.asset).ok_or_else(|| bad("links.relink", "placed graphic refers to a missing asset"))?;
+            let aid = g.asset;
+            let only_use = d.asset_ref_count(aid) == Some(1);
+            let fresh = relinked_asset(a, &path)?;
+            (aid, only_use, fresh)
+        };
+
+        let r = s.edit(|d, _| {
+            // Revalidate before mutating: a stale placement target must not allocate or add an asset.
+            let current = d.item(iid).and_then(Item::graphic).map(|g| g.asset).ok_or_else(|| bad("links.relink", "item is not a placed graphic"))?;
+            if current != aid {
+                return Err(bad("links.relink", "placed graphic changed before relink"));
+            }
+
+            let name = fresh.name.clone();
+            // Reuse an identical target already in the document. If this placement is the source
+            // asset's only reference, keep its id stable instead of splitting it unnecessarily.
+            let replacement_id = if let Some(existing) = pagenor_doc::find_same_asset(&d.assets, fresh.as_ref()) {
+                existing
+            } else if only_use {
+                d.assets.insert(aid, fresh.clone());
+                aid
+            } else {
+                let mut replacement = (*fresh).clone();
+                replacement.id = AssetId(d.alloc());
+                d.add_asset(replacement)
+            };
+
+            if replacement_id != aid {
+                let it = d.item_mut(iid).ok_or_else(|| bad("links.relink", "no such item"))?;
+                let Content::Graphic(g) = &mut it.content else {
+                    return Err(bad("links.relink", "item is not a placed graphic"));
+                };
+                if g.asset != aid {
+                    return Err(bad("links.relink", "placed graphic changed before relink"));
+                }
+                g.asset = replacement_id;
+
+                // Repeated placement-only relinks must not accumulate unused intermediate assets.
+                if !d.used_assets().contains(&aid) {
+                    d.assets.remove(&aid);
+                }
+            }
+            Ok(json!({"name": name, "warnings": [], "asset": replacement_id.0, "item": iid.0}))
+        });
+        return r;
+    }
+
+    let aid = match selector {
+        LinkSelector::Asset(aid) => aid,
+        LinkSelector::Item(_) => return Err(bad("links.relink", "unsupported selector")),
+    };
     let a = s.doc()?.doc.assets.get(&aid).ok_or_else(|| bad("links.relink", "no such graphic"))?;
-    let fresh = relinked_asset(a, path)?;
+    // Build the replacement before the edit: a file that cannot be read leaves the document as it was.
+    let fresh = relinked_asset(a, &path)?;
     s.edit(|d, _| {
         let name = fresh.name.clone();
         d.assets.insert(aid, fresh);
-        Ok(json!({"name": name}))
+        Ok(json!({"name": name, "warnings": [], "asset": aid.0}))
     })
 }
 
@@ -351,6 +436,193 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn relinking_a_page_placement_preserves_an_anchored_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.png");
+        let b = dir.path().join("b.png");
+        std::fs::write(&a, png(10, 10)).unwrap();
+        std::fs::write(&b, png(20, 10)).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = s.execute("frame.create", &json!({"rect":[72,72,400,400],"content":"text","text":"Before after"})).unwrap();
+        let first = s.execute("file.place", &json!({"path":a.to_string_lossy()})).unwrap();
+        let second = s.execute("file.place", &json!({"path":a.to_string_lossy(),"x":400})).unwrap();
+        let original = AssetId(first["asset"].as_u64().unwrap());
+        let anchor = ItemId(first["id"].as_u64().unwrap());
+        s.execute("anchored.insert", &json!({"ids":[anchor.0],"story":text["story"],"pos":3})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.asset_ref_count(original), Some(2));
+        s.execute("links.relink", &json!({"item":second["id"],"path":b.to_string_lossy()})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.anchored_item(anchor).unwrap().graphic().unwrap().asset, original);
+        assert_ne!(s.doc().unwrap().doc.item(ItemId(second["id"].as_u64().unwrap())).unwrap().graphic().unwrap().asset, original);
+        let back = pagenor_format::load(&pagenor_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert!(back.assets.contains_key(&original));
+        assert_eq!(back.anchored_item(anchor).unwrap().graphic().unwrap().asset, original);
+    }
+    #[test]
+    fn relink_one_placement_is_atomic_reuses_assets_and_cleans_orphans() {
+        let dir = std::env::temp_dir().join(format!("pagenor-links-placement-relink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        let c = dir.join("c.png");
+        std::fs::write(&a, png(10, 10)).unwrap();
+        std::fs::write(&b, png(20, 10)).unwrap();
+        std::fs::write(&c, png(30, 10)).unwrap();
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
+        let second = s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 180, "y": 72, "width": 72})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+
+        let shared = s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset;
+        assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, shared);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1);
+        let before_second = s.doc().unwrap().doc.item(second_id).unwrap().clone();
+
+        // A failed file read is atomic: no asset/id split and no placement change.
+        let missing = dir.join("missing.png");
+        assert!(s.execute("links.relink", &json!({"item": second_id.0, "path": missing.to_string_lossy()})).is_err());
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1);
+        assert_eq!(s.doc().unwrap().doc.item(second_id).unwrap(), &before_second);
+
+        let relinked = s.execute("links.relink", &json!({"item": second_id.0, "path": b.to_string_lossy()})).unwrap();
+        let replacement = AssetId(relinked["asset"].as_u64().unwrap());
+        assert_ne!(replacement, shared);
+        assert_eq!(relinked["warnings"], json!([]));
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 2);
+        assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, shared, "the first placement keeps A");
+        assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, replacement, "only the second placement changes");
+
+        // Frame and placement geometry/fitting stay byte-for-byte the same except for Graphic.asset.
+        let mut after_second = s.doc().unwrap().doc.item(second_id).unwrap().clone();
+        let Content::Graphic(after_graphic) = &mut after_second.content else { panic!("the placed item must remain a graphic") };
+        after_graphic.asset = shared;
+        assert_eq!(after_second, before_second);
+
+        let go = s.execute("links.goTo", &json!({"item": second_id.0})).unwrap();
+        assert_eq!(go["ids"], json!([second_id.0]), "placement Go To selects only that item");
+
+        // After the first split, B has one placement, so relinking that placement to C keeps
+        // the same asset id and changes only the source held by that asset.
+        let c_result = s.execute("links.relink", &json!({"item": second_id.0, "path": c.to_string_lossy()})).unwrap();
+        let c_asset = AssetId(c_result["asset"].as_u64().unwrap());
+        assert_eq!(c_asset, replacement);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 2, "A + the in-place C replacement");
+        assert_eq!(s.doc().unwrap().doc.assets[&replacement].link.as_deref(), c.to_str());
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, replacement);
+        assert_eq!(s.doc().unwrap().doc.assets[&replacement].link.as_deref(), b.to_str(), "undo restores B in the same asset id");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset, shared, "undo restores the shared source");
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1, "undo removes the split asset");
+
+        // If the target file already exists as another asset, placement relink reuses that asset id.
+        let third = s.execute("file.place", &json!({"path": b.to_string_lossy(), "x": 280, "y": 72, "width": 72})).unwrap();
+        let third_id = ItemId(third["id"].as_u64().unwrap());
+        let existing_b = s.doc().unwrap().doc.item(third_id).and_then(Item::graphic).unwrap().asset;
+        let reused = s.execute("links.relink", &json!({"item": second_id.0, "path": b.to_string_lossy()})).unwrap();
+        assert_eq!(AssetId(reused["asset"].as_u64().unwrap()), existing_b);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 2, "A and the reused B asset");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn relink_single_placement_keeps_its_asset_id() {
+        let dir = std::env::temp_dir().join(format!("pagenor-links-single-relink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        std::fs::write(&a, png(10, 10)).unwrap();
+        std::fs::write(&b, png(20, 10)).unwrap();
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let placed = s.execute("file.place", &json!({"path": a.to_string_lossy()})).unwrap();
+        let item = ItemId(placed["id"].as_u64().unwrap());
+        let aid = s.doc().unwrap().doc.item(item).and_then(Item::graphic).unwrap().asset;
+        let r = s.execute("links.relink", &json!({"item": item.0, "path": b.to_string_lossy()})).unwrap();
+        assert_eq!(AssetId(r["asset"].as_u64().unwrap()), aid);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1);
+        assert_eq!(s.doc().unwrap().doc.assets[&aid].link.as_deref(), b.to_str());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn relink_single_placement_to_existing_asset_removes_orphan_source() {
+        let dir = std::env::temp_dir().join(format!("pagenor-links-orphan-relink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        std::fs::write(&a, png(10, 10)).unwrap();
+        std::fs::write(&b, png(20, 10)).unwrap();
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 72, "y": 72})).unwrap();
+        let second = s.execute("file.place", &json!({"path": b.to_string_lossy(), "x": 180, "y": 72})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        let a_asset = s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset;
+        let b_asset = s.doc().unwrap().doc.item(second_id).and_then(Item::graphic).unwrap().asset;
+        assert_ne!(a_asset, b_asset);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 2);
+
+        let r = s.execute("links.relink", &json!({"item": first_id.0, "path": b.to_string_lossy()})).unwrap();
+        assert_eq!(AssetId(r["asset"].as_u64().unwrap()), b_asset, "existing B asset is reused");
+        assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, b_asset);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 1, "the now-unused A asset is removed");
+        assert!(!s.doc().unwrap().doc.assets.contains_key(&a_asset));
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(first_id).and_then(Item::graphic).unwrap().asset, a_asset);
+        assert_eq!(s.doc().unwrap().doc.assets.len(), 2, "undo restores the removed source asset");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn link_commands_reject_conflicting_and_invalid_item_targets() {
+        let dir = std::env::temp_dir().join(format!("pagenor-links-invalid-target-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.png");
+        std::fs::write(&path, png(10, 10)).unwrap();
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap());
+        let placed = s.execute("file.place", &json!({"path": path.to_string_lossy(), "x": 180, "y": 72})).unwrap();
+        let graphic = ItemId(placed["id"].as_u64().unwrap());
+        let aid = s.doc().unwrap().doc.item(graphic).and_then(Item::graphic).unwrap().asset;
+
+        for command in ["links.goTo", "links.relink"] {
+            let mut p = json!({"asset": aid.0, "item": graphic.0});
+            if command == "links.relink" {
+                p["path"] = json!(path.to_string_lossy());
+            }
+            let e = s.execute(command, &p).unwrap_err().to_string();
+            assert!(e.contains("mutually exclusive"), "{command}: {e}");
+        }
+
+        let e = s.execute("links.goTo", &json!({"item": 999_999_u64})).unwrap_err().to_string();
+        assert!(e.contains("no such item"), "{e}");
+        let e = s.execute("links.goTo", &json!({"item": frame.0})).unwrap_err().to_string();
+        assert!(e.contains("not a placed graphic"), "{e}");
+        let e = s.execute("links.relink", &json!({"item": frame.0, "path": path.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("not a placed graphic"), "{e}");
+
+        let mut broken = s.doc().unwrap().doc.item(graphic).unwrap().graphic().unwrap().clone();
+        broken.asset = AssetId(999_999);
+        Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(graphic).unwrap().content = Content::Graphic(broken);
+        let e = s.execute("links.relink", &json!({"item": graphic.0, "path": path.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("missing asset"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     use super::*;
 
     fn png(w: u32, h: u32) -> Vec<u8> {

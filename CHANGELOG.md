@@ -1,5 +1,25 @@
 # Pagenor changelog
 
+## 0.14.0 — local milestone, 2026-11-11
+
+- Recover text from native documents with stale/deleted/foreign frame references.
+- Wrap Find Next once from the caret, reveal document/master matches and retain
+  Find-field focus when Enter advances the search.
+- Select and edit nested group children; drill down on double-click and return to
+  the previous tool or parent group with Escape.
+- Retain empty-frame fitting through native/IDML saves and apply it on placement.
+- Add Keep with Previous to layout, IDML, paragraph styles and Type → Keep Options.
+- Keep marks attached across paint changes and preserve kerning/joining across
+  feature switches, retaining Pagenor’s native/scoped fonts and Indic input.
+- Warn about white/Paper overprint settings on printed objects; existing PDF
+  overprint export limitations remain reported.
+- Relink or reveal an individual image placement while preserving other uses,
+  geometry, undo, async status checks and color/ICC information.
+- Native capability 8 protects the new saved settings. Local source only;
+  all seven gates pass (3,157 tests, seven existing skips; twenty WASM packages).
+  Five offscreen views inspected; Windows/Linux shared-library checks pass.
+  [Source pins, checks and limits](docs/queued-adoption-20261111.md).
+
 ## 0.13.1 — local fixes, 2026-11-11
 
 - Adapt 33 reviewed fix scopes; preserve existing actual-caret Text Frame Options.

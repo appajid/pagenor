@@ -1,5 +1,9 @@
 # Pagenor 0.13.1 — reviewed fixes, 11 November 2026
 
+Follow-up: eleven queued source scopes from this review are adapted locally in
+**0.14.0 / P11.25**. See the [completion ledger](queued-adoption-20261111.md)
+for source pins, compatibility decisions and final checks.
+
 Status: implemented and validated locally as P11.24 / 0.13.1.
 Base: `39ef376f0cf5888122367608887d642e76f62edd` (0.13.0).
 

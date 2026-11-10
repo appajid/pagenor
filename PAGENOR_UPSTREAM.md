@@ -1063,3 +1063,23 @@ original user files remain unchanged. Native Windows/Linux execution remains pen
 The linked ledger records each source author and immutable inspected head under
 the retained MIT OR Apache-2.0 notices. This pass adapts local contexts rather than
 merging upstream branches or introducing the newer document model wholesale.
+
+## Queued editor and publishing adaptations — P11.25 (2026-11-11)
+
+Local Pagenor **0.14.0** adapts these MIT OR Apache-2.0 source scopes. The original licences and copyright notices remain applicable. This is a selected adaptation to Pagenor’s existing architecture, not a branch merge.
+
+| Proposal | Source author | Inspected head |
+| --- | --- | --- |
+| [#2395](https://github.com/storytold/designcraft/pull/2395) | @simonhull | `99d9926c4e2dcfbd77dabc54216d754713388fa2` |
+| [#2567](https://github.com/storytold/designcraft/pull/2567) | @r31lin | `89b20ba97870ab57f270ec57cf8ec66f326ebe4d` |
+| [#2553](https://github.com/storytold/designcraft/pull/2553) | @el-j | `95ba558d0df76405e0c73756e34e20f0c6ac6584` |
+| [#2554](https://github.com/storytold/designcraft/pull/2554) | @el-j | `5fe5ff89f6b77c64a5a3893eb82c022ba36d2620` |
+| [#2555](https://github.com/storytold/designcraft/pull/2555) | @el-j | `a99523bef93257a77f40cc1996ea06e03d4faaf2` |
+| [#2418](https://github.com/storytold/designcraft/pull/2418) | @magelix | `2da1bce1cefd5ab7af20dd8d48cdf66ecb53183a` |
+| [#2382](https://github.com/storytold/designcraft/pull/2382) | @tlindner | `894209e5a58dc0991dc686f07d55a21c7090b2aa` |
+| [#1150](https://github.com/storytold/designcraft/pull/1150) | @y-az | `0f68281bc1e9631a204a6e8d6c51cd5d56421aec` |
+| [#2333](https://github.com/storytold/designcraft/pull/2333) | @y-az | `45d225c962caa8208be2e87c900bebf6ae862c2b` |
+| [#2412](https://github.com/storytold/designcraft/pull/2412) | @ZIDAN44 | `cd315908aae3aa7b13f89225cda1af0d69f842a7` |
+| [#2544](https://github.com/storytold/designcraft/pull/2544) | @hokie123 | `bd51962160aa63c8ccad2fb4d1c35f5637058d1c` |
+
+The cumulative group branches and shaping prerequisite are reconciled in order. Native format advances to 8 for fitting/paragraph settings. Pagenor retains its scoped/live fonts, Indic input, `.pgnr`, independent master pages, owner icons, async dialogs and link worker, and color/ICC reporting. Absent CJK-only adornment/warichu paths are not introduced; existing PDF overprint limitations remain explicit. [Compatibility choices, per-step checks and final verification](docs/queued-adoption-20261111.md).

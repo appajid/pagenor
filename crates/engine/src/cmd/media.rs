@@ -31,6 +31,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(pagenor_doc::DocError::NoItem(fid))?;
                 let r = it.inner_bounds();
+                it.empty_fitting = None;
                 it.content = Content::Graphic(Graphic {
                     asset: aid,
                     size: (r.width(), r.height()),
@@ -149,6 +150,20 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_placed_into_an_empty_frame_drops_its_fitting_options() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally"})).unwrap();
+        assert!(s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).unwrap().empty_fitting.is_some());
+        let fake = super::super::file::base64_encode(b"\x00\x00\x00\x18ftypmp42");
+        s.execute("file.place", &json!({"base64": fake, "name": "clip.mp4", "frame": f})).unwrap();
+        let it = s.doc().unwrap().doc.item(pagenor_doc::ItemId(f)).unwrap().clone();
+        assert!(it.graphic().is_some(), "the media sits in the frame");
+        assert!(it.empty_fitting.is_none());
+    }
+
     use serde_json::json;
 
     use crate::Session;

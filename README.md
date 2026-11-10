@@ -15,9 +15,11 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current local milestone: **0.13.1** — 33 reviewed editor, typography, import and
-bounded-processing fix scopes. Native format stays 7. All seven checks pass (3,089 tests; twenty WASM packages);
-[changes and compatibility notes](docs/upstream-adoption-20261111.md).
+Current local milestone: **0.14.0** — document recovery, Find Next, nested-group
+editing, retained frame fitting, Keep with Previous, shaping and per-placement
+image relinking. Native format 8. All seven checks pass: 3,157 tests, seven existing
+skips and twenty WASM packages; Windows/Linux shared libraries compile-check.
+[Changes, checks and compatibility notes](docs/queued-adoption-20261111.md).
 
 ## The sample magazine
 

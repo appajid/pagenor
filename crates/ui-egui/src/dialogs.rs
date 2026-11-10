@@ -1833,6 +1833,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             &app.ui.language,
             match d.s("section").as_str() {
                 "span" => "Span Columns",
+                "keep" => "Keep Options",
                 "bullets" => "Bullets and Numbering",
                 _ => "Paragraph Borders and Shading",
             },
@@ -2066,6 +2067,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         });
                     }
                     "findChange" => {
+                        // Enter, with any modifier, is Find Next, as in InDesign. It is taken before a
+                        // field, checkbox or button here sees it: the fields keep focus, a focused
+                        // checkbox doesn't toggle, and neither OK nor Change All is ever pressed by it.
+                        let enter = !popup_open
+                            && ui.input_mut(|i| {
+                                let is_enter = |e: &egui::Event| matches!(e, egui::Event::Key { key: egui::Key::Enter, .. });
+                                let pressed = i.events.iter().any(|e| is_enter(e) && matches!(e, egui::Event::Key { pressed: true, .. }));
+                                i.events.retain(|e| !is_enter(e));
+                                pressed
+                            });
                         ui.horizontal(|ui| {
                             for (label, grep) in [("Text", false), ("GREP", true)] {
                                 if ui
@@ -2140,7 +2151,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 crit["kind"] = json!(d.s("objKind"));
                             }
                             ui.horizontal(|ui| {
-                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find All"))).clicked() {
+                                // Enter is Find All here, the search Object mode has.
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find All"))).clicked() || enter {
                                     let n = app.run("find.objects", crit.clone()).ok().and_then(|r| r["ids"].as_array().map(Vec::len)).unwrap_or(0);
                                     d.fields.insert("status".into(), json!(format!("{n} found")));
                                 }
@@ -2156,11 +2168,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             ui.label(d.s("status"));
                         } else {
                             egui::Grid::new("fc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Find what:"));
-                                text_field(ui, &mut d, "find", 260.0);
+                                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Find what:"));
+                                text_field_with_label(ui, &mut d, "find", 260.0, Some(label.id));
                                 ui.end_row();
-                                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Change to:"));
-                                text_field(ui, &mut d, "change", 260.0);
+                                let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Change to:"));
+                                text_field_with_label(ui, &mut d, "change", 260.0, Some(label.id));
                                 ui.end_row();
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Search:"));
                                 let cur = d.s("scope");
@@ -2184,7 +2196,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             ui.horizontal(|ui| {
                                 let params0 = find_change_params(&d);
                                 let params = || params0.clone();
-                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() {
+                                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Find Next"))).clicked() || enter {
                                     let r = app.run("find.next", params());
                                     let msg = match r {
                                         Ok(Value::Null) => "No matches".to_string(),
@@ -2797,7 +2809,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     )
                     .clicked()
                     || text_frame_enter
-                    || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    || (!popup_open && d.id != "findChange" && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
@@ -3004,6 +3016,17 @@ fn confirm_layout_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, Stri
 }
 
 /// Apply the open dialog.
+fn check_dialog_selection(app: &DesignApp, d: &Dialog, name: &str) -> Result<(), String> {
+    // Legacy/internal dialog callers without a captured target retain their existing behavior.
+    let Some(uid) = d.fields.get("document").and_then(Value::as_u64) else { return Ok(()) };
+    let st = app.session.doc().map_err(|e| e.to_string())?;
+    let selection = serde_json::to_value(&st.selection).map_err(|e| e.to_string())?;
+    if uid != st.uid || d.fields.get("selection") != Some(&selection) {
+        return Err(format!("the document or selection changed; reopen {name}"));
+    }
+    Ok(())
+}
+
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
     if d.id == "findChange" {
@@ -3246,6 +3269,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             Ok(r)
         }
         "paragraphLocal" => {
+            if d.s("section")=="keep" {check_dialog_selection(app,&d,"Keep Options")?;}
             let attrs: Map<String, Value> = d.fields.iter().filter_map(|(k, v)| k.strip_prefix("p.").map(|a| (a.to_string(), v.clone()))).collect();
             if attrs.is_empty() {
                 return Ok(Value::Null);
@@ -3584,6 +3608,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "fittingOptions" => {
+            check_dialog_selection(app,&d,"Frame Fitting Options")?;
             let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
@@ -4940,6 +4965,7 @@ fn keep_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
         crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
     });
     ui.add_space(4.0);
+    para_check(ui, d, pv, "keepWithPrevious", crate::i18n::tr(lang, "Keep with Previous"));
     para_check(ui, d, pv, "keepLinesTogether", crate::i18n::tr(lang, "Keep Lines Together"));
     let together = para_value(d, pv, "keepLinesTogether").as_bool().unwrap_or(false);
     ui.add_enabled_ui(together, |ui| {
@@ -5339,6 +5365,7 @@ fn paragraph_local(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.set_min_width(480.0);
     match d.s("section").as_str() {
         "span" => span_columns(&lang, ui, d, &pv, &doc),
+        "keep" => keep_options(&lang, ui, d, &pv),
         "bullets" => {
             let (char_styles, families, fonts, scope) = ListUi::new_parts(app);
             let (family, style) = (d.s("family"), d.s("style"));
@@ -7963,10 +7990,11 @@ mod paragraph_rules_dialog_tests {
     fn paragraph_style_options_keep_and_border_sections_reach_the_styled_paragraph() {
         let para = style_section_edit(
             &["keep", "border"],
-            json!({"p.keepWithNext": 2, "p.keepLinesTogether": true, "p.keepAllLines": false, "p.keepFirst": 3,
-                "p.startParagraph": "nextPage", "p.borderOn": true, "p.borderWeights": [2.0, 0.0, 2.0, 0.0]}),
+            json!({"p.keepWithNext": 2, "p.keepWithPrevious": true, "p.keepLinesTogether": true, "p.keepAllLines": false, "p.keepFirst": 3,
+            "p.startParagraph": "nextPage", "p.borderOn": true, "p.borderWeights": [2.0, 0.0, 2.0, 0.0]}),
         );
         assert_eq!(para["keepWithNext"], 2);
+        assert_eq!(para["keepWithPrevious"], true);
         assert_eq!(para["keepLinesTogether"], true);
         assert_eq!(para["keepAllLines"], false);
         assert_eq!(para["keepFirst"], 3);
@@ -9654,5 +9682,247 @@ mod upstream_review11_setup_units_tests {
         confirm_document_setup(&mut app, &d).unwrap();
         let after = app.session.active().unwrap().doc.spreads.iter().flat_map(|s| s.pages.iter().map(|p| (p.width, p.height))).collect::<Vec<_>>();
         assert_eq!(before, after);
+    }
+}
+
+#[cfg(test)]
+mod queued_find_tests {
+    use super::scrolling_dialog_tests::{dialog_context, dialog_frame};
+    use super::*;
+
+    #[test]
+    fn find_next_brings_the_text_it_found_into_view() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"preset": "A4", "pages": 5, "facingPages": false})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+        app.run("frame.create", json!({"spread": 4, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        crate::canvas::go_to_page(&mut app, 0);
+        let spread = |app: &DesignApp| crate::canvas::current_spread(app);
+        assert_eq!(spread(&app), Some(pagenor_doc::SpreadRef::Doc(0)));
+        let hit = app.run("find.next", json!({"find": "zebra", "scope": "document"})).unwrap();
+        assert_eq!(hit["start"], 0);
+        assert_eq!(spread(&app), Some(pagenor_doc::SpreadRef::Doc(4)), "the view went to the page with the match");
+    }
+
+    #[test]
+    fn enter_in_find_change_finds_the_next_match_and_changes_nothing() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let sid = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "red and red"})).unwrap()["story"].clone();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        app.run("app.findChange", json!({})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("find".into(), json!("red"));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        dialog_frame(&mut app, &ctx, screen, vec![enter]);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("findChange"), "the dialog stays open");
+        let st = app.session.doc().unwrap();
+        assert_eq!(st.doc.story(pagenor_doc::StoryId(sid.as_u64().unwrap())).unwrap().text, "red and red", "nothing changed");
+        assert_eq!(st.selection.text.map(|t| t.range()), Some(0..3), "the first match is selected");
+        // With a modifier, Enter is Find Next too, never OK (Change All).
+        for (modifiers, range) in [(egui::Modifiers::COMMAND, 8..11), (egui::Modifiers::SHIFT, 8..11)] {
+            let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers };
+            dialog_frame(&mut app, &ctx, screen, vec![enter]);
+            assert!(app.ui.dialog.is_some(), "{modifiers:?}+Enter does not confirm the dialog");
+            assert_eq!(app.session.doc().unwrap().selection.text.map(|t| t.range()), Some(range), "{modifiers:?}+Enter");
+        }
+        let text = &app.session.doc().unwrap().doc.story(pagenor_doc::StoryId(sid.as_u64().unwrap())).unwrap().text;
+        assert_eq!(text, "red and red", "nothing changed");
+    }
+
+    #[test]
+    fn find_next_shows_a_match_on_a_parent_page_with_its_selection() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+        let r = app
+            .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+            .unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        assert!(!app.session.doc().unwrap().editing_parents);
+        app.run("find.next", json!({"find": "zebra"})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert!(st.editing_parents, "the parent page is shown");
+        assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((sid, 0..5)), "the match stays selected");
+        // Back on a document page's text, parent editing ends and that match stays selected.
+        let r = app.run("frame.create", json!({"spread": 0, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+        let doc_sid = r["story"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        app.run("layout.parents.edit", json!({"on": true})).unwrap();
+        app.run("text.select", json!({"story": sid, "anchor": 5, "focus": 5})).unwrap();
+        app.run("find.next", json!({"find": "zebra"})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert!(!st.editing_parents);
+        assert_eq!(st.selection.text.map(|t| (t.story.0, t.range())), Some((doc_sid, 0..5)));
+    }
+
+    /// Showing a match on a parent page (or back on a document page) keeps the search's place: each
+    /// match is found once, then Find Next reports no more.
+    #[test]
+    fn find_next_goes_on_after_switching_to_and_from_the_parent_pages() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+        let r = app
+            .run("frame.create", json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"}))
+            .unwrap();
+        let parent_sid = r["story"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let found = |app: &mut DesignApp| {
+            let mut stories = vec![];
+            for _ in 0..4 {
+                if app.run("find.next", json!({"find": "zebra"})).unwrap().is_null() {
+                    break;
+                }
+                stories.push(app.session.doc().unwrap().selection.text.unwrap().story.0);
+            }
+            stories
+        };
+        assert_eq!(found(&mut app), vec![parent_sid], "a lone match on a parent page is found once");
+
+        app.run("layout.parents.edit", json!({"on": false})).unwrap();
+        let r = app.run("frame.create", json!({"spread": 0, "rect": [72, 72, 300, 200], "content": "text", "text": "zebra"})).unwrap();
+        let doc_sid = r["story"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut stories = found(&mut app);
+        stories.sort_unstable();
+        let mut both = vec![parent_sid, doc_sid];
+        both.sort_unstable();
+        assert_eq!(stories, both, "matches on a parent and a document page are each found once, then no more");
+    }
+
+    /// Enter in Object mode runs Find All, the search that mode has.
+    #[test]
+    fn enter_in_find_change_object_mode_finds_all() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "a"})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        app.run("app.findChange", json!({})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("objectMode".into(), json!(true));
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        dialog_frame(&mut app, &ctx, screen, vec![enter]);
+        let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+        assert_eq!(d.s("status"), "1 found");
+    }
+
+    /// Enter in Find what finds the next match and leaves the field focused, to refine the search.
+    #[test]
+    fn enter_in_find_what_keeps_the_field_focused() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "red and red"})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        app.run("app.findChange", json!({})).unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("find".into(), json!("red"));
+        }
+        let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::new("find_focus_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(4);
+        h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").click();
+        h.run_steps(2);
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused());
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().session.doc().unwrap().selection.text.map(|t| t.range()), Some(0..3), "Enter found the first match");
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find what:").is_focused(), "the field keeps focus");
+    }
+}
+
+#[cfg(test)]
+mod queued_dialog_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+    fn fixture(app: DesignApp) -> Harness<'static, DesignApp> {
+        let builder = Harness::builder().with_size(egui::vec2(1100.0, 850.0));
+        let builder = if std::env::var_os("PAGENOR_QUEUED_VISUALS").is_some() { builder.wgpu() } else { builder };
+        let mut ready = false;
+        let mut h = builder.build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        h.run_steps(4);
+        h
+    }
+    fn capture(h: &mut Harness<'_, DesignApp>, name: &str) {
+        if let Some(dir) = std::env::var_os("PAGENOR_QUEUED_VISUALS") {
+            let path = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&path).unwrap();
+            h.render().unwrap().save(path.join(format!("{name}.png"))).unwrap();
+        }
+    }
+    #[test]
+    fn keep_previous_local_and_style_controls_roundtrip_and_are_undoable() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect":[72,72,300,300],"content":"text","text":"Heading\nBody"})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        app.run("app.keepOptionsDialog", json!({})).unwrap();
+        let mut h = fixture(app);
+        h.get_by_label("Keep with Previous").click();
+        h.run_steps(3);
+        capture(&mut h, "keep-options");
+        confirm(h.state_mut()).unwrap();
+        assert_eq!(h.state().session.doc().unwrap().doc.story(sid).unwrap().paras[0].para.keep_with_previous, Some(true));
+        let before = h.state().session.doc().unwrap().doc.clone();
+        let back = pagenor_format::load(&pagenor_format::save(&before).unwrap()).unwrap();
+        assert_eq!(back.story(sid).unwrap().paras[0].para.keep_with_previous, Some(true));
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_ne!(h.state().session.doc().unwrap().doc.story(sid).unwrap().paras[0].para.keep_with_previous, Some(true));
+        open_style_options(h.state_mut(), true, pagenor_doc::BASIC_PARAGRAPH);
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("keep"));
+        h.run_steps(3);
+        let _ = h.get_by_label("Keep with Previous");
+        capture(&mut h, "paragraph-style-keep");
+    }
+    #[test]
+    fn empty_fitting_dialog_roundtrips_and_refuses_a_changed_target() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect":[100,100,300,300]})).unwrap();
+        let id = pagenor_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.fittingOptions", json!({"fitting":"fitProportionally","autoFit":true,"align":0,"crop":[1,2,3,4]})).unwrap();
+        app.run("app.fittingOptions", json!({})).unwrap();
+        let mut h = fixture(app);
+        let _ = h.get_by_label("Auto-Fit");
+        capture(&mut h, "empty-frame-fitting");
+        confirm(h.state_mut()).unwrap();
+        let f = h.state().session.doc().unwrap().doc.item(id).unwrap().empty_fitting.unwrap();
+        assert_eq!(f.crop, [1.0, 2.0, 3.0, 4.0]);
+        assert!(f.auto_fit);
+        h.state_mut().run("app.fittingOptions", json!({})).unwrap();
+        h.state_mut().run("selection.set", json!({"ids":[]})).unwrap();
+        let before = h.state().session.doc().unwrap().doc.clone();
+        assert!(confirm(h.state_mut()).is_err());
+        assert!(std::sync::Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
     }
 }

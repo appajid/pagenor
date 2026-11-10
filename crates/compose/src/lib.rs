@@ -765,6 +765,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     };
     let para_ranges = story.para_ranges();
     let np = para_ranges.len();
+    let deleted = deleted_paras(story, &para_ranges);
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter = ListCounter::default();
     // Named lists number independently of layout: one pass up front, for the labels.
@@ -835,8 +836,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             pi = j;
             continue 'paras;
         }
+        if deleted.get(pi).copied().unwrap_or(false) {
+            info.push(deleted_paragraph_info(&info, &cur));
+            pi += 1;
+            continue;
+        }
         let pf = &story.paras[pi];
         let (mut pp, mut base_chars) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, &deleted, pi, &pp);
         // The separator supplies character metrics for a paragraph with no glyphs.
         if prange.is_empty() && story.text.as_bytes().get(prange.start) == Some(&b'\n') {
             base_chars = doc.styles.resolve_char(&base_chars, story.format_after(prange.start));
@@ -850,12 +857,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             base_chars = doc.styles.resolve_char(&base_chars, &fmt);
         }
         // A break character that ends the previous paragraph sends this one on, like a start option.
-        let after_break = pi
-            .checked_sub(1)
-            .and_then(|p| para_ranges.get(p))
-            .and_then(|r| story.text.get(r.clone()))
-            .and_then(|t| t.chars().next_back())
-            .and_then(break_start);
+        let after_break = previous_visible_break(doc, story, &para_ranges, &deleted, pi);
         if let Some(t) = story.para_table(pi) {
             // A paragraph set across the columns moves on to the next frame where others move on to
             // the next column.
@@ -1016,7 +1018,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 end: (cur.fi, cur.col),
                 lines: 1,
                 lines_in_end_col: 1,
-                keep_with_next: 0,
+                keep_with_next: pp.keep_with_next,
                 keep_together: false,
                 keep_all: false,
                 keep_first: 1,
@@ -2033,6 +2035,21 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
     Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
+/// The first paragraph after `pi` that tracked changes don't delete.
+fn next_visible_paragraph(story: &Story, deleted: &[bool], pi: usize) -> Option<usize> {
+    let first = pi.checked_add(1)?;
+    (first..story.paras.len()).find(|&n| !deleted.get(n).copied().unwrap_or(false))
+}
+
+/// Lines paragraph `pi` keeps with the next one: its own Keep with Next, or at least one when the
+/// next visible paragraph has Keep with Previous (its first line stays with this paragraph's last
+/// line). Deleted paragraphs in between take no room, so they don't break the keep.
+fn keep_with_next(doc: &Document, story: &Story, deleted: &[bool], pi: usize, pp: &pagenor_doc::ParaProps) -> u32 {
+    let next_keeps_with_previous =
+        next_visible_paragraph(story, deleted, pi).and_then(|n| story.paras.get(n)).is_some_and(|p| doc.styles.resolve_para(p).0.keep_with_previous);
+    if next_keeps_with_previous { pp.keep_with_next.max(1) } else { pp.keep_with_next }
+}
+
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next paragraph separated from the next one.
@@ -2048,10 +2065,12 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
             }
         }
     }
+    let deleted = deleted_paras(story, &story.para_ranges());
     let mut bad: Vec<usize> = Vec::new();
     for (&pi, v) in &cols {
         let Some(pf) = story.paras.get(pi) else { continue };
-        let (pp, _) = doc.styles.resolve_para(pf);
+        let (mut pp, _) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, &deleted, pi, &pp);
         if pp.keep_lines_together && v.len() > 1 {
             let (first, last) = (v[0].1, v[v.len() - 1].1);
             if pp.keep_all_lines || first < pp.keep_first.max(1) as usize || last < pp.keep_last.max(1) as usize {
@@ -2060,7 +2079,7 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
             }
         }
         if pp.keep_with_next > 0
-            && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
+            && let (Some(end), Some(next)) = (v.last(), next_visible_paragraph(story, &deleted, pi).and_then(|n| cols.get(&n)))
             && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1))
         {
             bad.push(pi);
@@ -3885,7 +3904,26 @@ fn caret_stops(l: &Line) -> Vec<(usize, f64)> {
     ps.extend([l.range.start, l.range.end]);
     ps.sort_unstable();
     ps.dedup();
-    ps.into_iter().filter(|p| l.range.contains(p) || *p == l.range.end).map(|p| (p, caret_x(l, p))).collect()
+    ps.into_iter().filter(|p| (l.range.contains(p) || *p == l.range.end) && !before_own_mark(l, *p)).map(|p| (p, caret_x(l, p))).collect()
+}
+
+/// Whether glyph `i` of line `l` is a combining mark in a cluster of its own after a letter (a
+/// mark in a colour of its own, see `shape::StyleRuns::cluster_chars`): the caret stays with its
+/// letter, as it does when the mark is in the letter's cluster. Generated text (a label that
+/// starts with a mark) is not a mark of the source: the caret before its marker stays.
+fn own_mark(l: &Line, i: usize) -> bool {
+    l.glyphs.get(i).is_some_and(|g| {
+        g.len > 0
+            && i > 0
+            && g.byte > l.range.start
+            && g.generated_text.is_none()
+            && unicode_bidi::bidi_class(g.rendered_char) == unicode_bidi::BidiClass::NSM
+    })
+}
+
+/// Whether story byte `p` is where such a mark ([`own_mark`]) starts: no caret position.
+fn before_own_mark(l: &Line, p: usize) -> bool {
+    l.glyphs.iter().enumerate().any(|(i, g)| g.byte == p && own_mark(l, i))
 }
 
 /// Bidi caret movement: the position one step to the left (or right) of `pos` on its line as
@@ -3961,6 +3999,8 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
             .flat_map(|g| [g.byte, g.byte + g.len])
+            // No caret position between a letter and a mark in a cluster of its own, as on the line.
+            .filter(|&at| !before_own_mark(l, at))
             .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
     }
     let l = hit_line(ft, p)?;
@@ -3970,7 +4010,12 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     }
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
-    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+    for (i, g) in l.glyphs.iter().enumerate().filter(|(_, g)| g.len > 0) {
+        if own_mark(l, i) {
+            // No caret position between a letter and its mark.
+            best = g.byte + g.len;
+            continue;
+        }
         let mid = g.x + g.adv / 2.0;
         if p.x < mid && p.x >= prev_mid {
             return Some(g.byte);
@@ -4043,4 +4088,65 @@ pub fn path_glyphs(
         }
     }
     runs
+}
+
+// Small tracked-deletion prerequisites from the same pinned Keep with Previous source.
+fn deleted_paras(story: &Story, ranges: &[Range<usize>]) -> Vec<bool> {
+    let mut spans: Vec<Range<usize>> = Vec::new();
+    for (r, f) in story.runs() {
+        if f.over.change != Some(pagenor_doc::ChangeMark::Deleted) {
+            continue;
+        }
+        match spans.last_mut() {
+            Some(l) if l.end == r.start => l.end = r.end,
+            _ => spans.push(r),
+        }
+    }
+    if spans.is_empty() {
+        return vec![false; ranges.len()];
+    }
+    let covered = |r: Range<usize>| {
+        r.is_empty() || spans.get(spans.partition_point(|s| s.end <= r.start)).is_some_and(|s| s.start <= r.start && s.end >= r.end)
+    };
+    let return_deleted = |r: &Range<usize>| r.end < story.text.len() && covered(r.end..r.end + 1);
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(i, r)| covered(r.clone()) && (return_deleted(r) || i.checked_sub(1).and_then(|p| ranges.get(p)).is_some_and(return_deleted)))
+        .collect()
+}
+
+fn deleted_paragraph_info(info: &[ParaInfo], cursor: &Cursor) -> ParaInfo {
+    info.last().map_or(
+        ParaInfo {
+            start: (cursor.fi, cursor.col),
+            at_top: cursor.last_baseline.is_none(),
+            end: (cursor.fi, cursor.col),
+            lines: 0,
+            lines_in_end_col: 0,
+            keep_with_next: 0,
+            keep_together: false,
+            keep_all: false,
+            keep_first: 1,
+            keep_last: 1,
+        },
+        |previous| ParaInfo { lines_in_end_col: 0, ..previous.clone() },
+    )
+}
+
+fn previous_visible_break(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool], pi: usize) -> Option<StartParagraph> {
+    (0..pi).rev().find(|&p| !deleted.get(p).copied().unwrap_or(false)).and_then(|p| {
+        let range = ranges.get(p)?;
+        let (index, _) = story.text.get(range.clone())?.char_indices().next_back()?;
+        visible_break(doc, story, p, range.start + index)
+    })
+}
+
+fn visible_break(doc: &Document, story: &Story, p: usize, at: usize) -> Option<StartParagraph> {
+    let character = story.text.get(at..)?.chars().next()?;
+    let start = break_start(character)?;
+    let (_, chars) = doc.styles.resolve_para(story.paras.get(p)?);
+    let props = doc.styles.resolve_char(&chars, story.char_format_at(at + character.len_utf8()));
+    let gone = props.change == pagenor_doc::ChangeMark::Deleted || doc.conditions_hide(&props.conditions);
+    (!gone).then_some(start)
 }

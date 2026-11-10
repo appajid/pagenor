@@ -218,6 +218,18 @@ impl Document {
         used
     }
 
+    /// References to one source across frames, media posters, anchored objects, cells and notes.
+    /// None if nesting or arithmetic exceeds the traversal budget: never assume a single owner.
+    pub fn asset_ref_count(&self, target: AssetId) -> Option<usize> {
+        let mut count = Some(0usize);
+        let complete = self.asset_refs(&mut |a| {
+            if a == target {
+                count = count.and_then(|n| n.checked_add(1));
+            }
+        });
+        if complete { count } else { None }
+    }
+
     /// Point every reference to a key of `map` at its value.
     pub fn remap_assets(&mut self, map: &HashMap<AssetId, AssetId>) {
         if map.is_empty() {

@@ -1600,6 +1600,7 @@ impl<'r> Importer<'r> {
         a.single_word_justify = e.prop("SingleWordJustification").and_then(|v| names::align_in(v.trim()));
         a.kashidas = e.prop("Kashidas").and_then(|v| names::kashidas_in(v.trim()));
         a.keep_with_next = u("KeepWithNext");
+        a.keep_with_previous = e.boolean("KeepWithPrevious");
         a.keep_lines_together = e.boolean("KeepLinesTogether");
         a.keep_all_lines = e.boolean("KeepAllLinesTogether");
         a.keep_first = u("KeepFirstLines");
@@ -2589,6 +2590,9 @@ impl<'r> Importer<'r> {
                         }
                     }
                 } else {
+                    // An empty frame keeps its Frame Fitting Options for what is placed later: its
+                    // own, over those of its object style chain, as for a frame with a graphic.
+                    it.empty_fitting = self.with_style(e, "FrameFittingOption").as_ref().and_then(empty_fitting);
                     // Page items pasted into this frame (Paste Into).
                     let kids: Vec<Arc<Item>> = e
                         .elements()
@@ -3179,6 +3183,17 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<pagenor_doc::Clipping
     c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
     c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
+}
+
+/// A `FrameFittingOption` on a frame with no graphic; `None` when it sets nothing.
+fn empty_fitting(ff: &El) -> Option<pagenor_doc::EmptyFrameFitting> {
+    let f = pagenor_doc::EmptyFrameFitting {
+        fitting: ff.get("FittingOnEmptyFrame").map_or(pagenor_doc::Fitting::None, names::fitting_in),
+        auto_fit: ff.get("AutoFit") == Some("true"),
+        align: ff.get("FittingAlignment").map_or(4, names::anchor_in),
+        crop: [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0)),
+    };
+    (!f.is_default()).then_some(f)
 }
 
 fn path_of(pg: &El) -> PathData {

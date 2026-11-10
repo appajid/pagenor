@@ -23,7 +23,8 @@ pub use pagenor_doc::file_type::MIME;
 /// format 4 retains placed-graphic clipping paths that older readers would otherwise discard.
 // Format 6 retains document colors for future shapes; prior readers must reject it.
 // Format 7 retains World-Ready composer enum values and book TOC scope.
-pub const VERSION: u32 = 7;
+// Format 8 retains empty-frame fitting and Keep with Previous.
+pub const VERSION: u32 = 8;
 
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
@@ -295,6 +296,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     }
     upgrade(&mut doc, version);
     doc.merge_duplicate_assets();
+    doc.drop_dangling_story_frames();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -377,33 +379,42 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
     }
     upgrade(&mut doc, 1);
     doc.merge_duplicate_assets();
+    doc.drop_dangling_story_frames();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
 
 /// Bring older documents' JSON up to the current model. Vertical Type was a text frame option
 /// (`content.options.vertical`); it is the story's direction, which a story takes from its first
-/// frame.
+/// frame that is a text frame of that story (the frames the thread repair drops don't count).
 fn upgrade_json(doc: &mut Value) {
-    let mut vertical = HashSet::new();
-    vertical_frames(doc, &mut vertical, 0);
-    if vertical.is_empty() {
+    let mut frames = HashMap::new();
+    text_frames(doc, &mut frames, 0);
+    if !frames.values().any(|f| f.vertical) {
         return;
     }
     let Some(stories) = doc.get_mut("stories").and_then(Value::as_object_mut) else { return };
     for st in stories.values_mut() {
-        let first = st.get("frames").and_then(|f| f.get(0)).and_then(Value::as_u64);
-        if let (Some(f), Some(st)) = (first, st.as_object_mut())
-            && vertical.contains(&f)
-            && !st.contains_key("vertical")
-        {
+        let Some(st) = st.as_object_mut() else { continue };
+        let Some(sid) = st.get("id").and_then(Value::as_u64) else { continue };
+        let first = st
+            .get("frames")
+            .and_then(Value::as_array)
+            .and_then(|fs| fs.iter().filter_map(Value::as_u64).filter_map(|f| frames.get(&f)).find(|f| f.story == sid));
+        if first.is_some_and(|f| f.vertical) && !st.contains_key("vertical") {
             st.insert("vertical".into(), Value::Bool(true));
         }
     }
 }
 
-/// Ids of the text frames in `v` (any depth: groups, anchored objects) whose options say vertical.
-fn vertical_frames(v: &Value, out: &mut HashSet<u64>, depth: usize) {
+/// What [`upgrade_json`] needs of a text frame in an older document's JSON.
+struct LegacyTextFrame {
+    story: u64,
+    vertical: bool,
+}
+
+/// The text frames in `v` (any depth: groups, anchored objects) by id.
+fn text_frames(v: &Value, out: &mut HashMap<u64, LegacyTextFrame>, depth: usize) {
     // serde_json already refuses JSON nested deeper than 128 levels.
     if depth > 256 {
         return;
@@ -412,17 +423,18 @@ fn vertical_frames(v: &Value, out: &mut HashSet<u64>, depth: usize) {
         Value::Object(m) => {
             if let (Some(id), Some(c)) = (m.get("id").and_then(Value::as_u64), m.get("content"))
                 && c.get("type").and_then(Value::as_str) == Some("text")
-                && c.get("options").and_then(|o| o.get("vertical")).and_then(Value::as_bool) == Some(true)
+                && let Some(story) = c.get("story").and_then(Value::as_u64)
             {
-                out.insert(id);
+                let vertical = c.get("options").and_then(|o| o.get("vertical")).and_then(Value::as_bool) == Some(true);
+                out.entry(id).or_insert(LegacyTextFrame { story, vertical });
             }
             for c in m.values() {
-                vertical_frames(c, out, depth + 1);
+                text_frames(c, out, depth + 1);
             }
         }
         Value::Array(a) => {
             for c in a {
-                vertical_frames(c, out, depth + 1);
+                text_frames(c, out, depth + 1);
             }
         }
         _ => {}
@@ -1161,5 +1173,110 @@ mod upstream_review11_tests {
         let mut left = 20;
         assert!(read_entry(&mut z, "bad", 20, &mut left).is_err());
         assert_eq!(left, 14);
+    }
+}
+
+#[cfg(test)]
+mod queued_recovery_tests {
+    use super::*;
+    use pagenor_doc::geom::Rect;
+    use pagenor_doc::{ParaFormat, SpreadRef, build::NewDocument};
+    fn item_json(v: &mut Value, id: u64) -> Option<&mut Value> {
+        if v.get("id").and_then(Value::as_u64) == Some(id) {
+            return Some(v);
+        }
+        match v {
+            Value::Object(m) => m.values_mut().find_map(|v| item_json(v, id)),
+            Value::Array(a) => a.iter_mut().find_map(|v| item_json(v, id)),
+            _ => None,
+        }
+    }
+
+    /// #2364: a story whose thread names a frame the document no longer holds (deleted while the
+    /// story kept its id) made the whole file refuse to open. It opens; the story keeps its text,
+    /// unplaced, and the other stories are untouched.
+    #[test]
+    fn a_story_whose_frame_is_gone_opens_with_its_text_unplaced() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (gone, back_cover) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "Back Cover", ParaFormat::default()).unwrap();
+        let (kept, spine) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "Spine", ParaFormat::default()).unwrap();
+        // The frame leaves the spread, but its story still threads it.
+        Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != gone);
+        assert!(d.check().is_err(), "the file's state");
+        let back = load(&save(&d).unwrap()).unwrap();
+        back.check().unwrap();
+        assert!(back.stories[&back_cover].frames.is_empty());
+        assert_eq!(back.stories[&back_cover].text, "Back Cover");
+        assert_eq!(back.stories[&spine].frames, vec![kept]);
+        assert_eq!(back.stories[&spine].text, "Spine");
+    }
+
+    /// A thread that names another story's frame drops it; that frame stays in its own story.
+    #[test]
+    fn a_frame_threaded_into_another_story_stays_with_its_own() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "first", ParaFormat::default()).unwrap();
+        let (b, sb) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "second", ParaFormat::default()).unwrap();
+        d.story_mut(sa).unwrap().frames.push(b);
+        let back = load(&save(&d).unwrap()).unwrap();
+        back.check().unwrap();
+        assert_eq!(back.stories[&sa].frames, vec![a]);
+        assert_eq!(back.stories[&sb].frames, vec![b]);
+    }
+
+    /// A story takes a frame-level Vertical setting from its first frame that survives the thread
+    /// repair, not from a frame the repair drops: another story's frame or one that is gone.
+    #[test]
+    fn frame_level_vertical_text_follows_the_first_frame_the_story_keeps() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "横", ParaFormat::default()).unwrap();
+        let (b, sb) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "縦", ParaFormat::default()).unwrap();
+        let (gone, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(210.0, 10.0, 400.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (c, sc) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(210.0, 210.0, 400.0, 400.0), lid, "縦書き", ParaFormat::default()).unwrap();
+        // Story a threads b's vertical frame first; story c threads a deleted frame first.
+        d.story_mut(sa).unwrap().frames.insert(0, b);
+        d.story_mut(sc).unwrap().frames.insert(0, gone);
+        Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != gone);
+        let mut v = serde_json::to_value(&d).unwrap();
+        item_json(&mut v, a.0).unwrap()["content"]["options"]["vertical"] = json!(false);
+        item_json(&mut v, b.0).unwrap()["content"]["options"]["vertical"] = json!(true);
+        item_json(&mut v, c.0).unwrap()["content"]["options"]["vertical"] = json!(true);
+        let back = load(&serde_json::to_vec(&v).unwrap()).unwrap();
+        back.check().unwrap();
+        assert_eq!(back.stories[&sa].frames, vec![a]);
+        assert!(!back.stories[&sa].vertical, "a keeps only its own horizontal frame");
+        assert!(back.stories[&sb].vertical);
+        assert_eq!(back.stories[&sc].frames, vec![c]);
+        assert!(back.stories[&sc].vertical, "c's first kept frame is vertical");
+    }
+}
+
+#[cfg(test)]
+mod queued_fitting_tests {
+    use super::*;
+    #[test]
+    fn empty_fitting_options_roundtrip_and_old_readers_are_guarded() {
+        use pagenor_doc::{EmptyFrameFitting, Fitting, Item, ItemId, Shape, SpreadRef};
+        let mut d = Document::new(&pagenor_doc::build::NewDocument::default());
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(
+            id,
+            d.default_layer(),
+            Shape::Rectangle,
+            pagenor_doc::geom::shapes::rectangle(pagenor_doc::geom::Rect::new(0.0, 0.0, 100.0, 200.0)),
+        );
+        it.empty_fitting = Some(EmptyFrameFitting { fitting: Fitting::FitProportionally, auto_fit: true, align: 0, crop: [1.0, 2.0, 3.0, 4.0] });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let bytes = save(&d).unwrap();
+        let back = load(&bytes).unwrap();
+        assert_eq!(back.item(id).unwrap().empty_fitting, d.item(id).unwrap().empty_fitting);
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut meta = String::new();
+        zip.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 8);
     }
 }

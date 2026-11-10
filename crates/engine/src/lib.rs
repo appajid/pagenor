@@ -315,6 +315,25 @@ impl Default for Session {
 
 impl Session {
     /// The name `file.new` gives the next document without a title (New Document shows it).
+    /// Turns parent page editing on or off to show text Find Next found there, keeping that text
+    /// selected and the search where it is: the next Find Next goes on after the match instead of
+    /// starting again from it.
+    pub fn edit_parents_keeping_find(&mut self, on: bool) -> Result<()> {
+        let st = self.doc()?;
+        let selection = st.selection.clone();
+        let current = self.find_context.as_ref().is_some_and(|c| c.is_current(st));
+        let context = self.find_context.take().filter(|_| current);
+        self.execute("layout.parents.edit", &serde_json::json!({"on": on}))?;
+        let st = self.doc_mut()?;
+        st.selection = selection;
+        st.revision = st.revision.saturating_add(1);
+        if let Some(mut c) = context {
+            c.acknowledge(st);
+            self.find_context = Some(c);
+        }
+        Ok(())
+    }
+
     pub fn reset_find_scope(&mut self) {
         self.find_context = None;
     }

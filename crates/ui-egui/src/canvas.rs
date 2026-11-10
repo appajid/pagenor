@@ -126,6 +126,44 @@ pub fn fit(app: &mut DesignApp, rect: Rect, what: &str) {
     }
 }
 
+/// Scroll so object `id` is centred, zooming out only when it doesn't fit (leaving the parent
+/// pages for an object on a document page). A jump Go Back can return from.
+pub fn go_to_item(app: &mut DesignApp, id: pagenor_doc::ItemId) {
+    let Some(st) = app.session.active() else { return };
+    let Some(loc) = st.doc.find(id) else { return };
+    let on_parent = matches!(loc.spread, SpreadRef::Parent(_));
+    if st.editing_parents != on_parent {
+        // The selection (found text, say) stays.
+        if app.session.edit_parents_keeping_find(on_parent).is_ok() {
+            app.after_engine();
+        }
+    }
+    let Some(st) = app.session.active() else { return };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let Some(slot) = layout.slot(loc.spread) else { return };
+    let Some(it) = st.doc.item_at(&loc) else { return };
+    let b = slot.xf.transform_rect_bbox(st.doc.parent_xf(&loc).transform_rect_bbox(it.bounds()));
+    let Some(rect) = app.canvas_rect else { return };
+    if ![b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) {
+        return;
+    }
+    record_history(app, false);
+    let fits = app.view().is_some_and(|v| b.width() * v.zoom <= rect.width() as f64 - 80.0 && b.height() * v.zoom <= rect.height() as f64 - 80.0);
+    if fits {
+        if let Some(v) = app.view_mut() {
+            v.origin = Point::new(b.center().x - rect.width() as f64 / 2.0 / v.zoom, b.center().y - rect.height() as f64 / 2.0 / v.zoom);
+        }
+    } else {
+        let zoom = ((rect.width() as f64 - 80.0) / b.width().max(1.0)).min((rect.height() as f64 - 80.0) / b.height().max(1.0)).clamp(0.05, 40.0);
+        if let Some(v) = app.view_mut() {
+            v.zoom = zoom;
+            v.origin = Point::new(b.center().x - rect.width() as f64 / 2.0 / zoom, b.center().y - rect.height() as f64 / 2.0 / zoom);
+            v.fitted = true;
+        }
+    }
+    record_history(app, true);
+}
+
 /// Index of the slot nearest the view centre.
 pub fn current_slot(app: &DesignApp, layout: &CanvasLayout) -> Option<usize> {
     let v = app.view()?;
@@ -1976,7 +2014,17 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
     let Some((id, _)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
     let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
+        // As a Selection-tool click picks it: a selected child (or a selected group around it)
+        // stays picked, rather than being replaced by the top-level group.
+        let target = if direct {
+            id
+        } else {
+            let leaf = st.doc.item(id).and_then(|it| {
+                let (_, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
+                pagenor_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group())
+            });
+            st.doc.selection_target(leaf.unwrap_or(id), |i| st.selection.contains(i))
+        };
         (target, st.selection.contains(target))
     }) else {
         return ContextMenu::Canvas;
@@ -2977,6 +3025,187 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
 
 #[cfg(test)]
 mod tests {
+
+    fn typing(text: &str) -> (egui_kittest::Harness<'static, DesignApp>, u64) {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect":[72,72,400,400],"content":"text","text":text})).unwrap();
+        app.run("tool.select", json!({"tool":"type"})).unwrap();
+        app.run("text.select", json!({"story":r["story"],"anchor":0,"focus":0})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.01).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        (h, r["id"].as_u64().unwrap())
+    }
+    fn screen_at(h: &mut egui_kittest::Harness<'_, DesignApp>, id: u64, range: std::ops::Range<usize>) -> Pos2 {
+        let app = h.state();
+        let d = &app.session.doc().unwrap().doc;
+        let it = d.item(pagenor_doc::ItemId(id)).unwrap();
+        let loc = d.find(it.id).unwrap();
+        let cs = app.session.cache.get(d, it.text_frame().unwrap().story, None);
+        let fi = cs.frames.iter().position(|f| f.frame == it.id).unwrap();
+        let (l, g) = cs.frames[fi].lines.iter().find_map(|l| l.glyphs.iter().find(|g| range.contains(&g.byte)).map(|g| (l, g))).unwrap();
+        let canvas = app.session.layout().xf(loc.spread) * d.parent_xf(&loc) * d.text_xf(it) * Point::new(g.x + g.adv * 0.25, l.baseline - 3.0);
+        Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(canvas)
+    }
+    fn click(h: &mut egui_kittest::Harness<'_, DesignApp>, p: Pos2) {
+        h.hover_at(p);
+        h.step();
+        h.drag_at(p);
+        h.step();
+        h.drop_at(p);
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn double_click_text_frame_with_direct_selection_switches_to_type_and_escape_returns() {
+        let (mut h, id) = typing("Hello world from text frame!");
+        // Switch to directSelection tool
+        h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "directSelection");
+
+        let p = screen_at(&mut h, id, 0..5);
+        h.hover_at(p);
+        h.step();
+        // Double-click on text frame with directSelection tool
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(5);
+
+        assert_eq!(h.state().session.tool_id(), "type");
+        assert!(h.state_mut().session.wants_text(), "should be in text editing mode");
+
+        // 1st Escape exits text edit mode, returns to directSelection tool, frame selected
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "directSelection");
+        assert!(!h.state_mut().session.wants_text());
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![pagenor_doc::ItemId(id)]);
+
+        // 2nd Escape deselects the frame; as before, Escape in Direct Selection then goes back to
+        // the Selection tool.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+    }
+
+    #[test]
+    fn double_click_grouped_text_frame_with_selection_tool_drills_down_and_escape_climbs_back() {
+        let (mut h, id) = typing("Grouped text frame content");
+        // Create another frame and group them together
+        let r2 = h.state_mut().run("frame.create", json!({"rect": [72, 450, 400, 550], "content": "text", "text": "Other frame"})).unwrap();
+        let id2 = r2["id"].as_u64().unwrap();
+        h.state_mut().run("selection.set", json!({"ids": [id, id2]})).unwrap();
+        let r_grp = h.state_mut().run("object.group", json!({})).unwrap();
+        let grp_id = r_grp["id"].as_u64().unwrap();
+
+        // Switch to selection tool and deselect all
+        h.state_mut().run("tool.select", json!({"tool": "selection"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+
+        let p = screen_at(&mut h, id, 0..5);
+        h.hover_at(p);
+        h.step();
+
+        // 1st double-click on group over `id` drills down into group: selects `id`
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(35);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![pagenor_doc::ItemId(id)]);
+
+        // 2nd double-click on selected `id` switches to Type tool
+        click(&mut h, p);
+        click(&mut h, p);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "type");
+        assert!(h.state_mut().session.wants_text(), "should be editing text");
+
+        // 1st Escape exits text edit mode, returns to selection tool with child frame selected
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(!h.state_mut().session.wants_text());
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![pagenor_doc::ItemId(id)]);
+
+        // 2nd Escape selects parent group
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![pagenor_doc::ItemId(grp_id)]);
+
+        // 3rd Escape deselects
+        h.key_press(egui::Key::Escape);
+        h.run_steps(5);
+        assert_eq!(h.state().session.tool_id(), "selection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+    }
+
+    #[test]
+    fn direct_selection_click_and_type_tool_click_in_nested_groups() {
+        let (mut h, id) = typing("Nested hello");
+        let r2 = h.state_mut().run("frame.create", json!({"rect": [72, 450, 400, 550], "content": "text", "text": "Other frame"})).unwrap();
+        let id2 = r2["id"].as_u64().unwrap();
+        h.state_mut().run("selection.set", json!({"ids": [id, id2]})).unwrap();
+        let r_grp = h.state_mut().run("object.group", json!({})).unwrap();
+        let inner_grp_id = r_grp["id"].as_u64().unwrap();
+
+        // Create a 3rd frame and group it with the inner group (nested group)
+        let r3 = h.state_mut().run("frame.create", json!({"rect": [72, 600, 400, 700], "content": "text", "text": "Third frame"})).unwrap();
+        let id3 = r3["id"].as_u64().unwrap();
+        h.state_mut().run("selection.set", json!({"ids": [inner_grp_id, id3]})).unwrap();
+        let _ = h.state_mut().run("object.group", json!({})).unwrap();
+
+        let center_of = |app: &DesignApp, item_id: u64| {
+            let doc = &app.session.doc().unwrap().doc;
+            let it = doc.item(pagenor_doc::ItemId(item_id)).unwrap();
+            let loc = doc.find(pagenor_doc::ItemId(item_id)).unwrap();
+            let sp = (doc.parent_xf(&loc) * it.xf) * it.bounds().center();
+            let c = app.session.layout().to_canvas(SpreadRef::Doc(0), sp);
+            Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(c)
+        };
+
+        // Test 1: Direct Selection tool single click on nested child `id` selects `id` directly
+        h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "directSelection");
+        assert!(h.state().session.doc().unwrap().selection.items.is_empty());
+
+        let p1 = center_of(h.state(), id);
+        click(&mut h, p1);
+        h.run_steps(5);
+        assert_eq!(h.state().session.doc().unwrap().selection.items, vec![pagenor_doc::ItemId(id)], "direct selection must select child directly");
+
+        // Test 2: Type tool single click on nested child `id2` places caret and edits text
+        h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        assert_eq!(h.state().session.tool_id(), "type");
+
+        let p2 = center_of(h.state(), id2);
+        click(&mut h, p2);
+        h.run_steps(5);
+        assert!(h.state_mut().session.wants_text(), "Type tool click on grouped text frame must start text editing");
+        let sel_text = h.state().session.doc().unwrap().selection.text;
+        assert!(sel_text.is_some(), "caret must be placed in grouped text frame");
+        assert_eq!(sel_text.unwrap().frame, Some(pagenor_doc::ItemId(id2)));
+
+        // Type some characters
+        h.state_mut().run("text.insert", json!({"text": "!"})).unwrap();
+        h.run_steps(5);
+        let story = h.state().session.doc().unwrap().doc.text_story(sel_text.unwrap().story, None).unwrap().text.clone();
+        assert!(story.contains('!'), "typed text must be inserted in grouped story");
+    }
+
     use egui_kittest::{Harness, kittest::Queryable};
     use pagenor_geom::Unit;
 
@@ -3337,6 +3566,29 @@ mod tests {
         h.run_steps(3);
         assert_eq!(spread_items(&h), [b, a]);
         assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
+    }
+
+    #[test]
+    fn right_clicking_a_selected_group_child_keeps_it_selected() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [250, 250, 400, 400]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        let group = app.run("object.group", json!({})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app);
+        // A child picked with a drill-down stays the selection, as a Selection-tool click leaves it.
+        h.state_mut().run("selection.set", json!({"ids": [a]})).unwrap();
+        h.run_steps(3);
+        let on_a = screen_of(&h, 60.0, 60.0);
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [a], "the selected child is not replaced by its group");
+        // With nothing selected, the first click picks the top-level group as the tool does.
+        h.key_press(egui::Key::Escape);
+        h.state_mut().run("edit.deselectAll", json!({})).unwrap();
+        h.run_steps(3);
+        right_click(&mut h, on_a);
+        assert_eq!(selected(&h), [group]);
     }
 
     #[test]

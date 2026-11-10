@@ -1428,3 +1428,284 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
 }
+
+#[test]
+fn double_click_text_frame_switches_to_type_tool() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "standalone", ParaFormat::default()).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    // Selection tool double click
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]
+    );
+
+    // Direct Selection tool double click
+    let mut dt = create("directSelection");
+    let a = dt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]
+    );
+
+    // Nested text frame inside a group
+    let (grouped_fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 300.0, 400.0, 400.0), lid, "grouped", ParaFormat::default()).unwrap();
+    let child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    g.content = pagenor_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+
+    let cx = ctx(&d, &s, &c, &l);
+    // Direct Selection: double-clicking nested text frame directly switches to Type tool
+    let a = dt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(
+        a,
+        vec![
+            Action::SwitchTool("type".into()),
+            Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": grouped_fid.0, "point": [350.0, 350.0]}))
+        ]
+    );
+
+    // Selection tool: 1st double-click drills down to select child item grouped_fid
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [grouped_fid.0]}))]);
+
+    // Selection tool: 2nd double-click with grouped_fid selected switches to Type tool
+    let s_child = Selection::items(vec![grouped_fid]);
+    let cx_child = ctx(&d, &s_child, &c, &l);
+    let a2 = t.pointer(&cx_child, &PointerEvent::new(PointerKind::DoubleClick, 350.0, 350.0).with_clicks(2));
+    assert_eq!(
+        a2,
+        vec![
+            Action::SwitchTool("type".into()),
+            Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": grouped_fid.0, "point": [350.0, 350.0]}))
+        ]
+    );
+
+    // In selection tool: pressing Escape when child is selected climbs up to parent group
+    let a_esc_child = t.key(&cx_child, ToolKey::Escape, Mods::default());
+    assert_eq!(a_esc_child, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [gid.0]}))]);
+
+    // Pressing Escape on parent group deselects
+    let s_grp = Selection::items(vec![gid]);
+    let cx_grp = ctx(&d, &s_grp, &c, &l);
+    let a_esc_grp = t.key(&cx_grp, ToolKey::Escape, Mods::default());
+    assert_eq!(a_esc_grp, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+}
+
+#[test]
+fn escape_in_type_tool_returns_to_previous_tool() {
+    let d = Document::new(&NewDocument::default());
+    let s = Selection {
+        text: Some(pagenor_doc::TextSel { story: pagenor_doc::StoryId(1), anchor: 0, focus: 0, frame: None, cell: None }),
+        ..Default::default()
+    };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    // Default TypeTool without prevTool returns to selection
+    let mut t = create("type");
+    let a = t.key(&cx, ToolKey::Escape, Mods::default());
+    assert_eq!(a, vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), serde_json::json!({}))]);
+
+    // TypeTool with prevTool = "directSelection" returns to directSelection
+    let mut t = create("type");
+    t.set_option("prevTool", &serde_json::json!("directSelection"));
+    let a = t.key(&cx, ToolKey::Escape, Mods::default());
+    assert_eq!(a, vec![Action::SwitchTool("directSelection".into()), Action::Exec("text.exitToFrame".into(), serde_json::json!({}))]);
+
+    // After exiting text edit, the text frame remains selected in the returned selection tool
+    let fid = ItemId(1);
+    let s_frame = Selection { items: vec![fid], text: None, ..Default::default() };
+    let cx_frame = ctx(&d, &s_frame, &c, &l);
+
+    // In directSelection tool with the frame selected: subsequent Escape deselects the frame
+    let mut dt = create("directSelection");
+    let a_subsequent = dt.key(&cx_frame, ToolKey::Escape, Mods::default());
+    assert_eq!(a_subsequent, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // In selection tool with the standalone frame selected: subsequent Escape deselects the frame
+    let mut st = create("selection");
+    let a_subsequent_sel = st.key(&cx_frame, ToolKey::Escape, Mods::default());
+    assert_eq!(a_subsequent_sel, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // If already deselected, Escape does not emit selection.set
+    let s_empty = Selection::default();
+    let cx_empty = ctx(&d, &s_empty, &c, &l);
+    assert_eq!(dt.key(&cx_empty, ToolKey::Escape, Mods::default()), vec![]);
+    assert_eq!(st.key(&cx_empty, ToolKey::Escape, Mods::default()), vec![]);
+}
+
+#[test]
+fn direct_selection_selects_item_directly_in_group_and_nested_groups() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+
+    // Create a text frame and a rectangle
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "child text", ParaFormat::default()).unwrap();
+    let child1 = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+
+    let rid = ItemId(d.alloc());
+    let rect = Item::new(rid, lid, Shape::Rectangle, shapes::rectangle(Rect::new(220.0, 100.0, 320.0, 200.0)));
+    let child2 = std::sync::Arc::new(rect);
+
+    // Inner group containing both children
+    let inner_gid = ItemId(d.alloc());
+    let mut inner_g = Item::new(inner_gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    inner_g.content = pagenor_doc::item::Content::Group { items: vec![child1, child2] };
+
+    // Outer group containing the inner group
+    let outer_gid = ItemId(d.alloc());
+    let mut outer_g = Item::new(outer_gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    outer_g.content = pagenor_doc::item::Content::Group { items: vec![std::sync::Arc::new(inner_g)] };
+    d.insert_item(SpreadRef::Doc(0), outer_g, None).unwrap();
+
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    let mut dt = create("directSelection");
+    let mut st = create("selection");
+    let mut tt = create("type");
+
+    // Standard Selection tool: single click selects top-level group outer_gid
+    let a_st = st.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_st, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [outer_gid.0], "content": false}))]);
+
+    // Direct Selection tool: single click on child1 (nested in 2 levels of groups) directly selects child1
+    let a_dt1 = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_dt1, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [fid.0], "content": true}))]);
+
+    // Direct Selection tool: single click on child2 directly selects child2
+    let a_dt2 = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 250.0, 150.0));
+    assert_eq!(a_dt2, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [rid.0], "content": true}))]);
+
+    // Type tool: single click on nested text frame child1 places caret at click position
+    let a_tt1 = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_tt1, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+
+    // Type tool: double click on nested text frame child1 selects word at click position
+    let a_tt2 = tt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(a_tt2, vec![Action::Exec("text.selectAt".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0], "unit": "word"}))]);
+}
+
+#[test]
+fn type_tool_and_direct_selection_reject_items_in_locked_ancestor_groups() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+
+    let (_fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    let child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    g.locked = true;
+    g.content = pagenor_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    let mut dt = create("directSelection");
+    let mut tt = create("type");
+
+    // Direct Selection: clicking item inside locked group does not select it
+    let a_dt = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_dt, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // Type tool: clicking text frame inside locked group does not place caret
+    let a_tt = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_tt, vec![]);
+}
+
+#[test]
+fn type_tool_places_the_caret_in_a_standalone_locked_text_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    d.item_mut(fid).unwrap().locked = true;
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    // Locked text frames take the caret; only a lock inherited from a group refuses it.
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}
+
+#[test]
+fn type_tool_places_the_caret_in_a_locked_text_frame_in_an_unlocked_group() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    let mut child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    std::sync::Arc::make_mut(&mut child).locked = true;
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    g.content = pagenor_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}
+
+#[test]
+fn direct_marquee_respects_nested_transforms_hidden_items_and_locks() {
+    use pagenor_doc::Content;
+    use pagenor_geom::Affine;
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let mut children = Vec::new();
+    let mut ids = Vec::new();
+    for (x, hidden, locked) in [(100.0, false, false), (250.0, true, false), (400.0, false, true)] {
+        let (id, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(x, 100.0, x + 100.0, 200.0), layer, "text", ParaFormat::default()).unwrap();
+        ids.push(id);
+        let mut it = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+        let item = Arc::make_mut(&mut it);
+        item.hidden = hidden;
+        item.locked = locked;
+        children.push(it);
+    }
+    let inner = ItemId(d.alloc());
+    let mut group = Item::new(inner, layer, Shape::Group, Default::default());
+    group.content = Content::Group { items: children };
+    group.xf = Affine::translate((20.0, 15.0));
+    let outer = ItemId(d.alloc());
+    let mut group2 = Item::new(outer, layer, Shape::Group, Default::default());
+    group2.content = Content::Group { items: vec![Arc::new(group)] };
+    group2.xf = Affine::translate((40.0, 60.0));
+    d.insert_item(SpreadRef::Doc(0), group2, None).unwrap();
+    for (tool, expected) in [("directSelection", vec![ids[0].0]), ("selection", vec![outer.0])] {
+        let (selection, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+        let cx = ctx(&d, &selection, &cache, &layout);
+        let mut t = create(tool);
+        let a = layout.to_canvas(SpreadRef::Doc(0), Point::new(50.0, 50.0));
+        let b = layout.to_canvas(SpreadRef::Doc(0), Point::new(800.0, 500.0));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, a.x, a.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, b.x, b.y));
+        let actions = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, b.x, b.y));
+        assert_eq!(actions, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids":expected,"add":false}))], "{tool}");
+    }
+    d.item_mut(inner).unwrap().locked = true;
+    let (selection, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &selection, &cache, &layout);
+    let mut t = create("directSelection");
+    let a = layout.to_canvas(SpreadRef::Doc(0), Point::new(50.0, 50.0));
+    let b = layout.to_canvas(SpreadRef::Doc(0), Point::new(800.0, 500.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, a.x, a.y));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, b.x, b.y));
+    assert_eq!(
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, b.x, b.y)),
+        vec![Action::Exec("selection.set".into(), serde_json::json!({"ids":[],"add":false}))]
+    );
+}

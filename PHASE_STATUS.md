@@ -1,5 +1,17 @@
 # Pagenor development phases
 
+P11.25: local **0.14.0** adapts eleven queued source scopes: damaged-document
+frame recovery, Find Next wrapping/reveal/Enter, nested-group selection and text
+entry, empty-frame fitting, Keep with Previous, shaping across paint/feature
+changes, white/Paper overprint warnings and per-placement image relinking.
+Native capability 8 retains the new fitting/paragraph settings. Preserves scoped
+fonts, inline Indic input, left/right masters, `.pgnr`, owner icons, async dialogs,
+link status checks and color/ICC metadata. All seven gates pass: 3,157 tests,
+zero failures, seven existing skips; twenty WASM packages. Five offscreen views
+are inspected; Windows/Linux shared-library checks pass.
+Local source only; no install or publication. Native Windows/Linux execution
+remains pending. [Source pins, checks and limits](docs/queued-adoption-20261111.md).
+
 P11.24: local **0.13.1** adapts 33 compatible upstream fix scopes from the
 11 November review through #2578. Fixes master-aware Layers rows, Color Picker
 sizing/state, thread ports, selected Indic marks, IDML cell insets/orphan stories,
@@ -12,7 +24,7 @@ No install, upload, publication or new test release bundle. The installed app an
 original user files remain unchanged. Native Windows/Linux execution remains pending.
 [Source pins, compatibility decisions and deferred scopes](docs/upstream-adoption-20261111.md).
 
-Current local version: **0.13.1** (P11.24; checks passed); published desktop preview remains **0.7.0** (P11.13).
+Current local version: **0.14.0** (P11.25; checks passed); published desktop preview remains **0.7.0** (P11.13).
 0.6.0 and v0.3.0 packages remain intact.
 
 P11.23: local **0.13.0** adapts 38 reviewed upstream proposal scopes through

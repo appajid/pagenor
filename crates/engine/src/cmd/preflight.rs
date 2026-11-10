@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
 
+mod white_overprint;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Issue {
@@ -154,6 +156,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
     let mut out = Vec::new();
+    out.extend(white_overprint::printed(s, d));
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();

@@ -884,6 +884,14 @@ impl DesignApp {
         };
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if id == "find.next" && r.as_ref().is_ok_and(|v| !v.is_null()) {
+            self.show_found_text();
+        } else if id == "links.goTo"
+            && r.is_ok()
+            && let Some(item) = self.session.active().and_then(|st| st.selection.items.first().copied())
+        {
+            canvas::go_to_item(self, item);
+        }
         if r.is_ok() {
             if id == "file.close" && self.session.active().is_none() {
                 self.ui.home = true;
@@ -1036,6 +1044,22 @@ impl DesignApp {
     }
 
     /// Handle requests produced by tools/commands (dialogs, view changes, file pickers).
+    /// Scroll to the frame Find Next found its text in. A match on a parent page turns parent
+    /// editing on, one on a document page turns it off; the found text stays selected for Change
+    /// and the search keeps its place.
+    fn show_found_text(&mut self) {
+        let Some(st) = self.session.active() else { return };
+        let Some(frame) = st.selection.text.and_then(|t| t.frame) else { return };
+        let on_parent = st.doc.find(frame).is_some_and(|l| matches!(l.spread, pagenor_doc::SpreadRef::Parent(_)));
+        if st.editing_parents != on_parent {
+            if let Err(e) = self.session.edit_parents_keeping_find(on_parent) {
+                self.status(e.to_string());
+            }
+            self.after_engine();
+        }
+        canvas::go_to_item(self, frame);
+    }
+
     pub fn after_engine(&mut self) {
         let reqs = std::mem::take(&mut self.session.ui_requests);
         for r in reqs {

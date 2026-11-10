@@ -11,6 +11,7 @@ use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, Tool
 pub struct TypeTool {
     /// Vertical Type Tool: frames it draws set text vertically.
     pub vertical: bool,
+    prev_tool: Option<String>,
     start: Option<Point>,
     selecting: Option<u64>,
     drawing: bool,
@@ -50,10 +51,11 @@ impl Tool for TypeTool {
                 self.selecting = None;
                 self.cell_drag = None;
                 self.unit_selected = false;
-                if let Some((_, id)) = cx.hit(ev.pos)
+                if let Some((_, id)) = cx.hit_leaf(ev.pos).or_else(|| cx.hit(ev.pos))
                     && let Some(it) = cx.doc.item(id)
                     && !matches!(it.content, pagenor_doc::Content::Graphic(_) | pagenor_doc::Content::Group { .. })
                     && (it.is_text_frame() || (!it.locked && cx.doc.layer(it.layer).is_none_or(|l| !l.locked)))
+                    && !cx.doc.ancestor_locked(id)
                 {
                     let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
                     let clicks = ev.click_count();
@@ -166,7 +168,10 @@ impl Tool for TypeTool {
                 vec![Action::Exec("table.prevCell".into(), json!({}))]
             }
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
-            ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
+            ToolKey::Escape => {
+                let target = self.prev_tool.as_deref().filter(|t| matches!(*t, "selection" | "directSelection")).unwrap_or("selection");
+                vec![Action::SwitchTool(target.into()), Action::Exec("text.exitToFrame".into(), json!({}))]
+            }
             _ => vec![],
         }
     }
@@ -186,6 +191,11 @@ impl Tool for TypeTool {
         self.drawing
     }
 
+    fn set_option(&mut self, key: &str, value: &serde_json::Value) {
+        if matches!(key, "prevTool" | "previousTool") {
+            self.prev_tool = value.as_str().map(String::from);
+        }
+    }
     fn wants_text(&self, cx: &ToolContext) -> bool {
         cx.selection.text.is_some()
     }
