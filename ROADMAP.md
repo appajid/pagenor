@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+P11.26: local **0.14.1** adapts upstream #2581 to reject QR merge placeholders
+on standalone generated QR paths. The same validation covers Pagenor's separate
+QR-generator binding command. Valid frame-based merges, hyperlinks and undo remain
+supported. Native capability stays 8. Two regressions fail before the correction;
+all six new regressions and all seven workspace gates pass afterwards: 3,163 tests,
+zero failures, seven existing skips and twenty WASM packages. Windows/Linux six-library
+checks pass; full engine checks need missing C cross-compilers, and native execution
+remains pending. The installed Mac app stays at 0.14.0; no session changes
+or publication.
+[Source pin, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
+
 P11.25: local **0.14.0** adapts eleven queued source scopes: damaged-document
 frame recovery, Find Next wrapping/reveal/Enter, nested-group selection and text
 entry, empty-frame fitting, Keep with Previous, shaping across paint/feature

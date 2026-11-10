@@ -57,6 +57,10 @@ Native exports save a copy and keep the active document's path. PDF options must
 columns plus the virtual fields `Source filename` and `Merge index`. `data.placeholder.add {field, role?, story?, at?, end?, item?}`
 marks text or a frame (`role`: text, image, qr, hyperlink). An image placeholder can sit inside a story.
 `object.qrCode {field?, source?, rect?}` can bind a QR frame to any column, including one that is not marked `#`.
+QR merge placeholders require a graphic frame. A standalone generated QR path is refused,
+since replacing its frame content would leave the old code visible. Create an empty frame
+or use `object.qrCode {field, rect}` without static content. A frame containing a code can
+be bound and its contents are replaced for each record.
 
 `data.options` sets records, tiling, image fitting, and `skipWarnings` (off unless set). `data.source.affix` stores
 prefix and postfix rules. `data.join` names a driving source and key links; with no driving source, records are

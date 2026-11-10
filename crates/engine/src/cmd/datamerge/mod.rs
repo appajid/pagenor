@@ -88,7 +88,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, source?, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, source?, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; qr targets a graphic frame, not a standalone QR code",
             has_doc,
             placeholder_add
         ),
@@ -777,14 +777,21 @@ fn overset_count(doc: &Document) -> usize {
     doc.stories.keys().filter(|sid| pagenor_compose::compose_story(doc, **sid, &pagenor_compose::ComposeOptions::default()).is_overset()).count()
 }
 
+/// Merge replaces frame content, not a standalone QR code's compound path.
+fn validate_qr_target(target: &pagenor_doc::Item) -> std::result::Result<(), String> {
+    if target.alt_text.starts_with("QR code: ") {
+        return Err("a QR placeholder needs an empty graphic frame, not an existing QR code".into());
+    }
+    Ok(())
+}
+
 /// Bind a frame to a source column as a QR placeholder. The column's kind is left as stored.
 pub(crate) fn bind_qr_field(doc: &mut Document, item: ItemId, field: &str, source: Option<u64>) -> std::result::Result<(), String> {
     if field.is_empty() {
         return Err("the field name is empty".into());
     }
-    if doc.item(item).is_none() {
-        return Err(format!("no object with id {}", item.0));
-    }
+    let target = doc.item(item).ok_or_else(|| format!("no object with id {}", item.0))?;
+    validate_qr_target(target)?;
     let source_id = if let Some(id) = source {
         let src = doc.data_merge.sources.iter().find(|src| src.id == id).ok_or_else(|| format!("unknown data source {id}"))?;
         if !is_virtual_field(field) && !src.fields.iter().any(|f| f.name == field) {
@@ -858,8 +865,9 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             return Err(bad("data.placeholder.add", "text placeholders go in a story"));
         }
         let item = explicit_item.or_else(|| sel.items.first().copied()).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
-        if d.item(item).is_none() {
-            return Err(bad("data.placeholder.add", format!("no object with id {}", item.0)));
+        let target = d.item(item).ok_or_else(|| bad("data.placeholder.add", format!("no object with id {}", item.0)))?;
+        if role == PlaceholderRole::Qr {
+            validate_qr_target(target).map_err(|e| bad("data.placeholder.add", e))?;
         }
         if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr)
             && let Some(it) = d.item_mut(item)

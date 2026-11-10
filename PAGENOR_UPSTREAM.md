@@ -1083,3 +1083,14 @@ Local Pagenor **0.14.0** adapts these MIT OR Apache-2.0 source scopes. The origi
 | [#2544](https://github.com/storytold/designcraft/pull/2544) | @hokie123 | `bd51962160aa63c8ccad2fb4d1c35f5637058d1c` |
 
 The cumulative group branches and shaping prerequisite are reconciled in order. Native format advances to 8 for fitting/paragraph settings. Pagenor retains its scoped/live fonts, Indic input, `.pgnr`, independent master pages, owner icons, async dialogs and link worker, and color/ICC reporting. Absent CJK-only adornment/warichu paths are not introduced; existing PDF overprint limitations remain explicit. [Compatibility choices, per-step checks and final verification](docs/queued-adoption-20261111.md).
+
+## QR merge target correction — P11.26 (2026-11-11)
+
+Local **0.14.1** adapts [#2581](https://github.com/storytold/designcraft/pull/2581),
+by @autocraft-bot[bot], inspected head
+`6414b19e5ffcf2211ebd92c58c3be8a2bd336ce1`, under the retained MIT OR Apache-2.0
+licences and original copyright. Reject standalone generated QR paths as QR merge
+placeholder targets; extend the same guard to Pagenor's QR-generator field binding.
+Valid frame contents and hyperlink bindings remain supported. This selected
+adaptation does not introduce upstream product identifiers, dependencies or assets.
+[Review, safeguards and checks](docs/qr-merge-adoption-20261111.md).
