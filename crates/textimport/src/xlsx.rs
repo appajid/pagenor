@@ -14,7 +14,11 @@ use crate::{ImportError, Imported};
 /// "B12" → (row 11, column 1).
 fn cell_ref(r: &str) -> Option<(usize, usize)> {
     let letters: String = r.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
-    let row: usize = r[letters.len()..].parse().ok()?;
+    let digits = r.get(letters.len()..)?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let row: usize = digits.parse().ok()?;
     let col = letters.chars().try_fold(0usize, |acc, c| {
         let digit = (c.to_ascii_uppercase() as u8).checked_sub(b'A')? as usize + 1;
         acc.checked_mul(26)?.checked_add(digit)
@@ -1244,6 +1248,18 @@ mod tests {
             let rows = crate::xlsx_records(&book, None).unwrap();
             assert_eq!(table.cell(1, 0).unwrap().text.text, text);
             assert_eq!(rows[1][0], text);
+        }
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_tests {
+    use super::*;
+    #[test]
+    fn reject_signed_cell_rows() {
+        assert_eq!(cell_ref("B12"), Some((11, 1)));
+        for r in ["A+1", "A-1", "A", "A1x", "1"] {
+            assert_eq!(cell_ref(r), None);
         }
     }
 }

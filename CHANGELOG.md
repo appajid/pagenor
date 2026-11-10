@@ -1,5 +1,21 @@
 # Pagenor changelog
 
+## 0.13.1 — local fixes, 2026-11-11
+
+- Adapt 33 reviewed fix scopes; preserve existing actual-caret Text Frame Options.
+- Fix master-spread Layers contents, Color Picker height/component persistence,
+  text-thread endpoints and port cursors, and selected complex-script marks.
+- Keep resized pages/masters when Document Setup changes bleed or equivalent units.
+- Correct IDML cell insets/orphan anchored stories, RTF header/footer variants,
+  signed XLSX/data-merge inputs and scalar custom variables.
+- Use compact native JSON; charge failed archive reads; bound nested SVGs, GREP,
+  named-font instances, imported style names, table splits and log records.
+- Correct small gradient, Lab hue, cross-reference and path bounds/selection cases.
+- Keep native format 7, dependency version pins, `.pgnr`, owner icons, scoped fonts
+  and inline Indic input. Local only; all seven gates pass (3,089 tests, seven existing skips; twenty WASM
+  packages). Three offscreen views inspected; Windows/Linux library compile checks pass.
+- [Per-proposal provenance, decisions and limits](docs/upstream-adoption-20261111.md).
+
 ## 0.13.0 — local milestone, 2026-10-31
 
 - Adapt 38 reviewed proposal scopes, including six older queued editor items.

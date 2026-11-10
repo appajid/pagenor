@@ -86,7 +86,8 @@ pub fn expand(definition: &str, v: &XrefValues) -> String {
         out.push_str(&rest[..i]);
         let Some(j) = rest[i..].find('>') else {
             out.push_str(&rest[i..]);
-            return out;
+            rest = "";
+            break;
         };
         let tag = rest[i + 1..i + j].trim().trim_end_matches('/').trim();
         let name = tag.split_whitespace().next().unwrap_or("");
@@ -420,5 +421,15 @@ mod tests {
         s.delete(0..8);
         s.check().unwrap();
         assert!(s.anchors.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_tests {
+    use super::*;
+    #[test]
+    fn unfinished_tag_keeps_typographic_quotes() {
+        let v = XrefValues { para: "Intro".into(), ..Default::default() };
+        assert_eq!(expand("\"<paraText />\" <", &v), "\u{201C}Intro\u{201D} <");
     }
 }

@@ -253,6 +253,7 @@ pub struct UiState {
     /// Preferences › Story Editor Display: text size (points).
     pub story_editor_size: f32,
     /// Edit › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
+    pub color_picker_component: String,
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
@@ -402,6 +403,7 @@ impl Default for UiState {
             proof_colors: false,
             proof_setup: Default::default(),
             dynamic_spelling: false,
+            color_picker_component: "r".into(),
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),

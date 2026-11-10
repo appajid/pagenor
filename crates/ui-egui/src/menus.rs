@@ -1823,6 +1823,9 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.graphicCell" {
+        return enabled(app, "table.placeGraphic");
+    }
     if id == "app.contactSheet" {
         return app.session.active().is_some() && app.session.loaded.is_some();
     }
@@ -2226,6 +2229,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.graphicCell" {
+        return enabled(app, "table.placeGraphic");
+    }
     if matches!(id, "view.goBack" | "view.goForward") {
         return crate::canvas::can_go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
     }
@@ -5146,5 +5152,19 @@ mod typography_regressions {
         run_ui(&mut app, "window.workspace", &json!({"name":"Essentials"})).unwrap().unwrap();
         assert!(app.ui.icon_groups.is_none());
         assert!(app.ui.dock_expanded);
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_menu_tests {
+    use super::*;
+    #[test]
+    fn graphic_cell_needs_a_table() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[72,72,400,400],"content":"text","caret":true})).unwrap();
+        assert!(!menu_enabled(&app, "app.graphicCell"));
+        app.run("table.insert", json!({"rows":2,"cols":2})).unwrap();
+        assert!(menu_enabled(&app, "app.graphicCell"));
     }
 }

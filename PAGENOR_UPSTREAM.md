@@ -1045,3 +1045,21 @@ All 38 original source authors and immutable heads are recorded in the linked
 ledger. MIT OR Apache-2.0 notices are retained. Pagenor-specific code adapts native
 dialog continuations, book snapshots, ownership/budgets and current model fields;
 whole upstream branches, translation packs and CJK-only features are excluded.
+
+## 11 November 2026 — P11.24 / local 0.13.1
+
+P11.24: local **0.13.1** adapts 33 compatible upstream fix scopes from the
+11 November review through #2578. Fixes master-aware Layers rows, Color Picker
+sizing/state, thread ports, selected Indic marks, IDML cell insets/orphan stories,
+RTF/XLSX imports, compact native saves, SVG/GREP/font-instance bounds and table/data
+merge validation. Retains Pagenor's actual-caret Text Frame Options workflow,
+scoped/live fonts and native format 7. All seven gates pass: 3,089 tests, zero failures, seven existing skips; twenty
+WASM packages. Three offscreen views are inspected; Windows/Linux core library
+compile checks pass.
+No install, upload, publication or new test release bundle. The installed app and
+original user files remain unchanged. Native Windows/Linux execution remains pending.
+[Source pins, compatibility decisions and deferred scopes](docs/upstream-adoption-20261111.md).
+
+The linked ledger records each source author and immutable inspected head under
+the retained MIT OR Apache-2.0 notices. This pass adapts local contexts rather than
+merging upstream branches or introducing the newer document model wholesale.

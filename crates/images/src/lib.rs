@@ -112,7 +112,25 @@ fn svg_options(fonts: ScopedFonts<'_>) -> usvg::Options<'_> {
             })
         }),
     };
-    usvg::Options { fontdb: db, font_family: "Source Sans 3".into(), font_resolver, ..Default::default() }
+    let default_data = usvg::ImageHrefResolver::default_data_resolver();
+    let image_href_resolver = usvg::ImageHrefResolver {
+        resolve_data: Box::new(move |mime, data, options| {
+            let raster = matches!(
+                image::guess_format(&data),
+                Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
+            );
+            if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
+                let xml = svg_data(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
+                charge_nested_svg(xml.len())?;
+                svg_preflight(&xml)?;
+                default_data(mime, Arc::new(xml.into_owned()), options)
+            } else {
+                default_data(mime, data, options)
+            }
+        }),
+        resolve_string: Box::new(|_, _| None),
+    };
+    usvg::Options { fontdb: db, font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
 }
 
 fn load_family(db: &mut Arc<usvg::fontdb::Database>, fonts: &ScopedFonts<'_>, family: &str) {
@@ -157,7 +175,10 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
 /// Parse with one document's font scope. usvg applies SVG variation settings to the original
 /// variable font; Pagenor's named-instance coordinates are not substituted for SVG CSS.
 pub fn svg_tree_with_fonts(bytes: &[u8], fonts: ScopedFonts<'_>) -> Option<usvg::Tree> {
-    usvg::Tree::from_data(bytes, &svg_options(fonts)).ok()
+    let xml = svg_data(bytes, MAX_SVG_BYTES)?;
+    svg_preflight(&xml)?;
+    NESTED_SVG_BYTES.set(0);
+    usvg::Tree::from_data(&xml, &svg_options(fonts)).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -401,6 +422,78 @@ pub fn render_svg_with_fonts(bytes: &[u8], max_side: u32, fonts: ScopedFonts<'_>
     let mut pm = resvg::tiny_skia::Pixmap::new(w, h)?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(k, k), &mut pm.as_mut());
     Some((pm.take(), w, h))
+}
+
+const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SVG_EVENTS: usize = 100_000;
+const MAX_SVG_DEPTH: usize = 64;
+
+/// SVG bytes the data images of one document may add up to, all levels together: each nested
+/// document gets the per-document limits, so without this one outer file could hold many of them.
+const MAX_NESTED_SVG_BYTES: usize = 32 * 1024 * 1024;
+
+thread_local! {
+    /// Nested SVG bytes taken so far by the parse running on this thread (see [`svg_tree`]).
+    static NESTED_SVG_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Take `n` bytes of the running parse's nested-SVG budget; `None` when they don't fit.
+fn charge_nested_svg(n: usize) -> Option<()> {
+    let used = NESTED_SVG_BYTES.get().checked_add(n).filter(|u| *u <= MAX_NESTED_SVG_BYTES)?;
+    NESTED_SVG_BYTES.set(used);
+    Some(())
+}
+
+/// Enforce the encoded-size cap, gunzip SVGZ data to at most `limit` bytes, and return the decoded content as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::io::Read;
+
+    if bytes.len() > MAX_SVG_BYTES {
+        return None;
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut xml = Vec::new();
+        flate2::read::GzDecoder::new(bytes).take(limit as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= limit).then_some(std::borrow::Cow::Owned(xml))
+    } else {
+        (bytes.len() <= limit).then_some(std::borrow::Cow::Borrowed(bytes))
+    }
+}
+
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in doctype.as_ref() {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -699,3 +792,24 @@ mod tests {
 
 #[cfg(test)]
 mod review31;
+
+#[cfg(test)]
+mod upstream_review11_svg_tests {
+    use super::*;
+    #[test]
+    fn svg_xml_and_cumulative_data_budget() {
+        assert!(svg_preflight(b"<svg><g/></svg>").is_some());
+        assert!(svg_preflight(b"<!DOCTYPE svg [<!ENTITY x 'x'>]><svg/>").is_none());
+        let deep = format!("<svg>{}{}{}</svg>", "<g>".repeat(65), "", "</g>".repeat(65));
+        assert!(svg_tree(deep.as_bytes()).is_none());
+        NESTED_SVG_BYTES.set(0);
+        assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES - 1).is_some());
+        assert!(charge_nested_svg(2).is_none());
+        assert!(svg_data(b"12345", 4).is_none());
+    }
+    #[test]
+    fn external_image_urls_are_not_resolved() {
+        let opts = svg_options(FontDb::global().scoped(0));
+        assert!((opts.image_href_resolver.resolve_string)("/private/pagenor-nonexistent.png", &opts).is_none());
+    }
+}

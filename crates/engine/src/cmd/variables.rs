@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text?, format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -90,7 +90,14 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
     let kind = match str_param(p, "type").unwrap_or("custom") {
-        "custom" => VarKind::Custom { text: str_param(p, "text").unwrap_or("").into() },
+        "custom" => VarKind::Custom {
+            text: match p.get("text") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(s)) => s.clone(),
+                Some(v @ (Value::Number(_) | Value::Bool(_))) => v.to_string(),
+                _ => return Err(bad("variables.define", "custom text must be a string, number or boolean")),
+            },
+        },
         "lastPageNumber" => VarKind::LastPageNumber { section: p.get("section").and_then(Value::as_bool).unwrap_or(false) },
         "chapterNumber" => VarKind::ChapterNumber,
         "fileName" => VarKind::FileName { extension: p.get("extension").and_then(Value::as_bool).unwrap_or(false) },

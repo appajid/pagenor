@@ -8,7 +8,7 @@
 //! held.
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use pagenor_doc::{Content, Document, Item, ItemId, LayerId};
+use pagenor_doc::{Content, Document, Item, ItemId, LayerId, SpreadRef};
 use serde_json::json;
 
 use crate::theme::Tokens;
@@ -391,9 +391,14 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let sel_layers: Vec<_> = selected.iter().filter_map(|i| doc.item(*i).map(|it| it.layer)).collect();
     let language = app.ui.language.clone();
     // Objects on the current spread, back to front.
-    let cur = crate::canvas::current_page(app).unwrap_or(0);
-    let spread_items: Vec<std::sync::Arc<Item>> =
-        doc.page_loc(cur).and_then(|(si, _)| doc.spreads.get(si)).map(|sp| sp.items.clone()).unwrap_or_default();
+    let fallback = if st.editing_parents { SpreadRef::Parent(0) } else { SpreadRef::Doc(0) };
+    let (spread_ref, page_in_spread) = crate::canvas::current_spread_page(app).unwrap_or((fallback, 0));
+    let spread = doc.spread(spread_ref);
+    let spread_items: Vec<std::sync::Arc<Item>> = spread.map(|sp| sp.items.clone()).unwrap_or_default();
+    let page_caption = match spread_ref {
+        SpreadRef::Doc(si) => format!("Page: {}", app.session.page_label(doc.first_page_of_spread(si) + page_in_spread)),
+        SpreadRef::Parent(_) => spread.and_then(|sp| sp.parent.as_ref()).map_or_else(|| "Master".into(), |p| p.label()),
+    };
     let mut rows: Vec<Row> = Vec::new();
     let mut cmds: Vec<(&'static str, serde_json::Value)> = Vec::new();
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -542,14 +547,9 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = 4.0;
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!(
-                "Page: {}, {} Layer{}",
-                app.session.page_label(cur),
-                doc.layers.len(),
-                if doc.layers.len() == 1 { "" } else { "s" }
-            ))
-            .size(11.0)
-            .color(t.text_dim),
+            egui::RichText::new(format!("{}, {} Layer{}", page_caption, doc.layers.len(), if doc.layers.len() == 1 { "" } else { "s" }))
+                .size(11.0)
+                .color(t.text_dim),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Layer")).clicked() {
@@ -721,5 +721,32 @@ mod tests {
         h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
         h.run_steps(3);
         assert_eq!(h.state().session.doc().unwrap().doc.item(id).unwrap().name, "");
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_parent_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+    #[test]
+    fn parent_objects_follow_visible_master() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.canvas_rect = Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
+        app.run("layout.parents.new", json!({"prefix":"B"})).unwrap();
+        for (spread, name) in [(SpreadRef::Doc(0), "Page object"), (SpreadRef::Parent(0), "A object"), (SpreadRef::Parent(1), "B object")] {
+            let id = app.run("frame.create", json!({"spread":spread,"rect":[36,36,100,100]})).unwrap()["id"].clone();
+            app.run("object.rename", json!({"id":id,"name":name})).unwrap();
+        }
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        crate::canvas::go_to_master(&mut app, 0, Some(0)).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
+        h.run_steps(3);
+        assert!(h.query_by_label("A object").is_some());
+        assert!(h.query_by_label("Page object").is_none());
+        crate::canvas::go_to_master(h.state_mut(), 1, Some(0)).unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("B object").is_some());
+        assert!(h.query_by_label("A object").is_none());
     }
 }

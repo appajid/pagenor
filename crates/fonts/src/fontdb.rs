@@ -947,17 +947,30 @@ fn enumerate_faces(data: &[u8]) -> Vec<Found> {
         Ok(FileRef::Collection(c)) => c.len().min(MAX_FACES),
         Err(_) => 0,
     };
+    /// Named instances listed from one file, all its faces together: each is a face of its own,
+    /// and a collection's faces can share one table of thousands.
+    const MAX_INSTANCES: usize = 4096;
     let mut out = Vec::new();
+    let mut instances = 0usize;
+    // Records looked at, kept or not: duplicate or unnamed ones cost a name lookup too.
+    let mut inspected = 0usize;
     for i in 0..count {
         let Ok(f) = skrifa::FontRef::from_index(data, i) else { continue };
         let Some((family, style)) = face_names(&f) else { continue };
         let axes = f.axes();
         let mut named = Vec::new();
+        // The styles taken, ASCII-lowercased: a lookup, not a search of those before.
+        let mut taken = std::collections::HashSet::new();
         for ni in f.named_instances().iter() {
+            if instances >= MAX_INSTANCES || inspected >= MAX_INSTANCES {
+                break;
+            }
+            inspected += 1;
             let Some(style) = name(&f, &[ni.subfamily_name_id()]) else { continue };
-            if named.iter().any(|(_, s, _): &(u32, String, _)| s.eq_ignore_ascii_case(&style)) {
+            if !taken.insert(style.to_ascii_lowercase()) {
                 continue;
             }
+            instances += 1;
             let coords: Vec<([u8; 4], f32)> = axes.iter().zip(ni.user_coords()).map(|(a, v)| (a.tag().to_be_bytes(), v)).collect();
             named.push((i, style, coords));
         }
@@ -2440,6 +2453,14 @@ impl ScopedFonts<'_> {
             return Some(f.clone());
         }
         let mut coords = base.coords.clone();
+        // The font's own axes, and where each tag is in `coords`: a setting for an axis the font
+        // doesn't have changes nothing, so it isn't kept (a style string is document input).
+        let axes: std::collections::HashSet<[u8; 4]> =
+            base.skrifa().map(|f| f.axes().iter().map(|a| a.tag().to_be_bytes()).collect()).unwrap_or_default();
+        let mut at: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+        for (i, (t, _)) in coords.iter().enumerate() {
+            at.entry(*t).or_insert(i);
+        }
         for kv in style[open + 1..].trim_end_matches('}').split(',') {
             let (k, v) = kv.split_once(':')?;
             let k = k.trim().as_bytes();
@@ -2448,9 +2469,13 @@ impl ScopedFonts<'_> {
                 return None;
             }
             let tag = [k[0], k[1], k[2], k[3]];
-            match coords.iter_mut().find(|(t, _)| *t == tag) {
+            match at.get(&tag).and_then(|i| coords.get_mut(*i)) {
                 Some(c) => c.1 = v,
-                None => coords.push((tag, v)),
+                None if axes.contains(&tag) => {
+                    at.insert(tag, coords.len());
+                    coords.push((tag, v));
+                }
+                None => {}
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;

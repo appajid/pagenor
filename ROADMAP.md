@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+P11.24: local **0.13.1** adapts 33 compatible upstream fix scopes from the
+11 November review through #2578. Fixes master-aware Layers rows, Color Picker
+sizing/state, thread ports, selected Indic marks, IDML cell insets/orphan stories,
+RTF/XLSX imports, compact native saves, SVG/GREP/font-instance bounds and table/data
+merge validation. Retains Pagenor's actual-caret Text Frame Options workflow,
+scoped/live fonts and native format 7. All seven gates pass: 3,089 tests, zero failures, seven existing skips; twenty
+WASM packages. Three offscreen views are inspected; Windows/Linux core library
+compile checks pass.
+No install, upload, publication or new test release bundle. The installed app and
+original user files remain unchanged. Native Windows/Linux execution remains pending.
+[Source pins, compatibility decisions and deferred scopes](docs/upstream-adoption-20261111.md).
+
 - P11.23: local **0.13.0** adapts 38 reviewed upstream proposal scopes through
   #2086, including the six older queued items. Adds formatting Find/Change, native
   asynchronous dialogs, Links controls, master-side sizing and page history,

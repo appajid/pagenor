@@ -10,6 +10,19 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+/// Visible glyph indices for source text, including zero-length marks belonging to its cluster.
+pub fn selected_glyphs(line: &Line, start: usize, end: usize) -> Vec<usize> {
+    let mut cluster = None;
+    line.glyphs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| {
+            cluster = if g.len > 0 { Some(g.byte) } else { cluster.filter(|byte| *byte == g.byte) };
+            (g.visible && g.byte >= start && g.byte < end && cluster == Some(g.byte)).then_some(i)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 use pagenor_doc::Composer;
 

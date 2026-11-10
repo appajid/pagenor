@@ -98,7 +98,7 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     if let Some(ai) = &doc.ai {
         ai.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     }
-    let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
+    let json = serde_json::to_vec(doc).map_err(|e| FormatError::Io(e.to_string()))?;
     // JSON turns non-finite coordinates into null; refuse a file that cannot reopen.
     serde_json::from_slice::<Document>(&json).map_err(|e| FormatError::Io(format!("the document has a value that can't be saved: {e}")))?;
     validate_save_parts(json.len(), meta.len(), doc.assets.values().filter(|a| !a.data.is_empty()).map(|a| a.data.len()), SAVE_LIMITS)?;
@@ -240,11 +240,13 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, max_bytes: usi
     }
     let capacity = usize::try_from(f.size()).unwrap_or(max_bytes).min(max_bytes);
     let mut v = Vec::with_capacity(capacity);
-    (&mut f).take(max_bytes.saturating_add(1) as u64).read_to_end(&mut v).map_err(|e| FormatError::NotOurs(format!("can't read {name}: {e}")))?;
+    let read = (&mut f).take(max_bytes.saturating_add(1) as u64).read_to_end(&mut v);
+    // Charge actual output even when CRC/decompression fails. Never retry with free bytes.
+    *remaining = remaining.saturating_sub(v.len());
+    read.map_err(|e| FormatError::NotOurs(format!("can't read {name}: {e}")))?;
     if v.len() > max_bytes {
         return Err(FormatError::NotOurs(format!("{name} exceeds the {max_bytes}-byte limit")));
     }
-    *remaining = remaining.checked_sub(v.len()).ok_or_else(|| FormatError::NotOurs("archive expanded size overflow".into()))?;
     Ok(Some(v))
 }
 
@@ -1127,5 +1129,37 @@ mod tests {
         d.insert_item(SpreadRef::Doc(0), Item::new(id, lid, Shape::Rectangle, path), None).unwrap();
         let Err(err) = save(&d) else { panic!("a document with an infinite coordinate was saved") };
         assert!(err.to_string().contains("can't be saved"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_tests {
+    use super::*;
+    #[test]
+    fn compact_native_json_round_trip() {
+        let d = Document::new(&pagenor_doc::build::NewDocument { pages: 3, ..Default::default() });
+        let bytes = save(&d).unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let mut json = String::new();
+        z.by_name("document.json").unwrap().read_to_string(&mut json).unwrap();
+        assert!(!json.contains('\n'));
+        assert_eq!(load(&bytes).unwrap().page_count(), 3);
+    }
+    #[test]
+    fn failed_crc_still_charges_output() {
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut cur);
+            z.start_file("bad", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+            z.write_all(b"abcdef").unwrap();
+            z.finish().unwrap();
+        }
+        let mut bytes = cur.into_inner();
+        let start = bytes.windows(6).position(|w| w == b"abcdef").unwrap();
+        bytes[start] = b'X';
+        let mut z = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let mut left = 20;
+        assert!(read_entry(&mut z, "bad", 20, &mut left).is_err());
+        assert_eq!(left, 14);
     }
 }

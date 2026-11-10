@@ -735,6 +735,9 @@ impl Table {
                 selected.insert(*owner);
             }
         }
+        if selected.len() > 1024 {
+            return Err("too many cells to split at once (at most 1024)".into());
+        }
         let mut targets = Vec::new();
         for (r, c) in selected {
             let cell = self.cell(r, c).ok_or("missing split cell")?;
@@ -1557,5 +1560,19 @@ mod split_tests {
         }
         assert_eq!(t.rows[2], body);
         assert_eq!(t.rows[3], footer);
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_split_tests {
+    use super::*;
+    #[test]
+    fn bounded_split_is_atomic() {
+        let mut t = Table::new(1, 40, 40, 0, 0, 400.0);
+        let before = t.clone();
+        assert!(t.split_cells(CellRange { r0: 0, c0: 0, r1: 39, c1: 39 }, true).unwrap_err().contains("too many cells"));
+        assert_eq!(t.nrows(), before.nrows());
+        assert_eq!(t.ncols(), before.ncols());
+        assert!(t.split_cells(CellRange { r0: 0, c0: 0, r1: 1, c1: 1 }, true).is_ok());
     }
 }

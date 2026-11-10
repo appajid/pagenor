@@ -1482,6 +1482,9 @@ impl Tool for SelectionTool {
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
             return if crate::thread::port_at(cx, p).is_some() { Cursor::LoadedText } else { l.cursor(cx, p) };
         }
+        if matches!(self.drag, Drag::None) && crate::thread::port_at(cx, p).is_some() {
+            return Cursor::LoadedText;
+        }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
             Drag::Resize { handle, .. } | Drag::ContentResize { handle, .. } => return handle_cursor(handle),

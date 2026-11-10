@@ -47,7 +47,7 @@ fn unescape_value(v: &str) -> String {
             c => out.push(c),
         }
     }
-    out
+    crate::capped_name(out)
 }
 
 /// `story` as Tagged Text.
@@ -336,5 +336,12 @@ mod tests {
             u16.extend(u.to_le_bytes());
         }
         assert_eq!(import(&u16).unwrap().story.text, "Hi");
+    }
+
+    #[test]
+    fn a_long_style_name_is_cut() {
+        let name = "N".repeat(100_000);
+        assert_eq!(unescape_value(&name).len(), crate::MAX_NAME_CHARS);
+        assert_eq!(unescape_value("Body"), "Body");
     }
 }

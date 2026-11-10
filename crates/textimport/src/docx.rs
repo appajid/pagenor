@@ -168,8 +168,12 @@ fn parse_with_limits(xml: &str, limits: XmlLimits) -> Result<El, ImportError> {
                     "gt" => ">".into(),
                     "quot" => "\"".into(),
                     "apos" => "'".into(),
-                    n if n.starts_with("#x") => u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
-                    n if n.starts_with('#') => n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
+                    n if n.starts_with("#x") && n[2..].bytes().all(|b| b.is_ascii_hexdigit()) => {
+                        u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
+                    n if n.starts_with('#') && !n.starts_with("#x") && n[1..].bytes().all(|b| b.is_ascii_digit()) => {
+                        n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
                     _ => String::new(),
                 };
                 if let Some(p) = stack.last_mut() {
@@ -475,8 +479,11 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
     if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
-        let ids: HashMap<String, String> =
-            styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?.to_string(), s.val("name")?))).collect();
+        let ids: HashMap<String, String> = styles
+            .els()
+            .filter(|s| s.name == "style")
+            .filter_map(|s| Some((s.attr("styleId")?.to_string(), crate::capped_name(s.val("name")?))))
+            .collect();
         for s in styles.els().filter(|s| s.name == "style") {
             let (Some(id), Some(name)) = (s.attr("styleId"), s.val("name")) else { continue };
             let kind = s.attr("type").unwrap_or("paragraph");
@@ -484,7 +491,7 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
             let name = match (kind, name.as_str()) {
                 ("paragraph", "Normal") => BASIC_PARAGRAPH.to_string(),
                 ("character", "Default Paragraph Font") => NO_CHAR_STYLE.to_string(),
-                _ => name.clone(),
+                _ => crate::capped_name(name.clone()),
             };
             let based_on = s.val("basedOn").and_then(|b| ids.get(&b).cloned()).map(|b| if b == "Normal" { BASIC_PARAGRAPH.to_string() } else { b });
             let imp = ImportedStyle { name: name.clone(), based_on, para: para_attrs(s.child("pPr")), chars: run_attrs(s.child("rPr")) };

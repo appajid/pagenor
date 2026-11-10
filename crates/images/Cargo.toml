@@ -16,7 +16,8 @@ pagenor-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
+quick-xml = { workspace = true }
+flate2 = "1"
 
 [dev-dependencies]
-flate2 = "1"
 pagenor-fonts = { workspace = true, features = ["testing"] }

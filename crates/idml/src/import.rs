@@ -1125,7 +1125,9 @@ impl<'r> Importer<'r> {
                 e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(pagenor_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
             cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
             cs.fill_tint = tint(e.num("FillTint"));
-            cs.inset_overrides = ["TopInset", "LeftInset", "BottomInset", "RightInset"].map(|k| e.num(k).map(|v| v.max(0.0)));
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
             if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
                 cs.insets = Some([top, left, bottom, right]);
                 cs.inset_overrides = [None; 4];
@@ -1970,8 +1972,10 @@ impl<'r> Importer<'r> {
             if let Some(tint) = tint(ce.num("FillTint")) {
                 cell.fill_tint = tint;
             }
-            for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-                if let Some(v) = ce.num(k) {
+            let keys =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            for (i, (text, old)) in keys.iter().enumerate() {
+                if let Some(v) = ce.num(text).or_else(|| ce.num(old)) {
                     cell.insets[i] = v.max(0.0);
                 }
             }
@@ -2528,13 +2532,14 @@ impl<'r> Importer<'r> {
         // Content.
         match tag {
             "TextFrame" => {
-                let story_self = e.get("ParentStory").unwrap_or("n").to_string();
+                let mut story_self = e.get("ParentStory").unwrap_or("n").to_string();
                 let story = match self.story_ids.get(&story_self) {
                     Some(s) => *s,
                     None => {
                         let sid = StoryId(self.alloc());
                         self.stories.insert(sid, Story::new(sid));
-                        self.story_ids.insert(format!("#orphan{}", sid.0), sid);
+                        story_self = format!("#orphan{}", sid.0);
+                        self.story_ids.insert(story_self.clone(), sid);
                         sid
                     }
                 };

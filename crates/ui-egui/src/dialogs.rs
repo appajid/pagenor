@@ -1005,6 +1005,9 @@ pub fn open_document_setup(app: &mut DesignApp) {
     }
     // The margins as shown: OK applies them to every page only when they were edited.
     f["marginsShown"] = json!(SETUP_EDGES.map(|e| f[format!("margin{e}")].clone()));
+    // The size as shown: OK sends it only when edited, so resized pages and parents keep theirs.
+    f["widthShown"] = f["width"].clone();
+    f["heightShown"] = f["height"].clone();
     let mut d = Dialog::new("documentSetup", f);
     d.unit = units;
     app.ui.dialog = Some(d);
@@ -1333,8 +1336,15 @@ fn confirm_document_setup(app: &mut DesignApp, d: &Dialog) -> Result<Value, Stri
     let shown = d.fields.get("marginsShown").and_then(Value::as_array);
     let edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));
     let mut p = json!({"intent": d.s("intent"), "pages": count("pages")?, "startPage": count("startPage")?, "facingPages": d.b("facingPages"),
-        "binding": d.s("binding"), "width": measure("width")?, "height": measure("height")?,
+        "binding": d.s("binding"),
         "bleed": edges("bleed")?, "slug": edges("slug")?, "adjustLayout": d.b("adjustLayout")});
+    for key in ["width", "height"] {
+        let value = measure(key)?;
+        // A different unit or equivalent numeric spelling is not a size edit.
+        if setup_measure(d, &format!("{key}Shown")).is_none_or(|shown| (value - shown).abs() > 1e-6) {
+            p[key] = json!(value);
+        }
+    }
     if edited {
         p["margins"] = json!({"top": margins[0], "bottom": margins[1], "inside": margins[2], "outside": margins[3]});
     }
@@ -1912,9 +1922,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 result = Some(false);
             }
         }
-        // A centred window only offers its body last frame's height: let this one grow to its
-        // options' height (the screen still caps it).
-        let min_body = if side_actions { body_height.min(crate::section_options::BODY_H) } else { 1.0 };
+        // A centred window only offers its body last frame's height: let these grow to their
+        // content's height (the screen still caps it). Numbering & Section Options has its
+        // options beside its buttons; the Color Picker lays itself out on a fixed canvas, which
+        // otherwise shows only its top strip (the field cut off, no values, no hex) behind a
+        // scrollbar.
+        let min_body = match d.id.as_str() {
+            "numberingSection" => body_height.min(crate::section_options::BODY_H),
+            "colorPicker" => body_height.min(picker_layout::SIZE.y + 2.0 * ui.spacing().item_spacing.y),
+            _ => 1.0,
+        };
         egui::ScrollArea::both()
             .id_salt(("dialog_body", &d.id))
             .min_scrolled_width(1.0)
@@ -6608,6 +6625,9 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         let old = d.s("hex");
         d.fields.insert("old".into(), json!(old));
     }
+    if !d.fields.contains_key("component") {
+        d.fields.insert("component".into(), json!(app.ui.color_picker_component));
+    }
     let comp = PickComp::from_key(&d.s("component"));
     let mut p = picked_of(d);
     let before = p;
@@ -6780,6 +6800,7 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     if comp_now != comp {
         d.fields.insert("component".into(), json!(comp_now.key()));
+        app.ui.color_picker_component = comp_now.key().to_string();
     }
     // The hex code, and the eyedropper's mark beside it.
     let cy = area.min.y + at::ROWS[7];
@@ -9572,5 +9593,66 @@ mod contact_sheet_review31_tests {
         assert!(app.session.loaded.is_none());
         app.run("edit.undo", json!({})).unwrap();
         assert_eq!(app.session.doc().unwrap().doc.page_count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_color_tests {
+    use super::*;
+    /// The Color Picker reopens on the component it was left on, and the choice survives the
+    /// preferences file; an opener that names a component still gets it.
+    #[test]
+    fn the_color_picker_remembers_its_component() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
+        assert_eq!(app.ui.color_picker_component, "r", "R at first, as before");
+        app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+        let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+        h.run_steps(3);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "r");
+        h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "H:").click();
+        h.run_steps(2);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+        assert_eq!(h.state().app.ui.color_picker_component, "h", "the choice is kept outside the dialog");
+        h.get_by_label("Cancel").click();
+        h.run_steps(2);
+        assert!(h.state().app.ui.dialog.is_none());
+        // Reopened: H, not R.
+        h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+        h.run_steps(3);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+        h.get_by_label("Cancel").click();
+        h.run_steps(2);
+        // An opener's own choice wins.
+        h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
+        h.run_steps(3);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "l");
+        // Saved with the preferences, and read back; a file without it is R.
+        let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
+        assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
+        assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_setup_units_tests {
+    use super::*;
+    #[test]
+    fn equivalent_size_units_preserve_mixed_page_sizes() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages":3})).unwrap();
+        app.run("layout.pageSize", json!({"pages":[2],"width":300,"height":400})).unwrap();
+        let before = app.session.active().unwrap().doc.spreads.iter().flat_map(|s| s.pages.iter().map(|p| (p.width, p.height))).collect::<Vec<_>>();
+        open_document_setup(&mut app);
+        let mut d = app.ui.dialog.take().unwrap();
+        for key in ["width", "height"] {
+            let pts = setup_measure(&d, key).unwrap();
+            d.fields.insert(key.into(), json!(format!("{} mm", pts * 25.4 / 72.0)));
+        }
+        confirm_document_setup(&mut app, &d).unwrap();
+        let after = app.session.active().unwrap().doc.spreads.iter().flat_map(|s| s.pages.iter().map(|p| (p.width, p.height))).collect::<Vec<_>>();
+        assert_eq!(before, after);
     }
 }

@@ -1801,6 +1801,33 @@ fn inline_objects_still_clear_the_bottom_edge() {
     assert_eq!(cs.line_count(), 0);
 }
 
+/// An inline object is bidi-neutral, as U+FFFC is: in a right-to-left paragraph it keeps its place
+/// in the reading order between Latin text and the Arabic after it. Its private-use mark is a
+/// strong left-to-right character, which joined it to the Latin run before it, so it was drawn on
+/// the far side of that run.
+#[test]
+fn an_inline_object_keeps_its_place_in_right_to_left_text() {
+    let text = "ab  \u{0628}";
+    let para = ParaAttrs { direction: Some(pagenor_doc::TextDirection::RightToLeft), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+    d.settings.glyph_fallback = true;
+    let it = pagenor_doc::Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        pagenor_doc::Shape::Rectangle,
+        pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 6.0, 6.0)),
+    );
+    let at = 3;
+    d.story_mut(sid).unwrap().insert_object(at, pagenor_doc::AnchoredObject::new(it, pagenor_doc::AnchorPosition::Inline { y_offset: 0.0 }));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let x = |byte: usize| line.glyphs.iter().find(|g| g.byte == byte).map(|g| g.x).unwrap();
+    let beh = text.find('\u{0628}').unwrap() + pagenor_doc::OBJECT_MARK.len_utf8();
+    let (latin, object, arabic) = (x(0), x(at), x(beh));
+    // Read right to left: the Latin text, the object, then the Arabic letter.
+    assert!(arabic < object && object < latin, "arabic {arabic}, object {object}, latin {latin}");
+}
+
 #[test]
 fn custom_anchors_do_not_change_bottom_baseline_fitting() {
     let (mut d, sid, _) = baseline_fit_doc("Text", 10.0);
@@ -5269,4 +5296,20 @@ fn table_cell_footnotes_fit_inside_the_row() {
     let note = &frame.notes[0];
     assert!(cell.origin.y + note.rect.y1 <= cell.clip.y1 + 0.01, "cell footnote must remain within the row");
     assert!(frame.lines.iter().all(|l| l.baseline + l.descent <= note.rect.y0 - d.footnote_options.space_before + 0.01));
+}
+
+#[test]
+fn selected_indic_marks_and_generated_labels() {
+    let text = "కి ఖ";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+    let family = "Pagenor Selected Telugu Cluster";
+    FontDb::global().add_font(pagenor_fonts::testing::font_mapping(family, &[('క', 'a'), ('ి', 'b'), ('ఖ', 'c'), (' ', ' ')]).unwrap());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+    let c = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &c.frames[0].lines[0];
+    let space = text.find(' ').unwrap();
+    let chosen = selected_glyphs(line, 0, space);
+    assert!(line.glyphs.iter().any(|g| g.byte < space && g.len == 0), "exercise a mark sharing its source cluster");
+    assert_eq!(chosen, line.glyphs.iter().enumerate().filter(|(_, g)| g.visible && g.byte < space).map(|(i, _)| i).collect::<Vec<_>>());
+    assert!(selected_glyphs(line, space, space).is_empty());
 }
