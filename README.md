@@ -15,10 +15,11 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current local source version: **0.14.1** — reject QR data-merge bindings that
+Current milestone: **0.14.1** — reject QR data-merge bindings that
 would retain a stale standalone code, across both command entry points. Valid
 frame-based merging and native format 8 remain unchanged. All seven gates pass:
-3,163 tests, seven existing skips and twenty WASM packages. Installed Mac app: **0.14.0**.
+3,163 tests, seven existing skips and twenty WASM packages.
+[Desktop preview notes](docs/releases/0.14.1.md).
 [Changes, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
 
 ## The sample magazine

@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+P11.27: **0.14.1 desktop release preparation**, authorized for GitHub publication
+on 2026-11-11. Publication requires exact-version notes, and the Mac GUI bundle
+carries software/provenance/owner notices independently of its CLI archive.
+All seven local gates pass: 3,163 tests, seven existing skips and twenty WASM
+packages. Fifteen packaging contracts, workflow/shell lint and the synthetic
+FreeBSD layout check pass. Native package builds, hosted platform gates and
+publication are in progress; no installer or
+interactive Windows/Linux validation is claimed before those checks finish.
+The installed Mac app and owner session stay untouched.
+[Release notes and distribution scope](docs/releases/0.14.1.md).
+
 P11.26: local **0.14.1** adapts upstream #2581 to reject QR merge placeholders
 on standalone generated QR paths. The same validation covers Pagenor's separate
 QR-generator binding command. Valid frame-based merges, hyperlinks and undo remain

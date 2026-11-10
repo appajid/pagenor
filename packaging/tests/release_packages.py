@@ -36,6 +36,32 @@ class ReleasePackages(unittest.TestCase):
             self.assertEqual(jobs[name]['if'], "needs.version.outputs.build == 'true'")
         self.assertNotIn('if', jobs['quality'])
 
+    def test_publish_requires_notes_for_the_matching_version(self):
+        import yaml
+        jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']
+        step = next(s for s in jobs['publish']['steps'] if s.get('name') == 'Checksums and release')
+        root = self.path / 'publish'
+        assets = root / 'dist/release'
+        assets.mkdir(parents=True)
+        (assets / 'example.zip').write_bytes(b'synthetic release asset')
+        notes = root / f'docs/releases/{VERSION}.md'
+        notes.parent.mkdir(parents=True)
+        notes.write_text(f'Pagenor {VERSION} release notes\n')
+        capture = self.path / 'gh-create-args'
+        self.tool('gh', '#!/bin/sh\ncase "$1 $2" in\n  "release view") exit 1;;\n  "release create") printf "%s\\n" "$@" > "$PAGENOR_TEST_CAPTURE";;\n  *) exit 2;;\nesac\n')
+        self.tool('sha256sum', '#!/usr/bin/env python3\nimport hashlib,sys\nfor f in sys.argv[1:]:\n print(hashlib.sha256(open(f,"rb").read()).hexdigest()+"  "+f)\n')
+        env = dict(self.env, VERSION=VERSION, GITHUB_SHA='a' * 40, PAGENOR_TEST_CAPTURE=str(capture))
+        result = subprocess.run(['bash', '-c', step['run']], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = capture.read_text().splitlines()
+        self.assertEqual(args[args.index('--notes-file') + 1], f'docs/releases/{VERSION}.md')
+        self.assertIn(f'v{VERSION}', args)
+        capture.unlink()
+        notes.unlink()
+        result = subprocess.run(['bash', '-c', step['run']], cwd=root, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, 'a missing matching release note must stop publication')
+        self.assertFalse(capture.exists(), 'missing notes must fail before gh release create')
+
     def test_windows_extensions_share_a_single_open_verb_and_document_icon(self):
         ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
         wix = ET.parse(ROOT / 'packaging/windows/pagenor.wxs')
@@ -321,6 +347,8 @@ elif args[0]!='detach':
         self.assertTrue(all(t['CFBundleTypeIconFile']=='PagenorDocument.icns' for t in info['CFBundleDocumentTypes']))
         self.assertTrue((stage/'.background/LICENSE-Pagenor-brand.txt').is_file())
         self.assertTrue((stage/'.background/OFL-Inter.txt').is_file())
+        for name in ['LICENSE-MIT','LICENSE-APACHE','NOTICE','PAGENOR_UPSTREAM.md','LICENSE-Pagenor-brand.txt','LICENSE-Pagenor-app-icon.txt']:
+            self.assertTrue((app/'Resources/Legal'/name).is_file(), name)
 
     def test_appimage_update_metadata_uses_owner_repo_and_removes_stale_zsync(self):
         bin_dir = Path(self.env['CARGO_TARGET_DIR']) / 'release'

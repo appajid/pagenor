@@ -107,6 +107,9 @@ cp "$ROOT/assets/app-icon/pagenor.icns" "$APP/Contents/Resources/Pagenor.icns"
 cp "$ROOT/assets/app-icon/pagenor-document.icns" "$APP/Contents/Resources/PagenorDocument.icns"
 # Licences of the embedded craft-fonts fonts (only when built with CRAFT_FONTS_DIR).
 copy_font_licences "$APP/Contents/Resources"
+# The GUI app must carry software/provenance/owner notices independently of the CLI ZIP.
+mkdir -p "$APP/Contents/Resources/Legal"
+copy_docs "$APP/Contents/Resources/Legal"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${PAGENOR_BUILD_SHA:-unknown}/g" \
   "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"

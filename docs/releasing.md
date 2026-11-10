@@ -97,6 +97,8 @@ prerelease only after all checks pass. Actions and the optional font input are
 pinned. Publishing alone has contents-write permission; signing secrets and
 paid Mac runners are not required. A duplicate version skips artifact rebuilding
 and keeps source quality checks active. Published artifacts are never replaced.
+Publication requires nonempty `docs/releases/<version>.md` notes for the exact
+workspace version; it refuses to fall back to an older release's description.
 Matching universal Mac packages can be appended under unique filenames with
 their own checksum manifest after verification.
 

@@ -347,4 +347,9 @@ jobs:
             echo "::error::Release v$VERSION already exists; refusing to replace it"
             exit 1
           fi
-          gh release create "v$VERSION" dist/release/* --target "$GITHUB_SHA" --title "Pagenor $VERSION — Windows and Linux preview" --prerelease --notes-file docs/pagenor/DESKTOP_RELEASE_070.md
+          notes="docs/releases/$VERSION.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::Missing release notes for v$VERSION: $notes"
+            exit 1
+          fi
+          gh release create "v$VERSION" dist/release/* --target "$GITHUB_SHA" --title "Pagenor $VERSION — desktop development preview" --prerelease --notes-file "$notes"

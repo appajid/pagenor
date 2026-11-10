@@ -1,15 +1,17 @@
 # Pagenor changelog
 
-## 0.14.1 — local correction, 2026-11-11
+## 0.14.1 — desktop preview, 2026-11-11
 
+- Require version-matched release notes before publication and ship software,
+  provenance and owner-brand notices inside the Mac GUI bundle.
 - Reject QR merge placeholders on standalone generated codes, which would retain
   their old visible path. Apply the same check to QR-generator field binding.
 - Preserve valid empty frames, frames containing codes, hyperlink placeholders,
   per-record vector content, unchanged templates and undo/redo.
 - Six generated-document regressions cover both entry points and atomic errors.
   All seven gates pass: 3,163 tests, zero failures, seven existing skips and twenty
-  WASM packages. Native format 8 and dependencies remain unchanged. Local source
-  only; installed Mac app remains 0.14.0.
+  WASM packages. Native format 8 and dependencies remain unchanged. Desktop
+  packages are published only after native platform and installer gates pass.
 - [Source pin, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
 
 ## 0.14.0 — local milestone, 2026-11-11
