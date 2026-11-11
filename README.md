@@ -19,7 +19,7 @@ Current milestone: **0.14.1** — reject QR data-merge bindings that
 would retain a stale standalone code, across both command entry points. Valid
 frame-based merging and native format 8 remain unchanged. All seven gates pass:
 3,163 tests, seven existing skips and twenty WASM packages.
-[Desktop preview notes](docs/releases/0.14.1.md).
+[Download the 0.14.1 desktop preview](https://github.com/appajid/pagenor/releases/tag/v0.14.1) · [Native validation and release notes](docs/releases/0.14.1.md).
 [Changes, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
 
 ## The sample magazine

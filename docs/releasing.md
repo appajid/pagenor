@@ -7,6 +7,9 @@ desktop development preview; [distribution notes](pagenor/DESKTOP_RELEASE_060.md
 record the native evidence and signing/interactive limits. Keep routine work
 local and publish versioned artifacts at milestones.
 
+Latest verified desktop preview: [0.14.1](releases/0.14.1.md#completed-distribution),
+with matching Mac/Windows/Linux packages and source integrated into main.
+
 ## Local prerequisites and commands
 
 All build scripts share `packaging/env.sh`, use the Pagenor IDs/owner assets and

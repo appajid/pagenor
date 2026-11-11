@@ -1,15 +1,18 @@
 # Pagenor development phases
 
-P11.27: **0.14.1 desktop release preparation**, authorized for GitHub publication
-on 2026-11-11. Publication requires exact-version notes, and the Mac GUI bundle
-carries software/provenance/owner notices independently of its CLI archive.
-All seven local gates pass: 3,163 tests, seven existing skips and twenty WASM
-packages. Fifteen packaging contracts, workflow/shell lint and the synthetic
-FreeBSD layout check pass. Native package builds, hosted platform gates and
-publication are in progress; no installer or
-interactive Windows/Linux validation is claimed before those checks finish.
-The installed Mac app and owner session stay untouched.
-[Release notes and distribution scope](docs/releases/0.14.1.md).
+P11.27: published **0.14.1 desktop development preview** on 2026-11-11.
+All 20 package payloads were downloaded and matched the two official SHA-256
+manifests; 22 assets cover universal Mac, Windows x64/x86/ARM64 and Linux
+x86_64/ARM64. Hosted seven-gate totals: Mac 3,163 passed / 7 existing ignores,
+Windows 3,149 / 4, Linux 3,160 / 7; no failures. Rust 1.95, fifteen packaging
+contracts, workflow/shell lint, FreeBSD build/tests, all three MSI installation
+checks and both Flatpak checks pass. Mac finished-DMG/install-copy signatures,
+icons, ARM64/Intel-under-Rosetta CLI exports and Unicode Telugu rendering pass.
+PR #5 integrates the source into main. Packages use tagged source `780a5423bd1e`;
+this completion record does not rebuild or replace their immutable binaries.
+Windows signing, Mac notarization, interactive Windows/Linux editor testing and
+physical-printer checks remain separate. The owner's Mac session is untouched.
+[Release, source pins and verification](docs/releases/0.14.1.md#completed-distribution).
 
 P11.26: local **0.14.1** adapts upstream #2581 to reject QR merge placeholders
 on standalone generated QR paths. The same validation covers Pagenor's separate
@@ -46,7 +49,7 @@ No install, upload, publication or new test release bundle. The installed app an
 original user files remain unchanged. Native Windows/Linux execution remains pending.
 [Source pins, compatibility decisions and deferred scopes](docs/upstream-adoption-20261111.md).
 
-Current local source version: **0.14.1** (P11.26; all seven gates passed); installed Mac app is **0.14.0**; published desktop preview remains **0.7.0** (P11.13).
+Current source and published desktop preview: **0.14.1** (P11.27; verified native distribution). The installed Mac app remains **0.14.0**, preserving the owner's current session.
 0.6.0 and v0.3.0 packages remain intact.
 
 P11.23: local **0.13.0** adapts 38 reviewed upstream proposal scopes through

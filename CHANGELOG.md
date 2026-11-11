@@ -14,6 +14,10 @@
   packages are published only after native platform and installer gates pass.
 - [Source pin, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
 
+- Published Mac/Windows/Linux packages after native quality and installer checks.
+  All 20 payload downloads match their manifests; source integration is merged.
+  [Completed distribution](docs/releases/0.14.1.md#completed-distribution).
+
 ## 0.14.0 — local milestone, 2026-11-11
 
 - Recover text from native documents with stale/deleted/foreign frame references.

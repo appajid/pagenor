@@ -84,3 +84,11 @@ external dependency pins do not change. The local Mac bundle is separate from
 the owner’s running app. Published 0.7.0 artifacts remain immutable; native
 Windows/Linux package validation and publication remain pending. See
 [the adoption log](UPSTREAM_ADOPTION_0120.md).
+
+The 11 November 2026 distribution milestone publishes **0.14.1**, grouping the
+previously local editor/publishing work since 0.7.0 with the 0.14.1 QR merge and
+packaging corrections. The Cargo version stays 0.14.1 and the release is a GitHub
+development prerelease, with native capability 8. Twenty matching package payloads
+and both manifests are verified; [distribution evidence](../releases/0.14.1.md#completed-distribution)
+records the native gates and remaining interactive/signing limits. Later completion
+notes do not rebuild or replace the tagged release's immutable binaries.
