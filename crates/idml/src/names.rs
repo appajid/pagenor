@@ -2,8 +2,8 @@
 
 use pagenor_color::BlendMode;
 use pagenor_doc::{
-    Align, Arrowhead, AutoSize, Cap, Capitalization, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph, StrokeAlign, StrokeType,
-    TabAlign, VerticalJustification, WrapMode, WrapSide,
+    Align, Arrowhead, AutoSize, Cap, Capitalization, ClippingKind, ContourType, FirstBaseline, Join, Leading, NumberStyle, Position, StartParagraph,
+    StrokeAlign, StrokeType, TabAlign, VerticalJustification, WrapMode, WrapSide,
 };
 use pagenor_geom::Unit;
 use pagenor_geom::corners::CornerShape;
@@ -44,6 +44,26 @@ pub fn anchor_rel_in(s: &str) -> pagenor_doc::anchored::AnchorRelative {
     }
 }
 
+/// `PDFAttribute` `PDFCrop` for a placed PDF's crop choice.
+pub fn pdf_crop_out(c: pagenor_doc::PdfCrop) -> &'static str {
+    use pagenor_doc::PdfCrop as C;
+    match c {
+        C::Crop => "CropPDF",
+        C::Art => "CropArt",
+        C::Trim => "CropTrim",
+        C::Bleed => "CropBleed",
+        C::Media => "CropMedia",
+        C::ContentVisible => "CropContentVisibleLayers",
+        C::ContentAll => "CropContentAllLayers",
+    }
+}
+
+/// A placed PDF's crop choice from `PDFCrop` (the crop box when unknown).
+pub fn pdf_crop_in(s: &str) -> pagenor_doc::PdfCrop {
+    use pagenor_doc::PdfCrop as C;
+    C::ALL.into_iter().find(|c| pdf_crop_out(*c) == s).unwrap_or(C::Crop)
+}
+
 pub fn anchor_out(i: u8) -> &'static str {
     ANCHORS[(i as usize).min(8)]
 }
@@ -81,24 +101,54 @@ pub fn unescape_id(s: &str) -> String {
     s.replace("%3a", ":").replace("%3A", ":").replace("%25", "%")
 }
 
+/// An `AppliedFont` value → font family. InDesign can write the family with its `$ID/` prefix
+/// (`$ID/Arial`), and `$ID/` alone for no font; some writers append the style after a tab.
+pub fn font_family_in(v: &str) -> Option<String> {
+    let v = v.trim_matches(['\n', '\r']);
+    let family = v.split('\t').next().unwrap_or(v);
+    let family = family.strip_prefix("$ID/").unwrap_or(family);
+    (!family.trim().is_empty()).then(|| family.to_string())
+}
+
 /// Built-in style names: (ours, IDML `Name`).
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];
 pub const CELL_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[None]")];
-pub const TABLE_BUILTINS: &[(&str, &str)] = &[("[Basic Table]", "$ID/[Basic Table]")];
+pub const TABLE_BUILTINS: &[(&str, &str)] = &[("[Basic Table]", "$ID/[Basic Table]"), ("[No table style]", "$ID/[No table style]")];
 pub const OBJECT_BUILTINS: &[(&str, &str)] =
     &[("[None]", "$ID/[None]"), ("[Basic Graphics Frame]", "$ID/[Normal Graphics Frame]"), ("[Basic Text Frame]", "$ID/[Normal Text Frame]")];
 
-/// Our style name → IDML `Name` (groups: `A/B` → `A:B`).
+/// Our style name → IDML `Name` (groups: `A/B` → `A:B`; a literal `:` or `\` is escaped as `\:`
+/// or `\\`, so it is not read back as a group separator).
 pub fn style_name_out(builtins: &[(&str, &str)], name: &str) -> String {
-    builtins.iter().find(|(o, _)| *o == name).map(|(_, i)| i.to_string()).unwrap_or_else(|| name.replace('/', ":"))
+    builtins
+        .iter()
+        .find(|(o, _)| *o == name)
+        .map(|(_, i)| i.to_string())
+        .unwrap_or_else(|| name.replace('\\', "\\\\").replace(':', "\\:").replace('/', ":"))
 }
 /// IDML `Name` → our style name.
 pub fn style_name_in(builtins: &[(&str, &str)], name: &str) -> String {
     if let Some((o, _)) = builtins.iter().find(|(_, i)| *i == name) {
         return o.to_string();
     }
-    name.strip_prefix("$ID/").unwrap_or(name).replace(':', "/")
+    let name = name.strip_prefix("$ID/").unwrap_or(name);
+    let mut out = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.clone().next() {
+                Some(next @ ('\\' | ':')) => {
+                    out.push(next);
+                    chars.next();
+                }
+                _ => out.push('\\'),
+            },
+            ':' => out.push('/'),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 /// `ParagraphStyle/…` Self id for one of our names.
 pub fn style_self(kind: &str, builtins: &[(&str, &str)], name: &str) -> String {
@@ -208,7 +258,7 @@ pub fn leading_out(l: Leading) -> (String, &'static str) {
     }
 }
 pub fn leading_in(s: &str) -> Option<Leading> {
-    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse().ok().map(Leading::Points) }
+    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(Leading::Points) }
 }
 
 pub fn stroke_align_out(a: StrokeAlign) -> &'static str {
@@ -252,6 +302,13 @@ pub fn join_in(s: &str) -> Join {
         "BevelEndJoin" => Join::Bevel,
         _ => Join::Miter,
     }
+}
+
+/// Reserved resource identities for concrete table dash arrays; user-named styles use
+/// `CustomStrokeStyle/` instead. Float bits distinguish patterns without rounding them.
+pub fn table_dash_style_id(pattern: &[f64]) -> String {
+    let bits = pattern.iter().map(|v| format!("{:016x}", v.to_bits())).collect::<Vec<_>>().join("-");
+    format!("PagenorTableDash/{bits}")
 }
 
 /// Stroke style Self ids for our stroke types (built-in InDesign stroke styles).
@@ -331,6 +388,63 @@ pub fn arrow_in(s: &str) -> Arrowhead {
     .unwrap_or(Arrowhead::None)
 }
 
+pub fn box_width_out(w: pagenor_doc::BoxWidth) -> &'static str {
+    match w {
+        pagenor_doc::BoxWidth::Column => "ColumnWidth",
+        pagenor_doc::BoxWidth::Text => "TextWidth",
+    }
+}
+pub fn box_width_in(s: &str) -> pagenor_doc::BoxWidth {
+    if s == "TextWidth" { pagenor_doc::BoxWidth::Text } else { pagenor_doc::BoxWidth::Column }
+}
+
+pub fn box_top_out(t: pagenor_doc::BoxTop) -> &'static str {
+    match t {
+        pagenor_doc::BoxTop::Ascent => "AscentTopOrigin",
+        pagenor_doc::BoxTop::Baseline => "BaselineTopOrigin",
+        pagenor_doc::BoxTop::EmBox => "EmBoxTopOrigin",
+        pagenor_doc::BoxTop::Leading => "LeadingTopOrigin",
+    }
+}
+pub fn box_top_in(s: &str) -> pagenor_doc::BoxTop {
+    match s {
+        "BaselineTopOrigin" => pagenor_doc::BoxTop::Baseline,
+        "EmBoxTopOrigin" => pagenor_doc::BoxTop::EmBox,
+        "LeadingTopOrigin" => pagenor_doc::BoxTop::Leading,
+        _ => pagenor_doc::BoxTop::Ascent,
+    }
+}
+
+pub fn box_bottom_out(b: pagenor_doc::BoxBottom) -> &'static str {
+    match b {
+        pagenor_doc::BoxBottom::Descent => "DescentBottomOrigin",
+        pagenor_doc::BoxBottom::Baseline => "BaselineBottomOrigin",
+        pagenor_doc::BoxBottom::EmBox => "EmBoxBottomOrigin",
+    }
+}
+pub fn box_bottom_in(s: &str) -> pagenor_doc::BoxBottom {
+    match s {
+        "BaselineBottomOrigin" => pagenor_doc::BoxBottom::Baseline,
+        "EmBoxBottomOrigin" => pagenor_doc::BoxBottom::EmBox,
+        _ => pagenor_doc::BoxBottom::Descent,
+    }
+}
+
+pub fn list_align_out(a: pagenor_doc::ListAlign) -> &'static str {
+    match a {
+        pagenor_doc::ListAlign::Left => "LeftAlign",
+        pagenor_doc::ListAlign::Center => "CenterAlign",
+        pagenor_doc::ListAlign::Right => "RightAlign",
+    }
+}
+pub fn list_align_in(s: &str) -> pagenor_doc::ListAlign {
+    match s {
+        "CenterAlign" => pagenor_doc::ListAlign::Center,
+        "RightAlign" => pagenor_doc::ListAlign::Right,
+        _ => pagenor_doc::ListAlign::Left,
+    }
+}
+
 pub fn corner_out(c: CornerShape) -> &'static str {
     match c {
         CornerShape::None => "None",
@@ -378,11 +492,41 @@ pub fn wrap_mode_out(m: WrapMode) -> &'static str {
         WrapMode::JumpToNextColumn => "NextColumnTextWrap",
     }
 }
+pub fn clipping_kind_out(k: ClippingKind) -> &'static str {
+    match k {
+        ClippingKind::DetectEdges => "DetectEdges",
+        ClippingKind::AlphaChannel => "AlphaChannel",
+        ClippingKind::PhotoshopPath => "PhotoshopPath",
+        ClippingKind::UserModifiedPath => "UserModifiedPath",
+    }
+}
+/// `None` for `ClippingType="None"` and unknown types.
+pub fn clipping_kind_in(s: &str) -> Option<ClippingKind> {
+    [ClippingKind::DetectEdges, ClippingKind::AlphaChannel, ClippingKind::PhotoshopPath, ClippingKind::UserModifiedPath]
+        .into_iter()
+        .find(|k| clipping_kind_out(*k) == s)
+}
 pub fn wrap_mode_in(s: &str) -> WrapMode {
     [WrapMode::BoundingBox, WrapMode::Contour, WrapMode::JumpObject, WrapMode::JumpToNextColumn]
         .into_iter()
         .find(|m| wrap_mode_out(*m) == s)
         .unwrap_or(WrapMode::None)
+}
+pub fn contour_type_out(c: ContourType) -> &'static str {
+    match c {
+        ContourType::BoundingBox => "BoundingBox",
+        ContourType::DetectEdges => "DetectEdges",
+        ContourType::AlphaChannel => "AlphaChannel",
+        ContourType::PhotoshopPath => "PhotoshopPath",
+        ContourType::GraphicFrame => "GraphicFrame",
+        ContourType::SameAsClipping => "SameAsClipping",
+    }
+}
+pub fn contour_type_in(s: &str) -> ContourType {
+    [ContourType::BoundingBox, ContourType::DetectEdges, ContourType::AlphaChannel, ContourType::PhotoshopPath, ContourType::GraphicFrame]
+        .into_iter()
+        .find(|c| contour_type_out(*c) == s)
+        .unwrap_or(ContourType::SameAsClipping)
 }
 pub fn wrap_side_out(s: WrapSide) -> &'static str {
     match s {
@@ -470,7 +614,7 @@ pub const REF_POINTS: [&str; 9] = [
 
 pub fn number_style_out(n: NumberStyle) -> &'static str {
     match n {
-        NumberStyle::Arabic | NumberStyle::ArabicLeadingZero => "Arabic",
+        NumberStyle::Arabic | NumberStyle::ArabicLeadingZero | NumberStyle::ArabicThreeDigits | NumberStyle::ArabicFourDigits => "Arabic",
         NumberStyle::UpperRoman => "UpperRoman",
         NumberStyle::LowerRoman => "LowerRoman",
         NumberStyle::UpperLetters => "UpperLetters",
@@ -489,6 +633,8 @@ pub fn number_style_in(s: &str) -> NumberStyle {
     }
 }
 
+/// IDML `MeasurementUnits` of a unit. Q is `Q`; `U` is a different unit, which Pagenor
+/// doesn't have.
 pub fn unit_out(u: Unit) -> &'static str {
     match u {
         Unit::Points => "Points",
@@ -500,27 +646,14 @@ pub fn unit_out(u: Unit) -> &'static str {
         Unit::Ciceros => "Ciceros",
         Unit::Agates => "Agates",
         Unit::Pixels => "Pixels",
-        Unit::Q => "U",
+        Unit::Q => "Q",
         Unit::Ha => "Ha",
     }
 }
-pub fn unit_in(s: &str) -> Unit {
-    [
-        Unit::Points,
-        Unit::Picas,
-        Unit::Inches,
-        Unit::InchesDecimal,
-        Unit::Millimeters,
-        Unit::Centimeters,
-        Unit::Ciceros,
-        Unit::Agates,
-        Unit::Pixels,
-        Unit::Q,
-        Unit::Ha,
-    ]
-    .into_iter()
-    .find(|u| unit_out(*u) == s)
-    .unwrap_or(Unit::Points)
+/// The unit an IDML `MeasurementUnits` value names, if Pagenor has it (not `U`, `Bai`,
+/// `Mils`, `AmericanPoints` or `Custom`).
+pub fn unit_in(s: &str) -> Option<Unit> {
+    Unit::ALL.into_iter().find(|u| unit_out(*u) == s)
 }
 
 /// IDML layer colour enumeration names for our layer colour table.
@@ -549,17 +682,55 @@ pub fn pt(x: f64, y: f64) -> String {
     format!("{} {}", num(x), num(y))
 }
 
+// ---------- list numbering ----------
+
+/// A paragraph's `NumberingFormat` ("A, B, C, D...", "001, 002, 003...", …), told apart by its
+/// first item. None for formats with no counterpart (CJK, Arabic, Hebrew, …).
+pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
+    Some(match s.split(',').next().unwrap_or("").trim() {
+        "1" => NumberStyle::Arabic,
+        "01" => NumberStyle::ArabicLeadingZero,
+        "001" => NumberStyle::ArabicThreeDigits,
+        "0001" => NumberStyle::ArabicFourDigits,
+        "I" => NumberStyle::UpperRoman,
+        "i" => NumberStyle::LowerRoman,
+        "A" => NumberStyle::UpperLetters,
+        "a" => NumberStyle::LowerLetters,
+        _ => return None,
+    })
+}
+pub fn numbering_format_out(n: NumberStyle) -> &'static str {
+    match n {
+        NumberStyle::Arabic | NumberStyle::Symbols => "1, 2, 3, 4...",
+        NumberStyle::ArabicLeadingZero => "01, 02, 03...",
+        NumberStyle::ArabicThreeDigits => "001, 002, 003...",
+        NumberStyle::ArabicFourDigits => "0001, 0002, 0003...",
+        NumberStyle::UpperRoman => "I, II, III, IV...",
+        NumberStyle::LowerRoman => "i, ii, iii, iv...",
+        NumberStyle::UpperLetters => "A, B, C, D...",
+        NumberStyle::LowerLetters => "a, b, c, d...",
+    }
+}
+/// Label text in IDML metacharacters (a tab is `^t`).
+pub fn list_text_out(s: &str) -> String {
+    s.replace('\t', "^t")
+}
+
 // ---------- footnote options ----------
 
 pub fn note_style_out(n: NumberStyle) -> &'static str {
     match n {
         NumberStyle::ArabicLeadingZero => "SingleLeadingZeros",
+        NumberStyle::ArabicThreeDigits => "DoubleLeadingZeros",
+        NumberStyle::ArabicFourDigits => "TripleLeadingZeros",
         n => number_style_out(n),
     }
 }
 pub fn note_style_in(s: &str) -> NumberStyle {
     match s {
-        "SingleLeadingZeros" | "DoubleLeadingZeros" => NumberStyle::ArabicLeadingZero,
+        "SingleLeadingZeros" => NumberStyle::ArabicLeadingZero,
+        "DoubleLeadingZeros" => NumberStyle::ArabicThreeDigits,
+        "TripleLeadingZeros" => NumberStyle::ArabicFourDigits,
         "Asterisks" => NumberStyle::Symbols,
         s => number_style_in(s),
     }

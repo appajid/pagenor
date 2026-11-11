@@ -12,6 +12,8 @@
 //! - **Colour:** CMYK as DeviceCMYK, RGB as DeviceRGB, Gray as DeviceGray, spot swatches (and their
 //!   tints) as `/Separation` with the swatch's own values as the alternate space, `[Registration]`
 //!   as `/Separation /All`.
+//!   Gradients with mixed output colour spaces are converted to RGB with an export warning;
+//!   homogeneous gradients keep their existing colour space (subject to PDF/A conversion).
 //! - **Images:** clipped to their frame; JPEG data is passed through, PNG/GIF/WebP are embedded
 //!   losslessly (or re-encoded as JPEG with [`PdfOptions::compress_images`]).
 //! - **Text as real text:** the composed glyph runs are emitted with embedded, subsetted fonts and a
@@ -19,8 +21,8 @@
 //!   right characters), so text is selectable and searchable.
 //! - **Marks:** crop marks, bleed marks and a page-information line, drawn in `[Registration]`.
 //! - **Standards:** PDF/A-2b through krilla's validator. PDF/X-4 writes PDF 1.6 with trim/bleed
-//!   boxes, but the PDF/X output intent and identification are not written yet (krilla 0.8 has no
-//!   PDF/X support) — the export report says so.
+//!   boxes, output intent and identification. Built-in exporter checks are available through
+//!   `pagenor-cli validate-pdf`; these are not a complete external conformance certification.
 //!
 //! Not yet: tagged PDF, bookmarks, hyperlinks, overprint, layers as optional content.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -34,7 +36,10 @@ mod text;
 mod forms;
 mod pdfx;
 mod transitions;
-pub use export::{BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, sheet_spreads};
+pub use export::{
+    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,
+    merge_pdfs, sheet_spreads, shown_parent_items,
+};
 pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
@@ -44,8 +49,7 @@ pub enum Standard {
     /// Plain PDF 1.7.
     #[default]
     None,
-    /// PDF/X-4 (PDF 1.6, trim/bleed boxes). TODO: OutputIntent + GTS_PDFXVersion once krilla
-    /// supports PDF/X.
+    /// PDF/X-4 (PDF 1.6, trim/bleed boxes, output intent and identification).
     PdfX4,
     /// PDF/A-2b (archival; validated by krilla).
     PdfA2b,
@@ -198,5 +202,7 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+#[cfg(test)]
+mod rtl_tests;
 #[cfg(test)]
 mod tests;

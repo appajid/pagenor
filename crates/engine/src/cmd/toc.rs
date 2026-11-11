@@ -3,7 +3,7 @@
 //! Contents regenerates the same story after edits.
 
 use pagenor_compose::{ComposeOptions, caret, compose_story};
-use pagenor_doc::{Align, Document, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry};
+use pagenor_doc::{Align, Document, ParaAttrs, ParaFormat, ParagraphStyle, SpreadRef, StoryId, TabAlign, TabStop, Toc, TocEntry, TocScope};
 use pagenor_geom::Rect;
 use serde_json::{Value, json};
 
@@ -12,16 +12,22 @@ use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "toc.styles", "Table of Contents Source Styles", [], None, "{scope?:currentDocument|entireBook} → style names", has_doc, |s,p| {
+            if scope_param(p)?==TocScope::EntireBook {super::book::book_toc_styles(s)} else {Ok(json!(s.doc()?.doc.styles.paragraph.iter().filter(|p|p.name!=pagenor_doc::NO_PARA_STYLE).map(|p|p.name.clone()).collect::<Vec<_>>()))}
+        }),
         cmd!(
             "toc.generate",
             "Table of Contents…",
             ["Layout"],
             None,
-            "{entries: [{style, level?: 1}] | styles: [names], title?: \"Contents\", pageNumbers?: true, page?: 1-based page for a new frame (its margins), rect?: [x0,y0,x1,y1] (spread coords)} → {story, entries}",
+            "{entries: [{style, level?: 1}] | styles: [names], title?: \"Contents\", pageNumbers?: true, scope?: currentDocument|entireBook, page?: 1-based page for a new frame (its margins), rect?: [x0,y0,x1,y1] (spread coords)} → {story, entries}",
             has_doc,
             generate
         ),
         cmd!("toc.update", "Update Table of Contents", ["Layout"], None, "{} — regenerate the existing table of contents", has_toc, |s, _| {
+            if s.doc()?.doc.toc.as_ref().is_some_and(|t| t.scope == TocScope::EntireBook) {
+                return super::book::update_active_toc(s, None);
+            }
             s.edit(|d, _| {
                 let toc = d.toc.clone().ok_or_else(|| bad("toc.update", "no table of contents"))?;
                 let n = fill(d, &toc, None)?;
@@ -30,6 +36,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(query "toc.entries", "Table of Contents Entries", [], None, "{entries | styles} → [{level, text, page}] without changing the document", has_doc, |s, p| {
             let entries = entries_param(p)?;
+            if scope_param(p)? == TocScope::EntireBook { return super::book::book_toc_entries(s,&entries); }
             let d = &s.doc()?.doc;
             let skip = d.toc.as_ref().map(|t| t.story);
             Ok(json!(collect(d, &entries, skip).into_iter().map(|e| json!({"level": e.level, "text": e.text, "page": e.page})).collect::<Vec<_>>()))
@@ -44,7 +51,7 @@ fn has_toc(s: &Session) -> std::result::Result<(), String> {
     }
 }
 
-fn entries_param(p: &Value) -> Result<Vec<TocEntry>> {
+pub(super) fn entries_param(p: &Value) -> Result<Vec<TocEntry>> {
     if let Some(v) = p.get("entries") {
         return serde_json::from_value(v.clone()).map_err(|e| bad("toc.generate", e.to_string()));
     }
@@ -54,6 +61,7 @@ fn entries_param(p: &Value) -> Result<Vec<TocEntry>> {
     Err(bad("toc.generate", "give `entries` or `styles`"))
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Found {
     pub level: u8,
     pub text: String,
@@ -139,8 +147,12 @@ fn ensure_styles(d: &mut Document, levels: u8, width: f64) {
 }
 
 /// Rewrite the TOC story; returns the number of entries.
-fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
+pub(super) fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
     let found = collect(d, &toc.entries, Some(toc.story));
+    fill_found(d, toc, width, found)
+}
+
+pub(super) fn fill_found(d: &mut Document, toc: &Toc, width: Option<f64>, found: Vec<Found>) -> Result<usize> {
     let levels = toc.entries.iter().map(|e| e.level).max().unwrap_or(1);
     let width = width.unwrap_or_else(|| {
         d.story(toc.story).and_then(|st| st.frames.first()).and_then(|f| d.item(*f)).map(|i| i.text_area().width()).unwrap_or(300.0)
@@ -175,9 +187,23 @@ fn fill(d: &mut Document, toc: &Toc, width: Option<f64>) -> Result<usize> {
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
+    if scope_param(p)? == TocScope::EntireBook {
+        return super::book::update_active_toc(s, Some(p));
+    }
+    configure(s, p, false)
+}
+
+pub(super) fn scope_param(p: &Value) -> Result<TocScope> {
+    p.get("scope").map_or(Ok(TocScope::CurrentDocument), |v| serde_json::from_value(v.clone()).map_err(|e| bad("toc", e.to_string())))
+}
+
+pub(super) fn configure(s: &mut Session, p: &Value, book: bool) -> Result<Value> {
     let entries = entries_param(p)?;
     if entries.is_empty() {
         return Err(bad("toc.generate", "no entries"));
+    }
+    if entries.len() > 1024 || entries.iter().any(|e| !(1..=9).contains(&e.level) || e.style.len() > 1024) {
+        return Err(bad("toc.generate", "at most 1024 styles with levels 1–9 are supported"));
     }
     let title = str_param(p, "title").unwrap_or("Contents").to_string();
     let page_numbers = p.get("pageNumbers").and_then(Value::as_bool).unwrap_or(true);
@@ -198,8 +224,14 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
                 (sid, w)
             }
         };
-        let toc = Toc { story, title: title.clone(), entries: entries.clone(), page_numbers };
-        let n = fill(d, &toc, width)?;
+        let toc = Toc {
+            scope: if book { TocScope::EntireBook } else { TocScope::CurrentDocument },
+            story,
+            title: title.clone(),
+            entries: entries.clone(),
+            page_numbers,
+        };
+        let n = if book { 0 } else { fill(d, &toc, width)? };
         d.toc = Some(toc);
         Ok(json!({"story": story.0, "entries": n}))
     })

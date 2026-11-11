@@ -9,10 +9,12 @@
 
 mod fontdb;
 mod group;
+mod kind;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
+mod psname;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 #[cfg(any(target_os = "linux", target_os = "freebsd", all(test, unix)))]
@@ -30,6 +32,7 @@ pub use fontdb::{
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
 use harfrust::{Direction, Language, ShapeOptions, Tag, UnicodeBuffer};
+pub use kind::{FaceKind, FontClass, FontFormat, classify, panose_distance};
 pub use kurbo::BezPath;
 use skrifa::MetadataProvider;
 use skrifa::instance::Size;
@@ -90,6 +93,14 @@ pub struct ShapedGlyph {
     pub rtl: bool,
 }
 
+/// Unscaled line metrics at a collection index: units per em, ascent, descent and line gap.
+/// UI fallbacks use these to share the primary interface face's baseline.
+pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
+    let f = skrifa::FontRef::from_index(data, index).ok()?;
+    let m = f.metrics(Size::unscaled(), skrifa::instance::LocationRef::default());
+    Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
+}
+
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
 pub fn feature(tag: &str) -> Option<Feature> {
     let (on, t) = match tag.strip_prefix('-') {
@@ -145,6 +156,10 @@ pub struct ShapeContext<'a> {
     pub before: &'a str,
     pub after: &'a str,
     pub language: Option<&'a str>,
+    /// Every character keeps its own cluster (a vowel mark isn't merged into its base letter's
+    /// cluster), so a run shaped across several styles can give each glyph its own character's
+    /// style (HarfBuzz's monotone-characters cluster level).
+    pub cluster_chars: bool,
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -169,8 +184,10 @@ pub fn shape_with_context(
             before: if r.start == 0 { context.before } else { &text[..r.start] },
             after: if r.end == text.len() { context.after } else { &text[r.end..] },
             language: context.language,
+            cluster_chars: context.cluster_chars,
         };
-        let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
+        let local_features = features_in(features, r.clone());
+        let mut g = shape_dir(face, &text[r.clone()], &local_features, &map, rtl, script, local);
         for x in &mut g {
             x.cluster += r.start;
         }
@@ -191,6 +208,20 @@ pub fn shape_with_context(
     out
 }
 
+/// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
+/// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
+/// Contextual Alternates off, so `calt` off is dropped there.
+fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
+    use unicode_script::Script;
+    let calt = Tag::new(b"calt");
+    let off = |f: &Feature| f.tag == calt && f.value == 0;
+    if script == Script::Arabic && features.iter().any(off) {
+        features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into()
+    } else {
+        features.into()
+    }
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -201,6 +232,8 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
+    let features = script_features(features, script);
+    let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
@@ -216,6 +249,9 @@ fn shape_dir(
             buf.set_language(language);
         }
         buf.set_flags(harfrust::BufferFlags::PRODUCE_SAFE_TO_INSERT_TATWEEL);
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+        }
         buf.guess_segment_properties();
         buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
         let gb = shaper.shape(buf, ShapeOptions::new().features(features));
@@ -258,7 +294,10 @@ fn shape_dir(
 /// Shape upright text top to bottom (`text`, `features`, `map` and `context` as in
 /// [`shape_with_context`]): the shaper applies `vert` (vertical forms), and `vkrn` and `vpal` when
 /// `features` turn them on. Advances and origins are the face's vertical metrics
-/// ([`FontFace::v_advance`], [`FontFace::v_origin`]).
+/// ([`FontFace::v_advance`], [`FontFace::v_origin`]). `text` is shaped in one buffer (it isn't
+/// split into direction runs as [`shape_with_context`] splits it), so features over a byte range
+/// apply as given, counted from the start of `text`; callers shaping part of a run clip them with
+/// [`features_in`].
 pub fn shape_vertical(face: &FontFace, text: &str, features: &[Feature], map: impl Fn(char) -> char, context: ShapeContext<'_>) -> Vec<ShapedGlyph> {
     let mut funcs = vertical::VerticalFuncs { face, metrics: vertical::VMetrics::new(face) };
     let mut out = Vec::with_capacity(text.len());
@@ -273,6 +312,9 @@ pub fn shape_vertical(face: &FontFace, text: &str, features: &[Feature], map: im
         buf.set_post_context(context.after);
         if let Some(language) = context.language.and_then(|t| t.parse::<Language>().ok()) {
             buf.set_language(language);
+        }
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
         }
         buf.guess_segment_properties();
         buf.set_direction(Direction::TopToBottom);
@@ -324,9 +366,51 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
     chars.iter().map(|c| face.glyph_for(*c)).find(|g| *g != 0).unwrap_or(0)
 }
 
+/// `features` for the part `range` of the text they were given for: features over the whole text
+/// stay as they are; one over a byte range is clipped to `range` and counted from its start (or
+/// left out when it misses it).
+pub fn features_in(features: &[Feature], range: std::ops::Range<usize>) -> Vec<Feature> {
+    let (a, b) = (u32::try_from(range.start).unwrap_or(u32::MAX), u32::try_from(range.end).unwrap_or(u32::MAX));
+    features
+        .iter()
+        .filter_map(|f| {
+            if f.start == 0 && f.end == u32::MAX {
+                return Some(*f);
+            }
+            let (s, e) = (f.start.max(a), f.end.min(b));
+            (s < e).then(|| Feature { start: s - a, end: e - a, ..*f })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Features over a byte range follow the text into the part being shaped: clipped to it and
+    /// counted from its start; features over the whole text stay whole.
+    #[test]
+    fn ranged_features_follow_their_part() {
+        let tag = Tag::new(b"liga");
+        let whole = Feature { tag, value: 0, start: 0, end: u32::MAX };
+        let ranged = Feature { tag, value: 0, start: 4, end: 10 };
+        let got = features_in(&[whole, ranged], 6..20);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].start, got[0].end), (0, u32::MAX));
+        assert_eq!((got[1].start, got[1].end), (0, 4));
+        assert!(features_in(&[ranged], 10..20).is_empty(), "a range ending where the part starts misses it");
+        assert!(features_in(&[ranged], 12..20).is_empty(), "one ending before it too (it used to overflow)");
+    }
+
+    #[test]
+    fn arabic_keeps_contextual_alternates() {
+        use unicode_script::Script;
+        let off = feature("-calt").unwrap();
+        let liga = feature("-liga").unwrap();
+        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
+        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
+    }
 
     #[test]
     fn arabic_script_runs_do_not_inherit_the_hebrew_shaper() {
@@ -452,6 +536,45 @@ mod tests {
         assert!(!db.styles(&fam).iter().any(|s| s.contains('{')), "instances aren't listed");
         let static_face = db.face(DEFAULT_FAMILY, "Regular {wght:700}");
         assert_eq!(static_face.style, "Regular", "static fonts ignore axis settings");
+    }
+
+    #[test]
+    fn an_exact_family_name_wins_over_the_name_without_its_format_suffix() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("Pagenor Test Suffix (OTF)", &['a']).unwrap());
+        assert_eq!(db.face("Pagenor Test Suffix (OTF)", "Regular").family, "Pagenor Test Suffix (OTF)");
+        assert_eq!(db.face(&format!("{DEFAULT_FAMILY} (TT)"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} (T1)")));
+        assert!(!db.has_family(&format!("{DEFAULT_FAMILY} (Bold)")));
+        assert!(!db.has_family("Pagenor Test Suffix"));
+    }
+
+    /// IDML files from InDesign can name a family with its `$ID/` prefix (`$ID/Arial`).
+    #[test]
+    fn an_indesign_id_prefix_names_the_plain_family() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let prefixed = format!("$ID/{DEFAULT_FAMILY}");
+        assert_eq!(db.face(&prefixed, "Bold").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&prefixed));
+        assert_eq!(db.styles(&prefixed), db.styles(DEFAULT_FAMILY));
+        assert!(db.has_family(&format!("$ID/{DEFAULT_FAMILY} (OTF)")));
+        assert!(!db.has_family("$ID/"));
+        assert!(!db.has_family("$ID/DC No Such Family"));
+    }
+
+    #[test]
+    fn a_family_name_keeps_its_spaces_and_falls_back_to_the_trimmed_name() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("Pagenor Test Space ", &['a']).unwrap());
+        db.add_font(testing::font_with("Pagenor Test Space", &['a']).unwrap());
+        assert_eq!(db.face("Pagenor Test Space ", "Regular").family, "Pagenor Test Space ");
+        assert_eq!(db.face("Pagenor Test Space", "Regular").family, "Pagenor Test Space");
+        assert_eq!(db.face(&format!(" {DEFAULT_FAMILY}\n"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} ")));
+        assert_eq!(db.styles(&format!("{DEFAULT_FAMILY} ")), db.styles(DEFAULT_FAMILY));
     }
 
     #[test]
@@ -616,5 +739,26 @@ mod coverage_recommendation_tests {
         assert_eq!(scope.face("Traditional Arabic", "Regular").family, "Geeza Pro");
         assert_eq!(scope.replacement_face("Traditional Arabic", "Regular", &['ع', '“']).family, "Al Bayan");
         assert!(!scope.has_family("Traditional Arabic"));
+    }
+}
+
+#[cfg(test)]
+mod ribbi_missing_regular_review31 {
+    use super::*;
+    #[test]
+    fn another_face_s_legacy_regular_does_not_stand_for_a_missing_regular() {
+        // Only the Black face is installed: a document's "Regular" is a missing style, drawn in
+        // the nearest weight, not satisfied by Black's RIBBI subfamily name.
+        let bytes = testing::with_names(
+            &testing::font_with("Legacy Sans", &['A']).unwrap(),
+            &[(3, 1, 0x409, 1, "Legacy Sans Black"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x409, 16, "Legacy Sans"), (3, 1, 0x409, 17, "Black")],
+        )
+        .unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(bytes);
+        let scope = db.scoped(0);
+        assert!(scope.has_family("Legacy Sans"));
+        assert!(!scope.has_style("Legacy Sans", "Regular"));
+        assert!(scope.has_style("Legacy Sans", "Black"));
     }
 }

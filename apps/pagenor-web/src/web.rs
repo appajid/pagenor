@@ -2,16 +2,19 @@
 
 use super::browser_policy::{has_query_flag, mime_for};
 use pagenor_engine::Session;
-use pagenor_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
+use pagenor_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, PasteRequest, Services};
 use wasm_bindgen::JsCast as _;
 
 const DOC_EXTS: &[&str] = &["pgnr", "pagenor", "idml", "indd"];
 const IMAGE_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "xlsx", "idml", "indd", "pgnr",
-    "pagenor",
+    "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "txt", "docx", "rtf", "md", "markdown", "xlsx", "idml",
+    "indd", "pgnr", "pagenor",
 ];
 const CANVAS_ID: &str = "pagenor_canvas";
 const LOADING_ID: &str = "pagenor_loading";
+
+/// Clipboard reads retain the editing context captured before awaiting the browser.
+type ClipboardInbox = std::sync::Arc<std::sync::Mutex<Vec<(PasteRequest, String)>>>;
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
@@ -39,11 +42,12 @@ pub fn start() {
                         log::info!("pagenor-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
                     let inbox: Inbox = Inbox::default();
-                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    let clipboard = ClipboardInbox::default();
+                    let mut app = DesignApp::new(Session::new(), services(inbox.clone(), clipboard.clone(), cc.egui_ctx.clone()));
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox }))
+                    Ok(Box::new(WebShell { app, inbox, clipboard }))
                 }),
             )
             .await;
@@ -65,6 +69,7 @@ fn query() -> String {
 struct WebShell {
     app: DesignApp,
     inbox: Inbox,
+    clipboard: ClipboardInbox,
 }
 
 impl eframe::App for WebShell {
@@ -94,13 +99,46 @@ impl eframe::App for WebShell {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Process current input before checking a delayed read's captured target.
         self.app.ui(ui);
+        let ctx = ui.ctx();
+        let pastes = std::mem::take(&mut *self.clipboard.lock().unwrap_or_else(|e| e.into_inner()));
+        for (request, text) in pastes {
+            if self.app.receive_clipboard_paste(ctx, request, text) {
+                ctx.request_repaint();
+            }
+        }
     }
 }
 
-fn services(inbox: Inbox, ctx: egui::Context) -> Services {
+fn services(inbox: Inbox, clipboard_inbox: ClipboardInbox, ctx: egui::Context) -> Services {
     let open_inbox = inbox.clone();
+    let paste_ctx = ctx.clone();
     Services {
+        request_paste: Some(Box::new(move |request| {
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let clipboard = window.navigator().clipboard();
+            if clipboard.is_null() || clipboard.is_undefined() {
+                log::warn!("browser clipboard is unavailable");
+                return;
+            }
+            let read = clipboard.read_text();
+            let inbox = clipboard_inbox.clone();
+            let ctx = paste_ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match wasm_bindgen_futures::JsFuture::from(read).await {
+                    Ok(value) => {
+                        if let Some(text) = value.as_string() {
+                            inbox.lock().unwrap_or_else(|e| e.into_inner()).push((request, text));
+                            ctx.request_repaint();
+                        }
+                    }
+                    Err(error) => log::warn!("couldn't read browser clipboard: {error:?}"),
+                }
+            });
+        })),
         open_async: Some(Box::new(move |request: ImportRequest| {
             let inbox = open_inbox.clone();
             let ctx = ctx.clone();

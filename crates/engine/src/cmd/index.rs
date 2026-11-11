@@ -72,7 +72,9 @@ fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
         "currentPage" => IndexRange::CurrentPage,
         "toEndOfStory" => IndexRange::ToEndOfStory,
         "suppressPageRange" => IndexRange::SuppressPageRange,
-        "nextParagraphs" => IndexRange::NextParagraphs(p.get("paragraphs").and_then(Value::as_u64).unwrap_or(1) as u32),
+        "nextParagraphs" => {
+            IndexRange::NextParagraphs(p.get("paragraphs").and_then(Value::as_u64).map_or(1, |x| u32::try_from(x).unwrap_or(u32::MAX)))
+        }
         "see" => IndexRange::See(target()),
         "seeAlso" => IndexRange::SeeAlso(target()),
         r => return Err(bad("index.addReference", format!("unknown range `{r}`"))),
@@ -84,8 +86,12 @@ fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(t.story).ok_or(pagenor_doc::DocError::NoStory(t.story))?;
         // InDesign puts the marker before the selected text.
         let at = t.range().start.min(st.len());
+        let fmt = super::text::prepare_eof_marker(st, at, INDEX_MARK);
         st.insert_index_ref(at, r.clone());
         let shift = INDEX_MARK.len_utf8();
+        if let Some(fmt) = fmt {
+            st.format_chars(at..at + shift, |f| *f = fmt.clone());
+        }
         sel.text = Some(TextSel { anchor: t.anchor + shift, focus: t.focus + shift, ..t });
         Ok(json!({"pos": at}))
     })

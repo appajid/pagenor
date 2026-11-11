@@ -167,10 +167,21 @@ fn renumber_snap(dst: &mut pagenor_doc::Document, snap: &Snapshot, it: &mut Item
 }
 
 fn renumber(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, it: &mut Item, maps: &mut Maps) {
+    renumber_in(dst, src, it, maps, true);
+}
+
+/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
+fn renumber_in(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, it: &mut Item, maps: &mut Maps, adopt: bool) {
     let old = it.id;
     let new_id = ItemId(dst.alloc());
     maps.items.insert(old, new_id);
     it.id = new_id;
+    if adopt
+        && let Some(m) = it.media.as_mut()
+        && let Some(p) = m.poster
+    {
+        m.poster = dst.adopt_asset(src, p).or(Some(p));
+    }
     match &mut it.content {
         Content::Text(tf) => {
             let new_sid = if let Some(n) = maps.stories.get(&tf.story) {
@@ -179,9 +190,20 @@ fn renumber(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, it: &m
                 let n = StoryId(dst.alloc());
                 let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                 st.id = n;
+                let mut assets = HashMap::new();
+                for a in pagenor_doc::story_asset_refs(&st) {
+                    if let Some(na) = dst.adopt_asset(src, a)
+                        && na != a
+                    {
+                        assets.insert(a, na);
+                    }
+                }
+                pagenor_doc::remap_story_assets(&mut st, &assets);
                 st.frames.clear();
-                dst.stories.insert(n, Arc::new(st));
+                // Mapped first: the map is the seen-set that stops story recursion.
                 maps.stories.insert(tf.story, n);
+                renumber_anchored(dst, src, &mut st, maps);
+                dst.stories.insert(n, Arc::new(st));
                 n
             };
             tf.story = new_sid;
@@ -190,16 +212,29 @@ fn renumber(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, it: &m
             }
         }
         Content::Graphic(g) => {
-            if let Some(a) = src.assets.get(&g.asset) {
-                dst.assets.entry(g.asset).or_insert_with(|| a.clone());
+            if adopt && let Some(a) = dst.adopt_asset(src, g.asset) {
+                g.asset = a;
             }
         }
         Content::Group { items } => {
             for child in items.iter_mut() {
-                renumber(dst, src, Arc::make_mut(child), maps);
+                renumber_in(dst, src, Arc::make_mut(child), maps, adopt);
             }
         }
         Content::Unassigned => {}
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+fn renumber_anchored(dst: &mut pagenor_doc::Document, src: &pagenor_doc::Document, st: &mut Story, maps: &mut Maps) {
+    let mut fresh = |t: &mut Story| {
+        for o in &mut t.objects {
+            renumber_in(dst, src, &mut Arc::make_mut(o).item, maps, false);
+        }
+    };
+    st.for_each_text_mut(&mut fresh);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
 }
 
@@ -674,9 +709,19 @@ fn inline_picture_item(doc: &mut pagenor_doc::Document, loaded: Option<&LoadedPi
                 data: Arc::new(pic.bytes.clone()),
                 pixels: Some(pic.px),
                 page: 0,
+                ..Default::default()
             }),
         );
-        let graphic = Graphic { asset: aid, size: (w, h), xf: Affine::IDENTITY, auto_fit: Fitting::None, fit_align: 0, crop: [0.0; 4] };
+        let graphic = Graphic {
+            clip: None,
+            asset: aid,
+            size: (w, h),
+            xf: Affine::IDENTITY,
+            auto_fit: Fitting::None,
+            fit_align: 0,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+        };
         (w, h, Some(graphic))
     } else {
         (0.0, 0.0, None)
@@ -715,7 +760,7 @@ fn apply_reps(doc: &mut pagenor_doc::Document, reps: &[Rep]) {
         let Some(st) = doc.story_mut(sid) else { continue };
         for r in mine {
             if r.start <= r.end && r.end <= st.text.len() {
-                st.replace(r.start..r.end, &r.text);
+                super::super::text::replace_preserving_eof(st, r.start..r.end, &r.text, true, false);
             }
         }
     }
@@ -838,8 +883,16 @@ fn place_image(
         return;
     };
     let mode = fitting_of(&options.fitting);
-    let mut g =
-        Graphic { asset: AssetId(0), size: (nw, nh), xf: Affine::translate((inner.x0, inner.y0)), auto_fit: mode, fit_align: 0, crop: [0.0; 4] };
+    let mut g = Graphic {
+        clip: None,
+        asset: AssetId(0),
+        size: (nw, nh),
+        xf: Affine::translate((inner.x0, inner.y0)),
+        auto_fit: mode,
+        fit_align: 0,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+    };
     if let Some(xf) = g.fitted(inner, mode) {
         g.xf = xf;
     }
@@ -857,23 +910,22 @@ fn place_image(
         report.warnings.push(format!("Record {record}, field {field}: image {cell} exceeds finite geometry limits."));
         return;
     }
-    let aid = AssetId(doc.alloc());
+    let fresh = AssetId(doc.alloc());
     let name = if loaded.name.is_empty() { field.to_string() } else { loaded.name.clone() };
     let link = options.link_images.then(|| loaded.link.clone()).flatten();
-    doc.assets.insert(
-        aid,
-        Arc::new(Asset {
-            id: aid,
-            name,
-            mime: pagenor_render::image_mime(&bytes).to_string(),
-            link,
-            data: Arc::new(bytes),
-            pixels: Some((pw, ph)),
-            page: 0,
-        }),
-    );
+    let aid = doc.add_asset(Asset {
+        id: fresh,
+        name,
+        mime: pagenor_render::image_mime(&bytes).to_string(),
+        link,
+        data: Arc::new(bytes),
+        pixels: Some((pw, ph)),
+        page: 0,
+        ..Default::default()
+    });
     g.asset = aid;
     if let Some(it) = doc.item_mut(item) {
+        it.empty_fitting = None;
         it.content = Content::Graphic(g);
     }
 }

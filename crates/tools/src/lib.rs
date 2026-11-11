@@ -11,6 +11,7 @@
 
 mod anchors;
 pub mod catalog;
+mod corners;
 mod datagrid;
 mod frame;
 mod gradient;
@@ -56,6 +57,7 @@ pub enum PointerKind {
     Up,
     Move,
     DoubleClick,
+    TripleClick,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,9 +85,13 @@ impl PointerEvent {
         self.clicks = n;
         self
     }
-    /// Presses in a row: at least 2 for [`PointerKind::DoubleClick`], at least 1 otherwise.
+    /// Presses in a row: at least 2 for a double click, 3 for a triple click, 1 otherwise.
     pub fn click_count(&self) -> u8 {
-        if self.kind == PointerKind::DoubleClick { self.clicks.max(2) } else { self.clicks.max(1) }
+        match self.kind {
+            PointerKind::DoubleClick => self.clicks.max(2),
+            PointerKind::TripleClick => self.clicks.max(3),
+            _ => self.clicks.max(1),
+        }
     }
 }
 
@@ -119,6 +125,8 @@ pub enum Action {
     SwitchTool(String),
     /// Ask the UI to pan/zoom: `{"pan":[dx,dy]}` (screen px) or `{"zoomAt":[x,y], "factor":f}` (canvas).
     View(Value),
+    /// The tool used the event for its own state; the engine has nothing to do.
+    Handled,
 }
 
 /// Which snap categories are on, and the snap zone in screen pixels.
@@ -214,6 +222,8 @@ pub struct ToolContext<'a> {
     pub layer: pagenor_doc::LayerId,
     pub snap: SnapView,
     pub unit: Unit,
+    /// Whether resizing content also scales stroke weights.
+    pub scale_strokes: bool,
 }
 
 impl ToolContext<'_> {
@@ -228,6 +238,31 @@ impl ToolContext<'_> {
             return self.hit_parent(sr, sp);
         };
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
+    }
+
+    /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
+    /// group, so a loaded text cursor over a text frame in a group found nothing to thread into
+    /// (gaps 27); InDesign threads into it.
+    pub fn hit_text_frame(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if it.is_text_frame() {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        pagenor_doc::hit_descendant(it, sp, self.tol(4.0), &|c| c.is_text_frame()).map(|f| (sr, f))
+    }
+
+    /// The frontmost leaf item (non-group) under `p`, looking inside groups.
+    pub fn hit_leaf(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if !matches!(it.content, pagenor_doc::Content::Group { .. }) {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        let leaf = pagenor_doc::hit_descendant(it, sp, self.tol(4.0), &|c| !matches!(c.content, pagenor_doc::Content::Group { .. })).unwrap_or(id);
+        Some((sr, leaf))
     }
 
     /// The parent item showing (not yet overridden) on the document page under `p`:
@@ -323,6 +358,13 @@ pub enum Overlay {
         b: Point,
         label: String,
     },
+    /// The whole content of this frame drawn faintly, the part outside the frame included (while
+    /// the content moves inside it).
+    ContentGhost(ItemId),
+    /// The live-corner widget (yellow square): clicking it starts corner editing.
+    LiveCornerWidget(Point),
+    /// A live-corner diamond: dragging it sets the corner size.
+    LiveCornerDiamond(Point),
 }
 
 /// Correction from a snap, in spread coordinates for `delta`.
@@ -349,6 +391,14 @@ pub enum Cursor {
     ResizeNeSw,
     Rotate,
     Pen,
+    /// The pen over a segment of a selected path: a click adds an anchor there.
+    PenAdd,
+    /// The pen over an anchor of a selected path: a click deletes it.
+    PenDelete,
+    /// The pen over the first anchor of the path it is drawing: a click closes it.
+    PenClose,
+    /// Convert Direction Point.
+    PenConvert,
     Text,
     Hand,
     HandGrab,
@@ -379,6 +429,9 @@ pub trait Tool: Send {
     fn busy(&self) -> bool {
         false
     }
+    /// Restore view-only state when switching tools.
+    fn set_option(&mut self, _key: &str, _value: &Value) {}
+
     /// The tool takes typed text (Type tool with a caret): single-key shortcuts are suppressed.
     fn wants_text(&self, _cx: &ToolContext) -> bool {
         false
@@ -406,6 +459,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
         "scale" => Box::new(xform::XformTool::new("scale")),
         "shear" => Box::new(xform::XformTool::new("shear")),
         "eyedropper" => Box::new(xform::EyedropperTool),
+        "colorTheme" => Box::new(xform::ColorThemeTool),
         "hand" => Box::new(nav::HandTool::default()),
         "placeGun" => Box::new(nav::PlaceGun::default()),
         "zoom" => Box::new(nav::ZoomTool::default()),

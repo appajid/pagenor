@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 pagenor-ai = { workspace = true }
+craft-ui = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }
@@ -24,6 +25,7 @@ pagenor-engine = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
 unicode-segmentation = { workspace = true }
+unicode-script = { workspace = true }
 regex = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
@@ -31,6 +33,8 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
+pagenor-format = { workspace = true }
 pagenor-idml = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
@@ -39,3 +43,7 @@ pagenor-fonts = { workspace = true, features = ["testing"] }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "1a11a4897865f7410c40d25ca6e452ce399a1a2c" }
+raw-window-handle = "0.6"

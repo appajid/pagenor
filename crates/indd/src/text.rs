@@ -14,22 +14,26 @@ pub(crate) fn cp1252(b: &[u8]) -> String {
         .collect()
 }
 
-pub(crate) fn utf16le(b: &[u8]) -> String {
-    let units: Vec<u16> = b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-    char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
+pub(crate) fn utf16le(b: &[u8]) -> Option<String> {
+    let (units, tail) = b.as_chunks::<2>();
+    if !tail.is_empty() {
+        return None;
+    }
+    char::decode_utf16(units.iter().map(|c| u16::from_le_bytes(*c))).collect::<std::result::Result<String, _>>().ok()
 }
 
 /// u16 count, u16 tag: tag & 0x4000 → 8-bit chars of length tag & 0x3FFF, else `count` UTF-16 units.
 pub(crate) fn read_string(b: &[u8], off: usize) -> Option<(String, usize)> {
     let n = crate::bytes::u16_at(b, off)? as usize;
-    let tag = crate::bytes::u16_at(b, off + 2)? as usize;
+    let tag = crate::bytes::u16_at(b, off.checked_add(2)?)? as usize;
+    let start = off.checked_add(4)?;
     if tag & 0x4000 != 0 {
         let len = tag & 0x3FFF;
-        let s = crate::bytes::clamp(b, off + 4, len);
-        Some((cp1252(s), off + 4 + len))
+        let end = start.checked_add(len)?;
+        Some((cp1252(b.get(start..end)?), end))
     } else {
-        let s = crate::bytes::clamp(b, off + 4, n * 2);
-        Some((utf16le(s), off + 4 + n * 2))
+        let end = start.checked_add(n.checked_mul(2)?)?;
+        Some((utf16le(b.get(start..end)?)?, end))
     }
 }
 

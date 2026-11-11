@@ -260,6 +260,34 @@ fn create_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Put `it`, which now fills `b`, at `to`. A group carries the matrix; any other item stretches
+/// its frame and a graphic inside is re-fitted. `scale` is Liquid Layout's Scale rule, which
+/// scales the content too.
+pub(crate) fn place_item(it: &mut Item, b: Rect, to: Rect, scale: bool) {
+    // A flat item (a horizontal or vertical line) has nothing to scale on its flat axis.
+    let ratio = |n: f64, o: f64| if o.abs() < 1e-9 { 1.0 } else { n / o };
+    let m = Affine::translate((to.x0, to.y0))
+        * Affine::scale_non_uniform(ratio(to.width(), b.width()), ratio(to.height(), b.height()))
+        * Affine::translate((-b.x0, -b.y0));
+    if scale {
+        super::object::scale_item(it, m, ratio(to.width(), b.width()).abs(), false);
+    } else if matches!(it.content, Content::Group { .. }) {
+        it.xf = m * it.xf;
+    } else {
+        // The frame stretches; content keeps its size unless the frame auto-fits it.
+        let inner = it.xf.inverse() * m * it.xf;
+        super::object::bake(it, inner);
+        let ib = it.inner_bounds();
+        if let Content::Graphic(g) = &mut it.content {
+            let o = inner * pagenor_geom::Point::ZERO;
+            g.xf = Affine::translate(o.to_vec2()) * g.xf;
+            if let Some(xf) = g.fitted(ib, g.auto_fit) {
+                g.xf = xf;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

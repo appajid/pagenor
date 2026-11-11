@@ -583,3 +583,114 @@ fn invalid_replies_drop_the_connection_without_replay() {
         server.join().unwrap();
     }
 }
+
+#[test]
+fn headless_triple_click_selects_the_composed_line() {
+    let mut b = Headless::with_document();
+    b.session.execute("frame.create", &json!({"content":"text","rect":[72,72,500,200],"text":"First line\nSecond line"})).unwrap();
+    let mut s = Server::new(Box::new(b));
+    for kind in ["tripleclick", "triclick"] {
+        let r = ok(&mut s, "pointer", json!({"tool":"type", "events":[{"kind":kind,"x":90,"y":80}]}));
+        let selection = &r["selection"]["text"];
+        assert_eq!(selection["anchor"], 0, "{r}");
+        assert_eq!(selection["focus"], 10, "{r}");
+    }
+}
+
+fn initialized_headless_server() -> Server {
+    let mut s = server();
+    let init = rpc(
+        &mut s,
+        1,
+        "initialize",
+        json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "command-classification-test", "version": "0"}}),
+    );
+    assert_eq!(init["result"]["protocolVersion"], PROTOCOL_VERSION);
+    assert_eq!(s.handle_line(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string()), None);
+    assert!(s.is_initialized());
+    s
+}
+
+// Repro cases include prefix-shaped nonexistent ids, case typos and unrelated unknown ids.
+const UNKNOWN_COMMAND_CASES: &[&str] = &[
+    "app.nonexistent",
+    "view.nonexistent",
+    "window.nonexistent",
+    "view.zoomin",
+    "app.Save",
+    "help.nonexistent",
+    "fit.nonexistent",
+    "fit.",
+    "fit.CenterContent",
+    "frame.nonexistent",
+    "nonexistent",
+    "app.",
+    "view.",
+    "window.",
+    "help.About",
+    "edit.dynamicspeling",
+];
+
+#[test]
+fn headless_execute_classifies_exact_ui_commands_and_unknown_ids() {
+    let mut s = initialized_headless_server();
+    for id in UNKNOWN_COMMAND_CASES {
+        let result = call(&mut s, "execute", json!({"command": id}));
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let text = text_of(&result);
+        assert!(text.contains(&format!("unknown command `{id}`")), "{id}: {text}");
+        assert!(!text.contains("--connect") && !text.contains("is a UI command"), "unknown ids must not suggest the desktop app: {text}");
+    }
+    // Use the authoritative catalog, including UI commands outside app/view/window families.
+    for &(id, _, _, _) in pagenor_engine::ui_commands::UI_COMMANDS {
+        if pagenor_engine::find_command(id).is_some() {
+            continue; // Engine commands take precedence if a UI id ever shares their name.
+        }
+        let result = call(&mut s, "execute", json!({"command": id}));
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let text = text_of(&result);
+        assert!(text.contains(&format!("`{id}` is a UI command")) && text.contains("--connect"), "{id}: {text}");
+    }
+    assert_eq!(ok(&mut s, "execute", json!({"command": "app.links"})), pagenor_engine::links::all(), "an engine app.* command must still execute");
+}
+
+#[test]
+fn headless_batch_preserves_command_classification_and_stops_before_later_steps() {
+    let mut s = initialized_headless_server();
+    let before = ok(&mut s, "inspect_document", json!({}));
+    let cases = UNKNOWN_COMMAND_CASES.iter().map(|id| (*id, false)).chain(
+        pagenor_engine::ui_commands::UI_COMMANDS
+            .iter()
+            .filter(|command| pagenor_engine::find_command(command.0).is_none())
+            .map(|command| (command.0, true)),
+    );
+    for (id, is_ui) in cases {
+        let result = call(
+            &mut s,
+            "batch",
+            json!({"commands": [
+                {"command": "app.links"},
+                {"command": id},
+                {"command": "frame.create", "params": {"rect": [0, 0, 100, 100], "content": "text"}}
+            ]}),
+        );
+        assert_eq!(result["isError"], true, "{id}: {result}");
+        let report: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(report["failedIndex"], 1, "{id}: {report}");
+        assert_eq!(report["failedCommand"], id);
+        assert_eq!(report["completed"], 1);
+        assert_eq!(report["results"], json!([pagenor_engine::links::all()]));
+        let error = report["error"].as_str().unwrap();
+        if is_ui {
+            assert!(error.contains(&format!("`{id}` is a UI command")) && error.contains("--connect"), "{id}: {error}");
+        } else {
+            assert!(error.contains(&format!("unknown command `{id}`")), "{id}: {error}");
+            assert!(!error.contains("--connect") && !error.contains("is a UI command"), "{id}: {error}");
+        }
+    }
+    assert_eq!(ok(&mut s, "inspect_document", json!({})), before, "no command after any failed step may create a frame");
+    let success = ok(&mut s, "batch", json!({"commands": [{"command": "app.links"}, {"command": "app.links"}]}));
+    assert_eq!(success["completed"], 2);
+    assert_eq!(success["results"], json!([pagenor_engine::links::all(), pagenor_engine::links::all()]));
+    assert!(success.get("failedCommand").is_none());
+}

@@ -14,12 +14,14 @@ workspace = true
 unicode-bidi = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
+unicode-script = { workspace = true }
 pagenor-geom = { workspace = true }
 pagenor-color = { workspace = true }
 pagenor-doc = { workspace = true }
 pagenor-fonts = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
+fancy-regex = "0.16"
 miniz_oxide = "0.8"
 
 [dev-dependencies]

@@ -16,15 +16,18 @@ pub fn specs() -> Vec<CommandSpec> {
             if ts.cell.is_some() {
                 return Err(bad("note.new", "notes go in story text"));
             }
-            let text = str_param(p, "text").unwrap_or("").to_string();
+            let text = super::text_param(p, "text");
             let author = str_param(p, "author").unwrap_or("").to_string();
             let at = ts.anchor.max(ts.focus);
             s.edit(|d, sel| {
                 let story = d.story_mut(ts.story).ok_or_else(|| bad("note.new", "no such story"))?;
-                let fmt = story.char_format_at(at).clone();
+                let at = pagenor_doc::story::floor_char_boundary(&story.text, at.min(story.len()));
+                let fmt = super::text::prepare_eof_marker(story, at, NOTE_MARK).unwrap_or_else(|| story.char_format_at(at).clone());
                 story.insert_with(at, &NOTE_MARK.to_string(), fmt);
+                story.fix_marks();
                 let k = story.text[..at].matches(NOTE_MARK).count();
-                let n = Arc::make_mut(&mut story.editorial[k]);
+                let n = story.editorial.get_mut(k).ok_or_else(|| bad("note.new", "note anchors and payloads do not match"))?;
+                let n = Arc::make_mut(n);
                 (n.text, n.author) = (text, author);
                 let id = n.id;
                 if let Some(t) = &mut sel.text {
@@ -36,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("note.edit", "Edit Note", [], None, "{story, id, text?, author?}", has_doc, |s, p| {
             let (sid, id) = target(p)?;
-            let (text, author) = (str_param(p, "text").map(str::to_string), str_param(p, "author").map(str::to_string));
+            let (text, author) = (str_param(p, "text").map(|_| super::text_param(p, "text")), str_param(p, "author").map(str::to_string));
             s.edit(|d, _| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("note.edit", "no such story"))?;
                 let n = st.editorial.iter_mut().find(|n| n.id == id).ok_or_else(|| bad("note.edit", format!("no note {id}")))?;
@@ -47,7 +50,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Some(a) = author {
                     n.author = a;
                 }
-                st.rev += 1;
+                st.rev = st.rev.wrapping_add(1);
                 ok()
             })
         }),
@@ -56,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
             s.edit(|d, _| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("note.delete", "no such story"))?;
                 let at = anchor(st, id).ok_or_else(|| bad("note.delete", format!("no note {id}")))?;
-                st.delete(at..at + NOTE_MARK.len_utf8());
+                super::text::delete_preserving_eof(st, at..at + NOTE_MARK.len_utf8(), true);
                 ok()
             })
         }),
@@ -73,7 +76,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     let st = d.story_mut(sid).ok_or_else(|| bad("note.convertToText", "no such story"))?;
                     let at = anchor(st, id).ok_or_else(|| bad("note.convertToText", format!("no note {id}")))?;
                     let text = st.editorial.iter().find(|n| n.id == id).map(|n| n.text.clone()).unwrap_or_default();
-                    st.replace(at..at + NOTE_MARK.len_utf8(), &text);
+                    super::text::replace_preserving_eof(st, at..at + NOTE_MARK.len_utf8(), &text, true, false);
                     ok()
                 })
             }
@@ -107,6 +110,29 @@ fn anchor(st: &pagenor_doc::Story, id: u64) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notes_insert_into_a_story_whose_markers_lack_payloads() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Draft copy."})).unwrap();
+        let sid = pagenor_doc::StoryId(r["story"].as_u64().unwrap());
+        let st = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc).story_mut(sid).unwrap();
+        st.insert(0, &format!("{}{}{}", pagenor_doc::NOTE_MARK, pagenor_doc::ENDNOTE_REF, pagenor_doc::FOOTNOTE_REF));
+        st.editorial.clear();
+        st.endnotes.clear();
+        st.notes.clear();
+        let end = st.len();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": end, "focus": end})).unwrap();
+        s.execute("note.new", &json!({"text": "check this"})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "An endnote."})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "A footnote."})).unwrap();
+        let st = &s.doc().unwrap().doc.stories[&sid];
+        st.check().unwrap();
+        assert_eq!(st.editorial[1].text, "check this");
+        assert_eq!(st.endnotes[1].text.text, "An endnote.");
+        assert_eq!(st.notes[1].text.text, "A footnote.");
+    }
+
     use serde_json::json;
 
     use crate::Session;

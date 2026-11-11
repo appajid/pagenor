@@ -224,7 +224,7 @@ fn parse_single(tok: &str, default: Unit, percent_base: Option<f64>) -> Option<f
     for (sep, unit_pt, sub_pt) in [('p', PT_PER_PICA, 1.0), ('c', PT_PER_CICERO, PT_PER_DIDOT)] {
         if let Some(pos) = tok.find(sep) {
             let (a, b) = (&tok[..pos], &tok[pos + 1..]);
-            let num_ok = |s: &str| s.is_empty() || s.parse::<f64>().is_ok();
+            let num_ok = |s: &str| s.is_empty() || (s.chars().all(|c| c.is_ascii_digit() || c == '.') && s.parse::<f64>().is_ok());
             // Exclude `pt`, `px`, `cm`.
             if num_ok(a) && num_ok(b) && !(a.is_empty() && b.is_empty()) {
                 let a = if a.is_empty() { 0.0 } else { a.parse::<f64>().ok()? };
@@ -254,7 +254,10 @@ fn parse_single(tok: &str, default: Unit, percent_base: Option<f64>) -> Option<f
 /// Format a value (points) in `unit` the way InDesign fields show it: up to 3 decimals, trailing
 /// zeros trimmed; picas as `3p6`, ciceros as `2c4`.
 pub fn format_measure(pt: f64, unit: Unit) -> String {
-    format_measure_prec(pt, unit, 3)
+    // As InDesign shows them: inches and centimetres to four decimals (a 1p gutter is 0.1667 in
+    // or 0.4233 cm, A4 is 8.2677 in wide), the other units to three.
+    let decimals = if matches!(unit, Unit::Inches | Unit::InchesDecimal | Unit::Centimeters) { 4 } else { 3 };
+    format_measure_prec(pt, unit, decimals)
 }
 
 pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
@@ -274,8 +277,11 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
                 whole += 1.0;
                 rest = 0.0;
             }
+            // Decide the sign from the rounded value so float noise doesn't print "-0p0".
+            let rest = trim(rest);
+            let neg = neg && (whole > 0.0 || rest != "0");
             let sep = if unit == Unit::Picas { 'p' } else { 'c' };
-            format!("{}{}{}{}", if neg { "-" } else { "" }, whole as i64, sep, trim(rest))
+            format!("{}{}{}{}", if neg { "-" } else { "" }, whole as i64, sep, rest)
         }
         _ => format!("{}{}", trim(unit.from_pt(pt)), unit.suffix()),
     }
@@ -292,6 +298,31 @@ mod tests {
         (a - b).abs() < 1e-6
     }
 
+    /// Tiny negatives that round to zero must not print a sign.
+    #[test]
+    fn tiny_negative_picas_ciceros_have_no_sign() {
+        assert_eq!(format_measure(-0.0004, Unit::Picas), "0p0");
+        assert_eq!(format_measure(-0.0004, Unit::Ciceros), "0c0");
+        assert_eq!(format_measure(-12.0, Unit::Picas), "-1p0");
+        assert_eq!(format_measure(-0.0006, Unit::Picas), "-0p0.001");
+        assert_eq!(format_measure_prec(-0.00004, Unit::Picas, 4), "0p0");
+    }
+
+    /// Inches and centimetres show four decimals, as InDesign's fields do; other units three.
+    #[test]
+    fn inches_and_centimeters_show_four_decimals() {
+        assert_eq!(format_measure(12.0, Unit::Inches), "0.1667 in");
+        assert_eq!(format_measure(210.0 * PT_PER_MM, Unit::Inches), "8.2677 in");
+        assert_eq!(format_measure(612.0, Unit::Inches), "8.5 in");
+        assert_eq!(format_measure(9.0, Unit::Inches), "0.125 in");
+        assert_eq!(format_measure(10.0, Unit::Millimeters), "3.528 mm");
+        // A 1p gutter and a frame's height, as InDesign's New Document and Transform fields show them.
+        assert_eq!(format_measure(12.0, Unit::Centimeters), "0.4233 cm");
+        assert_eq!(format_measure(17.1125 / 2.54 * 72.0, Unit::Centimeters), "17.1125 cm");
+        assert_eq!(format_measure(21.0 / 2.54 * 72.0, Unit::Centimeters), "21 cm");
+        assert_eq!(format_measure(10.0, Unit::Points), "10 pt");
+    }
+
     #[test]
     fn plain_and_units() {
         assert!(close(p("12"), 12.0));
@@ -302,6 +333,13 @@ mod tests {
         assert!(close(p("14ag"), 72.0));
         assert!(close(p("4Q"), PT_PER_MM));
         assert!(close(parse_measure("3", Unit::Millimeters).unwrap(), 3.0 * PT_PER_MM));
+    }
+
+    #[test]
+    fn picas_and_ciceros_reject_exponents() {
+        for s in ["1e5p", "1e5c", "1p1e2", "1c1e2", "1e5"] {
+            assert!(parse_measure(s, Unit::Points).is_err(), "{s}");
+        }
     }
 
     #[test]

@@ -1,195 +1,16 @@
 //! The menu bar tree (InDesign order), UI-only commands, keyboard shortcuts and Quick Apply.
 
+#[cfg(test)]
+pub(crate) const SETTINGS_SHORTCUT: &str = if cfg!(target_os = "macos") { "Cmd+," } else { "Cmd+K" };
+#[cfg(test)]
+pub(crate) const EDGES_SHORTCUT: &str = if cfg!(target_os = "macos") { "Ctrl+Cmd+H" } else { "Cmd+H" };
+
+use crate::file_dialogs::{Bound, with_path};
 use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode};
 
-/// UI commands: (id, label, shortcut, params).
-pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
-    ("window.ai", "AI Assistant", None, "{open?: bool}"),
-    ("window.ai.layout", "AI Window Layout", None, "{floating?, position?: [x,y], tab?: chat|suggestions|settings}"),
-    ("ai.chat.send", "Send AI Message", None, "{text}"),
-    ("ai.proofreadSelection", "Proofread Selection", None, "{}"),
-    ("ai.task.stop", "Stop AI Task", None, "{}"),
-    ("ai.task.inspect", "Inspect AI Task", None, "{} → busy, notice, models (no credentials)"),
-    ("ai.settings.get", "AI Settings", None, "{} — never returns credentials"),
-    ("ai.settings.save", "Save AI Settings", None, "{provider?, endpoint?, model?, account?, apiKey?}"),
-    ("ai.auth.login", "Continue with ChatGPT", None, "{newAccount?: bool}"),
-    ("ai.auth.logout", "Sign Out of ChatGPT", None, "{}"),
-    ("ai.auth.usage", "ChatGPT Usage", None, "{}"),
-    ("ai.models", "Load AI Models", None, "{}"),
-    ("ai.connection.test", "Test AI Connection", None, "{}"),
-    ("ai.report.export", "Export AI Review Report", None, "{path?} — never overwrites"),
-    ("ai.suggestion.show", "Locate AI Original", None, "{id} — show text or Story Editor"),
-    ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
-    ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
-    ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
-    ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
-    ("app.save", "Save", Some("Cmd+S"), "{}"),
-    #[cfg(not(target_arch = "wasm32"))]
-    ("app.quit", "Quit Pagenor", Some("Cmd+Q"), "{} — checkpoint unsaved documents before closing"),
-    ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{} — choose where to write a copy (the document stays as it is)"),
-    ("app.loadSwatches", "Load Swatches…", None, "{} — pick a swatch exchange (.ase) file"),
-    ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
-    ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
-    ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
-    ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
-    ("app.exportEpub", "Export EPUB…", None, "{path?} — reflowable EPUB 3 (with the first page as its cover)"),
-    (
-        "app.exportInteractivePdf",
-        "Export PDF (Interactive)…",
-        None,
-        "{path?, fullScreen?, advanceSeconds?} — single pages fitted, bookmarks panel open, buttons, forms, transitions",
-    ),
-    ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
-    ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
-    ("app.exportPptx", "Export PowerPoint…", None, "{path?, …file.exportPptx options} — editable slides; no parameters opens export options"),
-    ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
-    ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
-    ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
-    ("app.userDictionary", "User Dictionary…", None, "{} — hyphenation exceptions (hyphenation.* commands)"),
-    ("app.fittingOptions", "Frame Fitting Options…", None, "{} — the dialog for object.fittingOptions"),
-    ("app.menus", "Menus…", None, "{} — show or hide menu items"),
-    ("window.hideMenuItem", "Hide Menu Item", None, "{item: \"Menu/Label\", hidden?: bool}"),
-    ("edit.dynamicSpelling", "Dynamic Spelling", None, "{on?: bool} — underline misspelled words on the canvas"),
-    (
-        "app.language",
-        "Interface Language",
-        None,
-        "{lang: \"\"|de|fr|es|ja|zh|ar|pt-br} — menus and panel names (the macOS menu bar follows on the next launch)",
-    ),
-    (
-        "app.flattener",
-        "Transparency Flattener Presets",
-        None,
-        "{preset: \"\"|high|medium|low} — PDF export rasterises spreads with transparency at 300 / 150 / 72 ppi",
-    ),
-    ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{} — pick an image for the target table cell"),
-    ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
-    ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
-    ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
-    (
-        "app.exportPdf",
-        "Export PDF…",
-        None,
-        "{path?, …file.exportPdf options} — opens export options without parameters; explicit options export directly",
-    ),
-    ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
-    ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
-    ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),
-    ("app.keyboardShortcuts", "Keyboard Shortcuts…", None, "{} — view and change the shortcut of any command"),
-    ("window.richBlack", "Appearance of Black", None, "{on: bool} — show 100% black as rich black on screen (off: accurately)"),
-    ("window.setShortcut", "Set Shortcut", None, "{id, shortcut: \"Cmd+Alt+J\" | \"\" (none) | null (default)} → {shortcut, conflicts: [ids]}"),
-    ("window.resetShortcuts", "Reset Shortcuts", None, "{} — every command back to its default shortcut"),
-    ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
-    ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
-    ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
-    ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
-    ("app.findFontDialog", "Find/Replace Font…", None, "{} — fonts used (missing ones flagged) and replacing them"),
-    ("app.fontDiscovery", "Font Discovery…", None, "{} — installed-font scan locations, counts, skipped files and rescan"),
-    ("app.insertXrefDialog", "Insert Cross-Reference…", None, "{} — New Cross-Reference dialog (paragraph or text anchor, format)"),
-    ("app.deleteAllGuides", "Delete All Guides on Spread", None, "{} — the spread in view"),
-    ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
-    ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
-    ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
-    ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
-    ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
-    ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
-    ("view.fitPage", "Fit Page in Window", Some("Cmd+0"), "{}"),
-    ("view.fitSelection", "Fit Selection in Window", Some("Cmd+Alt+="), "{}"),
-    ("view.fitSpread", "Fit Spread in Window", Some("Cmd+Alt+0"), "{}"),
-    ("view.actualSize", "Actual Size", Some("Cmd+1"), "{}"),
-    ("view.entirePasteboard", "Entire Pasteboard", Some("Cmd+Alt+Shift+0"), "{}"),
-    ("view.zoom", "Zoom To", None, "{zoom: 1.0 = 100%}"),
-    ("view.screenMode", "Screen Mode", None, "{mode: normal|preview|bleed|slug|presentation}"),
-    ("view.togglePreview", "Toggle Normal/Preview", Some("W"), "{}"),
-    (
-        "app.formattingAffectsText",
-        "Formatting Affects Text",
-        Some("J"),
-        "{on?: bool} — with text frames selected, colours go to their text (on) or the frames (off); toggles without `on`",
-    ),
-    ("view.frameEdges", "Show/Hide Frame Edges", Some("Cmd+H"), "{}"),
-    ("view.rulers", "Show/Hide Rulers", Some("Cmd+R"), "{}"),
-    ("view.guides", "Show/Hide Guides", Some("Cmd+;"), "{}"),
-    ("view.snapToGuides", "Snap to Guides", Some("Cmd+Shift+;"), "{}"),
-    ("view.snapToDocumentGrid", "Snap to Document Grid", None, "{}"),
-    ("view.smartGuides", "Smart Guides", None, "{}"),
-    (
-        "view.snapPreferences",
-        "Smart Guide Options",
-        None,
-        "{alignEdges?, alignCenters?, smartDimensions?, smartSpacing?: bool, zone?: px} — what smart guides snap to and how close; returns the current values",
-    ),
-    ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
-    ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
-    ("view.hiddenCharacters", "Show/Hide Hidden Characters", Some("Cmd+Alt+I"), "{}"),
-    ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
-    ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
-    ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
-    ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
-    ("window.previousDocument", "Previous Document", Some("Cmd+Shift+F6"), "{}"),
-    ("app.layerOptions", "Object Layer Options…", None, "{} — show or hide the layers of the selected placed PDF"),
-    ("view.tagMarkers", "Show Tag Markers", None, "{on?: bool} — brackets around inline-tagged text"),
-    ("view.flattenerPreview", "Flattener Preview", None, "{on?: bool} — highlight objects that involve transparency"),
-    ("view.rotateSpread", "Rotate Spread", None, "{angle: 90 (clockwise) | -90 | 180 | 0 (clear)} — turn the view in quarter turns"),
-    ("view.proofColors", "Proof Colors", None, "{on?: bool} — simulate the proof target on screen"),
-    (
-        "view.proofSetup",
-        "Proof Setup",
-        None,
-        "{target?: workingCmyk|srgb|legacyMacRgb|monitorRgb|protanopia|deuteranopia|cmyk:<profile>, intent?, simulatePaper?: bool|\"toggle\"}",
-    ),
-    ("app.colorSettings", "Color Settings…", None, "{} — the working spaces, intent and black-point compensation"),
-    ("view.separations", "Separations Preview", None, "{plate?: cyan|magenta|yellow|black|null, inkLimit?: percent|null}"),
-    ("view.overprintPreview", "Overprint Preview", Some("Cmd+Alt+Shift+Y"), "{} — show how overprinting inks mix"),
-    ("view.fastDisplay", "Fast Display", Some("Cmd+Alt+Shift+Z"), "{} — placed graphics as grey boxes, no effects"),
-    ("view.typicalDisplay", "Typical Display", Some("Cmd+Alt+Z"), "{} — low-resolution image proxies"),
-    ("view.highQualityDisplay", "High Quality Display", Some("Cmd+Alt+H"), "{} — full-resolution images"),
-    ("view.goToPage", "Go to Page…", Some("Cmd+J"), "{page: number (position) | \"name\" (section page name, or \"+n\" for a position)}"),
-    (
-        "window.panel",
-        "Show Panel",
-        None,
-        "{panel: properties|pages|layers|swatches|paragraphStyles|characterStyles|stroke|character|paragraph|textWrap|links|table}",
-    ),
-    ("window.floatPanel", "Float Panel", None, "{panel, x?, y?} — the panel in its own movable window"),
-    ("window.dockPanel", "Dock Panel", None, "{panel} — back into the dock's icon column"),
-    ("window.controlBar", "Control", Some("Cmd+Alt+6"), "{}"),
-    ("window.split", "Split Window", None, "{on?: bool} — two views of the document side by side, each with its own zoom and scroll"),
-    ("window.newWindow", "New Window", None, "{on?: bool} — another view of the active document in its own window"),
-    ("window.taskBar", "Contextual Task Bar", None, "{}"),
-    (
-        "window.taskBarPin",
-        "Pin Bar Position",
-        None,
-        "{on?: bool, at?: [x, y] (points from the canvas's top-left)} — the Contextual Task Bar stays where it is (or at `at`) instead of following the selection; with neither, toggles",
-    ),
-    ("window.taskBarReset", "Reset Bar Position", None, "{} — the Contextual Task Bar follows the selection again, under it"),
-    ("help.discord", "Pagenor Community…", None, "{} — unavailable until a community destination is configured"),
-    ("help.appPage", "Pagenor Project Page…", None, "{} — opens Pagenor's repository"),
-    ("help.github", "Pagenor on GitHub…", None, "{} — opens https://github.com/appajid/pagenor"),
-    ("help.issues", "Report an Issue…", None, "{} — opens the GitHub issue tracker"),
-    ("help.website", "Pagenor Project Page…", None, "{} — opens Pagenor's repository"),
-    ("help.app", "Pagenor Project Page…", None, "{app: pagenor} — opens Pagenor's repository"),
-    (
-        "help.about",
-        "About Pagenor",
-        None,
-        "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
-    ),
-    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{}"),
-    (
-        "window.workspace",
-        "Workspace",
-        None,
-        "{name: Essentials|Advanced|Book|Digital Publishing|Interactive for PDF|Printing and Proofing|Typography}",
-    ),
-    ("window.newWorkspace", "New Workspace…", None, "{name} — saves the current bars and panel arrangement"),
-    ("window.deleteWorkspace", "Delete Workspace…", None, "{name}"),
-    ("window.resetWorkspace", "Reset Workspace", None, "{} — back to the current workspace as saved (or its defaults)"),
-    ("window.brightness", "Interface Color Theme", None, "{brightness: dark|mediumDark|mediumLight|light|highContrast}"),
-];
+pub use pagenor_engine::ui_commands::UI_COMMANDS;
 
 /// Menu bar: (menu, entries). Entries: `cmd:<id>`, `ui:<id>`, `-` separator, `>Submenu` … `<`.
 pub const MENUS: &[(&str, &[&str])] = &[
@@ -197,7 +18,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
         "File",
         &[
             "ui:app.newDocumentDialog",
+            "ui:app.newCover",
             "ui:app.openDialog",
+            ">Open Recent",
+            "<",
             "-",
             "cmd:file.close",
             "ui:app.save",
@@ -207,10 +31,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
+            "ui:app.contactSheet",
             "-",
+            ">Export",
             "ui:app.exportPdf",
-            "ui:app.packageDialog",
-            "ui:app.printBooklet",
             "ui:app.exportPng",
             "ui:app.exportIdml",
             "ui:app.exportEpub",
@@ -220,9 +44,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.exportPptx",
             "ui:app.exportXml",
             "ui:app.exportText",
-            ">Export",
             "cmd:snippet.export",
             "<",
+            "ui:app.packageDialog",
+            "ui:app.printBooklet",
+            "ui:app.resizeCover",
             "-",
             "cmd:layout.documentSetup",
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
@@ -276,6 +102,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.language|简体中文|{\"lang\": \"zh\"}",
             "ui:app.language|العربية|{\"lang\": \"ar\"}",
             "ui:app.language|Português (Brasil)|{\"lang\": \"pt-br\"}",
+            "ui:app.language|Русский|{\"lang\": \"ru\"}",
             "<",
             ">Transparency Flattener Presets",
             "ui:app.flattener|None (keep transparency)|{\"preset\": \"\"}",
@@ -300,15 +127,24 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.deletePage",
             "-",
             "cmd:layout.pages.applyParent",
-            "cmd:layout.parents.new",
+            "ui:app.masterPages",
+            "ui:app.newMaster",
             "<",
             "cmd:layout.marginsAndColumns",
             "cmd:layout.createGuides",
             "-",
+            "ui:view.firstPage",
+            "ui:view.previousPage",
+            "ui:view.nextPage",
+            "ui:view.lastPage",
+            "ui:view.nextSpread",
+            "ui:view.previousSpread",
             "ui:view.goToPage",
+            "ui:view.goBack",
+            "ui:view.goForward",
             "-",
             "cmd:layout.section",
-            "cmd:toc.generate",
+            "ui:app.tocDialog",
             "cmd:toc.update",
             ">Index",
             "cmd:index.addReference",
@@ -332,6 +168,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.pathOptions",
             "cmd:type.pathOptions|Delete Type from Path|{\"delete\": true}",
             "<",
+            "ui:app.tabsPanel",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
             "cmd:type.fillWithPlaceholder",
             ">Insert Special Character",
@@ -387,6 +224,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:text.insert|Column Break|{\"text\": \"\u{e002}\", \"raw\": true}",
             "cmd:text.insert|Frame Break|{\"text\": \"\u{e003}\", \"raw\": true}",
             "cmd:text.insert|Page Break|{\"text\": \"\u{e004}\", \"raw\": true}",
+            "cmd:text.insert|Odd Page Break|{\"text\": \"\u{e011}\", \"raw\": true}",
+            "cmd:text.insert|Even Page Break|{\"text\": \"\u{e012}\", \"raw\": true}",
             "cmd:text.insert|Paragraph Return|{\"text\": \"\\n\", \"raw\": true}",
             "cmd:text.insert|Forced Line Break|{\"text\": \"\u{2028}\", \"raw\": true}",
             "<",
@@ -402,6 +241,12 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.alignCenter",
             "cmd:type.alignRight",
             "cmd:type.justify",
+            "ui:app.paragraphRulesDialog",
+            "ui:app.justificationDialog",
+            "ui:app.paragraphBordersDialog",
+            "ui:app.spanColumnsDialog",
+            "ui:app.keepOptionsDialog",
+            "ui:app.bulletsNumberingDialog",
             "-",
             "cmd:type.bold",
             "cmd:type.italic",
@@ -412,34 +257,6 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.sizeDown",
             "-",
             "ui:view.hiddenCharacters",
-            "ui:view.taggedFrames",
-            ">Rotate Spread",
-            "ui:view.rotateSpread|90° CW|{\"angle\": 90}",
-            "ui:view.rotateSpread|90° CCW|{\"angle\": -90}",
-            "ui:view.rotateSpread|180°|{\"angle\": 180}",
-            "ui:view.rotateSpread|Clear Rotation|{\"angle\": 0}",
-            "<",
-            ">Proof Setup",
-            "ui:view.proofSetup|Working CMYK|{\"target\": \"workingCmyk\"}",
-            "ui:view.proofSetup|Internet Standard RGB (sRGB)|{\"target\": \"srgb\"}",
-            "ui:view.proofSetup|Legacy Macintosh RGB|{\"target\": \"legacyMacRgb\"}",
-            "ui:view.proofSetup|Monitor RGB|{\"target\": \"monitorRgb\"}",
-            "ui:view.proofSetup|Color Blindness – Protanopia|{\"target\": \"protanopia\"}",
-            "ui:view.proofSetup|Color Blindness – Deuteranopia|{\"target\": \"deuteranopia\"}",
-            "-",
-            "ui:view.proofSetup|Simulate Paper Color|{\"simulatePaper\": \"toggle\"}",
-            "<",
-            "ui:view.proofColors",
-            "ui:view.flattenerPreview",
-            "ui:view.tagMarkers",
-            ">Separations Preview",
-            "ui:view.separations|Off|{\"plate\": null, \"inkLimit\": null}",
-            "ui:view.separations|Cyan|{\"plate\": \"cyan\"}",
-            "ui:view.separations|Magenta|{\"plate\": \"magenta\"}",
-            "ui:view.separations|Yellow|{\"plate\": \"yellow\"}",
-            "ui:view.separations|Black|{\"plate\": \"black\"}",
-            "ui:view.separations|Ink Limit 300%|{\"inkLimit\": 300}",
-            "<",
             "-",
             ">Hyperlinks & Cross-References",
             "cmd:hyperlink.create",
@@ -523,6 +340,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:object.cornerOptions",
             "-",
             ">Effects",
+            "ui:effects.dialog|Transparency…|{\"page\": \"transparency\"}",
             "cmd:object.dropShadow",
             "cmd:object.innerShadow",
             "cmd:object.outerGlow",
@@ -560,6 +378,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "ui:app.qrCode",
             ">Clipping Path",
+            "cmd:object.clippingPathOptions|None|{\"type\": \"none\"}",
             "cmd:object.clippingPath|Alpha Channel|{\"type\": \"alpha\"}",
             "cmd:object.clippingPath|Detect Edges|{\"type\": \"edges\"}",
             "<",
@@ -611,11 +430,19 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:table.selectTable",
             "<",
             "-",
+            ">Cell Options",
+            "ui:app.cellOptionsDialog",
+            "<",
             "cmd:table.merge",
             "cmd:table.unmerge",
             ">Convert Cell Type",
             "ui:app.graphicCell|Convert Cell to Graphic Cell…",
             "cmd:table.textCell",
+            "<",
+            ">Convert Rows",
+            "cmd:table.convertRowsToHeader",
+            "cmd:table.convertRowsToBody",
+            "cmd:table.convertRowsToFooter",
             "<",
             "cmd:table.splitHorizontally",
             "cmd:table.splitVertically",
@@ -628,6 +455,28 @@ pub const MENUS: &[(&str, &[&str])] = &[
     (
         "View",
         &[
+            "ui:view.overprintPreview",
+            ">Proof Setup",
+            "ui:view.proofSetup|Working CMYK|{\"target\": \"workingCmyk\"}",
+            "ui:view.proofSetup|Internet Standard RGB (sRGB)|{\"target\": \"srgb\"}",
+            "ui:view.proofSetup|Legacy Macintosh RGB|{\"target\": \"legacyMacRgb\"}",
+            "ui:view.proofSetup|Monitor RGB|{\"target\": \"monitorRgb\"}",
+            "ui:view.proofSetup|Color Blindness – Protanopia|{\"target\": \"protanopia\"}",
+            "ui:view.proofSetup|Color Blindness – Deuteranopia|{\"target\": \"deuteranopia\"}",
+            "-",
+            "ui:view.proofSetup|Simulate Paper Color|{\"simulatePaper\": \"toggle\"}",
+            "<",
+            "ui:view.proofColors",
+            ">Separations Preview",
+            "ui:view.separations|Off|{\"plate\": null, \"inkLimit\": null}",
+            "ui:view.separations|Cyan|{\"plate\": \"cyan\"}",
+            "ui:view.separations|Magenta|{\"plate\": \"magenta\"}",
+            "ui:view.separations|Yellow|{\"plate\": \"yellow\"}",
+            "ui:view.separations|Black|{\"plate\": \"black\"}",
+            "ui:view.separations|Ink Limit 300%|{\"inkLimit\": 300}",
+            "<",
+            "ui:view.flattenerPreview",
+            "-",
             "ui:view.zoomIn",
             "ui:view.zoomOut",
             "ui:view.fitPage",
@@ -636,8 +485,20 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:view.actualSize",
             "ui:view.entirePasteboard",
             "-",
-            "ui:view.overprintPreview",
-            "ui:view.togglePreview",
+            ">Rotate Spread",
+            "ui:view.rotateSpread|90° CW|{\"angle\": 90}",
+            "ui:view.rotateSpread|90° CCW|{\"angle\": -90}",
+            "ui:view.rotateSpread|180°|{\"angle\": 180}",
+            "ui:view.rotateSpread|Clear Rotation|{\"angle\": 0}",
+            "<",
+            "-",
+            ">Screen Mode",
+            "ui:view.screenMode|Normal|{\"mode\": \"normal\"}",
+            "ui:view.screenMode|Preview|{\"mode\": \"preview\"}",
+            "ui:view.screenMode|Bleed|{\"mode\": \"bleed\"}",
+            "ui:view.screenMode|Slug|{\"mode\": \"slug\"}",
+            "ui:view.screenMode|Presentation|{\"mode\": \"presentation\"}",
+            "<",
             ">Display Performance",
             "ui:view.fastDisplay",
             "ui:view.typicalDisplay",
@@ -645,18 +506,25 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             "ui:view.rulers",
+            "-",
+            ">Extras",
             "ui:view.frameEdges",
             "ui:view.textThreads",
-            "ui:view.hiddenCharacters",
-            "-",
+            "<",
             ">Grids & Guides",
             "ui:view.guides",
             "ui:view.snapToGuides",
             "ui:view.snapToDocumentGrid",
             "ui:view.smartGuides",
             "ui:view.baselineGrid",
+            "ui:view.documentGrid",
             "-",
             "ui:app.deleteAllGuides",
+            "<",
+            "-",
+            ">Structure",
+            "ui:view.taggedFrames",
+            "ui:view.tagMarkers",
             "<",
         ],
     ),
@@ -678,10 +546,12 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.controlBar",
             "ui:window.taskBar",
             "ui:window.toolsDoubleColumn",
+            "ui:window.panelsDoubleColumn",
             "-",
             "ui:window.panel",
             "-",
             ">Type & Tables",
+            "ui:app.tabsPanel",
             "ui:window.panel|Conditional Text|{\"panel\": \"conditions\"}",
             "ui:window.panel|Notes|{\"panel\": \"notes\"}",
             "ui:window.panel|Glyphs|{\"panel\": \"glyphs\"}",
@@ -705,21 +575,56 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             ">Output",
             "ui:window.panel|Attributes|{\"panel\": \"attributes\"}",
-            "cmd:preflight.run",
+            "ui:window.panel.activate|Preflight|{\"panel\": \"preflight\"}",
             "<",
             "-",
             "ui:window.brightness",
+            "ui:window.nextAppearanceMode",
         ],
     ),
     ("Help", &["ui:help.github", "ui:help.issues", "-", "cmd:file.newSample", "-", "ui:help.about"]),
+];
+
+/// The Typography preset's available panels in the order observed in InDesign's workspace.
+/// CC Libraries and the separate Story panel have no corresponding Pagenor panel.
+pub const TYPOGRAPHY_GROUPS: &[&[&str]] = &[
+    &["pages", "layers", "swatches"],
+    &["glyphs", "textWrap"],
+    &["stroke", "gradient"],
+    &["hyperlinks", "effects"],
+    &["paragraph", "paragraphStyles"],
+    &["character", "characterStyles"],
 ];
 
 pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     UI_COMMANDS.iter().find(|c| c.0 == id).map(|c| (c.1, c.2))
 }
 
+/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
+fn toggle_tabs_panel(app: &mut DesignApp) {
+    let visible =
+        app.ui.docking.as_ref().map_or_else(|| app.ui.floating.iter().any(|(id, _)| id == "tabs"), |layout| layout.contains(&"tabs".to_owned()));
+    if visible {
+        if app.ui.docking.is_some() {
+            if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.close", &json!({"panel":"tabs"})) {
+                app.status(error);
+            }
+        } else {
+            crate::dock::dock_panel(app, "tabs");
+        }
+    } else {
+        let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
+        crate::dock::float_panel(app, "tabs", at);
+        app.ui.tabs_panel.snap_request = 2;
+    }
+}
+
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if matches!(id, "window.minimize" | "window.maximize" | "window.close" | "window.drag" | "window.resize") && !app.custom_titlebar {
+        return Some(Err("custom window controls are not available in this host".into()));
+    }
+
     if matches!(
         id,
         "window.ai"
@@ -741,37 +646,81 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         return Some(crate::ai::command(app, id, p));
     }
 
+    if let Some(result) = crate::panel_docking::command(app, id, p) {
+        return Some(result);
+    }
     let rect = app.canvas_rect;
     let flag = |b: &mut bool| {
         *b = !*b;
         Ok(json!(*b))
     };
     Some(match id {
+        "app.masterPages" => app.run("window.panel", json!({"panel":"pages"})),
+        "app.newMaster" | "app.masterSettings" | "app.masterText" => crate::dialogs::open_master_dialog(app, id, p),
+        "app.editMaster" => {
+            let index = p.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            crate::canvas::go_to_master(app, index, p.get("page").and_then(Value::as_u64).map(|n| n as usize)).map(|_| Value::Null)
+        }
+
+        "window.minimize" => app.queue_window_command(egui::ViewportCommand::Minimized(true)).map(|_| Value::Null),
+        "window.maximize" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.window_maximized);
+            app.queue_window_command(egui::ViewportCommand::Maximized(on)).map(|_| json!(on))
+        }
+        "window.close" => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                app.request_quit()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                Err("window close is not available in the browser".into())
+            }
+        }
+        "window.drag" => app.queue_window_command(egui::ViewportCommand::StartDrag).map(|_| Value::Null),
+        "window.resize" => {
+            let edge = match p.get("edge").and_then(Value::as_str) {
+                Some("north") => egui::ResizeDirection::North,
+                Some("south") => egui::ResizeDirection::South,
+                Some("east") => egui::ResizeDirection::East,
+                Some("west") => egui::ResizeDirection::West,
+                Some("northEast") => egui::ResizeDirection::NorthEast,
+                Some("southEast") => egui::ResizeDirection::SouthEast,
+                Some("northWest") => egui::ResizeDirection::NorthWest,
+                Some("southWest") => egui::ResizeDirection::SouthWest,
+                _ => return Some(Err("invalid window resize edge".into())),
+            };
+            app.queue_window_command(egui::ViewportCommand::BeginResize(edge)).map(|_| Value::Null)
+        }
         #[cfg(not(target_arch = "wasm32"))]
         "app.quit" => app.request_quit(),
         "app.newDocumentDialog" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            let mut d = crate::dialogs::Dialog::new("newDocument", json!({}));
+            crate::new_document::use_print_units(app, &mut d);
+            app.ui.dialog = Some(d);
             Ok(Value::Null)
         }
         "app.openDialog" => app.pick_and_open("open"),
-        "app.placeDialog" => app.pick_and_open("place"),
-        "app.placeWithOptions" => {
-            // Word/RTF Import Options: style mapping and conflicts before the text lands.
-            let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
-            let l = path.to_lowercase();
-            if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
-                return Some(app.open_file("file.place", json!({"path": path})));
-            }
-            let info = match app.run("place.styles", json!({"path": path})) {
-                Ok(v) => v,
-                Err(e) => return Some(Err(e)),
-            };
-            app.ui.dialog = Some(crate::dialogs::Dialog::new(
-                "importOptions",
-                json!({"path": path, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {}}),
-            ));
+        "app.home" => {
+            app.sync_recent_documents();
+            app.ui.home = true;
             Ok(Value::Null)
         }
+        "app.recentDocuments" => Ok(json!(app.ui.recent_documents.rows(&app.session))),
+        "app.openRecentDocument" => app.open_recent_document(p),
+        "app.placeDialog" => app.pick_and_open("place"),
+        "app.placeWithOptions" => {
+            app.ask_open("place", Bound::Document, |app, path| {
+                let l = path.to_ascii_lowercase();
+                if !(l.ends_with(".docx") || l.ends_with(".rtf") || l.ends_with(".md") || l.ends_with(".markdown")) {
+                    return app.open_file("file.place", json!({"path":path}));
+                }
+                let info = app.run("place.styles", json!({"path":path}))?;
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("importOptions", json!({"path":path, "styles":info["paragraph"], "charStyles":info["character"], "conflicts":info["conflicts"], "styleConflicts":"useExisting", "removeStyles":false,"map":{}})));
+                Ok(Value::Null)
+            })
+        }
+
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
@@ -780,18 +729,12 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => {
-            let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
-            if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                return Some(app.run("file.saveAs", json!({"path": path})));
-            }
-            Ok(Value::Null)
+            let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).ok_or("no document");
+            match name { Ok(name) => app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveAs", json!({"path":path}))), Err(e) => Err(e.into()) }
         }
         "app.saveCopyDialog" => {
-            let name = app.session.active().map(|d| format!("{} copy.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).unwrap_or_default();
-            if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                return Some(app.run("file.saveACopy", json!({"path": path})));
-            }
-            Ok(Value::Null)
+            let name = app.session.active().map(|d| format!("{} copy.{}", d.doc.title, pagenor_doc::file_type::EXTENSION)).ok_or("no document");
+            match name { Ok(name) => app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path":path}))), Err(e) => Err(e.into()) }
         }
         "app.exportPng" => export_png(app, p),
         "app.exportIdml" => export_idml(app, p),
@@ -826,6 +769,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.dialog = Some(crate::dialogs::Dialog::new("menus", json!({"query": ""})));
             Ok(Value::Null)
         }
+        "app.cellOptionsDialog" => crate::dialogs::open_cell_options(app),
         "window.hideMenuItem" => {
             let Some(item) = p.get("item").and_then(Value::as_str) else { return Some(Err("missing item".into())) };
             let hide = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);
@@ -849,14 +793,23 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 .unwrap_or(Value::Null))
         }
         "app.fittingOptions" => {
-            let g = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).and_then(|it| it.graphic().cloned()));
-            let Some(g) = g else { return Some(Err("select a frame with a placed graphic".into())) };
-            let fitting = serde_json::to_value(g.auto_fit).unwrap_or(json!("none"));
+            let opts = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id))).and_then(|it| {
+                if let Some(g) = it.graphic() {
+                    Some((g.auto_fit != pagenor_doc::Fitting::None, g.auto_fit, g.fit_align, g.crop))
+                } else if matches!(it.content, pagenor_doc::Content::Unassigned) {
+                    let f = it.empty_fitting.unwrap_or_default();
+                    Some((f.auto_fit, f.fitting, f.align, f.crop))
+                } else {
+                    None
+                }
+            });
+            let Some((auto_fit, fitting, align, crop)) = opts else { return Some(Err("select a graphic frame or an empty frame".into())) };
+            let fitting = serde_json::to_value(fitting).unwrap_or(json!("none"));
             let c = |v: f64| json!(pagenor_geom::format_measure(v, pagenor_geom::Unit::Points));
             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                 "fittingOptions",
-                json!({"autoFit": g.auto_fit != pagenor_doc::Fitting::None, "fitting": fitting, "align": g.fit_align,
-                    "cropTop": c(g.crop[0]), "cropLeft": c(g.crop[1]), "cropBottom": c(g.crop[2]), "cropRight": c(g.crop[3])}),
+                json!({"document": app.session.active().map(|st|st.uid),"selection":app.session.active().and_then(|st|serde_json::to_value(&st.selection).ok()),"autoFit": auto_fit, "fitting": fitting, "align": align,
+                    "cropTop": c(crop[0]), "cropLeft": c(crop[1]), "cropBottom": c(crop[2]), "cropRight": c(crop[3])}),
             ));
             Ok(Value::Null)
         }
@@ -871,20 +824,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
         "app.packageDialog" => {
             let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
-            match app.services.pick_save.as_mut().and_then(|f| f(&name)) {
-                Some(dir) => {
-                    let r = app.run("file.package", json!({"dir": dir}));
-                    if let Ok(v) = &r {
-                        app.status(format!(
-                            "Packaged {} files into {}",
-                            v["files"].as_array().map_or(0, |f| f.len()),
-                            v["dir"].as_str().unwrap_or("")
-                        ));
-                    }
-                    r
-                }
-                None => Ok(Value::Null),
-            }
+            app.ask_save(&name, Bound::Document, |app, dir| {
+                let result = app.run("file.package", json!({"dir":dir}))?;
+                app.status(format!("Packaged {} files into {}", result["files"].as_array().map_or(0, Vec::len), result["dir"].as_str().unwrap_or("")));
+                Ok(result)
+            })
         }
         "app.language" => {
             let v = p.get("lang").and_then(Value::as_str).unwrap_or("");
@@ -902,20 +846,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.flattener = v.to_string();
             Ok(json!(v))
         }
-        "app.graphicCell" => {
-            let Some(pick) = app.services.pick_open.as_mut() else { return Some(Err("needs a file picker".into())) };
-            match pick("place") {
-                Some(path) => app.run("table.placeGraphic", json!({"path": path})),
-                None => Ok(Value::Null),
-            }
+        "app.graphicCell" => app.ask_open("place", Bound::Document, |app, path| app.run("table.placeGraphic", json!({"path":path}))),
+        "effects.dialog" => {
+            crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
+            Ok(Value::Null)
         }
         "app.loadSwatches" => {
-            if let Some(pick) = app.services.pick_open.as_mut() {
-                return Some(match pick("swatches") {
-                    Some(path) => app.run("swatch.load", json!({"path": path})),
-                    None => Ok(Value::Null),
-                });
-            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if app.services.open_async.is_none() { return Some(app.ask_open("swatches", Bound::Document, |app, path| app.run("swatch.load", json!({"path":path})))); }
             let request = app.import_request("swatches");
             if let Some(open) = app.services.open_async.as_mut() {
                 open(request);
@@ -923,11 +861,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(Value::Null)
         }
         "app.saveSwatches" => {
-            let path = match p.get("path").and_then(Value::as_str) {
-                Some(s) => Some(s.to_string()),
-                None => app.services.pick_save.as_mut().and_then(|f| f("Swatches.ase")),
+            let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_owned) else {
+                let params = p.clone();
+                return Some(app.ask_save("Swatches.ase", Bound::Document, move |app, path| app.run("app.saveSwatches", with_path(&params, "path", path))));
             };
-            let Some(path) = path else { return Some(Ok(Value::Null)) };
             let r = match app.run("swatch.save", json!({})) {
                 Ok(r) => r,
                 Err(e) => return Some(Err(e)),
@@ -964,12 +901,90 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "app.rubyDialog" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
-            let cur = st.selection.text.and_then(|t| {
-                let story = st.doc.text_story(t.story, t.cell)?;
-                let at = if t.range().is_empty() { t.range().start } else { t.range().start + 1 };
-                story.char_format_at(at).over.ruby.clone()
+            let staged_eof = st.selection.text.is_some_and(|t| {
+                t.cell.is_none()
+                    && t.is_caret()
+                    && st.doc.story(t.story).is_some_and(|story| {
+                        t.focus == story.len()
+                            && story.text.ends_with('\n')
+                            && story.paras.last().is_some_and(|pf| !pf.chars.is_empty() || pf.eof_inherited_chars.is_some())
+                    })
             });
+            let cur = if staged_eof {
+                match app.session.execute("type.selectionAttrs", &json!({})) {
+                    Ok(attrs) => attrs["chars"]["ruby"].as_str().map(str::to_owned),
+                    Err(e) => return Some(Err(e.to_string())),
+                }
+            } else {
+                st.selection.text.and_then(|t| {
+                    let story = st.doc.text_story(t.story, t.cell)?;
+                    let at = if t.range().is_empty() { t.range().start } else { t.range().start + 1 };
+                    story.char_format_at(at).over.ruby.clone()
+                })
+            };
             app.ui.dialog = Some(crate::dialogs::Dialog::new("ruby", json!({"text": cur.unwrap_or_default()})));
+            Ok(Value::Null)
+        }
+        "app.justificationDialog" => {
+            let Some(a) = app.session.execute("type.selectionAttrs", &json!({"mixed": true})).ok().filter(|a| !a.is_null()) else {
+                return Some(Err("select text or a text frame".into()));
+            };
+            let mixed: Vec<&str> = a["paraMixed"].as_array().map(|m| m.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let current: serde_json::Map<String, Value> = crate::dialogs::JUSTIFY_ATTRS
+                .iter()
+                .map(|k| (k.to_string(), if mixed.contains(k) { Value::Null } else { a["para"][*k].clone() }))
+                .collect();
+            let st = match app.session.doc() {
+                Ok(st) => st,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let selection = match serde_json::to_value(&st.selection) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            app.ui.dialog =
+                Some(crate::dialogs::Dialog::new("justification", json!({"current": current, "document": st.uid, "selection": selection})));
+            Ok(Value::Null)
+        }
+        "app.paragraphRulesDialog" => {
+            let Some(a) = crate::panels::text_attrs(app) else { return Some(Err("select text or a text frame".into())) };
+            let st = app.session.doc().map_err(|e| e.to_string());
+            match st {
+                Err(e) => Err(e),
+                Ok(st) => {
+                    let rule = if p.get("rule").and_then(Value::as_str) == Some("ruleBelow") { "ruleBelow" } else { "ruleAbove" };
+                    let selection = serde_json::to_value(&st.selection).map_err(|e| e.to_string());
+                    match selection {
+                        Err(e) => Err(e),
+                        Ok(selection) => {
+                            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                                "paragraphRules",
+                                json!({"rule":rule,"current":a["para"],"document":st.uid,"selection":selection}),
+                            ));
+                            Ok(Value::Null)
+                        }
+                    }
+                }
+            }
+        }
+        "app.paragraphBordersDialog" | "app.spanColumnsDialog" | "app.bulletsNumberingDialog" | "app.keepOptionsDialog" => {
+            let Some(a) = crate::panels::text_attrs(app) else { return Some(Err("select text or a text frame".into())) };
+            let section = match id {
+                "app.spanColumnsDialog" => "span",
+                "app.keepOptionsDialog" => "keep",
+                "app.bulletsNumberingDialog" => "bullets",
+                _ if p.get("tab").and_then(Value::as_str) == Some("shading") => "shading",
+                _ => "border",
+            };
+            let fields = json!({
+                "section": section,
+                "current": a["para"],
+                "family": a["chars"]["fontFamily"],
+                "style": a["chars"]["fontStyle"],
+            });
+            let mut fields=fields;
+            if id=="app.keepOptionsDialog"&&let Some(st)=app.session.active(){fields["document"]=json!(st.uid);fields["selection"]=match serde_json::to_value(&st.selection){Ok(value)=>value,Err(error)=>return Some(Err(error.to_string()))};}
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphLocal", fields));
             Ok(Value::Null)
         }
         "app.footnoteOptionsDialog" => {
@@ -1002,14 +1017,14 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.deleteAllGuides" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let page = crate::canvas::current_page(app).unwrap_or(0);
-            let spread = if st.editing_parents { json!({"kind": "parent", "index": 0}) } else { json!(st.doc.page_loc(page).map_or(0, |l| l.0)) };
+            let spread = crate::canvas::current_spread(app).map(|r| json!(r)).unwrap_or_else(|| json!(st.doc.page_loc(page).map_or(0, |l| l.0)));
             return Some(app.run("guide.deleteAll", json!({"spread": spread})));
         }
         "app.deletePage" | "app.duplicateSpread" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
             let page = crate::canvas::current_page(app).unwrap_or(0);
             let r = if id == "app.deletePage" {
-                app.run("layout.pages.delete", json!({"pages": [page]}))
+                crate::dialogs::delete_pages(app, vec![page])
             } else {
                 let spread = st.doc.page_loc(page).map_or(0, |l| l.0);
                 app.run("layout.pages.duplicateSpread", json!({"spread": spread}))
@@ -1018,6 +1033,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "app.tablePanel" => {
             app.ui.open_panel = if app.ui.open_panel.as_deref() == Some("table") { None } else { Some("table".into()) };
+            Ok(Value::Null)
+        }
+        "app.tabsPanel" => {
+            toggle_tabs_panel(app);
             Ok(Value::Null)
         }
         "app.exportPdf" => {
@@ -1078,6 +1097,10 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 pagenor_render::DisplayQuality::High => "high",
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
+            f["brightness"] = json!(app.ui.brightness.id());
+            f["themeFavorites"] = json!(app.ui.theme_favorites);
+            f["openedBrightness"] = json!(app.ui.brightness.id());
+            f["toolsColumns"] = json!(if app.ui.tools_double_column { "double" } else { "single" });
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
@@ -1124,17 +1147,28 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(Value::Null)
         }
         "view.screenMode" => {
-            app.ui.screen_mode = match p.get("mode").and_then(Value::as_str).unwrap_or("normal") {
+            let mode = match p.get("mode").and_then(Value::as_str).unwrap_or("normal") {
                 "preview" => ScreenMode::Preview,
                 "bleed" => ScreenMode::Bleed,
                 "slug" => ScreenMode::Slug,
                 "presentation" => ScreenMode::Presentation,
                 _ => ScreenMode::Normal,
             };
+            set_screen_mode(app, mode);
             Ok(Value::Null)
         }
         "view.togglePreview" => {
-            app.ui.screen_mode = if app.ui.screen_mode == ScreenMode::Normal { ScreenMode::Preview } else { ScreenMode::Normal };
+            let mode = if app.ui.screen_mode == ScreenMode::Normal { ScreenMode::Preview } else { ScreenMode::Normal };
+            set_screen_mode(app, mode);
+            Ok(Value::Null)
+        }
+        "view.togglePresentation" => {
+            let mode = match (app.ui.screen_mode, app.ui.presentation_return) {
+                (ScreenMode::Presentation, ScreenMode::Presentation) => ScreenMode::Normal,
+                (ScreenMode::Presentation, back) => back,
+                _ => ScreenMode::Presentation,
+            };
+            set_screen_mode(app, mode);
             Ok(Value::Null)
         }
         "view.frameEdges" => flag(&mut app.ui.frame_edges),
@@ -1159,6 +1193,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "view.snapToDocumentGrid" => flag(&mut app.ui.snap_to_document_grid),
         "view.smartGuides" => flag(&mut app.ui.smart_guides),
         "view.baselineGrid" => flag(&mut app.ui.baseline_grid),
+        "view.documentGrid" => {
+            // The grid is drawn into the canvas texture.
+            app.canvas.shown = None;
+            flag(&mut app.ui.document_grid)
+        }
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
@@ -1175,6 +1214,13 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.session.set_active(next);
             }
             Ok(json!(app.session.active_index()))
+        }
+        "app.layerOptionsDialog" => crate::dialogs::open_layer_options(app, p.get("id").and_then(Value::as_u64)).map(|()| Value::Null),
+        "app.swatchOptionsDialog" => {
+            crate::dialogs::open_swatch_options(app, p.get("name").and_then(Value::as_str).unwrap_or("")).map(|()| Value::Null)
+        }
+        "app.colorGroupOptionsDialog" => {
+            crate::dialogs::open_color_group_options(app, p.get("name").and_then(Value::as_str).unwrap_or("")).map(|()| Value::Null)
         }
         "app.layerOptions" => {
             let layers = match app.session.execute("object.pdfLayers", &json!({})) {
@@ -1238,6 +1284,86 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.canvas.shown = None;
             Ok(Value::Null)
         }
+        "view.firstPage" | "view.previousPage" | "view.nextPage" | "view.lastPage" => {
+            let n = app.session.active().map_or(0, |d| d.doc.page_count());
+            if n > 0 {
+                let cur = crate::canvas::current_page(app).unwrap_or(0);
+                let to = match id {
+                    "view.firstPage" => 0,
+                    "view.previousPage" => cur.saturating_sub(1),
+                    "view.nextPage" => cur.saturating_add(1).min(n - 1),
+                    _ => n - 1,
+                };
+                crate::canvas::go_to_page(app, to);
+            }
+            Ok(Value::Null)
+        }
+        "view.nextSpread" | "view.previousSpread" => {
+            crate::canvas::step_spread(app, if id == "view.nextSpread" { 1 } else { -1 });
+            Ok(Value::Null)
+        }
+        "links.copyPath" => {
+            (|| {
+                let st=app.session.active().ok_or("Open a document first")?;
+                let id=p.get("asset").and_then(Value::as_u64).ok_or("Choose a link")?;
+                let path=st.doc.assets.get(&pagenor_doc::AssetId(id)).and_then(|a|a.link.clone()).ok_or("The graphic is embedded and has no linked file")?;
+                app.pending_clipboard_text=Some(path.clone());
+                Ok(json!({"path":path}))
+            })()
+        }
+        "links.reveal" => {
+            (|| {
+                let st = app.session.active().ok_or("Open a document first.")?;
+                let id = p.get("asset").and_then(Value::as_u64).ok_or("Choose a link.")?;
+                let asset = st.doc.assets.get(&pagenor_doc::AssetId(id)).ok_or("No such graphic.")?;
+                let path = asset.link.as_ref().ok_or("The graphic is embedded and has no linked file.")?;
+                let mut path = std::path::PathBuf::from(path);
+                if path.is_relative() {
+                    let folder = st
+                        .path
+                        .as_deref()
+                        .and_then(|path| std::path::Path::new(path).parent())
+                        .ok_or("Save the document before revealing a relative link.")?;
+                    path = folder.join(path);
+                }
+                let path = path.to_string_lossy().to_string();
+                let reveal = app.services.reveal.as_mut().ok_or("Show in Folder isn't available in this build.")?;
+                reveal(&path)?;
+                Ok(json!({"path":path}))
+            })()
+        }
+        "app.tocDialog" => {
+            match app.session.active() {
+                None => Err("no document".into()),
+                Some(st) => {
+                    let definition=st.doc.toc.clone();
+                    let fields=json!({"documentUid":st.uid,"title":definition.as_ref().map(|t|t.title.as_str()).unwrap_or("Contents"),"scope":definition.as_ref().map(|t|t.scope).unwrap_or_default(),"pageNumbers":definition.as_ref().is_none_or(|t|t.page_numbers),"entries":definition.as_ref().map(|t|t.entries.clone()).unwrap_or_default(),"page":"1"});
+                    let mut dialog=crate::dialogs::Dialog::new("toc",fields);
+                    let styles=app.run("toc.styles",json!({"scope":dialog.s("scope")}));
+                    match styles {Ok(styles)=>{dialog.fields.insert("styles".into(),styles);}, Err(error)=>{dialog.fields.insert("error".into(),json!(error));}}
+                    app.ui.dialog=Some(dialog);Ok(Value::Null)
+                }
+            }
+        }
+        "app.contactSheet" => {
+            if app.session.loaded.is_none() {Err("Load images with File → Place first".into())}
+            else {
+                app.ui.dialog=Some(crate::dialogs::Dialog::new("contactSheet",json!({"documentUid":app.session.active().map(|d|d.uid),"columns":"3","rows":"4","gutter":"6 pt","margin":"36 pt"})));
+                Ok(Value::Null)
+            }
+        }
+        "app.newCover" | "app.resizeCover" => {
+            let dialog = if id == "app.newCover" { "newCover" } else { "coverResize" };
+            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+                dialog,
+                json!({"printer":"other","trimWidth":"6 in","trimHeight":"9 in","pages":"224","spine":"0.5 in","safe":"0.5 in","bleed":"0.125 in","page":"1","oldSpine":"0.5 in","newSpine":"0.5 in","oldPages":"224","newPages":"240"}),
+            ));
+            Ok(Value::Null)
+        }
+        "view.goBack" | "view.goForward" => {
+            crate::canvas::go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
+            Ok(Value::Null)
+        }
         "view.goToPage" => {
             match p.get("page") {
                 Some(Value::Number(n)) => crate::canvas::go_to_page(app, (n.as_u64().unwrap_or(1) as usize).saturating_sub(1)),
@@ -1249,9 +1375,25 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             }
             Ok(Value::Null)
         }
+        "window.collapseToIcons" => {
+            let collapsed = match p.get("collapsed") {
+                None => true,
+                Some(v) => match v.as_bool() {
+                    Some(v) => v,
+                    None => return Some(Err("collapsed must be a boolean".into())),
+                },
+            };
+            app.ui.dock_expanded = !collapsed;
+            if collapsed {
+                app.ui.open_panel = None;
+            }
+            Ok(json!({"collapsed": collapsed}))
+        }
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties").to_string();
-            if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
+            if panel == "tabs" {
+                toggle_tabs_panel(app);
+            } else if crate::dock::DOCK_TABS.iter().any(|(id, _, _)| *id == panel) {
                 app.ui.dock_tab = panel;
                 app.ui.dock_expanded = true;
                 app.ui.open_panel = None;
@@ -1330,7 +1472,7 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         }
         "window.floatPanel" | "window.dockPanel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("");
-            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) {
+            if !crate::dock::ICON_PANELS.iter().any(|(id, _, _)| *id == panel) && !crate::dock::FLOATING_PANELS.iter().any(|(id, _)| *id == panel) {
                 return Some(Err(format!("{id}: unknown panel `{panel}`")));
             }
             if id == "window.floatPanel" {
@@ -1417,7 +1559,11 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.ui.pending_urls.push(url.clone());
             Ok(json!({"url": url}))
         }
-        "window.toolsDoubleColumn" => flag(&mut app.ui.tools_double_column),
+        "window.toolsDoubleColumn" => {
+            app.ui.tools_double_column = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.tools_double_column);
+            Ok(json!(app.ui.tools_double_column))
+        }
+        "window.panelsDoubleColumn" => flag(&mut app.ui.panels_double_column),
         "window.newWorkspace" => {
             let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
                 app.ui.dialog = Some(crate::dialogs::Dialog::new("newWorkspace", json!({"name": ""})));
@@ -1430,10 +1576,13 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 task_bar: u.task_bar,
                 task_bar_pin: u.task_bar_pin,
                 tools_double_column: u.tools_double_column,
+                panels_double_column: u.panels_double_column,
                 dock_tab: u.dock_tab.clone(),
                 dock_expanded: u.dock_expanded,
                 open_panel: u.open_panel.clone(),
                 floating: u.floating.clone(),
+                docking: u.docking.clone(),
+                docking_hidden: u.docking_hidden.clone(),
             };
             app.ui.custom_workspaces.retain(|x| x.name != name);
             app.ui.custom_workspaces.push(w);
@@ -1457,26 +1606,50 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "window.workspace", &json!({"name": name}));
         }
         "window.workspace" => {
+            app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
+            app.ui.docking_raise = None;
+            app.ui.docking_opened = None;
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 app.ui.control_bar = w.control_bar;
                 app.ui.task_bar = w.task_bar;
                 app.ui.task_bar_pin = w.task_bar_pin;
                 app.ui.tools_double_column = w.tools_double_column;
+                app.ui.panels_double_column = w.panels_double_column;
                 app.ui.dock_tab = w.dock_tab;
                 app.ui.dock_expanded = w.dock_expanded;
                 app.ui.open_panel = w.open_panel;
                 app.ui.floating = w.floating;
+                app.ui.docking = w.docking;
+                app.ui.docking_hidden = w.docking_hidden;
                 app.ui.workspace = w.name;
                 return Some(Ok(Value::Null));
             }
             // Workspaces choose which bars and panels are visible.
+            if app.ui.docking.is_some() {
+                app.ui.floating.clear();
+            }
+            app.ui.docking = None;
+            app.ui.docking_hidden.clear();
             app.ui.control_bar = matches!(name, "Advanced" | "Typography" | "Printing and Proofing" | "Book" | "Interactive for PDF");
-            app.ui.dock_tab = if name == "Typography" { "properties".into() } else { app.ui.dock_tab.clone() };
+            let groups = match name {
+                "Typography" => Some(TYPOGRAPHY_GROUPS),
+                _ => None,
+            };
+            app.ui.icon_groups = groups.map(|groups| groups.iter().map(|g| g.iter().map(|p| p.to_string()).collect()).collect());
+            app.ui.dock_expanded = groups.is_none();
+            let dock_tab = match name {
+                "Interactive for PDF" | "Digital Publishing" => Some("pages"),
+                _ => None,
+            };
+            if let Some(tab) = dock_tab {
+                app.ui.dock_tab = tab.into();
+                app.ui.dock_expanded = true;
+            }
             app.ui.open_panel = match name {
-                "Typography" => Some("paragraphStyles".into()),
                 "Printing and Proofing" => Some("swatches".into()),
                 "Interactive for PDF" => Some("buttons".into()),
+                "Digital Publishing" => Some("liquid".into()),
                 _ => None,
             };
             app.ui.workspace = name.to_string();
@@ -1488,8 +1661,25 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             app.restyle = true;
             Ok(Value::Null)
         }
+        "window.nextAppearanceMode" => {
+            use crate::theme::Brightness;
+            app.ui.brightness = match app.ui.brightness {
+                Brightness::System => Brightness::Light,
+                Brightness::Light | Brightness::MediumLight => Brightness::MediumDark,
+                _ => Brightness::System,
+            };
+            app.restyle = true;
+            Ok(json!({"brightness": app.ui.brightness.id()}))
+        }
         _ => return None,
     })
+}
+
+fn set_screen_mode(app: &mut DesignApp, mode: ScreenMode) {
+    if mode == ScreenMode::Presentation && app.ui.screen_mode != ScreenMode::Presentation {
+        app.ui.presentation_return = app.ui.screen_mode;
+    }
+    app.ui.screen_mode = mode;
 }
 
 /// Save by handing the serialized document to the host as a download (web).
@@ -1505,6 +1695,12 @@ fn download_document(app: &mut DesignApp) -> Result<Value, String> {
 }
 
 fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.png", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_png(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let page = crate::control::page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count())?;
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
@@ -1524,7 +1720,7 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}-p{}.png", st.doc.title, page + 1);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1537,12 +1733,18 @@ fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 /// File › Export IDML…: ask for a path, export through `file.exportIdml` and write the bytes with
 /// the platform writer (a download on the web).
 fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.idml", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_idml(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}.idml", st.doc.title);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1557,12 +1759,18 @@ fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.{ext}", st.doc.title);
+        let (params, ext, cmd) = (p.clone(), ext.to_owned(), cmd.to_owned());
+        return app.ask_save(&name, Bound::Document, move |app, path| export_bytes(app, &with_path(&params, "path", path), &ext, &cmd));
+    }
     let st = app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
             let name = format!("{}.{ext}", st.doc.title);
-            app.services.pick_save.as_mut().and_then(|f| f(&name))
+            Some(name)
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
@@ -1586,6 +1794,12 @@ fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
 pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if p.get("path").and_then(Value::as_str).is_none() {
+        let st = app.session.active().ok_or("no document")?;
+        let name = format!("{}.pdf", st.doc.title);
+        let params = p.clone();
+        return app.ask_save(&name, Bound::Document, move |app, path| export_pdf(app, &with_path(&params, "path", path)));
+    }
     let st = app.session.active().ok_or("no document")?;
     let name = format!("{}.pdf", st.doc.title);
     let browser = app.services.download.is_some() && app.services.pick_save.is_none();
@@ -1594,7 +1808,7 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
     } else {
         let path = match p.get("path").and_then(Value::as_str) {
             Some(s) => Some(s.to_string()),
-            None => app.services.pick_save.as_mut().and_then(|f| f(&name)),
+            None => Some(name),
         };
         let Some(path) = path else { return Ok(Value::Null) };
         path
@@ -1622,6 +1836,26 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.graphicCell" {
+        return enabled(app, "table.placeGraphic");
+    }
+    if id == "app.contactSheet" {
+        return app.session.active().is_some() && app.session.loaded.is_some();
+    }
+    if id == "app.tocDialog" {
+        return enabled(app, "toc.generate");
+    }
+    if id == "app.resizeCover" {
+        return enabled(app, "layout.coverResize");
+    }
+
+    if id == "object.textFrameOptions" {
+        return !crate::dialogs::text_frame_options_targets(app).is_empty();
+    }
+    if matches!(id, "window.minimize" | "window.maximize" | "window.close" | "window.drag" | "window.resize") {
+        return app.custom_titlebar;
+    }
+
     if id == "app.fontDiscovery" {
         return enabled(app, "font.diagnostics");
     }
@@ -1689,10 +1923,24 @@ pub fn shortcut_text(sc: &str) -> String {
         None => ("", sc),
     };
     let has = |m: &str| mods.split('+').any(|x| x == m);
+    if mac {
+        let mut out = String::new();
+        for (m, sym) in [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Cmd", "⌘")] {
+            if has(m) {
+                out += sym;
+            }
+        }
+        return out + key;
+    }
+    // Windows and Linux, as InDesign writes them: Ctrl (Cmd's key here) first, then Alt, Shift.
     let mut out = String::new();
-    for (m, sym, word) in [("Ctrl", "⌃", "Ctrl+"), ("Alt", "⌥", "Alt+"), ("Shift", "⇧", "Shift+"), ("Cmd", "⌘", "Ctrl+")] {
-        if has(m) && !(m == "Cmd" && !mac && has("Ctrl")) {
-            out += if mac { sym } else { word };
+    if has("Cmd") || has("Ctrl") {
+        out += "Ctrl+";
+    }
+    for m in ["Alt", "Shift"] {
+        if has(m) {
+            out += m;
+            out += "+";
         }
     }
     out + key
@@ -1744,11 +1992,22 @@ fn parse_entries(entries: &[&str]) -> Vec<Item> {
             i += 1;
             out.push(Item::Sub(name.to_string(), sub));
         } else if e == "ui:window.panel" {
-            let items = crate::dock::DOCK_TABS
+            let mut items: Vec<_> = crate::dock::PANEL_GROUPS
                 .iter()
-                .chain(crate::dock::ICON_PANELS)
-                .map(|(id, label, _)| Item::Cmd { label: label.to_string(), id: "window.panel".into(), params: json!({"panel": id}), shortcut: None })
+                .map(|(group, _, ids)| {
+                    Item::Sub(
+                        (*group).into(),
+                        ids.iter()
+                            .map(|id| {
+                                let label = crate::dock::panel_entry(id).map_or_else(|| crate::dock::panel_label(id), |p| p.1);
+                                Item::Cmd { label: label.into(), id: "window.panel".into(), params: json!({"panel": id}), shortcut: None }
+                            })
+                            .collect(),
+                    )
+                })
                 .collect();
+            items.push(Item::Sep);
+            items.push(Item::Cmd { label: "Arrange Vertically".into(), id: "window.panel.stack".into(), params: Value::Null, shortcut: None });
             out.push(Item::Sub("Panels".into(), items));
         } else if e == "ui:window.brightness" {
             let items = crate::theme::Brightness::ALL
@@ -1786,9 +2045,135 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
     MENUS.iter().map(|(m, e)| (*m, parse_entries(e))).collect()
 }
 
+/// Shared dynamic history for native desktop menus and the in-window menu bar.
+pub fn recent_document_items(app: &DesignApp) -> Vec<Item> {
+    let rows = app.ui.recent_documents.rows(&app.session);
+    if rows.is_empty() {
+        return vec![Item::Cmd {
+            label: "No recent documents yet.".into(),
+            id: "app.openRecentDocument".into(),
+            params: Value::Null,
+            shortcut: None,
+        }];
+    }
+    rows.into_iter()
+        .map(|row| Item::Cmd {
+            label: row.name,
+            id: "app.openRecentDocument".into(),
+            params: json!({"uid": row.uid, "path": row.path}),
+            shortcut: None,
+        })
+        .collect()
+}
+
+pub fn menu_tree_for(app: &DesignApp) -> Vec<(&'static str, Vec<Item>)> {
+    let mut tree = menu_tree();
+    if let Some((_, entries)) = tree.iter_mut().find(|(title, _)| *title == "File") {
+        for entry in entries {
+            if let Item::Sub(label, children) = entry
+                && label == "Open Recent"
+            {
+                *children = recent_document_items(app);
+            }
+        }
+    }
+    tree
+}
+
+/// A row of the macOS application menu (the menu named after the app).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMenuItem {
+    /// Runs `command` (no parameters); `id` is the native menu item id, `label` goes through `i18n::tr`.
+    Cmd {
+        id: &'static str,
+        label: &'static str,
+        command: &'static str,
+    },
+    Sep,
+    Services,
+    Hide,
+    HideOthers,
+    ShowAll,
+    Quit,
+}
+
+/// The macOS application menu. Settings… is `app.preferences`, which `native_menu_tree` leaves out of Edit.
+pub const MAC_APP_MENU: &[AppMenuItem] = &[
+    AppMenuItem::Cmd { id: "pagenor-about", label: "About Pagenor", command: "help.about" },
+    AppMenuItem::Sep,
+    AppMenuItem::Cmd { id: "pagenor-settings", label: "Settings…", command: "app.preferences" },
+    AppMenuItem::Sep,
+    AppMenuItem::Services,
+    AppMenuItem::Sep,
+    AppMenuItem::Hide,
+    AppMenuItem::HideOthers,
+    AppMenuItem::ShowAll,
+    AppMenuItem::Sep,
+    AppMenuItem::Quit,
+];
+
+/// The menu tree for the macOS menu bar: `menu_tree` without the commands `MAC_APP_MENU` holds,
+/// so each command (and its shortcut) appears once.
+pub fn native_menu_tree() -> Vec<(&'static str, Vec<Item>)> {
+    let in_app_menu = |id: &str| MAC_APP_MENU.iter().any(|m| matches!(m, AppMenuItem::Cmd { command, .. } if *command == id));
+    let mut tree = menu_tree();
+    for (_, entries) in &mut tree {
+        without_commands(entries, &in_app_menu);
+    }
+    tree
+}
+
+/// Native menu tree with Pagenor's dynamic recent documents.
+pub fn native_menu_tree_for(app: &DesignApp) -> Vec<(&'static str, Vec<Item>)> {
+    let mut tree = menu_tree_for(app);
+    for (_, entries) in &mut tree {
+        without_commands(entries, &|id| MAC_APP_MENU.iter().any(|m| matches!(m, AppMenuItem::Cmd { command, .. } if *command == id)));
+    }
+    tree
+}
+
+/// Drops the parameterless commands `drop` matches from `entries` (recursively), then any separator
+/// the removal left at an end or next to another.
+fn without_commands(entries: &mut Vec<Item>, drop: &dyn Fn(&str) -> bool) {
+    let before = entries.len();
+    entries.retain(|e| !matches!(e, Item::Cmd { id, params, .. } if params.is_null() && drop(id)));
+    for e in entries.iter_mut() {
+        if let Item::Sub(_, children) = e {
+            without_commands(children, drop);
+        }
+    }
+    if entries.len() == before {
+        return;
+    }
+    let mut tidy: Vec<Item> = Vec::with_capacity(entries.len());
+    for e in entries.drain(..) {
+        if matches!(e, Item::Sep) && tidy.last().is_none_or(|l| matches!(l, Item::Sep)) {
+            continue;
+        }
+        tidy.push(e);
+    }
+    if matches!(tidy.last(), Some(Item::Sep)) {
+        tidy.pop();
+    }
+    *entries = tidy;
+}
+
 /// Check state of a toggle command (None = not a toggle).
 pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
     Some(match id {
+        "window.panel" => {
+            let panel = params.get("panel").and_then(Value::as_str)?;
+            if panel == "ai" && app.ui.ai.floating {
+                return Some(app.ui.ai.open);
+            }
+            if let Some(layout) = &app.ui.docking {
+                layout.contains(&panel.to_owned())
+            } else {
+                app.ui.open_panel.as_deref() == Some(panel)
+                    || app.ui.floating.iter().any(|(id, _)| id == panel)
+                    || (app.ui.dock_expanded && app.ui.dock_tab == panel)
+            }
+        }
         "window.ai" => app.ui.ai.open,
         "view.rulers" => app.ui.rulers,
         "view.frameEdges" => app.ui.frame_edges,
@@ -1801,6 +2186,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.snapToDocumentGrid" => app.ui.snap_to_document_grid,
         "view.smartGuides" => app.ui.smart_guides,
         "view.baselineGrid" => app.ui.baseline_grid,
+        "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
@@ -1811,6 +2197,17 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.proofColors" => app.ui.proof_colors,
         "view.flattenerPreview" => app.ui.flattener_preview,
         "view.tagMarkers" => app.ui.tag_markers,
+        "view.screenMode" => {
+            let mode = match params.get("mode").and_then(Value::as_str) {
+                Some("normal") => crate::ScreenMode::Normal,
+                Some("preview") => crate::ScreenMode::Preview,
+                Some("bleed") => crate::ScreenMode::Bleed,
+                Some("slug") => crate::ScreenMode::Slug,
+                Some("presentation") => crate::ScreenMode::Presentation,
+                _ => return None,
+            };
+            app.ui.screen_mode == mode
+        }
         "view.rotateSpread" => match params.get("angle").and_then(Value::as_i64) {
             Some(0) => app.session.active().is_some_and(|st| st.doc.spreads.iter().all(|sp| sp.pages.first().is_none_or(|p| p.view_rotation == 0))),
             _ => return None,
@@ -1826,7 +2223,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "window.taskBar" => app.ui.task_bar,
         "window.taskBarPin" => app.ui.task_bar_pin.is_some(),
         "window.toolsDoubleColumn" => app.ui.tools_double_column,
+        "window.panelsDoubleColumn" => app.ui.panels_double_column,
         "view.togglePreview" => app.ui.screen_mode == crate::ScreenMode::Preview,
+        "view.togglePresentation" => app.ui.screen_mode == crate::ScreenMode::Presentation,
         "window.brightness" => params.get("brightness").and_then(Value::as_str) == Some(app.ui.brightness.id()),
         "type.storyDirection" => {
             let st = app.session.active()?;
@@ -1843,6 +2242,22 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.graphicCell" {
+        return enabled(app, "table.placeGraphic");
+    }
+    if matches!(id, "view.goBack" | "view.goForward") {
+        return crate::canvas::can_go_through_history(app, if id == "view.goBack" { -1 } else { 1 });
+    }
+    if matches!(id, "app.justificationDialog" | "app.keepOptionsDialog") {
+        return enabled(app, "type.para");
+    }
+    if id == "app.openRecentDocument" {
+        return !app.ui.recent_documents.rows(&app.session).is_empty();
+    }
+    if matches!(id, "window.minimize" | "window.maximize" | "window.close" | "window.drag" | "window.resize") {
+        return app.custom_titlebar;
+    }
+
     if id == "help.about" || id == "help.app" {
         return true;
     }
@@ -1873,6 +2288,22 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// A menu item was chosen. An engine command whose label ends in "…" and that takes parameters
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
+    if params.is_null() && id == "swatch.addColorTheme" {
+        crate::dialogs::open_color_theme(app, json!({}));
+        return;
+    }
+    if params.is_null()
+        && let Some(page) = crate::effects_dialog::page_of_command(id)
+    {
+        crate::effects_dialog::open(app, page);
+        return;
+    }
+    if params.is_null() && id == "edit.paste" && app.session.wants_text() {
+        // User Paste must read the system clipboard before the engine can choose a payload.
+        // Explicit app.run/engine calls with no text keep their internal-clipboard semantics.
+        app.queue_clipboard_paste();
+        return;
+    }
     if params.is_null() && id == "file.close" {
         close_document(app, None);
         return;
@@ -1885,8 +2316,25 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_print(app);
         return;
     }
+    if params.is_null() && id == "layout.section" {
+        crate::section_options::open(app);
+        return;
+    }
+    if params.is_null() && id == "layout.pages.insert" {
+        let cur = crate::canvas::current_page(app).unwrap_or(0);
+        crate::dialogs::open_insert_pages(app, cur);
+        return;
+    }
+    if params.is_null() && id == "layout.createGuides" {
+        crate::dialogs::open_create_guides(app);
+        return;
+    }
+    if params.is_null() && id == "layout.marginsAndColumns" {
+        crate::dialogs::open_margins_and_columns(app);
+        return;
+    }
     if params.is_null() && id == "object.textFrameOptions" {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        crate::dialogs::open_text_frame_options(app);
         return;
     }
     // New Paragraph/Character Style…: the style options for the new style.
@@ -1920,6 +2368,10 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
 /// ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z and ⇧⌘Z before the window sees them, so while a text field has keyboard
 /// focus, Select All, Copy, Cut, Paste, Undo and Redo act on that field, as in any Mac app.
 pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, params: &Value) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if id == "app.quit" {
+        app.finish_canvas_input_before_quit(ctx);
+    }
     if !(ctx.text_edit_focused() && params.is_null() && forward_to_text_field(app, ctx, id)) {
         activate(app, id, params);
     }
@@ -1954,30 +2406,272 @@ fn forward_to_text_field(app: &mut DesignApp, ctx: &egui::Context, id: &str) -> 
     true
 }
 
+/// A menu button whose popup stays within the viewport and scrolls when needed.
+/// All menu buttons share this wrapper, including workspace, zoom and panel menus.
+pub fn menu_button<'a, R>(
+    ui: &mut egui::Ui,
+    atoms: impl egui::IntoAtoms<'a>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    use egui::containers::menu::{MenuButton, MenuConfig};
+
+    // A menu opens from a button already shown in the previous frame. Base its height on
+    // that anchor, not the popup's eventual position, so placement cannot oscillate.
+    let button = ui.ctx().read_response(ui.next_auto_id()).map(|response| response.rect);
+    let max_height = menu_max_height(ui, button);
+    let contents = |ui: &mut egui::Ui| {
+        // Override the popup's initial available height, including when it opens upwards.
+        ui.set_max_height(max_height);
+        let mut scroll = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(1.0);
+        if ui.is_sizing_pass() {
+            // Closing and reopening a menu starts at its first command again.
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
+        scroll.show(ui, add_contents).inner
+    };
+    // Scrollbar clicks must not dismiss the popup; command rows close it explicitly.
+    let config = MenuConfig::find(ui).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (response, inner) = if egui::containers::menu::is_in_menu(ui) {
+        clipped_submenu(ui, atoms, config, contents)
+    } else {
+        MenuButton::new(atoms).config(config).ui(ui, contents)
+    };
+    egui::InnerResponse { response, inner: inner.map(|response| response.inner) }
+}
+
+/// The tallest menu that fits on either side of its anchor, including the popup frame.
+fn menu_max_height(ui: &egui::Ui, button: Option<egui::Rect>) -> f32 {
+    let screen = ui.ctx().content_rect();
+    let space = match button {
+        // Submenus open beside their row, aligned with its top or bottom.
+        Some(rect) if egui::containers::menu::is_in_menu(ui) => (screen.bottom() - rect.top()).max(rect.bottom() - screen.top()),
+        Some(rect) => (screen.bottom() - rect.bottom()).max(rect.top() - screen.top()),
+        None => screen.height(),
+    };
+    let chrome = egui::Frame::menu(ui.style()).total_margin().sum().y + 8.0;
+    (space.min(screen.height()) - chrome).max(1.0)
+}
+
+/// egui's submenu hover test uses the full row rect, even outside a scroll area's clip.
+fn clipped_submenu<'a, R>(
+    ui: &mut egui::Ui,
+    atoms: impl egui::IntoAtoms<'a>,
+    config: egui::containers::menu::MenuConfig,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+
+    let id = SubMenu::id_from_widget_id(ui.next_auto_id());
+    let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(id));
+    let inactive = ui.style().visuals.widgets.inactive;
+    if open {
+        ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
+    }
+    let button = SubMenuButton::new(atoms).config(config);
+    let response = ui.add(button.button);
+    ui.style_mut().visuals.widgets.inactive = inactive;
+    let clip = ui.clip_rect();
+    if !response.rect.intersect(clip).is_positive() {
+        if open {
+            MenuState::from_ui(ui, |state, _| state.open_item = None);
+        }
+        return (response, None);
+    }
+    // Undo the half-spacing expansion used by SubMenu::show after clamping to the clip.
+    let hover_margin = ui.spacing().item_spacing / 2.0;
+    let mut clipped = response.clone();
+    clipped.rect = response.rect.expand2(hover_margin).intersect(clip).shrink2(hover_margin);
+    clipped.interact_rect = response.interact_rect.intersect(clip);
+    let inner = button.sub_menu.show(ui, &clipped, contents);
+    (response, inner)
+}
+
 /// The menu bar contents (inside the app bar; macOS uses the native menu instead).
 pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = app.ui.language.clone();
-    let mut menus = menu_tree();
+    let mut menus = menu_tree_for(app);
     if crate::i18n::is_rtl(&lang) {
         menus.reverse();
     }
     for (menu, entries) in menus {
-        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| {
-            if crate::i18n::is_rtl(&lang) {
-                ui.set_max_width(320.0);
-            }
-            ui.with_layout(egui::Layout::top_down(if crate::i18n::is_rtl(&lang) { egui::Align::Max } else { egui::Align::Min }), |ui| {
-                ui.set_min_width(240.0);
-                let hidden = menu_items(app, ui, &entries, menu);
-                if hidden > 0 && !app.ui.show_full_menus {
-                    ui.separator();
-                    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show All Menu Items"))).clicked() {
-                        app.ui.show_full_menus = true;
-                    }
-                }
-            });
-        });
+        menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| menu_column(app, ui, &[(menu, entries)]));
     }
+}
+
+/// One menu's rows, as the menu bar and the canvas context menus show them: runs of items, each
+/// with the menu path its rows are hidden by (Edit › Menus).
+fn menu_column<P: AsRef<str>>(app: &mut DesignApp, ui: &mut egui::Ui, runs: &[(P, Vec<Item>)]) {
+    let lang = app.ui.language.clone();
+    let rtl = crate::i18n::is_rtl(&lang);
+    if rtl {
+        ui.set_max_width(320.0);
+    }
+    ui.with_layout(egui::Layout::top_down_justified(if rtl { egui::Align::Max } else { egui::Align::Min }), |ui| {
+        ui.set_min_width(240.0);
+        let mut hidden = 0;
+        for (path, items) in runs {
+            hidden += menu_items(app, ui, items, path.as_ref());
+        }
+        if hidden > 0 && !app.ui.show_full_menus {
+            ui.separator();
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show All Menu Items"))).clicked() {
+                app.ui.show_full_menus = true;
+            }
+        }
+    });
+}
+
+/// What a right-click on the canvas opens a menu for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenu {
+    /// The selected objects.
+    Object,
+    /// The text being edited with the Type tool.
+    Text,
+    /// The page or pasteboard, where nothing was hit.
+    Canvas,
+}
+
+// Canvas context menus, in the menu bar's entry syntax; `menu:Menu/Submenu` inserts that menu bar
+// submenu as it is.
+const CONTEXT_OBJECT: &[&str] = &[
+    "cmd:edit.undo",
+    "cmd:edit.redo",
+    "-",
+    "cmd:edit.cut",
+    "cmd:edit.copy",
+    "cmd:edit.paste",
+    "cmd:edit.pasteInto",
+    "cmd:edit.pasteInPlace",
+    "cmd:edit.duplicate",
+    "cmd:edit.clear",
+    "-",
+    ">Transform",
+    "cmd:transform.rotate|Rotate 90° Clockwise|{\"angle\": -90}",
+    "cmd:transform.rotate|Rotate 90° Counterclockwise|{\"angle\": 90}",
+    "cmd:transform.rotate|Rotate 180°|{\"angle\": 180}",
+    "-",
+    "cmd:transform.flip|Flip Horizontal|{\"axis\": \"horizontal\"}",
+    "cmd:transform.flip|Flip Vertical|{\"axis\": \"vertical\"}",
+    "-",
+    "cmd:transform.clear",
+    "<",
+    "menu:Object/Arrange",
+    "menu:Object/Select",
+    "-",
+    "cmd:object.group",
+    "cmd:object.ungroup",
+    "cmd:object.lock",
+    "cmd:object.unlockAll",
+    "cmd:object.hide",
+    "cmd:object.showAll",
+    "-",
+];
+/// Added to the object menu when a graphic frame is selected.
+const CONTEXT_FITTING: &[&str] = &["menu:Object/Fitting"];
+const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
+/// Added to the object menu when a text frame is selected.
+const CONTEXT_TEXT_FRAME: &[&str] = &["-", "cmd:type.fillWithPlaceholder", "cmd:object.textFrameOptions"];
+const CONTEXT_TEXT: &[&str] = &[
+    "cmd:edit.cut",
+    "cmd:edit.copy",
+    "cmd:edit.paste",
+    "cmd:edit.pasteWithoutFormatting",
+    "-",
+    "menu:Type/Insert Special Character",
+    "menu:Type/Insert White Space",
+    "menu:Type/Insert Break Character",
+    "cmd:type.fillWithPlaceholder",
+    "-",
+    "menu:Type/Change Case",
+    "-",
+    "ui:view.hiddenCharacters",
+    "ui:app.storyEditor",
+    "-",
+    "cmd:edit.selectAll",
+];
+const CONTEXT_CANVAS: &[&str] = &[
+    "cmd:edit.undo",
+    "cmd:edit.redo",
+    "-",
+    "cmd:edit.paste",
+    "cmd:edit.pasteInPlace",
+    "-",
+    "ui:view.zoomIn",
+    "ui:view.zoomOut",
+    "ui:view.fitPage",
+    "ui:view.fitSpread",
+    "ui:view.actualSize",
+    "-",
+    "ui:view.rulers",
+    "menu:View/Grids & Guides",
+    "-",
+    "cmd:edit.selectAll",
+];
+
+/// The menu-bar path context menu rows are keyed by (Edit › Menus doesn't list them); rows
+/// inserted with `menu:` keep their menu bar path.
+const CONTEXT_PATH: &str = "Context";
+
+/// The entries of a canvas context menu for the current selection.
+fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
+    match kind {
+        ContextMenu::Object => {
+            let (graphic, text) = app.session.active().map_or((false, false), |st| {
+                let items = || st.selection.items.iter().filter_map(|i| st.doc.item(*i));
+                (items().any(|it| matches!(it.content, pagenor_doc::Content::Graphic(_))), items().any(|it| it.is_text_frame()))
+            });
+            let mut v = CONTEXT_OBJECT.to_vec();
+            if graphic || text {
+                v.extend(CONTEXT_FITTING);
+            }
+            v.extend(CONTEXT_OBJECT_TAIL);
+            if text {
+                v.extend(CONTEXT_TEXT_FRAME);
+            }
+            v
+        }
+        ContextMenu::Text => CONTEXT_TEXT.to_vec(),
+        ContextMenu::Canvas => CONTEXT_CANVAS.to_vec(),
+    }
+}
+
+/// Parses context menu entries: the menu bar's syntax plus `menu:Menu/Submenu` (not inside a `>`
+/// submenu). Returns runs of items with the menu path they are hidden by: `Context`, or for an
+/// inserted submenu its menu bar menu, so hiding a row in the menu bar hides it here too.
+fn context_parse(entries: &[&str]) -> Vec<(String, Vec<Item>)> {
+    let tree = menu_tree();
+    let mut out = Vec::new();
+    let mut run: Vec<&str> = Vec::new();
+    for e in entries {
+        if let Some(path) = e.strip_prefix("menu:") {
+            out.push((CONTEXT_PATH.to_owned(), parse_entries(&std::mem::take(&mut run))));
+            let menu = path.rsplit_once('/').map_or(path, |(menu, _)| menu);
+            out.push((menu.to_owned(), menu_bar_submenu(&tree, path).into_iter().collect()));
+        } else {
+            run.push(e);
+        }
+    }
+    out.push((CONTEXT_PATH.to_owned(), parse_entries(&run)));
+    out
+}
+
+/// The menu bar's submenu at `Menu/Submenu`.
+fn menu_bar_submenu(tree: &[(&str, Vec<Item>)], path: &str) -> Option<Item> {
+    let (menu, sub) = path.split_once('/')?;
+    tree.iter().find(|(m, _)| *m == menu)?.1.iter().find(|it| matches!(it, Item::Sub(name, _) if name == sub)).cloned()
+}
+
+/// A canvas context menu: the menu bar's rows (labels, shortcuts, check marks, greyed when they
+/// can't run), scrolling when taller than the window.
+pub fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, kind: ContextMenu) {
+    let runs = context_parse(&context_entries(app, kind));
+    let max_height = menu_max_height(ui, None);
+    let mut scroll = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(1.0);
+    if ui.is_sizing_pass() {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    scroll.show(ui, |ui| menu_column(app, ui, &runs));
 }
 
 /// The key a menu item is hidden by (Edit › Menus).
@@ -1996,7 +2690,7 @@ fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
                 let shown = crate::i18n::tr(&app.ui.language, name).to_owned();
-                ui.menu_button(crate::rtl::widget(ui, shown), |ui| {
+                menu_button(ui, crate::rtl::widget(ui, shown), |ui| {
                     hidden += menu_items(app, ui, children, &sub);
                 });
             }
@@ -2082,17 +2776,120 @@ fn shortcut_modifiers_match(required: egui::Modifiers, actual: egui::Modifiers, 
         && required.alt == actual.alt
 }
 
+/// The command a paste event stands for besides plain Paste. egui-winit turns every ⌘+V chord into
+/// `Event::Paste` with the clipboard's text and drops the key press, so the shortcut table never
+/// sees Paste in Place's chord; the modifiers held when it went down tell them apart. `None` when
+/// the chord is another one, or the native menu's accelerator takes it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Option<&'static str> {
+    let id = "edit.pasteInPlace";
+    if app.native_menu && !app.ui.shortcuts.contains_key(id) {
+        return None;
+    }
+    let (m, k) = shortcut_of(app, id).as_deref().and_then(parse_shortcut)?;
+    (k == egui::Key::V && shortcut_modifiers_match(m, modifiers, cfg!(target_os = "macos"))).then_some(id)
+}
+
 /// Global keyboard shortcuts: menu commands and single-key tool shortcuts.
 pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if quit_shortcut(app, ctx) {
+        return;
+    }
+    // Presentation can retain the previous canvas/text-field focus although controls are
+    // hidden. Consume Esc before routing it to any tool or hidden text editor.
+    if app.ui.screen_mode == ScreenMode::Presentation
+        && app.ui.dialog.is_none()
+        && app.ui.palette.is_none()
+        && let Some(modifiers) = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat: false, modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+        })
+    {
+        ctx.input_mut(|i| i.consume_key(modifiers, egui::Key::Escape));
+        let _ = app.run("view.togglePresentation", json!({}));
+        return;
+    }
+    if app.ui.flyout.is_some() && app.ui.dialog.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.ui.flyout = None;
+        return;
+    }
     // Only a focused text field takes the keys: the canvas (or a button) having focus after a click
     // must not swallow tool shortcuts until Esc clears it.
-    if ctx.text_edit_focused() || app.ui.dialog.is_some() || app.ui.palette.is_some() {
+    // An open canvas context menu takes the keys (Escape closes it), as a native menu would.
+    if ctx.text_edit_focused()
+        || app.ui.dialog.is_some()
+        || app.ui.palette.is_some()
+        || crate::chrome::search_had_focus(ctx)
+        || app.canvas_composing(ctx)
+        || crate::canvas::context_menu_open(ctx)
+    {
         return;
     }
     let typing = app.session.wants_text();
     let events = ctx.input(|i| i.events.clone());
-    for e in events {
+    let layout_text = typing && events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty()));
+    // Order idle object-selection keys together: canvas would otherwise replay an
+    // earlier Escape after the menu's later Select All. Keep mixed input, gestures
+    // and UI-owned keys on their existing paths.
+    let ordered_selection_keys = !typing
+        && app.session.tool_id() == "selection"
+        && !app.session.tool_busy()
+        && app.session.active().is_some_and(|st| st.interaction.is_none())
+        && app.canvas_rect.is_some()
+        && app.view().is_some()
+        && !app.split
+        && !app.second_window
+        && ctx.memory(|m| m.top_modal_layer().is_none())
+        && !egui::Popup::is_any_open(ctx)
+        && ctx.input(|i| i.raw.focused && !i.pointer.any_down())
+        && events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat: false, .. }))
+        && {
+            let shortcuts = effective_shortcuts(app);
+            events.iter().enumerate().all(|(index, e)| match e {
+                egui::Event::ModifiersChanged(_) | egui::Event::Key { pressed: false, .. } => true,
+                egui::Event::Key { key, modifiers, pressed: true, repeat: false, .. } => {
+                    let command = shortcuts.iter().find(|(_, sc)| {
+                        parse_shortcut(sc).is_some_and(|(m, k)| k == *key && shortcut_modifiers_match(m, *modifiers, cfg!(target_os = "macos")))
+                    });
+                    if let Some((id, _)) = command {
+                        *key != egui::Key::Escape && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll")
+                    } else {
+                        // eframe emits this unbound modifier key in addition to ModifiersChanged.
+                        (*key == egui::Key::ControlLeft && modifiers.ctrl)
+                            || (*modifiers == egui::Modifiers::NONE
+                                && (*key == egui::Key::Escape || pagenor_tools::tool_for_shortcut(key.name()) == Some("selection")))
+                    }
+                }
+                // Web emits Text before Key; winit emits Key before Text. Admit
+                // only the text paired with an otherwise-unbound plain Selection key.
+                egui::Event::Text(text) if matches!(text.as_str(), "v" | "V") => {
+                    let before = events.iter().take(index).rev().find(|e| !matches!(e, egui::Event::ModifiersChanged(_)));
+                    let after = events.iter().skip(index.saturating_add(1)).find(|e| !matches!(e, egui::Event::ModifiersChanged(_)));
+                    before.into_iter().chain(after).any(|e| {
+                        let egui::Event::Key { key: egui::Key::V, modifiers, pressed: true, repeat: false, .. } = e else { return false };
+                        *modifiers == egui::Modifiers::NONE
+                            && pagenor_tools::tool_for_shortcut("V") == Some("selection")
+                            && !shortcuts.iter().any(|(_, sc)| {
+                                parse_shortcut(sc)
+                                    .is_some_and(|(m, k)| k == egui::Key::V && shortcut_modifiers_match(m, *modifiers, cfg!(target_os = "macos")))
+                            })
+                    })
+                }
+                _ => false,
+            })
+        };
+    let mut handled_escapes = Vec::new();
+    let mut consumed_shortcuts = Vec::new();
+    for (index, e) in events.into_iter().enumerate() {
         let egui::Event::Key { key, pressed: true, modifiers, repeat: false, .. } = e else { continue };
+        // Option/AltGr may produce a character in the selected layout. That character
+        // belongs to text entry, rather than an Alt shortcut sharing its physical key.
+        if layout_text && modifiers.alt && !modifiers.mac_cmd {
+            continue;
+        }
         // Command shortcuts.
         let mut fired: Option<String> = None;
         let all = effective_shortcuts(app);
@@ -2103,6 +2900,7 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
                 && shortcut_modifiers_match(m, modifiers, cfg!(target_os = "macos"))
                 && (m.command || m.ctrl || m.alt || !typing)
                 && !(id == "edit.clear" && typing)
+                && (id != "object.textFrameOptions" || enabled(app, id))
             {
                 // Single-key shortcuts (W) only when not typing.
                 if !m.command && !m.ctrl && !m.alt && !m.shift && typing {
@@ -2119,8 +2917,21 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             if app.native_shortcuts.contains(&id) && !app.ui.shortcuts.contains_key(&id) {
                 continue; // The native menu handles it.
             }
+            // The opening shortcut belongs to this action, not to a newly opened dialog.
+            consumed_shortcuts.push((modifiers, key));
             // Like choosing the menu item: "…" commands open their dialog.
             activate(app, &id, &Value::Null);
+            continue;
+        }
+        if ordered_selection_keys && key == egui::Key::Escape {
+            // Use the same tool action/fallback as canvas, including an empty selection.
+            let vi = app.view_info();
+            let handled = app.session.tool_key(pagenor_tools::ToolKey::Escape, pagenor_tools::Mods::default(), vi).unwrap_or(false);
+            if !handled {
+                let _ = app.run("edit.deselectAll", json!({}));
+            }
+            app.after_engine();
+            handled_escapes.push(index);
             continue;
         }
         // Tool shortcuts (single keys, Shift+key).
@@ -2138,6 +2949,54 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
             }
         }
     }
+    if !handled_escapes.is_empty() {
+        ctx.input_mut(|i| {
+            let mut index = 0;
+            i.events.retain(|_| {
+                let keep = handled_escapes.binary_search(&index).is_err();
+                index += 1;
+                keep
+            });
+        });
+    }
+    // Escape indices refer to the original event list. Consume command keys only
+    // after removing those Escapes, before the canvas or newly opened UI sees them.
+    if !consumed_shortcuts.is_empty() {
+        ctx.input_mut(|i| {
+            for (modifiers, key) in consumed_shortcuts {
+                i.consume_key(modifiers, key);
+            }
+        });
+    }
+}
+
+/// Quit remains available during composition. AppKit/winit can consume its key-down
+/// to commit a dead key; macOS still forwards the Command key-up. Only this lifecycle
+/// action uses that fallback, and request_quit is idempotent with native menu delivery.
+#[cfg(not(target_arch = "wasm32"))]
+fn quit_shortcut(app: &mut DesignApp, ctx: &egui::Context) -> bool {
+    if app.ui.dialog.is_some() || !ctx.input(|i| i.focused) {
+        return false;
+    }
+    let Some((required, quit_key)) = effective_shortcuts(app).iter().find(|(id, _)| id == "app.quit").and_then(|(_, sc)| parse_shortcut(sc)) else {
+        return false;
+    };
+    // Alt/AltGr layout characters and unmodified letters retain text ownership.
+    if !required.command && !required.ctrl {
+        return false;
+    }
+    let matches = |event: &egui::Event| {
+        matches!(event, egui::Event::Key { key, pressed, repeat: false, modifiers, .. }
+            if *key == quit_key
+                && (*pressed || (cfg!(target_os = "macos") && app.native_menu))
+                && shortcut_modifiers_match(required, *modifiers, cfg!(target_os = "macos")))
+    };
+    if !ctx.input(|i| i.events.iter().any(matches)) {
+        return false;
+    }
+    ctx.input_mut(|i| i.events.retain(|e| !matches(e)));
+    activate_native(app, ctx, "app.quit", &Value::Null);
+    true
 }
 
 /// Quick Apply (⌘Return): the document's styles and every command, searched by name.
@@ -2154,6 +3013,11 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
         );
         r.request_focus();
         let items = quick_apply_items(&app.session, &q);
+        let enter = ui.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if !modifiers.command && !modifiers.ctrl && !modifiers.alt)
+            })
+        });
         egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
             for (i, it) in items.iter().enumerate() {
                 let mut b = egui::Button::new(it.label.as_str()).frame(false);
@@ -2162,7 +3026,11 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
                 } else if !it.kind.is_empty() {
                     b = b.shortcut_text(it.kind);
                 }
-                if ui.add_sized([460.0, 22.0], b).clicked() || (i == 0 && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                let size = egui::vec2(460.0, 22.0);
+                let row = ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min), |ui| {
+                    ui.add(b.min_size(size))
+                });
+                if row.inner.clicked() || (i == 0 && enter) {
                     run = Some((it.id.clone(), it.params.clone()));
                 }
             }
@@ -2191,7 +3059,7 @@ pub struct QuickItem {
 /// Quick Apply matches (styles first, as InDesign lists them), at most 14.
 pub fn quick_apply_items(session: &pagenor_engine::Session, query: &str) -> Vec<QuickItem> {
     let ql = query.to_lowercase();
-    let hit = |label: &str, id: &str| ql.is_empty() || label.to_lowercase().contains(&ql) || id.to_lowercase().contains(&ql);
+    let hit = |label: &str, id: &str| quick_match(&ql, &[label, id]);
     let mut out = Vec::new();
     if let Some(st) = session.active() {
         let styles = &st.doc.styles;
@@ -2215,20 +3083,514 @@ pub fn quick_apply_items(session: &pagenor_engine::Session, query: &str) -> Vec<
     if ql.is_empty() {
         out.clear();
     }
-    let commands = pagenor_engine::command_specs()
-        .iter()
-        .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
-        .map(|c| (c.id, c.label, c.shortcut))
-        .chain(UI_COMMANDS.iter().map(|c| (c.0, c.1, c.2)))
-        .filter(|(id, l, _)| hit(l, id))
-        .map(|(id, l, sc)| QuickItem { label: l.to_string(), id: id.to_string(), params: json!({}), shortcut: sc.map(str::to_string), kind: "" });
+    let commands = quick_commands().filter(|(id, l, _)| hit(l, id)).map(|(id, l, sc)| QuickItem {
+        label: l.to_string(),
+        id: id.to_string(),
+        params: json!({}),
+        shortcut: sc.map(str::to_string),
+        kind: "",
+    });
     out.extend(commands);
     out.truncate(14);
     out
 }
 
+/// The commands Quick Apply and the application bar's search find: (id, label, default shortcut).
+fn quick_commands() -> impl Iterator<Item = (&'static str, &'static str, Option<&'static str>)> {
+    pagenor_engine::command_specs()
+        .iter()
+        .filter(|c| !c.menu.is_empty() || c.shortcut.is_some())
+        .map(|c| (c.id, c.label, c.shortcut))
+        .chain(UI_COMMANDS.iter().map(|c| (c.0, c.1, c.2)))
+}
+
+/// Whether any of `texts` contains the lowercased query (an empty query matches everything).
+fn quick_match(query_lower: &str, texts: &[&str]) -> bool {
+    query_lower.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(query_lower))
+}
+
+/// The application bar's search: the commands whose label in the interface language, English
+/// label or id contains `query`, labelled in the interface language with the shortcut in effect.
+/// Nothing for an empty query; at most 14.
+pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
+    let ql = query.trim().to_lowercase();
+    if ql.is_empty() {
+        return Vec::new();
+    }
+    let lang = app.ui.language.as_str();
+    let mut out: Vec<QuickItem> = Vec::new();
+    for (id, label, _) in quick_commands() {
+        let shown = crate::i18n::tr(lang, label);
+        if out.len() >= 14 || out.iter().any(|it| it.id == id) || !quick_match(&ql, &[shown, label, id]) {
+            continue;
+        }
+        out.push(QuickItem { label: shown.to_string(), id: id.to_string(), params: Value::Null, shortcut: shortcut_of(app, id), kind: "" });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    /// The entries (command ids) of a menu bar menu, submenus included.
+    fn menu_ids(title: &str) -> Vec<&'static str> {
+        let items = MENUS.iter().find(|(t, _)| *t == title).map(|(_, items)| *items).unwrap_or_default();
+        items.iter().filter_map(|e| e.split_once(':').map(|(_, rest)| rest.split('|').next().unwrap_or(rest))).collect()
+    }
+
+    #[test]
+    fn view_items_are_in_the_view_menu_as_in_indesign() {
+        let (view, typ) = (menu_ids("View"), menu_ids("Type"));
+        for id in [
+            "view.rotateSpread",
+            "view.proofSetup",
+            "view.proofColors",
+            "view.flattenerPreview",
+            "view.separations",
+            "view.taggedFrames",
+            "view.tagMarkers",
+        ] {
+            assert!(view.contains(&id), "{id} is in View");
+            assert!(!typ.contains(&id), "{id} isn't in Type");
+        }
+        // Screen Mode and Extras are View submenus; Show Hidden Characters stays in Type.
+        assert!(view.contains(&"view.screenMode") && view.contains(&"view.frameEdges"));
+        assert!(typ.contains(&"view.hiddenCharacters") && !view.contains(&"view.hiddenCharacters"));
+        // W still toggles Normal / Preview without a menu entry.
+        assert_eq!(ui_label("view.togglePreview").and_then(|c| c.1), Some("W"));
+    }
+
+    #[test]
+    fn screen_mode_menu_checks_the_current_mode() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let mode = |app: &DesignApp, m: &str| checked(app, "view.screenMode", &json!({ "mode": m }));
+        assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(true), Some(false)));
+        app.ui.screen_mode = crate::ScreenMode::Preview;
+        assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(false), Some(true)));
+    }
+
+    fn dialog_control(app: &mut crate::DesignApp, method: &str, params: Value) -> Value {
+        let (request, _reply) = crate::control::ControlRequest::new(method, params);
+        let crate::control::Outcome::Done(response) = crate::control::handle(app, &egui::Context::default(), &request) else {
+            panic!("dialog command must finish without a screenshot");
+        };
+        assert_eq!(response["ok"], true, "{method}: {response}");
+        response["result"].clone()
+    }
+
+    fn app_with_mixed_column_rules() -> (crate::DesignApp, [pagenor_doc::ItemId; 2]) {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frames = [20, 260].map(|x| {
+            let frame = app.run("frame.create", json!({"rect": [x, 20, x + 220, 220], "content": "text"})).unwrap();
+            pagenor_doc::ItemId(frame["id"].as_u64().unwrap())
+        });
+        app.run(
+            "object.textFrameOptions",
+            json!({"ids": [frames[0]], "columns": 3, "gutter": 18, "inset": [2, 4, 6, 8], "verticalJustification": "center",
+                "columnRule": false, "columnRuleWeight": 1, "columnRuleColor": "[Black]", "columnRuleTint": 0.5,
+                "columnRuleTopInset": 2, "columnRuleBottomInset": 3, "columnRuleOffset": 4}),
+        )
+        .unwrap();
+        app.run(
+            "object.textFrameOptions",
+            json!({"ids": [frames[1]], "columns": 2, "gutter": 12, "inset": [10, 20, 30, 40], "verticalJustification": "bottom",
+                "columnRule": true, "columnRuleWeight": 4, "columnRuleColor": "[Paper]", "columnRuleTint": 0.25,
+                "columnRuleTopInset": 5, "columnRuleBottomInset": 6, "columnRuleOffset": 7}),
+        )
+        .unwrap();
+        app.run("selection.set", json!({"ids": frames})).unwrap();
+        (app, frames)
+    }
+
+    fn text_frame_dialog_harness(mut app: crate::DesignApp) -> egui_kittest::Harness<'static, crate::DesignApp> {
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        let mut fonts_installed = false;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 800.0)).build_ui_state(
+            move |ui, app| {
+                if fonts_installed {
+                    crate::dialogs::show(app, ui.ctx());
+                } else {
+                    crate::theme::install_fonts(ui.ctx(), "en");
+                    ui.ctx().request_repaint();
+                    fonts_installed = true;
+                }
+            },
+            app,
+        );
+        harness.run();
+        harness
+    }
+
+    fn assert_text_frame_edit_roundtrips(
+        app: &mut crate::DesignApp,
+        before: &pagenor_doc::Document,
+        expected: &pagenor_doc::Document,
+        selection: &pagenor_doc::Selection,
+        undo_len: usize,
+    ) {
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *expected, "only the explicitly edited properties may change");
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len + 1, "one confirmation is one undo step for both frames");
+        app.run("edit.undo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *before);
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len);
+        app.run("edit.redo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        assert_eq!(*st.doc, *expected);
+        assert_eq!(st.selection, *selection);
+        assert_eq!(st.history.undo.len(), undo_len + 1);
+    }
+
+    #[test]
+    fn mixed_column_rules_survive_no_edit_and_widget_edits_undo() {
+        use egui_kittest::kittest::Queryable;
+
+        for toggles in 0..=2 {
+            let (app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let revision = st.revision;
+            let undo_len = st.history.undo.len();
+            let mut harness = text_frame_dialog_harness(app);
+            for _ in 0..toggles {
+                harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Insert Column Rule").click();
+                harness.run();
+            }
+            // Confirm through the actual dialog's keyboard path, including the no-edit case.
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            assert!(harness.state().ui.dialog.is_none());
+            if toggles == 0 {
+                let st = harness.state().session.doc().unwrap();
+                assert!(std::sync::Arc::ptr_eq(&st.doc, &before));
+                assert_eq!(st.selection, selection);
+                assert_eq!(st.revision, revision);
+                assert_eq!(st.history.undo.len(), undo_len);
+            } else {
+                let mut expected = (*before).clone();
+                for id in frames {
+                    expected.item_mut(id).unwrap().text_frame_mut().unwrap().options.column_rule = toggles == 1;
+                }
+                assert_text_frame_edit_roundtrips(harness.state_mut(), &before, &expected, &selection, undo_len);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_widget_edits_preserve_other_fields_and_inset_edges() {
+        use egui_kittest::kittest::Queryable;
+
+        for (label, field, intermediate, final_value) in [
+            ("Number of columns", "columns", "4", "3"),
+            ("Gutter", "gutter", "19 pt", "18 pt"),
+            ("Top", "insetTop", "7 pt", "2 pt"),
+            ("Left", "insetLeft", "9 pt", "4 pt"),
+            ("Bottom", "insetBottom", "11 pt", "6 pt"),
+            ("Right", "insetRight", "13 pt", "8 pt"),
+        ] {
+            let (app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let undo_len = st.history.undo.len();
+            let mut harness = text_frame_dialog_harness(app);
+            harness.get_by_role_and_label(egui::accesskit::Role::TextInput, label).click();
+            harness.run();
+            // A changed value followed by the original value must remain an explicit edit.
+            for value in [intermediate, final_value] {
+                harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+                harness.run();
+                harness.get_by_role_and_label(egui::accesskit::Role::TextInput, label).type_text(value);
+                harness.run();
+            }
+            assert_eq!(harness.state().ui.dialog.as_ref().unwrap().fields[field], json!(final_value));
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+            assert!(harness.state().ui.dialog.is_none());
+            let mut expected = (*before).clone();
+            for id in frames {
+                let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+                match field {
+                    "columns" => options.columns = 3,
+                    "gutter" => options.gutter = 18.0,
+                    "insetTop" => options.inset[0] = 2.0,
+                    "insetLeft" => options.inset[1] = 4.0,
+                    "insetBottom" => options.inset[2] = 6.0,
+                    "insetRight" => options.inset[3] = 8.0,
+                    _ => panic!("unexpected widget field: {field}"),
+                }
+            }
+            assert_text_frame_edit_roundtrips(harness.state_mut(), &before, &expected, &selection, undo_len);
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_control_no_edit_preserves_layout_and_redo_history() {
+        let (mut app, frames) = app_with_mixed_column_rules();
+        app.run("object.textFrameOptions", json!({"ids": [frames[0]], "columns": 4})).unwrap();
+        app.run("edit.undo", json!({})).unwrap();
+        let st = app.session.doc().unwrap();
+        let before = st.doc.clone();
+        let selection = st.selection.clone();
+        let revision = st.revision;
+        let undo_len = st.history.undo.len();
+        let redo_len = st.history.redo.len();
+        assert!(redo_len > 0);
+        for explicit_open in [false, true] {
+            if explicit_open {
+                dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": {}}));
+            } else {
+                activate(&mut app, "object.textFrameOptions", &Value::Null);
+            }
+            assert_eq!(dialog_control(&mut app, "ui.dialog.confirm", json!({})), Value::Null);
+            assert!(app.ui.dialog.is_none());
+            let st = app.session.doc().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&st.doc, &before));
+            assert_eq!(st.selection, selection);
+            assert_eq!(st.revision, revision);
+            assert_eq!(st.history.undo.len(), undo_len);
+            assert_eq!(st.history.redo.len(), redo_len);
+        }
+        app.run("edit.redo", json!({})).unwrap();
+        let mut expected = (*before).clone();
+        expected.item_mut(frames[0]).unwrap().text_frame_mut().unwrap().options.columns = 4;
+        assert_eq!(*app.session.doc().unwrap().doc, expected);
+    }
+
+    #[test]
+    fn mixed_text_frame_control_set_and_open_apply_only_explicit_fields_and_undo() {
+        for (field, value) in [
+            ("columns", json!(3)),
+            ("gutter", json!("18 pt")),
+            ("verticalJustification", json!("center")),
+            ("insetTop", json!("2 pt")),
+            ("insetLeft", json!("4 pt")),
+            ("insetBottom", json!("6 pt")),
+            ("insetRight", json!("8 pt")),
+            ("columnRule", json!(false)),
+            ("columnRuleWeight", json!("1 pt")),
+            ("columnRuleColor", json!("[Black]")),
+            ("columnRuleTint", json!("50")),
+            ("columnRuleTopInset", json!("2 pt")),
+            ("columnRuleBottomInset", json!("3 pt")),
+            ("columnRuleOffset", json!("4 pt")),
+        ] {
+            for explicit_open in [false, true] {
+                let (mut app, frames) = app_with_mixed_column_rules();
+                let st = app.session.doc().unwrap();
+                let before = st.doc.clone();
+                let selection = st.selection.clone();
+                let undo_len = st.history.undo.len();
+                // Each explicit value equals A's displayed value; B still needs that property set.
+                let dialog = if explicit_open {
+                    let mut fields = serde_json::Map::new();
+                    fields.insert(field.into(), value.clone());
+                    dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": fields}))
+                } else {
+                    activate(&mut app, "object.textFrameOptions", &Value::Null);
+                    dialog_control(&mut app, "ui.dialog.set", json!({"field": field, "value": value}))
+                };
+                assert_eq!(dialog["fields"][field], value, "control responses retain the field-map shape");
+                dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+                let mut expected = (*before).clone();
+                for id in frames {
+                    let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+                    match field {
+                        "columns" => options.columns = 3,
+                        "gutter" => options.gutter = 18.0,
+                        "verticalJustification" => options.vertical_justification = pagenor_doc::VerticalJustification::Center,
+                        "insetTop" => options.inset[0] = 2.0,
+                        "insetLeft" => options.inset[1] = 4.0,
+                        "insetBottom" => options.inset[2] = 6.0,
+                        "insetRight" => options.inset[3] = 8.0,
+                        "columnRule" => options.column_rule = false,
+                        "columnRuleWeight" => options.column_rule_weight = 1.0,
+                        "columnRuleColor" => options.column_rule_color = "[Black]".into(),
+                        "columnRuleTint" => options.column_rule_tint = 0.5,
+                        "columnRuleTopInset" => options.column_rule_top_inset = 2.0,
+                        "columnRuleBottomInset" => options.column_rule_bottom_inset = 3.0,
+                        "columnRuleOffset" => options.column_rule_offset = 4.0,
+                        _ => panic!("unexpected test field: {field}"),
+                    }
+                }
+                assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_text_frame_open_numeric_seeds_preserve_omitted_edges_and_point_units() {
+        let (mut app, frames) = app_with_mixed_column_rules();
+        let st = app.session.doc().unwrap();
+        let before = st.doc.clone();
+        let selection = st.selection.clone();
+        let undo_len = st.history.undo.len();
+        dialog_control(
+            &mut app,
+            "ui.dialog.open",
+            json!({"id": "textFrameOptions", "fields": {"columns": 4, "gutter": 24, "insetTop": 7, "insetRight": 11,
+                "verticalJustification": "justify", "columnRule": true, "columnRuleWeight": 2, "columnRuleColor": "[Paper]",
+                "columnRuleTint": 60, "columnRuleTopInset": 7, "columnRuleBottomInset": 8, "columnRuleOffset": -3}}),
+        );
+        dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+        let mut expected = (*before).clone();
+        for id in frames {
+            let options = &mut expected.item_mut(id).unwrap().text_frame_mut().unwrap().options;
+            options.columns = 4;
+            options.gutter = 24.0;
+            options.inset[0] = 7.0;
+            options.inset[3] = 11.0;
+            options.vertical_justification = pagenor_doc::VerticalJustification::Justify;
+            options.column_rule = true;
+            options.column_rule_weight = 2.0;
+            options.column_rule_color = "[Paper]".into();
+            options.column_rule_tint = 0.6;
+            options.column_rule_top_inset = 7.0;
+            options.column_rule_bottom_inset = 8.0;
+            options.column_rule_offset = -3.0;
+        }
+        assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+    }
+
+    #[test]
+    fn control_open_keeps_other_dialog_seed_behavior() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        dialog_control(
+            &mut app,
+            "ui.dialog.open",
+            json!({"id": "frameSize", "fields": {"spread": 0, "x": 40, "y": 30, "width": "10p0", "height": "5p0", "shape": "rectangle", "content": "text"}}),
+        );
+        let created = dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+        let id = pagenor_doc::ItemId(created["id"].as_u64().unwrap());
+        let after = app.session.doc().unwrap().doc.clone();
+        assert_eq!(after.item(id).unwrap().bounds(), pagenor_geom::Rect::new(40.0, 30.0, 160.0, 90.0));
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *before);
+        app.run("edit.redo", json!({})).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *after);
+    }
+
+    #[test]
+    fn mixed_text_frame_legacy_scalar_inset_set_and_open_preserve_other_fields() {
+        for open_with_scalar in [false, true] {
+            let (mut app, frames) = app_with_mixed_column_rules();
+            let st = app.session.doc().unwrap();
+            let before = st.doc.clone();
+            let selection = st.selection.clone();
+            let undo_len = st.history.undo.len();
+            if open_with_scalar {
+                dialog_control(&mut app, "ui.dialog.open", json!({"id": "textFrameOptions", "fields": {"inset": "0p6"}}));
+            } else {
+                activate(&mut app, "object.textFrameOptions", &Value::Null);
+                dialog_control(&mut app, "ui.dialog.set", json!({"field": "inset", "value": "0p6"}));
+            }
+            // The existing explicit scalar takes precedence even beside a per-edge edit.
+            dialog_control(&mut app, "ui.dialog.set", json!({"field": "insetTop", "value": "99 pt"}));
+            dialog_control(&mut app, "ui.dialog.confirm", json!({}));
+            let mut expected = (*before).clone();
+            for id in frames {
+                expected.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset = [6.0; 4];
+            }
+            assert_text_frame_edit_roundtrips(&mut app, &before, &expected, &selection, undo_len);
+        }
+    }
+
+    #[test]
+    fn text_frame_dialog_preserves_existing_settings_and_applies_column_rules() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let frame = app.session.execute("frame.create", &json!({"rect": [20, 20, 220, 220], "content": "text"})).unwrap();
+        let id = pagenor_doc::ItemId(frame["id"].as_u64().unwrap());
+        app.session.doc_mut().unwrap().selection = pagenor_doc::Selection::items(vec![id]);
+        app.run("object.textFrameOptions", json!({"columns": 3, "gutter": 18, "inset": [2, 4, 6, 8], "verticalJustification": "center"})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(*app.session.doc().unwrap().doc, *before, "opening and confirming must not reset a frame");
+        activate(&mut app, "object.textFrameOptions", &Value::Null);
+        dialog_control(&mut app, "ui.dialog.set", json!({"field": "columnRule", "value": true}));
+        dialog_control(&mut app, "ui.dialog.set", json!({"field": "columnRuleWeight", "value": "2 pt"}));
+        crate::dialogs::confirm(&mut app).unwrap();
+        let options = &app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options;
+        assert!(options.column_rule);
+        assert_eq!(options.column_rule_weight, 2.0);
+        assert_eq!(options.inset, [2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(options.columns, 3);
+    }
+
+    #[test]
+    fn command_search_matches_labels_in_the_interface_language() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.ui.language = "de".into();
+        let items = command_search(&app, "gruppieren");
+        let group = items.iter().find(|i| i.id == "object.group").unwrap();
+        assert_eq!(group.label, "Gruppieren");
+        assert_eq!(group.shortcut.as_deref(), Some("Cmd+G"));
+        assert!(command_search(&app, "group").iter().any(|i| i.id == "object.group"), "English labels match too");
+        assert!(command_search(&app, "  ").is_empty());
+        assert!(command_search(&app, "e").len() <= 14);
+    }
+
+    #[test]
+    fn escape_and_shift_w_leave_presentation_for_the_previous_mode() {
+        // Presentation hides every control, so the keyboard must get out of it (#493).
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.session.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "graphic"})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let key = |k: egui::Key, modifiers: egui::Modifiers| {
+            vec![
+                egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers },
+                egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers },
+            ]
+        };
+        let selected = |app: &crate::DesignApp| app.session.active().map(|d| d.selection.items.len()).unwrap_or(0);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        app.run("view.screenMode", json!({"mode": "preview"})).unwrap();
+        app.select_tool("rectangleFrame");
+        assert_eq!(selected(&app), 1, "the new frame is selected");
+
+        frame(&mut app, key(egui::Key::W, egui::Modifiers::SHIFT));
+        assert_eq!(app.ui.screen_mode, ScreenMode::Presentation, "Shift+W enters Presentation");
+        assert_eq!(app.session.tool_id(), "rectangleFrame", "Shift+W is not a tool shortcut");
+        frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+        assert_eq!(app.ui.screen_mode, ScreenMode::Preview, "Esc returns to the mode Presentation was entered from");
+        assert_eq!(app.session.tool_id(), "rectangleFrame", "Esc only left Presentation");
+        assert_eq!(selected(&app), 1, "Esc only left Presentation");
+
+        frame(&mut app, key(egui::Key::W, egui::Modifiers::SHIFT));
+        frame(&mut app, key(egui::Key::W, egui::Modifiers::SHIFT));
+        assert_eq!(app.ui.screen_mode, ScreenMode::Preview, "Shift+W leaves Presentation for the previous mode");
+
+        app.run("view.screenMode", json!({"mode": "presentation"})).unwrap();
+        frame(&mut app, key(egui::Key::W, egui::Modifiers::NONE));
+        assert_eq!(app.ui.screen_mode, ScreenMode::Normal, "W from any mode but Normal goes to Normal");
+
+        // Outside Presentation, Esc keeps its usual meaning.
+        frame(&mut app, key(egui::Key::Escape, egui::Modifiers::NONE));
+        assert_eq!(app.ui.screen_mode, ScreenMode::Normal);
+        assert_eq!(app.session.tool_id(), "selection");
+    }
+
     use super::*;
 
     #[test]
@@ -2246,6 +3608,42 @@ mod tests {
         assert!(app.ui.pending_urls.is_empty());
     }
 
+    #[test]
+    fn mac_settings_follow_about_in_the_app_menu_and_leave_edit() {
+        let pos = |command: &str| MAC_APP_MENU.iter().position(|m| matches!(m, AppMenuItem::Cmd { command: c, .. } if *c == command));
+        let (Some(about), Some(settings)) = (pos("help.about"), pos("app.preferences")) else { panic!("About and Settings are in the app menu") };
+        assert!(about < settings);
+        assert_eq!(MAC_APP_MENU.get(settings - 1), Some(&AppMenuItem::Sep));
+        assert_eq!(MAC_APP_MENU.get(settings + 1), Some(&AppMenuItem::Sep));
+        let label = |command: &str| {
+            MAC_APP_MENU.iter().find_map(|m| match m {
+                AppMenuItem::Cmd { label, command: c, .. } if *c == command => Some(*label),
+                _ => None,
+            })
+        };
+        assert_eq!(label("app.preferences"), Some("Settings…"));
+        assert_ne!(crate::i18n::tr("de", "Settings…"), "Settings…");
+        let ids = MAC_APP_MENU.iter().filter_map(|m| if let AppMenuItem::Cmd { id, .. } = m { Some(*id) } else { None }).collect::<Vec<_>>();
+        assert!(ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id)), "native ids are unique: {ids:?}");
+
+        let edit = |tree: Vec<(&'static str, Vec<Item>)>| {
+            let mut out = Vec::new();
+            walk(&tree.into_iter().find(|(t, _)| *t == "Edit").map(|(_, e)| e).unwrap_or_default(), &mut out);
+            out.into_iter().map(|(_, id, _)| id).collect::<Vec<_>>()
+        };
+        assert!(edit(menu_tree()).iter().any(|id| id == "app.preferences"), "the in-window Edit menu keeps Preferences");
+        let native = native_menu_tree();
+        let mut all = Vec::new();
+        for (_, entries) in &native {
+            walk(entries, &mut all);
+        }
+        assert!(!all.iter().any(|(_, id, _)| id == "app.preferences"), "the macOS menu bar has Settings only in the app menu");
+        assert!(edit(native_menu_tree()).iter().any(|id| id == "app.keyboardShortcuts"));
+        for (title, entries) in &native {
+            assert!(!matches!(entries.first(), Some(Item::Sep)) && !matches!(entries.last(), Some(Item::Sep)), "{title}: separator at an end");
+            assert!(entries.windows(2).all(|w| !matches!(w, [Item::Sep, Item::Sep])), "{title}: doubled separator");
+        }
+    }
     fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
         for it in items {
             match it {
@@ -2269,12 +3667,14 @@ mod tests {
         };
         let frame_fill = |app: &crate::DesignApp| app.session.active().unwrap().doc.item(pagenor_doc::ItemId(fid)).unwrap().fill.swatch.clone();
         assert!(!crate::panels::colors_affect_text(&app));
+        app.run("swatch.create", json!({"name": "Cyan", "color": {"c": 100, "m": 0, "y": 0, "k": 0}})).unwrap();
         crate::panels::apply_swatch(&mut app, false, "Cyan", None).unwrap();
         assert_eq!(frame_fill(&app), "Cyan");
         assert_eq!(text_fill(&app), None);
         let r = run_ui(&mut app, "app.formattingAffectsText", &json!({})).unwrap().unwrap();
         assert_eq!(r["on"], true, "toggles on");
         assert!(crate::panels::colors_affect_text(&app));
+        app.run("swatch.create", json!({"name": "Magenta", "color": {"c": 0, "m": 100, "y": 0, "k": 0}})).unwrap();
         crate::panels::apply_swatch(&mut app, false, "Magenta", Some(0.5)).unwrap();
         assert_eq!(frame_fill(&app), "Cyan", "the frame is left alone");
         assert_eq!(text_fill(&app).as_deref(), Some("Magenta"));
@@ -2304,9 +3704,25 @@ mod tests {
     }
 
     #[test]
+    fn platform_shortcuts_leave_mac_system_keys_free() {
+        let app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let keys = effective_shortcuts(&app);
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+,"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Ctrl+Cmd+H"));
+            assert!(!keys.iter().any(|(_, sc)| sc == "Cmd+H" || sc == "Cmd+K" || sc == "Cmd+M" || sc == "Cmd+Alt+H"));
+        } else {
+            assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+            assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Cmd+H"));
+        }
+        assert!(parse_shortcut(SETTINGS_SHORTCUT).is_some());
+        assert!(parse_shortcut(EDGES_SHORTCUT).is_some());
+    }
+
+    #[test]
     fn custom_shortcuts_override_defaults() {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
-        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
+        assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some(SETTINGS_SHORTCUT));
         let r = run_ui(&mut app, "window.setShortcut", &json!({"id": "app.preferences", "shortcut": "Cmd+Alt+Shift+9"})).unwrap().unwrap();
         assert_eq!(r["shortcut"], "Cmd+Alt+Shift+9");
         assert!(effective_shortcuts(&app).contains(&("app.preferences".into(), "Cmd+Alt+Shift+9".into())));
@@ -2326,7 +3742,12 @@ mod tests {
             assert_eq!(shortcut_text("Cmd+Alt+3"), "⌥⌘3");
             assert_eq!(shortcut_text("Cmd+Shift+."), "⇧⌘.");
         } else {
-            assert_eq!(shortcut_text("Cmd+Alt+3"), "Alt+Ctrl+3");
+            // InDesign's order on Windows: Ctrl+Alt+Shift+.
+            assert_eq!(shortcut_text("Cmd+Alt+3"), "Ctrl+Alt+3");
+            assert_eq!(shortcut_text("Cmd+Alt+Shift+C"), "Ctrl+Alt+Shift+C");
+            assert_eq!(shortcut_text("Cmd+Shift+E"), "Ctrl+Shift+E");
+            assert_eq!(shortcut_text("Ctrl+Cmd+Q"), "Ctrl+Q");
+            assert_eq!(shortcut_text("Cmd+-"), "Ctrl+-");
         }
     }
 
@@ -2363,6 +3784,188 @@ mod tests {
         assert_eq!(run_ui(&mut app, "window.split", &json!({})).unwrap().unwrap(), json!(false));
         assert_eq!(app.pane, 0);
         frame(&mut app);
+    }
+
+    #[test]
+    fn split_window_dispatches_text_once_to_the_shared_document() {
+        for focus_pane in [0, 1] {
+            let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            let made = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+            let story = made["story"].as_u64().unwrap();
+            app.session.set_tool("type");
+            app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+            assert!(app.session.wants_text());
+            app.run("window.split", json!({"on": true})).unwrap();
+            app.focus_pane = focus_pane;
+
+            let ctx = egui::Context::default();
+            let frame = |app: &mut crate::DesignApp, events| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                });
+                out.textures_delta.clear();
+            };
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            frame(&mut app, vec![]);
+            let undo_before = app.session.active().unwrap().history.undo.len();
+            frame(&mut app, vec![egui::Event::Text("A".into())]);
+            let text = app.run("story.get", json!({"story": story})).unwrap();
+            assert_eq!(text["text"], "A", "one key press with pane {focus_pane} focused");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "");
+
+            // A press and key arriving together must use the newly focused pane, whichever
+            // canvas is drawn first. Middle-click changes pane focus without moving the caret.
+            let other = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+            frame(&mut app, vec![egui::Event::PointerMoved(other)]);
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerButton { pos: other, button: egui::PointerButton::Middle, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::Text("B".into()),
+                ],
+            );
+            assert_eq!(app.focus_pane, 1 - focus_pane);
+            assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
+            assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
+        }
+    }
+
+    #[test]
+    fn split_window_click_focus_routes_menu_zoom_but_hover_scroll_stays_local() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        let mut frame = |app: &mut crate::DesignApp, events| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let left = app.canvas_rect.unwrap().center();
+        let right = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
+        let cameras = |app: &mut crate::DesignApp| {
+            let current = app.pane;
+            app.switch_pane(0);
+            let left = *app.view().unwrap();
+            app.switch_pane(1);
+            let right = *app.view().unwrap();
+            app.switch_pane(current);
+            [left, right]
+        };
+        let button =
+            |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![egui::Event::PointerMoved(right)]);
+        frame(&mut app, vec![button(right, true)]);
+        frame(&mut app, vec![button(right, false)]);
+        assert_eq!((app.pane, app.focus_pane), (1, 1));
+        let before = cameras(&mut app);
+        app.run("view.zoom", json!({"zoom": 2.0})).unwrap();
+        let zoomed = cameras(&mut app);
+        assert_eq!(zoomed[0], before[0], "menu zoom leaves the other camera alone");
+        assert!((zoomed[1].zoom - 2.0).abs() < 1e-9);
+
+        frame(&mut app, vec![egui::Event::PointerMoved(left)]);
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -40.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let scrolled = cameras(&mut app);
+        assert_eq!(scrolled[1], zoomed[1], "hover scroll leaves the focused camera alone");
+        assert_ne!(scrolled[0].origin, zoomed[0].origin);
+        assert_eq!((app.pane, app.focus_pane), (1, 1), "hovering does not move menu focus");
+
+        frame(&mut app, vec![button(left, true)]);
+        frame(&mut app, vec![button(left, false)]);
+        assert_eq!((app.pane, app.focus_pane), (0, 0));
+        app.run("view.zoom", json!({"zoom": 1.0})).unwrap();
+        let final_views = cameras(&mut app);
+        assert!((final_views[0].zoom - 1.0).abs() < 1e-9);
+        assert_eq!(final_views[1], scrolled[1]);
+    }
+
+    #[test]
+    fn split_window_contextual_bars_have_independent_widget_ids() {
+        fn id_warnings(shape: &egui::Shape, found: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| id_warnings(shape, found)),
+                egui::Shape::Text(text) if text.galley.text().contains("use of widget ID") => found.push(text.galley.text().to_string()),
+                _ => {}
+            }
+        }
+
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        for rect in [[36, 36, 280, 180], [300, 36, 550, 180]] {
+            app.run("frame.create", json!({"rect": rect, "content": "unassigned"})).unwrap();
+        }
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("window.split", json!({"on": true})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        let mut warnings = Vec::new();
+        for _ in 0..4 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            warnings.clear();
+            for shape in &output.shapes {
+                id_warnings(&shape.shape, &mut warnings);
+            }
+            output.textures_delta.clear();
+        }
+        assert!(warnings.is_empty(), "both bars reused the same interactive widget IDs: {warnings:?}");
+        let bars: Vec<_> =
+            (0_u8..2).map(|pane| ctx.memory(|memory| memory.area_rect(egui::Id::new(("task_bar", egui::ViewportId::ROOT, pane)))).unwrap()).collect();
+        assert!(!bars[0].intersects(bars[1]), "each pane keeps its own bar: {bars:?}");
+    }
+
+    #[test]
+    fn show_document_grid_toggles_from_the_grids_and_guides_menu() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let tree = menu_tree();
+        let mut items = vec![];
+        for (_, entries) in &tree {
+            walk(entries, &mut items);
+        }
+        assert!(items.iter().any(|(label, id, _)| id == "view.documentGrid" && label == "Show/Hide Document Grid"));
+        assert_eq!(shortcut_of(&app, "view.documentGrid").as_deref(), Some("Cmd+'"));
+        assert_eq!(checked(&app, "view.documentGrid", &json!({})), Some(false));
+        assert_eq!(run_ui(&mut app, "view.documentGrid", &json!({})).unwrap().unwrap(), json!(true));
+        assert!(app.ui.document_grid);
+        assert_eq!(checked(&app, "view.documentGrid", &json!({})), Some(true));
+        run_ui(&mut app, "view.documentGrid", &json!({})).unwrap().unwrap();
+        assert!(!app.ui.document_grid);
     }
 
     #[test]
@@ -2405,6 +4008,30 @@ mod tests {
     }
 
     #[test]
+    fn russian_language_is_selectable_persisted_and_keeps_document_data() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Мои слова"})).unwrap();
+        let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+        run_ui(&mut app, "app.language", &json!({"lang": "ru"})).unwrap().unwrap();
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "ru"})), Some(true));
+        assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+        for (title, _) in menu_tree() {
+            assert_ne!(crate::i18n::tr("ru", title), title, "{title}");
+        }
+        let bytes = serde_json::to_vec(&app.ui).unwrap();
+        let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.language, "ru");
+        assert_eq!(crate::i18n::tr(&restored.language, "File"), "Файл");
+        assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+        assert!(menu_tree().iter().flat_map(|(_, entries)| entries.iter()).any(|entry| {
+            matches!(entry, Item::Sub(label, children) if label == "Interface Language" && children.iter().any(|child| {
+                matches!(child, Item::Cmd { label, id, params, .. } if label == "Русский" && id == "app.language" && params["lang"] == "ru")
+            }))
+        }));
+    }
+
+    #[test]
     fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         let ctx = egui::Context::default();
@@ -2431,7 +4058,7 @@ mod tests {
         crate::dialogs::confirm(&mut app).unwrap();
         frame(&mut app);
         assert_eq!(app.session.documents().len(), 1);
-        for lang in ["zh", "", "ar", "pt-br"] {
+        for lang in ["ru", "zh", "", "ar", "pt-br"] {
             app.run("app.language", json!({"lang": lang})).unwrap();
             frame(&mut app);
         }
@@ -2641,6 +4268,78 @@ mod tests {
         assert_eq!(app.session.tool_id(), "selection", "V switches tools straight after drawing");
         frame(&mut app, key(egui::Key::F));
         assert_eq!(app.session.tool_id(), "rectangleFrame");
+    }
+
+    #[test]
+    fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let cmd_return =
+            |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
+        frame(&mut app, vec![]);
+        assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
+        assert_eq!(app.session.documents().len(), 1, "the first entry (New Document) didn't run");
+        // Pressing the shortcut again, or holding it until it repeats, doesn't run it either.
+        frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
+        let repeat = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };
+        frame(&mut app, vec![repeat, cmd_return(false)]);
+        assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
+        assert_eq!(app.session.documents().len(), 1, "a second ⌘Return or a repeat doesn't run the first entry");
+        // A plain Return still does.
+        let enter =
+            |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(&mut app, vec![enter(true), enter(false)]);
+        assert_eq!(app.ui.palette, None, "Return runs the first entry and closes Quick Apply");
+        assert_eq!(app.session.documents().len(), 2);
+    }
+
+    #[test]
+    fn quick_apply_rows_are_left_aligned() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        app.ui.palette = Some(String::new());
+        let ctx = egui::Context::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let label_x = |label: &str| {
+            // The palette is painted last, over anything else with the same text.
+            shapes.iter().rev().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
+                _ => None,
+            })
+        };
+        // Rows that show a shortcut or a style kind, and rows that show neither, among the first visible ones.
+        let items = quick_apply_items(&app.session, "");
+        let first = items.iter().take(10);
+        let plain = first.clone().find(|it| it.shortcut.is_none() && it.kind.is_empty()).expect("a row without a shortcut");
+        let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
+        let (a, b) = (label_x(&plain.label).expect("plain row drawn"), label_x(&with_sc.label).expect("shortcut row drawn"));
+        assert!((a - b).abs() < 0.5, "{:?} at x {a}, {:?} at x {b}", plain.label, with_sc.label);
     }
 
     #[test]
@@ -2878,6 +4577,23 @@ mod tests {
     }
 
     #[test]
+    fn context_menus_hold_commands_and_menu_bar_submenus() {
+        let tree = menu_tree();
+        for entries in [CONTEXT_OBJECT, CONTEXT_FITTING, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT_FRAME, CONTEXT_TEXT, CONTEXT_CANVAS] {
+            for path in entries.iter().filter_map(|e| e.strip_prefix("menu:")) {
+                assert!(menu_bar_submenu(&tree, path).is_some(), "no menu bar submenu {path}");
+            }
+            let mut all = Vec::new();
+            for (_, items) in context_parse(entries) {
+                walk(&items, &mut all);
+            }
+            for (label, id, _) in &all {
+                assert!(ui_label(id).is_some() || pagenor_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
+            }
+        }
+    }
+
+    #[test]
     fn custom_workspaces_save_apply_and_delete() {
         let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.ui.dock_tab = "swatches".into();
@@ -2893,6 +4609,18 @@ mod tests {
         run_ui(&mut app, "window.deleteWorkspace", &json!({"name": "Mine"})).unwrap().unwrap();
         assert!(app.ui.custom_workspaces.is_empty());
         assert_eq!(app.ui.workspace, "Essentials");
+    }
+
+    #[test]
+    fn interactive_workspaces_show_their_panels() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.ui.dock_expanded = false;
+        run_ui(&mut app, "window.workspace", &json!({"name": "Interactive for PDF"})).unwrap().unwrap();
+        assert_eq!((app.ui.dock_tab.as_str(), app.ui.dock_expanded, app.ui.open_panel.as_deref()), ("pages", true, Some("buttons")));
+        run_ui(&mut app, "window.workspace", &json!({"name": "Digital Publishing"})).unwrap().unwrap();
+        assert_eq!((app.ui.dock_tab.as_str(), app.ui.open_panel.as_deref()), ("pages", Some("liquid")));
+        run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+        assert_eq!(app.ui.open_panel, None);
     }
 
     #[test]
@@ -2978,5 +4706,478 @@ mod shortcut_record_format_tests {
         let both = egui::Modifiers { command: true, ctrl: true, ..Default::default() };
         assert_eq!(shortcut_string_for(both, egui::Key::K, true), "Cmd+Ctrl+K");
         assert_eq!(shortcut_string_for(both, egui::Key::K, false), "Cmd+K");
+    }
+}
+
+#[cfg(test)]
+mod scrolling_menu_tests {
+    use super::*;
+    /// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+    #[test]
+    fn oversized_edit_menu_scrolls_to_preferences() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 260.0));
+        let mut tick = 0;
+        let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
+            tick += 1;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    egui::MenuBar::new().ui(ui, |ui| menu_bar(app, ui));
+                });
+            output.textures_delta.clear();
+            let mut labels = Vec::new();
+            fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, clip, labels);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for shape in output.shapes {
+                collect(&shape.shape, shape.clip_rect, &mut labels);
+            }
+            labels
+        };
+        frame(&mut app, vec![]);
+        let labels = frame(&mut app, vec![]);
+        let edit = labels.iter().find(|(text, _, _)| text == "Edit").unwrap().1.center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(edit),
+                    egui::Event::PointerButton { pos: edit, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let layer = ctx.layer_id_at(egui::pos2(edit.x + 80.0, 100.0)).expect("menu layer");
+        let bounds = ctx.memory(|m| m.area_rect(layer.id)).expect("menu bounds");
+        let track = egui::pos2(bounds.right() - 9.0, bounds.bottom() - 25.0);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(track),
+                    egui::Event::PointerButton { pos: track, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        assert!(egui::Popup::is_any_open(&ctx), "clicking the scroll track must not dismiss the menu");
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(edit.x + 80.0, 100.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -3000.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let mut labels = Vec::new();
+        for _ in 0..60 {
+            labels = frame(&mut app, vec![]);
+        }
+        let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Preferences…").expect("Preferences is rendered");
+        assert!(screen.contains_rect(*rect) && clip.contains_rect(*rect), "Preferences must be visible after scrolling: {rect:?}, {clip:?}");
+        let pos = rect.center();
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
+        assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    }
+
+    #[test]
+    fn menu_button_fits_its_anchor_and_resets_scroll_on_reopen() {
+        // Workspace/panel menus may be in the middle; the status-bar zoom menu opens upwards.
+        for anchor_y in [0.0, 130.0, 260.0] {
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+            let mut tick = 0;
+            let mut frame = |events: Vec<egui::Event>| {
+                tick += 1;
+                let mut button = None;
+                let mut first = None;
+                let mut last = None;
+                let mut output =
+                    ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                        ui.add_space(anchor_y);
+                        let response = menu_button(ui, "Long menu", |ui| {
+                            for i in 0..60 {
+                                let response = ui.button(format!("Item {i}"));
+                                if i == 0 {
+                                    first = Some((response.rect, ui.clip_rect()));
+                                }
+                                if i == 59 {
+                                    last = Some((response.rect, ui.clip_rect()));
+                                }
+                            }
+                        });
+                        button = Some(response.response);
+                    });
+                output.textures_delta.clear();
+                (button.expect("menu button"), first, last)
+            };
+            let click =
+                |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(vec![]);
+            let (button, _, _) = frame(vec![]);
+            let anchor = button.rect;
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(anchor.center()), click(anchor.center(), pressed)]);
+            }
+            for _ in 0..3 {
+                frame(vec![]);
+            }
+            let popup = ctx.memory(|memory| memory.area_rect(egui::Popup::default_response_id(&button))).expect("open menu");
+            assert!(screen.contains_rect(popup), "menu at {anchor_y} fits in the viewport: {popup:?}");
+            assert!(
+                popup.top() >= anchor.bottom() - 1.0 || popup.bottom() <= anchor.top() + 1.0,
+                "menu at {anchor_y} stays on one side of its button: {popup:?}, {anchor:?}"
+            );
+            let (_, first, last) = frame(vec![]);
+            let (first, clip) = first.expect("first row");
+            assert!(clip.contains_rect(first), "newly opened menu starts at the first row");
+            assert!(!clip.intersects(last.expect("last row").0), "last row starts below the scroll area");
+
+            frame(vec![
+                egui::Event::PointerMoved(popup.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -5000.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            for _ in 0..60 {
+                frame(vec![]);
+            }
+            let (_, first, last) = frame(vec![]);
+            let (last, clip) = last.expect("scrolled last row");
+            assert!(popup.contains_rect(last) && clip.contains_rect(last), "last row is reachable: {last:?}, {popup:?}, {clip:?}");
+            assert!(!clip.intersects(first.expect("scrolled first row").0), "menu really scrolled away from its start");
+
+            let outside = egui::pos2(screen.right() - 10.0, screen.center().y);
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(outside), click(outside, pressed)]);
+            }
+            assert!(!egui::Popup::is_any_open(&ctx), "outside click closes the menu");
+            assert!(frame(vec![]).1.is_none(), "closed menu is no longer drawn");
+            for pressed in [true, false] {
+                frame(vec![egui::Event::PointerMoved(anchor.center()), click(anchor.center(), pressed)]);
+            }
+            for _ in 0..3 {
+                frame(vec![]);
+            }
+            let (_, first, last) = frame(vec![]);
+            let (first, clip) = first.expect("reopened first row");
+            assert!(popup.contains_rect(first) && clip.contains_rect(first), "reopening resets to the first row: {first:?}, {clip:?}");
+            assert!(!clip.intersects(last.expect("reopened last row").0), "reopening discards the old scroll offset");
+        }
+    }
+
+    #[test]
+    fn tiny_menu_viewport_does_not_force_the_default_scroll_height() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 100.0));
+        let mut tick = 0;
+        let mut frame = |events: Vec<egui::Event>| {
+            tick += 1;
+            let mut button = None;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    ui.add_space(35.0);
+                    let response = menu_button(ui, "Long menu", |ui| {
+                        for i in 0..20 {
+                            let _ = ui.button(format!("Item {i}"));
+                        }
+                    });
+                    button = Some(response.response);
+                });
+            output.textures_delta.clear();
+            button.expect("menu button")
+        };
+        frame(vec![]);
+        let button = frame(vec![]);
+        let pos = button.rect.center();
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+        }
+        for _ in 0..3 {
+            frame(vec![]);
+        }
+        let popup = ctx.memory(|memory| memory.area_rect(egui::Popup::default_response_id(&button))).expect("open menu");
+        let space = (screen.bottom() - button.rect.bottom()).max(button.rect.top() - screen.top());
+        assert!(space < 64.0, "fixture has less space than egui's default minimum scroll height");
+        // A complete command row may not fit, but the scroll area's minimum must not make
+        // the popup exceed its height budget or cover the button that dismisses it.
+        assert!(popup.height() <= space, "tiny menu respects its available height: {popup:?}, {space}");
+        assert!(screen.contains_rect(popup), "tiny menu remains inside the viewport: {popup:?}");
+        assert!(
+            popup.top() >= button.rect.bottom() - 1.0 || popup.bottom() <= button.rect.top() + 1.0,
+            "tiny menu stays beside its anchor: {popup:?}, {:?}",
+            button.rect
+        );
+    }
+
+    #[test]
+    fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+        let entries = vec![Item::Sub("Hidden submenu".into(), vec![cmd_item("app.preferences", Value::Null)])];
+        let mut tick = 0;
+        let mut frame = |spacing: f32, events: Vec<egui::Event>| {
+            tick += 1;
+            let mut button_rect = egui::Rect::NOTHING;
+            let mut hidden_submenu = None;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        let response = ui.menu_button("Menu", |ui| {
+                            egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                                ui.add_space(spacing);
+                                let button_id = ui.next_auto_id();
+                                menu_items(&mut app, ui, &entries, "Test");
+                                let response = ui.ctx().read_response(button_id).expect("submenu button response");
+                                let open = egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item.is_some());
+                                hidden_submenu = Some((response.rect, ui.clip_rect(), open));
+                            });
+                        });
+                        button_rect = response.response.rect;
+                    });
+                });
+            output.textures_delta.clear();
+            (button_rect, hidden_submenu)
+        };
+        frame(500.0, vec![]);
+        let button = frame(500.0, vec![]).0.center();
+        for pressed in [true, false] {
+            frame(
+                500.0,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton { pos: button, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+            );
+        }
+        for _ in 0..3 {
+            frame(500.0, vec![]);
+        }
+        let (_, Some((hidden, clip, open))) = frame(500.0, vec![]) else { panic!("test menu is open") };
+        assert!(!open, "submenu starts closed");
+        assert!(screen.contains_rect(hidden), "hidden row remains inside the screen: {hidden:?}");
+        assert!(!clip.intersects(hidden), "submenu must be fully clipped: {hidden:?}, {clip:?}");
+        let (_, Some((_, _, open))) = frame(500.0, vec![egui::Event::PointerMoved(hidden.center())]) else { panic!("test menu remains open") };
+        assert!(!open, "hovering the clipped row's position outside the menu must not open its submenu");
+
+        let partial_spacing = 500.0 - (hidden.top() - clip.bottom()) - 6.0;
+        let (_, Some((partial, clip, open))) = frame(partial_spacing, vec![]) else { panic!("test menu remains open") };
+        assert!(!open);
+        assert!(partial.top() < clip.bottom() && partial.bottom() > clip.bottom(), "row must be partially clipped: {partial:?}, {clip:?}");
+        let outside = egui::pos2(partial.center().x, clip.bottom() + 1.0);
+        let (_, Some((_, _, open))) = frame(partial_spacing, vec![egui::Event::PointerMoved(outside)]) else { panic!("test menu remains open") };
+        assert!(!open, "hovering the clipped portion of a partially visible row must not open its submenu");
+        let visible = partial.intersect(clip).center();
+        let (_, Some((_, _, open))) = frame(partial_spacing, vec![egui::Event::PointerMoved(visible)]) else { panic!("test menu remains open") };
+        assert!(open, "hovering the visible portion still opens the submenu");
+        let (_, Some((_, _, open))) = frame(500.0, vec![]) else { panic!("test menu remains open") };
+        assert!(!open, "an open submenu closes when its row becomes fully clipped");
+    }
+    #[test]
+    fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        };
+        let key = |k: egui::Key, modifiers: egui::Modifiers| {
+            vec![
+                egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers },
+                egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers },
+            ]
+        };
+        let page = |app: &crate::DesignApp| crate::canvas::current_page(app).unwrap();
+        let spread = |app: &crate::DesignApp| {
+            let st = app.session.active().unwrap();
+            crate::canvas::current_slot(app, &pagenor_tools::layout::CanvasLayout::new(&st.doc, false)).unwrap()
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        // The Layout menu lists them, as InDesign's does, before Go to Page.
+        let layout = MENUS.iter().find(|m| m.0 == "Layout").unwrap().1;
+        let at = |id: &str| layout.iter().position(|e| e.starts_with(&format!("ui:{id}"))).unwrap();
+        assert!(at("view.firstPage") < at("view.previousPage"));
+        assert!(at("view.previousPage") < at("view.nextPage"));
+        assert!(at("view.nextPage") < at("view.lastPage"));
+        assert!(at("view.lastPage") < at("view.nextSpread"));
+        assert!(at("view.nextSpread") < at("view.previousSpread"));
+        assert!(at("view.previousSpread") < at("view.goToPage"));
+        let shift = egui::Modifiers::SHIFT;
+        let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        let alt = egui::Modifiers::ALT;
+        // Pages 1 | 2-3 | 4-5 | 6-7.
+        frame(&mut app, key(egui::Key::PageDown, shift));
+        assert_eq!(page(&app), 1, "Next Page");
+        frame(&mut app, key(egui::Key::PageDown, shift));
+        assert_eq!(page(&app), 2, "Next Page goes to the right page of the spread");
+        frame(&mut app, key(egui::Key::PageUp, shift));
+        assert_eq!(page(&app), 1, "Previous Page");
+        frame(&mut app, key(egui::Key::PageDown, cmd_shift));
+        assert_eq!(page(&app), 6, "Last Page");
+        frame(&mut app, key(egui::Key::PageDown, shift));
+        assert_eq!(page(&app), 6, "Next Page stops at the last page");
+        frame(&mut app, key(egui::Key::PageUp, cmd_shift));
+        assert_eq!(page(&app), 0, "First Page");
+        frame(&mut app, key(egui::Key::PageUp, shift));
+        assert_eq!(page(&app), 0, "Previous Page stops at the first page");
+        frame(&mut app, key(egui::Key::PageDown, alt));
+        assert_eq!(spread(&app), 1, "Next Spread");
+        frame(&mut app, key(egui::Key::PageDown, alt));
+        frame(&mut app, key(egui::Key::PageDown, alt));
+        frame(&mut app, key(egui::Key::PageDown, alt));
+        assert_eq!(spread(&app), 3, "Next Spread stops at the last spread");
+        frame(&mut app, key(egui::Key::PageUp, alt));
+        assert_eq!(spread(&app), 2, "Previous Spread");
+        // The spread is centred, the zoom kept.
+        let zoom = app.view().unwrap().zoom;
+        app.run("view.previousSpread", json!({})).unwrap();
+        let st = app.session.active().unwrap();
+        let slot = pagenor_tools::layout::CanvasLayout::new(&st.doc, false).slots[1];
+        let (v, r) = (*app.view().unwrap(), app.canvas_rect.unwrap());
+        let centre = (v.origin.x + r.width() as f64 / 2.0 / v.zoom, v.origin.y + r.height() as f64 / 2.0 / v.zoom);
+        assert!((centre.0 - slot.bounds.center().x).abs() < 1e-6 && (centre.1 - slot.bounds.center().y).abs() < 1e-6);
+        assert_eq!(v.zoom, zoom);
+    }
+
+    #[test]
+    fn tab_and_presentation_hide_floating_panels_too() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", &json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut crate::DesignApp| {
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                });
+                out.textures_delta.clear();
+            }
+        };
+        // The icon column's flyout (the classic dock) and a floating panel group (the docking layout).
+        let flyout = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("panel_flyout"));
+        let group = egui::LayerId::new(egui::Order::Middle, egui::Id::new("pagenor-panel-docking").with(("floating", "preflight")));
+        let shown = |layer: egui::LayerId| ctx.memory(|m| m.areas().is_visible(&layer));
+        let toggles = [
+            ("window.hidePanels", json!({}), json!({})),
+            ("window.hidePanelsExceptTools", json!({}), json!({})),
+            ("view.screenMode", json!({"mode": "presentation"}), json!({"mode": "normal"})),
+        ];
+        // Old saved workspaces can still open the classic icon-column flyout.
+        app.ui.open_panel = Some("preflight".into());
+        frame(&mut app);
+        assert!(app.ui.docking.is_none() && shown(flyout));
+        for (id, hide, show) in &toggles {
+            app.run(id, hide.clone()).unwrap();
+            frame(&mut app);
+            assert!(!shown(flyout), "{id} hides the flyout");
+            app.run(id, show.clone()).unwrap();
+            frame(&mut app);
+            assert!(shown(flyout), "{id} again brings it back");
+        }
+        app.run("window.floatPanel", json!({"panel": "preflight", "x": 400, "y": 200})).unwrap();
+        frame(&mut app);
+        assert!(app.ui.docking.is_some() && shown(group));
+        for (id, hide, show) in &toggles {
+            app.run(id, hide.clone()).unwrap();
+            frame(&mut app);
+            assert!(!shown(group), "{id} hides the floating panel");
+            app.run(id, show.clone()).unwrap();
+            frame(&mut app);
+            assert!(shown(group), "{id} again brings it back");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "menus/tests_eof_readers.rs"]
+mod eof_readers_tests;
+#[cfg(test)]
+#[path = "menus/tests_text_frame_options.rs"]
+mod text_frame_options_tests;
+
+#[cfg(test)]
+mod typography_regressions {
+    use super::*;
+    #[test]
+    fn typography_workspace_opens_its_panels_from_named_icon_groups_and_resets() {
+        let mut app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "window.workspace", &json!({"name":"Typography"})).unwrap().unwrap();
+        assert!(app.ui.control_bar);
+        assert!(!app.ui.dock_expanded);
+        assert!(app.ui.open_panel.is_none());
+        let groups = app.ui.icon_groups.clone().unwrap();
+        assert_eq!(groups[0], ["pages", "layers", "swatches"]);
+        assert_eq!(groups[4], ["paragraph", "paragraphStyles"]);
+        assert_eq!(groups[5], ["character", "characterStyles"]);
+        for panel in ["pages", "paragraphStyles", "characterStyles"] {
+            run_ui(&mut app, "window.panel", &json!({"panel":panel})).unwrap().unwrap();
+            assert!(app.ui.docking.as_ref().is_some_and(|d| d.contains(&panel.to_owned())));
+            assert!(app.ui.dock_expanded);
+        }
+        run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+        assert_eq!(app.ui.icon_groups, Some(groups));
+        assert!(app.ui.open_panel.is_none());
+        assert!(!app.ui.dock_expanded);
+        run_ui(&mut app, "window.workspace", &json!({"name":"Essentials"})).unwrap().unwrap();
+        assert!(app.ui.icon_groups.is_none());
+        assert!(app.ui.dock_expanded);
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_menu_tests {
+    use super::*;
+    #[test]
+    fn graphic_cell_needs_a_table() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[72,72,400,400],"content":"text","caret":true})).unwrap();
+        assert!(!menu_enabled(&app, "app.graphicCell"));
+        app.run("table.insert", json!({"rows":2,"cols":2})).unwrap();
+        assert!(menu_enabled(&app, "app.graphicCell"));
     }
 }

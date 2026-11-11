@@ -33,7 +33,7 @@ frame.create {"rect": [72, 320, 540, 500], "content": "text", "text": "See ."}
 text.select  {"story": "$3.story", "anchor": 4, "focus": 4}
 xref.insert  {"paragraph": "Results", "format": "Paragraph Text & Page Number"}
 DCS
-pagenor-cli script page.dcs --save page.pagenor --export page.pdf --export page.png
+pagenor-cli script page.dcs --save page.pgnr --export page.pdf --export page.png
 pagenor-cli script page.dcs --connect 7979      # the same steps, live in the running app
 ```
 
@@ -45,6 +45,11 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `--all-pages` that follow them, so one run can write several sizes
 (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
 
+CLI exports select their format by the case-insensitive output extension: `.png` (or no
+extension), `.jpg`/`.jpeg`, `.pdf`, `.pgnr`/legacy `.pagenor`, `.idml`, `.epub`, `.pptx`,
+`.html`/`.htm`, `.rtf` and `.txt`. Unsupported extensions fail before executing commands.
+Native exports save a copy and keep the active document's path. PDF options must be a JSON object.
+
 ## Data merge
 
 `data.source.select {path | bytes, name?, sheet?}` links a CSV, TSV, JSON, `.xlsx`, or `.xls` file
@@ -52,6 +57,10 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 columns plus the virtual fields `Source filename` and `Merge index`. `data.placeholder.add {field, role?, story?, at?, end?, item?}`
 marks text or a frame (`role`: text, image, qr, hyperlink). An image placeholder can sit inside a story.
 `object.qrCode {field?, source?, rect?}` can bind a QR frame to any column, including one that is not marked `#`.
+QR merge placeholders require a graphic frame. A standalone generated QR path is refused,
+since replacing its frame content would leave the old code visible. Create an empty frame
+or use `object.qrCode {field, rect}` without static content. A frame containing a code can
+be bound and its contents are replaced for each record.
 
 `data.options` sets records, tiling, image fitting, and `skipWarnings` (off unless set). `data.source.affix` stores
 prefix and postfix rules. `data.join` names a driving source and key links; with no driving source, records are

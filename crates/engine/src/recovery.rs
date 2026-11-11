@@ -9,7 +9,7 @@
 //! keeps the last checkpoint intact until the document is saved, reverted or explicitly closed.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -17,10 +17,42 @@ use serde_json::{Value, json};
 
 use crate::{DocState, EngineError, Result, Session};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::recovery_runs::run_dir;
+
 /// Native session state only; never serialized into documents. Canonical directories avoid
 /// opening the same checkpoint twice through different spellings of its path.
 #[derive(Debug, Default)]
-pub(crate) struct Entries(Mutex<BTreeMap<PathBuf, u64>>);
+pub(crate) struct Entries(Mutex<BTreeMap<PathBuf, u64>>, Mutex<Option<Checkpoint>>);
+
+#[derive(Debug)]
+struct Checkpoint {
+    document: std::sync::Weak<pagenor_doc::Document>,
+    path: Option<String>,
+    directory: PathBuf,
+    uid: u64,
+    stamps: [Stamp; 2],
+}
+#[derive(Debug, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    file_id: u64,
+}
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        let metadata = std::fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file())?;
+        #[cfg(unix)]
+        let file_id = std::os::unix::fs::MetadataExt::ino(&metadata);
+        #[cfg(not(unix))]
+        let file_id = 0;
+        Some(Self { size: metadata.len(), modified: metadata.modified().ok(), file_id })
+    }
+}
+fn stamps(dir: &Path, uid: u64) -> Option<[Stamp; 2]> {
+    let (doc, meta) = files(dir, uid);
+    Some([Stamp::of(&doc)?, Stamp::of(&meta)?])
+}
 
 fn io_error(path: &Path, error: impl std::fmt::Display) -> EngineError {
     EngineError::Other(format!("{}: {error}", path.display()))
@@ -156,6 +188,8 @@ fn checkpoint(dir: &Path, uid: u64, bytes: &[u8], metadata: &[u8]) -> Result<()>
 /// Write recovery entries for the dirty documents (and drop those of clean ones). Returns how
 /// many were written.
 pub fn save(s: &Session, dir: &Path) -> Result<usize> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::recovery_runs::validate_own(dir)?;
     std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
     let dir = std::fs::canonicalize(dir).map_err(|e| io_error(dir, e))?;
     let mut n = 0;
@@ -167,6 +201,17 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             if let Some(path) = d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().next() {
                 return Err(io_error(path, "could not remove obsolete recovery data"));
             }
+            continue;
+        }
+        let current = d.preview_stash.as_ref().unwrap_or(&d.doc);
+        let unchanged = d.recovery_entries.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|last| {
+            last.directory == dir
+                && last.path == d.path
+                && last.document.upgrade().is_some_and(|doc| std::sync::Arc::ptr_eq(&doc, current))
+                && d.recovery_entries.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&dir) == Some(&last.uid)
+                && stamps(&dir, last.uid).is_some_and(|now| now == last.stamps)
+        });
+        if unchanged {
             continue;
         }
         let bytes = pagenor_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| io_error(&dir, e))?;
@@ -184,25 +229,65 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             return Err(e);
         }
         entries.insert(dir.clone(), uid);
+        drop(entries);
+        if let Some(stamps) = stamps(&dir, uid) {
+            *d.recovery_entries.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Checkpoint { document: std::sync::Arc::downgrade(current), path: d.path.clone(), directory: dir.clone(), uid, stamps });
+        }
         n += 1;
     }
     Ok(n)
+}
+
+fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(io::Error::other("recovery entry is not a regular file within its size budget"));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::other("recovery entry exceeds its actual-read budget"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn move_entry(from: &Path, uid: u64, own: &Path) -> Result<()> {
+    let (source, metadata) = files(from, uid);
+    if !std::fs::symlink_metadata(&source).is_ok_and(|m| m.is_file()) {
+        return Ok(());
+    }
+    let new_uid = reserve(own, uid)?;
+    let (target, target_metadata) = files(own, new_uid);
+    if let Err(e) = std::fs::rename(&source, &target) {
+        let _ = std::fs::remove_file(&target);
+        return Err(io_error(&source, e));
+    }
+    if std::fs::symlink_metadata(&metadata).is_ok_and(|m| m.is_file())
+        && let Err(e) = std::fs::rename(&metadata, &target_metadata)
+    {
+        // The checkpoint remains recoverable without metadata. Preserve unreadable metadata
+        // at its source instead of deleting it or reporting that the document was lost.
+        log::warn!("{} was recovered without its original metadata: {e}", target.display());
+    }
+    Ok(())
 }
 
 /// Recovery entries in `dir`: (uid, metadata).
 pub fn list(dir: &Path) -> Vec<(u64, Value)> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else { return out };
-    for e in rd.flatten() {
+    for e in rd.take(4096).flatten() {
         let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("pagenor") {
+        if p.extension().and_then(|x| x.to_str()) != Some("pagenor") || !e.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
         }
         let Some(uid) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
         // Metadata is a file on disk: anything but an object (corrupt, hand-edited) counts as none.
-        let meta = std::fs::read_to_string(p.with_extension("json"))
+        let meta = read_bounded(&p.with_extension("json"), 64 * 1024)
             .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .filter(Value::is_object)
             .unwrap_or(json!({}));
         out.push((uid, meta));
@@ -214,6 +299,8 @@ pub fn list(dir: &Path) -> Vec<(u64, Value)> {
 /// Reopen every unclaimed recovery entry as an unsaved document, retaining its checkpoint.
 /// Returns the opened documents' indices; repeated calls in the same session skip owned entries.
 pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::recovery_runs::take_over(dir)?;
     let mut opened = Vec::new();
     let pending = list(dir);
     if pending.is_empty() {
@@ -225,7 +312,7 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
             continue;
         }
         let (doc, _) = files(&dir, uid);
-        let Ok(bytes) = std::fs::read(&doc) else { continue };
+        let Ok(bytes) = read_bounded(&doc, 512 * 1024 * 1024) else { continue };
         let mut d = match crate::cmd::from_bytes(&bytes) {
             Ok(d) => d,
             Err(_) => continue,

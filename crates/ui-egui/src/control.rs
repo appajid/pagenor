@@ -6,7 +6,7 @@
 //! - `document.inspect`: document summary; `ui.inspect`: UI state
 //! - `ui.menu.list`: flattened menu tree
 //! - `ui.tool.select {tool}`, `ui.tool.list`
-//! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
+//! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick|tripleclick, x, y, space?: "doc"|"screen"}], mods?}`:
 //!   drive the active tool through the same path as the mouse
 //! - `ui.key {key, shift?, alt?, cmd?}`: synthetic keyboard input
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
@@ -144,6 +144,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                     "up" => PointerKind::Up,
                     "move" => PointerKind::Move,
                     "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+                    "tripleclick" | "triclick" => PointerKind::TripleClick,
                     other => return err(format!("unknown pointer kind `{other}`")),
                 };
                 let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
@@ -186,6 +187,14 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             if let Some(t) = s("text") {
                 app.synthetic.push(egui::Event::Text(t.to_string()));
             }
+            ctx.request_repaint();
+            ok(Value::Null)
+        }
+        // What Ctrl/Cmd+V delivers from the system clipboard: text, or SVG markup copied in an
+        // illustration app (pasted as editable paths when no text is being edited).
+        "ui.paste" => {
+            let Some(text) = s("text") else { return err("missing `text`") };
+            app.synthetic.push(egui::Event::Paste(text.to_string()));
             ctx.request_repaint();
             ok(Value::Null)
         }
@@ -263,6 +272,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 ("frameEdges", "view.frameEdges"),
                 ("guides", "view.guides"),
                 ("baselineGrid", "view.baselineGrid"),
+                ("documentGrid", "view.documentGrid"),
                 ("textThreads", "view.textThreads"),
             ] {
                 if let Some(want) = p.get(k).and_then(Value::as_bool) {
@@ -271,6 +281,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                         "frameEdges" => app.ui.frame_edges,
                         "guides" => app.ui.guides,
                         "baselineGrid" => app.ui.baseline_grid,
+                        "documentGrid" => app.ui.document_grid,
                         _ => app.ui.text_threads,
                     };
                     if cur != want {
@@ -294,7 +305,7 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
                 app.ui.control_bar = v;
             }
             if p.get("closePanel").is_some() {
-                app.ui.open_panel = None;
+                r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
                 app.ui.dock_expanded = v;
@@ -310,16 +321,25 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             None => err("no dialog open"),
         },
         "ui.dialog.open" => {
+            crate::dialogs::cancel(app);
             let Some(id) = s("id") else { return err("missing `id`") };
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "textFrameOptions" {
+                crate::dialogs::text_frame_options_dialog(app, fields)
+            } else if id == "frameSize" {
+                crate::dialogs::frame_size_dialog(app, fields)
+            } else {
+                let mut dialog = crate::dialogs::Dialog::new(id, fields);
+                dialog.unit = app.session.active().map_or(pagenor_geom::Unit::Picas, |s| s.doc.settings.horizontal_units);
+                dialog
+            };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
         }
         "ui.dialog.confirm" => wrap(crate::dialogs::confirm(app)),
         "ui.dialog.cancel" => {
-            app.cancel_pdf_import();
-            app.ui.dialog = None;
+            crate::dialogs::cancel(app);
             ok(Value::Null)
         }
         "ui.resize" => {
@@ -405,6 +425,30 @@ pub(crate) fn page_index(p: &Value, default: usize, count: usize) -> Result<usiz
 #[cfg(test)]
 mod automation_contract_tests {
     use super::*;
+
+    #[test]
+    fn replacing_a_style_preview_dialog_restores_the_document_and_undo_recording() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let before = app.session.doc().unwrap().doc.clone();
+        let history = app.session.doc().unwrap().history.undo.len();
+        app.session.begin_interaction("Style Options").unwrap();
+        app.session.preview("style.paragraph.edit", json!({"name":pagenor_doc::BASIC_PARAGRAPH,"chars":{"size":24}})).unwrap();
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            "paragraphStyleOptions",
+            json!({
+                "name":pagenor_doc::BASIC_PARAGRAPH,"preview":true,"_stylePreviewed":{"chars":{"size":24}}
+            }),
+        ));
+        assert_ne!(app.session.doc().unwrap().doc, before);
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id":"characterStyleOptions","fields":{"new":true}}));
+        assert_eq!(response["ok"], true);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        assert!(app.session.doc().unwrap().interaction.is_none());
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
+        app.run("style.paragraph.edit", json!({"name":pagenor_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({"pages":2})).unwrap();
@@ -417,6 +461,21 @@ mod automation_contract_tests {
             Outcome::Screenshot { .. } => panic!("unexpected screenshot"),
         }
     }
+    #[test]
+    fn triple_click_control_selects_a_composed_line() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let text = "First line\nSecond line";
+        app.run("frame.create", json!({"content":"text","rect":[72,72,500,200],"text":text})).unwrap();
+        app.session.set_tool("type");
+        for kind in ["tripleclick", "triclick"] {
+            let r = call(&mut app, &ctx, "ui.pointer", json!({"events":[{"kind":kind,"x":90,"y":80}]}));
+            assert_eq!(r["ok"], true, "{r}");
+            let t = app.session.doc().unwrap().selection.text.unwrap();
+            assert_eq!(&text[t.anchor.min(t.focus)..t.anchor.max(t.focus)], "First line");
+        }
+    }
+
     #[test]
     fn synthetic_pointer_work_is_bounded() {
         let mut app = app();

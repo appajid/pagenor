@@ -102,6 +102,7 @@ impl Notes {
             vertical: false,
             exclusions: vec![],
             page_name: f.page_name.clone(),
+            section_marker: f.section_marker.clone(),
             page: f.page,
             grid: None,
             left_page: f.left_page,
@@ -109,12 +110,13 @@ impl Notes {
         };
         let nopts = ComposeOptions {
             page_name: opts.page_name.clone(),
+            section_marker: opts.section_marker.clone(),
             page: opts.page,
             running: opts.running.clone(),
             label: Some(label),
             xrefs: opts.xrefs.clone(),
         };
-        let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
+        let cs = crate::compose_child(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let h = cs.frames.first().and_then(|ft| ft.lines.last()).map_or(0.0, |l| l.baseline + l.descent);
         let v = (Arc::new(cs), h);
         self.cache.insert(key, v.clone());
@@ -125,9 +127,10 @@ impl Notes {
     #[allow(clippy::too_many_arguments)]
     pub fn reserve(&mut self, doc: &Document, fi: usize, col: usize, extra: &[usize], w: f64, f: &FrameSpec, opts: &ComposeOptions) -> f64 {
         let o = &doc.footnote_options;
+        let w = if o.span_columns { f.area.width() } else { w };
         let mut n = 0usize;
         let mut h = 0.0;
-        for p in self.placed.iter().filter(|p| p.fi == fi && p.col == col) {
+        for p in self.placed.iter().filter(|p| p.fi == fi && (o.span_columns || p.col == col)) {
             n += 1;
             h += p.h;
         }
@@ -142,6 +145,7 @@ impl Notes {
         if self.placed.iter().any(|p| p.k == k) {
             return;
         }
+        let (w, col) = if doc.footnote_options.span_columns { (f.area.width(), 0) } else { (w, col) };
         let (text, h) = self.compose(doc, k, w, f, opts);
         self.placed.push(Placed { k, fi, col, h, text });
     }
@@ -160,6 +164,7 @@ impl Notes {
             let (Some(_), Some(col)) = (frames.get(fi), cols.get(fi).and_then(|c| c.get(ci))) else { continue };
             let here: Vec<&Placed> = self.placed.iter().filter(|p| p.fi == fi && p.col == ci).collect();
             let total: f64 = here.iter().map(|p| p.h).sum::<f64>() + o.space_between * (here.len() - 1) as f64;
+            let col = if o.span_columns { frames.get(fi).map_or(*col, |f| f.area) } else { *col };
             let top = col.y1 - total;
             let ft = &mut out.frames[fi];
             if o.rule.on && o.rule.weight > 0.0 {
@@ -169,6 +174,7 @@ impl Notes {
                     rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
+                    ..Deco::default()
                 });
             }
             let mut y = top;

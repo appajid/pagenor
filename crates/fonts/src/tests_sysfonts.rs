@@ -854,9 +854,12 @@ fn publish_native_snapshot(db: &FontDb, name: &str, metadata: &[u8], force: bool
         .map(|f| CatalogEntry {
             family: f.family,
             style: f.style,
+            kind: f.kind,
+            added: None,
             location: CatalogLocation::Native(name.into()),
             group: f.group,
             native: f.native,
+            postscript: f.postscript,
             aliases: f.aliases,
             style_aliases: f.style_aliases,
         })
@@ -1210,4 +1213,49 @@ fn alias_names_are_bounded_independently_of_the_name_table() {
     let names = aliases(&font, &[StringId::FAMILY_NAME]);
     assert!(names.len() < long_names.len());
     assert!(names.iter().map(String::len).sum::<usize>() <= 64 << 10);
+}
+
+#[test]
+fn font_picker_metadata_never_loads_installed_faces_and_tracks_refresh() {
+    let dir = font_dir("picker-kind");
+    let installed = dir.join("Installed");
+    std::fs::create_dir_all(&installed).unwrap();
+    let path = installed.join("installed.otf");
+    std::fs::write(&path, renamed("SourceSans3-Regular.ttf")).unwrap();
+    let db = FontDb::with_font_dirs(vec![installed]);
+    db.scan_report();
+    assert!(!db.is_loaded(FAMILY));
+    let fonts = db.scoped(0);
+    assert_eq!(fonts.menu_kind(FAMILY).class, crate::FontClass::SansSerif);
+    assert_eq!(fonts.menu_kind(FAMILY).format, crate::FontFormat::TrueType, "tables, not filename");
+    assert!(fonts.menu_added(FAMILY).is_some());
+    assert!(!db.is_loaded(FAMILY), "filters must leave outlines unloaded");
+    let generation = db.scan_generation();
+    std::fs::remove_file(&path).unwrap();
+    db.load_system_fonts();
+    assert!(db.scan_generation() > generation);
+    assert!(fonts.menu_added(FAMILY).is_none());
+    assert_eq!(fonts.menu_kind(FAMILY).class, crate::FontClass::Other);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn installed_and_loaded_fonts_are_found_by_postscript_name() {
+    let dir = std::env::temp_dir().join(format!("pagenor-sysfonts-postscript-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ps.ttf"), crate::testing::font_with("Pagenor Test PS Installed", &['a']).unwrap()).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir.clone()]);
+    let found = Some(("Pagenor Test PS Installed".to_string(), "Regular".to_string()));
+    // From the catalog, without loading the font; case doesn't matter.
+    assert_eq!(db.postscript_face("pagenortestpsinstalled-regular"), found);
+    assert!(!db.is_loaded("Pagenor Test PS Installed"));
+    // Bundled and added (loaded) faces.
+    assert_eq!(db.postscript_face("SourceSerif4-Semibold"), Some(("Source Serif 4".to_string(), "Semibold".to_string())));
+    db.add_font(crate::testing::font_with("Pagenor Test PS Added", &['a']).unwrap());
+    assert_eq!(db.postscript_face("PagenorTestPSAdded-Regular"), Some(("Pagenor Test PS Added".to_string(), "Regular".to_string())));
+    // A family name isn't a PostScript name.
+    assert_eq!(db.postscript_face("Source Serif 4"), None);
+    assert_eq!(db.postscript_face("NoSuchFont-Regular"), None);
+    std::fs::remove_dir_all(dir).unwrap();
 }

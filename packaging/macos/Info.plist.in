@@ -29,7 +29,7 @@
   <key>PagenorBuildCommit</key>
   <string>@BUILD_SHA@</string>
   <key>CFBundleIconFile</key>
-  <string>Pagenor</string>
+  <string>Pagenor.icns</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.graphics-design</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
@@ -54,7 +54,7 @@
       <key>CFBundleTypeRole</key>
       <string>Editor</string>
       <key>CFBundleTypeIconFile</key>
-      <string>Pagenor</string>
+      <string>PagenorDocument.icns</string>
       <key>LSHandlerRank</key>
       <string>Owner</string>
       <key>LSItemContentTypes</key>
@@ -71,10 +71,10 @@
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
-        <string>public.image</string>
+        <string>public.content</string>
       </array>
       <key>UTTypeIconFile</key>
-      <string>Pagenor</string>
+      <string>PagenorDocument.icns</string>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>

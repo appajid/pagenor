@@ -67,7 +67,7 @@ fn image(d: &mut Document, name: &str, w: u32, h: u32, hue: f32) -> AssetId {
     let data = art_png(w, h, hue);
     d.assets.insert(
         id,
-        Arc::new(Asset { page: 0, id, name: name.into(), mime: "image/png".into(), link: None, data: Arc::new(data), pixels: Some((w, h)) }),
+        Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(data), pixels: Some((w, h)), ..Default::default() }),
     );
     id
 }
@@ -82,9 +82,11 @@ fn graphic_frame(d: &mut Document, sr: SpreadRef, r: Rect, asset: AssetId, px: (
         asset,
         size: (nw, nh),
         xf: Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k),
+        clip: None,
         auto_fit: pagenor_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
     });
     it.object_style = pagenor_doc::BASIC_GRAPHICS_FRAME.into();
     d.insert_item(sr, it, None)?;
@@ -333,7 +335,7 @@ fn build() -> pagenor_doc::Result<Document> {
         st.insert(end, &more);
         // A footnote on the last sentence of the article.
         if let Some(at) = st.text.trim_end().rfind('.') {
-            st.insert_note(
+            let _ = st.insert_note(
                 at + 1,
                 "Every image, swatch and paragraph in this sample is generated in code — no stock assets.",
                 ParaFormat { style: "Footnote".into(), ..Default::default() },

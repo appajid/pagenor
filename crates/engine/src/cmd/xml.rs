@@ -300,12 +300,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"root": root_name(d), "elements": elements}))
         }),
-        cmd!(noundo "file.exportXml", "Export XML…", ["File"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
+        cmd!(noundo "file.exportXml", "Export XML…", ["File", "Export"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
             let text = export_xml(&s.doc()?.doc);
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
-                    std::fs::write(path, text.as_bytes()).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+                    crate::write_atomic(std::path::Path::new(path), text.as_bytes()).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
                     Ok(json!({"path": path, "bytes": text.len()}))
                 }
                 None => Ok(json!({"text": text, "bytes": text.len()})),
@@ -438,7 +438,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             fresh.frames = frames;
-            fresh.rev = st.rev + 1;
+            fresh.rev = st.rev.wrapping_add(1);
             *st = fresh;
         }
         Ok(json!({"placed": placed, "unmatched": unmatched}))

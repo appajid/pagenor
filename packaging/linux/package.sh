@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Build and package Pagenor for Linux (<arch> is x86_64 or aarch64):
+# Build and package Pagenor for Linux (<arch> is x86_64, aarch64 or riscv64):
 #
 #   $DIST/pagenor-<version>-linux-<arch>.AppImage  any distro with glibc >= the build host's
 #   $DIST/pagenor-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
 #   $DIST/pagenor-<version>-linux-<arch>.deb       Debian, Ubuntu, Mint, Pop!_OS, ...
 #   $DIST/pagenor-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
 #   $DIST/pagenor-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
+#
+# riscv64 currently supports tar only (Ubuntu 24.04 CI baseline: glibc 2.39).
+# Cross builds: set CROSS_ARCH, CROSS_TARGET and CROSS_COMPILE; EMULATOR is optional.
 #
 # Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
 #
@@ -24,27 +27,58 @@ FORMATS="appimage deb rpm tar"
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
-    --formats) FORMATS="$2"; shift 2 ;;
+    --formats)
+      [ $# -ge 2 ] || { echo "--formats needs a value" >&2; exit 2; }
+      FORMATS="$2"; shift 2 ;;
     -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-ARCH="$(uname -m)"
+HOST_ARCH="$(uname -m)"
+ARCH="${CROSS_ARCH:-$HOST_ARCH}"
 case "$ARCH" in
   x86_64) DEB_ARCH=amd64 ;;
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
+  riscv64) DEB_ARCH=riscv64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
+# Reject inconsistent labels before building or writing a package. Target paths are not freeform.
+case "${CROSS_TARGET:-}" in
+  "")
+    if [ "$ARCH" != "$HOST_ARCH" ] && ! { [ "$ARCH" = aarch64 ] && [ "$HOST_ARCH" = arm64 ]; }; then
+      echo "CROSS_ARCH requires a matching CROSS_TARGET when the host architecture differs" >&2; exit 2
+    fi ;;
+  x86_64-unknown-linux-gnu) TARGET_ARCH=x86_64 ;;
+  aarch64-unknown-linux-gnu) TARGET_ARCH=aarch64 ;;
+  riscv64gc-unknown-linux-gnu) TARGET_ARCH=riscv64 ;;
+  *) echo "unsupported CROSS_TARGET ${CROSS_TARGET}" >&2; exit 2 ;;
+esac
+if [ -n "${CROSS_TARGET:-}" ] && [ "$ARCH" != "$TARGET_ARCH" ]; then
+  echo "CROSS_ARCH does not match CROSS_TARGET" >&2; exit 2
+fi
+[ -n "$FORMATS" ] || { echo "--formats must not be empty" >&2; exit 2; }
+for format in $FORMATS; do
+  case "$format" in
+    appimage | deb | rpm | tar) ;;
+    *) echo "unsupported package format $format" >&2; exit 2 ;;
+  esac
+  if [ "$ARCH" = riscv64 ] && [ "$format" != tar ]; then
+    echo "riscv64 currently supports only --formats tar" >&2; exit 2
+  fi
+done
+
 export PAGENOR_MAINTAINER="${PAGENOR_MAINTAINER:-Appaji Ambarisha}"
 BASENAME="pagenor-$VERSION-linux-$ARCH"
 
 echo "==> Pagenor $VERSION for Linux $ARCH ($FORMATS)"
 
 if [ "$SKIP_BUILD" = 0 ]; then
-  (cd "$ROOT" && cargo build --release --locked -p pagenor -p pagenor-cli)
+  BUILD_ARGS=(--release --locked -p pagenor -p pagenor-cli)
+  if [ -n "${CROSS_TARGET:-}" ]; then BUILD_ARGS+=(--target "$CROSS_TARGET"); fi
+  (cd "$ROOT" && cargo build "${BUILD_ARGS[@]}")
 fi
-BIN="$CARGO_TARGET_DIR/release"
+BIN="$CARGO_TARGET_DIR/${CROSS_TARGET:+$CROSS_TARGET/}release"
 WORK="$CARGO_TARGET_DIR/linux-package"
 STAGE="$WORK/root"
 rm -rf "$WORK"
@@ -52,7 +86,7 @@ rm -rf "$WORK"
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
 install -Dm755 "$BIN/pagenor" "$STAGE/usr/bin/pagenor"
 install -Dm755 "$BIN/pagenor-cli" "$STAGE/usr/bin/pagenor-cli"
-strip "$STAGE/usr/bin/pagenor" "$STAGE/usr/bin/pagenor-cli" 2>/dev/null || true
+"${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/pagenor" "$STAGE/usr/bin/pagenor-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
@@ -138,6 +172,12 @@ if has appimage; then
   fi
 fi
 
-"$STAGE/usr/bin/pagenor-cli" --version
+if [ -z "${CROSS_TARGET:-}" ]; then
+  "$STAGE/usr/bin/pagenor-cli" --version
+elif [ -n "${EMULATOR:-}" ]; then
+  "$EMULATOR" "$STAGE/usr/bin/pagenor-cli" --version
+else
+  echo "cross build: CLI execution skipped (set EMULATOR to smoke-test)"
+fi
 echo "==> done"
 ls -lh "$DIST"

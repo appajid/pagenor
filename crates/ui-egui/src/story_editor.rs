@@ -8,6 +8,21 @@ use serde_json::json;
 use crate::DesignApp;
 use crate::theme::Tokens;
 
+/// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)`
+/// in layout order. A paragraph that wraps spans several rows, so counting characters per line
+/// drifts from what the editor draws; the rows themselves are the truth.
+fn paragraph_start_offsets(rows: impl Iterator<Item = (f32, bool)>) -> Vec<f32> {
+    let mut starts = Vec::new();
+    let mut at_start = true;
+    for (y, ends_with_newline) in rows {
+        if at_start {
+            starts.push(y);
+        }
+        at_start = ends_with_newline;
+    }
+    starts
+}
+
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(sid) = app.story_editor else { return };
     let Some(st) = app.session.active() else {
@@ -30,27 +45,26 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_top(|ui| {
-                    // Style column.
-                    ui.vertical(|ui| {
-                        ui.set_width(130.0);
-                        for (i, r) in story.para_ranges().iter().enumerate() {
-                            let lines = story.text[r.clone()].len() / 60 + 1;
-                            let style = &story.paras[i].style;
-                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::style_name(&app.ui.language, style)).size(11.0).color(t.text_dim));
-                            for _ in 1..lines {
-                                ui.label(egui::RichText::new(" ").size(11.0));
-                            }
-                        }
-                    });
+                    // Style column: the labels are painted after the text, at the rows the text really wraps to.
+                    let (column, _) = ui.allocate_exact_size(vec2(130.0, 0.0), egui::Sense::hover());
                     ui.separator();
                     let mut text = story.text.clone();
-                    let r = ui.add(
-                        egui::TextEdit::multiline(&mut text)
-                            .font(egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0)))
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(20)
-                            .frame(egui::Frame::NONE),
-                    );
+                    let out = egui::TextEdit::multiline(&mut text)
+                        .font(egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0)))
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(20)
+                        .frame(egui::Frame::NONE)
+                        .show(ui);
+                    let r = out.response;
+                    let starts = paragraph_start_offsets(out.galley.rows.iter().map(|row| (row.pos.y, row.ends_with_newline)));
+                    for (i, y) in starts.into_iter().enumerate() {
+                        let Some(para) = story.paras.get(i) else { break };
+                        let rect = egui::Rect::from_min_size(egui::pos2(column.min.x, out.galley_pos.y + y), vec2(130.0, 14.0));
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            let name = crate::i18n::style_name(&app.ui.language, &para.style);
+                            crate::rtl::label(ui, egui::RichText::new(name).size(11.0).color(t.text_dim));
+                        });
+                    }
                     if r.changed() {
                         // Minimal diff: common prefix and suffix.
                         let old = &story.text;
@@ -87,5 +101,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
     if !open {
         app.story_editor = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A wrapped paragraph takes several rows; the next paragraph's label goes to the row after them.
+    #[test]
+    fn labels_follow_wrapped_rows() {
+        let rows = [(0.0, false), (20.0, false), (40.0, true), (60.0, true), (80.0, false)];
+        assert_eq!(super::paragraph_start_offsets(rows.into_iter()), vec![0.0, 60.0, 80.0]);
     }
 }

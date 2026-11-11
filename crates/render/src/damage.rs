@@ -92,6 +92,14 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&pagenor_compos
         if a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
         }
+        // Its anchored objects' text wrap reflows the other stories on its spreads.
+        for d in [old, new] {
+            for other in pagenor_compose::wrap::wrapped_by(d, sid) {
+                for f in d.story(other).map(|s| s.frames.clone()).unwrap_or_default() {
+                    out.push(frame_area(d, f)?);
+                }
+            }
+        }
         // Only the frames whose composition changed, when the previous composition is known.
         if let (Some(c), Some(_), Some(_)) = (cache, a, b)
             && let Some(prev) = c.composed_for(old, sid)
@@ -99,11 +107,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&pagenor_compos
             let cur = c.get(new, sid, None);
             let changed = pagenor_compose::Cache::changed_frames(&prev, &cur);
             for f in changed {
-                for d in [old, new] {
-                    if d.find(f).is_some() {
-                        out.push(frame_area(d, f)?);
-                    }
-                }
+                out.extend(changed_frame_areas(old, new, f)?);
             }
             continue;
         }
@@ -145,25 +149,59 @@ fn shows_other_text(d: &Document, s: &Story) -> bool {
 
 /// Area an item paints (spread coordinates), or None when it can't be bounded cheaply.
 fn item_area(it: &Item) -> Option<Rect> {
-    let mut ok = true;
-    it.walk(&mut |i| {
-        // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.wrap.mode != pagenor_doc::WrapMode::None {
-            ok = false;
-        }
-    });
-    if !ok {
+    if has_spill(it, 0) {
         return None;
     }
     let pad = it.stroke.extent().max(0.0) + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 };
-    Some(it.bounds().inflate(pad, pad))
+    Some(painted_bounds(it, 0)?.inflate(pad, pad))
+}
+
+/// An item's bounds, grown to its text: text is composed in the box around the frame's path in
+/// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
+fn has_spill(it: &Item, depth: usize) -> bool {
+    depth >= 64 || it.effects.any() || it.has_wrap() || it.children().iter().any(|c| has_spill(c, depth + 1))
+}
+fn painted_bounds(it: &Item, depth: usize) -> Option<Rect> {
+    if depth >= 64 {
+        return None;
+    }
+    let mut b = it.bounds();
+    if it.is_text_frame() {
+        b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
+    }
+    for c in it.children() {
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c, depth + 1)?));
+    }
+    Some(b)
+}
+
+/// The areas of changed frame `f` before and after an edit. None (repaint everything) for a
+/// text frame anchored in either document: it isn't on a spread there (so it has no area of its
+/// own here) but is drawn inside the text it is anchored in, wherever that is laid out, also when
+/// it is on a spread in the other document. A frame that is neither on a spread nor anchored in
+/// either document is drawn nowhere and adds nothing. Anchored items are searched (a scan of the
+/// whole document) only in a version where the frame is not on a spread: item ids are unique in
+/// a document, and anchoring takes an item off its spread.
+fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
+    let mut areas = Vec::new();
+    for d in [old, new] {
+        if d.find(f).is_some() {
+            areas.push(frame_area(d, f)?);
+        } else if d.anchored_item(f).is_some() {
+            return None;
+        }
+    }
+    Some(areas)
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(it.bounds());
+    if has_spill(it, 0) {
+        return None;
+    }
+    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it, 0)?);
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
     Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
 }
@@ -207,32 +245,26 @@ mod tests {
         assert!(dmg.iter().any(|(_, r)| r.contains(pagenor_geom::Point::new(350.0, 100.0))));
     }
 
-    #[test]
-    fn patched_render_equals_full_render() {
+    /// Channels where `old`'s render patched over `new`'s damage differs from `new`'s full render.
+    fn patched_diff(old: &Document, new: &Document, (w, h): (u32, u32), zoom: f64) -> usize {
         use crate::{Placed, RenderOptions, Renderer};
         use pagenor_geom::{Affine, Vec2};
-        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
-        let lid = d.default_layer();
-        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "Hello there", ParaFormat::default()).unwrap();
         let cache = pagenor_compose::Cache::new();
         let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }];
-        let (w, h) = (400u32, 300u32);
-        let view = Affine::scale(1.3);
+        let view = Affine::scale(zoom);
         let mut r = Renderer::new();
         r.threads = 0;
         let opts = RenderOptions::default();
-        let old = d.clone();
-        let mut img = r.render(&old, &cache, &placed, w, h, view, &opts);
-        d.story_mut(sid).unwrap().insert(5, ", typed");
-        let full = r.render(&d, &cache, &placed, w, h, view, &opts);
+        let mut img = r.render(old, &cache, &placed, w, h, view, &opts);
+        let full = r.render(new, &cache, &placed, w, h, view, &opts);
         // Patch the damaged pixels.
-        let regions = damage(&old, &d).unwrap();
+        let regions = damage(old, new).unwrap();
         let u = regions.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap();
-        let x0 = ((u.x0 * 1.3).floor().max(0.0)) as u32;
-        let y0 = ((u.y0 * 1.3).floor().max(0.0)) as u32;
-        let x1 = ((u.x1 * 1.3).ceil() as u32).min(w);
-        let y1 = ((u.y1 * 1.3).ceil() as u32).min(h);
-        let patch = r.render(&d, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
+        let x0 = ((u.x0 * zoom).floor().max(0.0)) as u32;
+        let y0 = ((u.y0 * zoom).floor().max(0.0)) as u32;
+        let x1 = ((u.x1 * zoom).ceil() as u32).min(w);
+        let y1 = ((u.y1 * zoom).ceil() as u32).min(h);
+        let patch = r.render(new, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
         for y in y0..y1 {
             for x in x0..x1 {
                 let pi = (((y - y0) * (x1 - x0) + (x - x0)) * 4) as usize;
@@ -240,8 +272,105 @@ mod tests {
                 img.pixels[ii..ii + 4].copy_from_slice(&patch.pixels[pi..pi + 4]);
             }
         }
-        let diff = img.pixels.iter().zip(&full.pixels).filter(|(a, b)| a.abs_diff(**b) > 2).count();
+        img.pixels.iter().zip(&full.pixels).filter(|(a, b)| a.abs_diff(**b) > 2).count()
+    }
+
+    #[test]
+    fn editing_a_wrapping_anchored_object_damages_the_text_it_wraps() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "Anchor", ParaFormat::default()).unwrap();
+        let (_, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 600.0), lid, "Wrapped", ParaFormat::default()).unwrap();
+        let mut it = pagenor_doc::Item::new(
+            pagenor_doc::ItemId(d.alloc()),
+            lid,
+            pagenor_doc::Shape::Rectangle,
+            pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        it.wrap.mode = pagenor_doc::WrapMode::BoundingBox;
+        let old = d.clone();
+        d.story_mut(a).unwrap().insert_object(0, pagenor_doc::AnchoredObject::new(it, Default::default()));
+        let dmg = damage(&old, &d).unwrap();
+        assert!(dmg.iter().any(|(_, r)| r.contains(pagenor_geom::Point::new(400.0, 500.0))));
+    }
+
+    #[test]
+    fn patched_render_equals_full_render() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "Hello there", ParaFormat::default()).unwrap();
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, ", typed");
+        let diff = patched_diff(&old, &d, (400, 300), 1.3);
         assert_eq!(diff, 0, "patched image differs from the full render in {diff} channels");
+    }
+
+    #[test]
+    fn moving_a_sheared_turned_text_frame_leaves_no_trail() {
+        use pagenor_geom::Affine;
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let text = "Lorem ipsum dolor sit amet. ".repeat(60);
+        let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 200.0), lid, &text, ParaFormat::default()).unwrap();
+        // Sheared outline (its box's corners are outside it, the text's first and last lines in
+        // them), then turned: the text reaches past the outline's bounds.
+        let it = d.item_mut(f).unwrap();
+        it.path = pagenor_geom::shapes::rectangle(Rect::new(0.0, 0.0, 300.0, 200.0)).transformed(Affine::skew(0.5, 0.0));
+        it.xf = Affine::translate((150.0, 60.0)) * Affine::rotate(30f64.to_radians());
+        let old = d.clone();
+        d.item_mut(f).unwrap().xf = Affine::translate((210.0, 90.0)) * Affine::rotate(30f64.to_radians());
+        let diff = patched_diff(&old, &d, (700, 560), 1.0);
+        assert_eq!(diff, 0, "the moved text left {diff} stale channels behind");
+    }
+
+    #[test]
+    fn editing_the_story_of_an_anchored_text_frame_repaints_everything() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, pagenor_doc::AnchoredObject::new(it, Default::default()));
+        d.check().unwrap();
+        let cache = pagenor_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, " text");
+        assert!(damage(&old, &d).is_none());
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
+    }
+
+    /// Only an anchored frame repaints everything: a frame on a spread damages its areas, and
+    /// one that is nowhere damages nothing.
+    #[test]
+    fn changed_frame_areas_repaint_everything_for_anchored_frames_only() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (on_spread, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, pagenor_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&d, &d, fid).is_none(), "anchored");
+        assert_eq!(changed_frame_areas(&d, &d, on_spread).map(|a| a.len()), Some(2), "before and after");
+        assert_eq!(changed_frame_areas(&d, &d, ItemId(u64::MAX)), Some(Vec::new()), "nowhere");
+    }
+
+    /// A frame on a spread in one document and anchored in the other repaints everything, both
+    /// ways: its anchored placement is drawn inside its host's text, outside the spread area.
+    #[test]
+    fn a_frame_moving_between_a_spread_and_an_anchor_repaints_everything() {
+        let mut on_spread = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = on_spread.default_layer();
+        let (_, host) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let mut anchored = on_spread.clone();
+        let it = anchored.item(fid).unwrap().clone();
+        anchored.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        anchored.story_mut(host).unwrap().insert_object(0, pagenor_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&on_spread, &anchored, fid).is_none(), "spread to anchor");
+        assert!(changed_frame_areas(&anchored, &on_spread, fid).is_none(), "anchor to spread");
     }
 
     #[test]

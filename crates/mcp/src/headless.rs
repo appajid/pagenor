@@ -37,6 +37,7 @@ pub(crate) fn pointer_kind(k: &str) -> Option<PointerKind> {
         "up" => PointerKind::Up,
         "move" => PointerKind::Move,
         "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+        "tripleclick" | "triclick" => PointerKind::TripleClick,
         _ => return None,
     })
 }
@@ -96,7 +97,7 @@ impl Headless {
 
     fn exec(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         let r = self.session.execute(id, params).map_err(|e| {
-            let ui_only = ["app.", "view.", "window."].iter().any(|p| id.starts_with(p));
+            let ui_only = pagenor_engine::ui_commands::is_ui_command(id);
             if ui_only && pagenor_engine::find_command(id).is_none() { format!("`{id}` is a UI command; {NEEDS_APP}") } else { e.to_string() }
         });
         // Requests for a UI (file pickers, dialogs) have nobody to serve them here.
@@ -202,7 +203,7 @@ impl Headless {
         let png = img.to_png();
         match s(p, "path") {
             Some(path) => {
-                std::fs::write(path, &png).map_err(|e| format!("write {path}: {e}"))?;
+                pagenor_engine::write_atomic(std::path::Path::new(path), &png).map_err(|e| format!("write {path}: {e}"))?;
                 Ok(json!({"path": path, "width": img.width, "height": img.height}))
             }
             None => Ok(json!({"width": img.width, "height": img.height, "pngBase64": pagenor_engine::cmd::base64_encode(&png)})),
@@ -222,7 +223,7 @@ impl Headless {
             .ok_or_else(|| format!("no page {page}"))?;
         let lower = path.to_ascii_lowercase();
         let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
-        std::fs::write(path, &bytes).map_err(|e| format!("write {path}: {e}"))?;
+        pagenor_engine::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| format!("write {path}: {e}"))?;
         Ok(json!({"path": path, "width": img.width, "height": img.height}))
     }
 }

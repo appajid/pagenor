@@ -46,6 +46,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: quality-${{ matrix.os }}-no-debug
+          cache-on-failure: 'true'
       - name: Workspace quality gate (native and WASM)
         run: cargo run --locked --package xtask -- ci
 

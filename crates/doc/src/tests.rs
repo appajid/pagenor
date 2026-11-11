@@ -235,6 +235,25 @@ fn page_names_follow_sections() {
 }
 
 #[test]
+fn hostile_section_start_numbers_saturate() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let first = d.sections.iter_mut().find(|s| s.start == 0).unwrap();
+    first.start_number = Some(u32::MAX);
+    let continuing = Section { start: 2, start_number: None, ..first.clone() };
+    d.sections.push(continuing);
+    assert_eq!(d.page_number(1), u32::MAX);
+    assert_eq!(d.page_number(2), u32::MAX);
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+    for section in &mut d.sections {
+        section.style = NumberStyle::Symbols;
+    }
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+    d.sections.clear();
+    assert_eq!(d.page_number(usize::MAX), u32::MAX);
+    assert_eq!(d.page_name(usize::MAX), u32::MAX.to_string());
+}
+
+#[test]
 fn document_serde_roundtrip() {
     let mut d = doc();
     let lid = d.default_layer();
@@ -341,4 +360,121 @@ fn find_many_handles_deep_groups_on_a_small_thread_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn chapter_settings_legacy_defaults_and_labels_round_trip() {
+    let mut d = doc();
+    let old: DocSettings = serde_json::from_value(serde_json::json!({"chapterNumber": 7})).unwrap();
+    assert_eq!(old.chapter_style, NumberStyle::Arabic);
+    assert_eq!(old.chapter_source, ChapterSource::Automatic);
+    d.settings = old;
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), d.default_layer(), "Heading", ParaFormat::default()).unwrap();
+    let anchor = d.paragraph_anchor(sid, 0).unwrap();
+    for (style, label) in [
+        (NumberStyle::Arabic, "7"),
+        (NumberStyle::UpperRoman, "VII"),
+        (NumberStyle::LowerRoman, "vii"),
+        (NumberStyle::UpperLetters, "G"),
+        (NumberStyle::LowerLetters, "g"),
+        (NumberStyle::ArabicLeadingZero, "07"),
+        (NumberStyle::ArabicThreeDigits, "007"),
+        (NumberStyle::ArabicFourDigits, "0007"),
+    ] {
+        d.settings.chapter_style = style;
+        d.settings.chapter_source = ChapterSource::UserDefined;
+        let restored: Document = serde_json::from_slice(&serde_json::to_vec(&d).unwrap()).unwrap();
+        assert_eq!(restored.settings, d.settings);
+        assert_eq!(restored.chapter_label(), label);
+        assert_eq!(restored.xref_values(anchor).unwrap().chapter, label);
+    }
+    d.settings.chapter_style = NumberStyle::Symbols;
+    d.settings.chapter_number = u32::MAX;
+    assert_eq!(d.chapter_label(), "99999");
+    d.settings.chapter_style = NumberStyle::UpperRoman;
+    assert!(d.chapter_label().len() < 200);
+}
+
+/// A placed PDF saved before its crop choice was stored loads with the crop box (the whole page),
+/// and that default isn't written out.
+#[test]
+fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
+    let a: Asset = serde_json::from_str(r#"{"id": 7, "name": "a.pdf", "mime": "application/pdf", "page": 1}"#).unwrap();
+    assert_eq!((a.pdf_crop, a.pdf_box, a.shown_box()), (PdfCrop::Crop, None, None));
+    let json = serde_json::to_string(&a).unwrap();
+    assert!(!json.contains("pdfCrop") && !json.contains("pdfBox"), "{json}");
+    let trim = Asset { pdf_crop: PdfCrop::Trim, pdf_box: Some([0.1, 0.1, 0.9, 0.9]), ..a };
+    let back: Asset = serde_json::from_str(&serde_json::to_string(&trim).unwrap()).unwrap();
+    assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
+    // A box with no area shows the whole page.
+    assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
+}
+
+#[test]
+fn page_numbers_saturate_at_the_largest_start() {
+    // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
+    let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
+    d.sections = vec![crate::Section {
+        start: 0,
+        start_number: Some(u32::MAX),
+        style: Default::default(),
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+    }];
+    assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
+    d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
+    assert_eq!(d.page_number(2), u32::MAX, "a section continuing it saturates too");
+}
+
+#[test]
+fn renamed_swatch_updates_the_colors_of_future_shapes() {
+    let mut d = Document::new(&NewDocument::default());
+    d.settings.new_object.fill = "Custom".into();
+    d.settings.new_object.stroke = "Custom".into();
+    d.rename_swatch_refs("Custom", "Renamed");
+    assert_eq!((d.settings.new_object.fill.as_str(), d.settings.new_object.stroke.as_str()), ("Renamed", "Renamed"));
+}
+
+fn group_of(d: &mut Document, lid: LayerId, kids: Vec<std::sync::Arc<Item>>) -> ItemId {
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, pagenor_geom::PathData::default());
+    g.content = Content::Group { items: kids };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    gid
+}
+
+#[test]
+fn ancestry_helpers_follow_nested_groups_and_ignore_anchored_items() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "t", ParaFormat::default()).unwrap();
+    let leaf = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    let inner = ItemId(d.alloc());
+    let mut ig = Item::new(inner, lid, Shape::Group, pagenor_geom::PathData::default());
+    ig.content = Content::Group { items: vec![leaf] };
+    let outer = group_of(&mut d, lid, vec![std::sync::Arc::new(ig)]);
+    assert_eq!(d.ancestry_chain(f), vec![outer, inner, f]);
+    assert_eq!((d.parent_of(f), d.parent_of(inner), d.parent_of(outer)), (Some(inner), Some(outer), None));
+    // Not on a spread (an unknown id, or one anchored in a story): no chain, no parent.
+    assert_eq!((d.ancestry_chain(ItemId(u64::MAX)), d.parent_of(ItemId(u64::MAX))), (vec![], None));
+    // A click on the leaf picks the deepest selected ancestor, else the top-level group.
+    assert_eq!(d.selection_target(f, |_| false), outer);
+    assert_eq!(d.selection_target(f, |i| i == inner), inner);
+    assert_eq!(d.selection_target(f, |i| i == f || i == outer), f);
+}
+
+#[test]
+fn ancestor_locked_ignores_the_items_own_lock() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "t", ParaFormat::default()).unwrap();
+    let mut leaf = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    std::sync::Arc::make_mut(&mut leaf).locked = true;
+    let g = group_of(&mut d, lid, vec![leaf]);
+    assert!(d.is_locked(f) && !d.ancestor_locked(f), "its own lock is not inherited");
+    d.item_mut(g).unwrap().locked = true;
+    assert!(d.ancestor_locked(f) && d.is_locked(f));
+    assert!(!d.ancestor_locked(g), "a top-level item has no ancestors");
 }

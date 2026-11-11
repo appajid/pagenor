@@ -394,3 +394,318 @@ fn opens_indesign_documents() {
     let placed = s.execute("file.place", &json!({"base64":crate::cmd::base64_encode(&indd),"name":"placed.indd"})).unwrap();
     assert!(placed["importWarnings"].is_array());
 }
+
+#[test]
+fn indic_idml_and_indd_open_native_reopen_and_pdf_preserve_text_and_font_identity() {
+    use pagenor_doc::{ParaFormat, SpreadRef};
+    use pagenor_geom::Rect;
+    // ToUnicode-only extraction here; the importer tests also preserve ZWJ/ZWNJ, whose
+    // invisible glyph substitutions can require PDF ActualText instead of ToUnicode.
+    let text = "A😀 ఉదయం క్షి";
+    let family = "Pagenor Import Indic Test";
+    // Give every source character a distinct glyph so PDF ToUnicode can distinguish them.
+    // The separate composition regressions test partial coverage and cluster fallback.
+    let chars: std::collections::BTreeSet<_> = text.chars().collect();
+    let mapping: Vec<_> = chars.into_iter().zip("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".chars()).collect();
+    pagenor_fonts::FontDb::global().add_font(pagenor_fonts::testing::font_mapping(family, &mapping).unwrap());
+    let mut source = Document::new(&pagenor_doc::build::NewDocument::default());
+    let (_, sid) =
+        source.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 300.0), source.default_layer(), text, ParaFormat::default()).unwrap();
+    source.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some(family.into());
+        f.over.font_style = Some("Regular".into());
+        f.over.language = Some("Telugu".into());
+    });
+    let files = [
+        ("indic.idml", pagenor_idml::export_idml(&source)),
+        ("indic.indd", pagenor_indd::synthetic::unicode_sample_with_font(text, family, "Regular").build()),
+    ];
+    for (name, bytes) in files {
+        let mut s = Session::new();
+        s.execute("file.openBytes", &json!({"base64": crate::cmd::base64_encode(&bytes), "name": name})).unwrap();
+        assert!(s.doc().unwrap().path.is_none(), "imports start unsaved");
+        for native_reopen in [false, true] {
+            let doc = &s.doc().unwrap().doc;
+            let story = doc.stories.values().find(|story| story.text == text).unwrap();
+            let (_, base) = doc.styles.resolve_para(&story.paras[0]);
+            let props = doc.styles.resolve_char(&base, story.runs().next().unwrap().1);
+            assert_eq!(props.font_family, family, "{name}: font identity");
+            assert_eq!(props.font_style, "Regular", "{name}: font style");
+            if name.ends_with(".idml") {
+                assert_eq!(pagenor_doc::language_tag(&props.language), Some("te"));
+            }
+            let pdf = s.execute("file.exportPdf", &json!({})).unwrap();
+            let pdf = crate::cmd::base64_decode(pdf["base64"].as_str().unwrap());
+            let extracted = crate::tests::pdf_text(&pdf).concat();
+            assert_eq!(extracted, text, "{name}, native reopen {native_reopen}");
+            if !native_reopen {
+                let native = pagenor_format::save(&s.doc().unwrap().doc).unwrap();
+                s.execute("file.openBytes", &json!({"base64": crate::cmd::base64_encode(&native), "name": "indic.pgnr"})).unwrap();
+            }
+        }
+    }
+}
+
+/// IDML says which page of a placed PDF shows and which box its graphic spans, so InDesign opens
+/// it at the same size and position; importing it back gives the same page, crop and geometry.
+#[test]
+fn placed_pdf_page_and_crop_round_trip_through_idml() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2})).unwrap();
+    s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+    let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+    let mut t = Session::new();
+    t.execute("file.new", &json!({})).unwrap();
+    // Page 2, cropped to its trim box: the frame is smaller than the page with its bleed.
+    let place = json!({"base64": b64, "name": "a.pdf", "pdfPage": 2, "pdfCrop": "trim", "width": 315, "x": 20, "y": 30});
+    let r = t.execute("file.place", &place).unwrap();
+    let d = t.doc().unwrap().doc.clone();
+    let item = d.item(ItemId(r["id"].as_u64().unwrap())).unwrap();
+    let (bounds, g) = (item.bounds(), item.graphic().unwrap().clone());
+    assert_eq!(d.assets[&g.asset].page, 1);
+    assert_eq!(d.assets[&g.asset].pdf_crop, pagenor_doc::PdfCrop::Trim);
+
+    let bytes = pagenor_idml::export_idml(&d);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut spreads = String::new();
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        if f.name().starts_with("Spreads/") {
+            std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
+        }
+    }
+    let attr = spreads.split("<PDFAttribute ").nth(1).and_then(|a| a.split("/>").next()).expect("a PDFAttribute");
+    assert!(attr.contains(r#"PageNumber="2""#) && attr.contains(r#"PDFCrop="CropTrim""#), "{attr}");
+    assert!(spreads.contains(r#"<GraphicBounds Left="0" Top="0" Right="612" Bottom="792"/>"#), "the trim box");
+
+    let back = crate::cmd::interchange::import(&bytes, None).unwrap();
+    let bi = back.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
+    let bg = bi.graphic().unwrap();
+    let ba = &back.assets[&bg.asset];
+    assert_eq!((ba.page, ba.pdf_crop), (1, pagenor_doc::PdfCrop::Trim));
+    let (want, got) = (d.assets[&g.asset].shown_box().unwrap(), ba.shown_box().expect("the trim box found on the page"));
+    assert!(want.iter().zip(got).all(|(a, b)| (a - b).abs() < 1e-9), "{got:?} vs {want:?}");
+    let bb = bi.bounds();
+    assert!([bb.x0 - bounds.x0, bb.y0 - bounds.y0, bb.x1 - bounds.x1, bb.y1 - bounds.y1].iter().all(|v| v.abs() < 1e-3), "{bb:?} vs {bounds:?}");
+    assert!((bg.size.0 - g.size.0).abs() < 1e-3 && (bg.size.1 - g.size.1).abs() < 1e-3);
+    let (a, b) = ((bi.xf * bg.xf).as_coeffs(), (item.xf * g.xf).as_coeffs());
+    assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3), "{a:?} vs {b:?}");
+
+    // A page the PDF doesn't have imports, and the PDF export leaves it out with a warning.
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut f, &mut body).unwrap();
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, body.replace(r#"PageNumber="2""#, r#"PageNumber="4294967295""#).as_bytes()).unwrap();
+    }
+    let hostile = pagenor_idml::import_idml(&out.finish().unwrap().into_inner()).unwrap();
+    assert_eq!(hostile.assets.values().map(|a| a.page).collect::<Vec<_>>(), [u32::MAX - 1]);
+    t.edit(|doc, _| {
+        *doc = hostile;
+        Ok(())
+    })
+    .unwrap();
+    let r = t.execute("file.exportPdf", &json!({})).unwrap();
+    assert!(r["warnings"].to_string().contains("has no page 4294967295"), "{r}");
+}
+
+/// An IDML placed PDF cropped to its media box, without `GraphicBounds`: the graphic takes the
+/// media box (the page with its 9 pt bleed).
+#[test]
+fn idml_placed_pdf_cropped_to_its_media_box_gets_media_box_bounds() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+    let b64 = s.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap().to_string();
+    let mut t = Session::new();
+    t.execute("file.new", &json!({})).unwrap();
+    t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "trim", "width": 630, "x": 0, "y": 0})).unwrap();
+    let bytes = pagenor_idml::export_idml(&t.doc().unwrap().doc);
+
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut edited = false;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut body).unwrap();
+        if f.name().starts_with("Spreads/") {
+            let text = String::from_utf8(body).unwrap().replace(r#"PDFCrop="CropTrim""#, r#"PDFCrop="CropMedia""#);
+            let start = text.find("<GraphicBounds ").unwrap();
+            let end = start + text[start..].find("/>").unwrap() + 2;
+            body = format!("{}{}", &text[..start], &text[end..]).into_bytes();
+            edited = true;
+        }
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, &body).unwrap();
+    }
+    assert!(edited);
+    let back = crate::cmd::interchange::import(&out.finish().unwrap().into_inner(), None).unwrap();
+    let g = back.spreads.iter().flat_map(|sp| sp.items.iter()).find_map(|i| i.graphic().cloned()).unwrap();
+    let a = &back.assets[&g.asset];
+    assert_eq!(a.pdf_crop, pagenor_doc::PdfCrop::Media);
+    assert!((g.size.0 - 630.0).abs() < 1e-3 && (g.size.1 - 810.0).abs() < 1e-3, "{:?}", g.size);
+    let b = a.shown_box().unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    assert!(b.iter().zip([0.0, 0.0, 1.0, 1.0]).all(|(x, y)| (x - y).abs() < 1e-6), "{b:?}");
+}
+
+/// A Bounding Box crop needs the page rendered to find its box. IDML import leaves that until
+/// the graphic is drawn or exported (its `GraphicBounds` give its size), so opening a document
+/// doesn't render every placed PDF; drawing and PDF export find the same box placing it did.
+#[test]
+fn idml_bounding_box_crop_is_measured_when_drawn_not_on_import() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("frame.create", &json!({"rect": [100, 200, 300, 260], "content": "unassigned"})).unwrap();
+    s.execute("object.fill", &json!({"swatch": "[Black]"})).unwrap();
+    let b64 = s.execute("file.exportPdf", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+    let mut t = Session::new();
+    t.execute("file.new", &json!({})).unwrap();
+    t.execute("file.place", &json!({"base64": b64, "name": "a.pdf", "pdfCrop": "contentVisible", "width": 200, "x": 20, "y": 30})).unwrap();
+    let placed = t.doc().unwrap().doc.assets.values().next().unwrap().shown_box().expect("placing measures the box");
+    assert!(placed[0] > 0.1 && placed[2] < 0.6, "the drawn rectangle, not the page: {placed:?}");
+
+    let bytes = pagenor_idml::export_idml(&t.doc().unwrap().doc);
+    let back = crate::cmd::interchange::import(&bytes, None).unwrap();
+    let a = back.assets.values().next().unwrap();
+    assert_eq!(a.pdf_crop, pagenor_doc::PdfCrop::ContentVisible);
+    assert!(a.content_box_pending(), "import didn't render the page: {:?}", a.pdf_box);
+    let close = |b: [f64; 4]| b.iter().zip(placed).all(|(x, y)| (x - y).abs() < 1e-9);
+    let drawn = pagenor_render::shown_box(a).expect("drawing measures the box");
+    assert!(close(drawn), "{drawn:?} vs {placed:?}");
+    let boxed = crate::cmd::interchange::with_pdf_boxes(&back);
+    let exported = boxed.assets.values().next().unwrap().shown_box().expect("PDF export gets the box");
+    assert!(close(exported), "{exported:?} vs {placed:?}");
+}
+
+#[test]
+fn indd_layer_stack_survives_native_import_and_save_without_covering_text() {
+    use pagenor_indd::synthetic::object;
+    let words = |values: &[u32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+    let name = |name: &str| {
+        let mut b = vec![0; 3];
+        b.extend_from_slice(&(0x4000 | name.len() as u16).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b
+    };
+    let mut source = pagenor_indd::synthetic::sample();
+    source.add(1, 0xE01, object(&[(0x501, words(&[1, 20])), (0x301, words(&[3, 10, 90, 91]))]));
+    source.add(90, 0x302, object(&[(0x304, name("Title"))]));
+    source.add(91, 0x302, object(&[(0x304, name("Page Number"))]));
+    source.add(20, 0x501, object(&[(0x503, words(&[20, 0, 2, 21, 92]))]));
+    source.add(21, 0x301, object(&[(0x303, words(&[20, 20, 2, 22, 30])), (0x302, [words(&[10]), vec![0, 0]].concat())]));
+    source.add(92, 0x301, object(&[(0x303, words(&[20, 20, 1, 40])), (0x302, [words(&[90]), vec![0, 0]].concat())]));
+    let mut session = Session::new();
+    session.execute("file.openBytes", &json!({"base64": crate::cmd::base64_encode(&source.build()), "name": "layered.indd"})).unwrap();
+    let doc = &session.doc().unwrap().doc;
+    assert_eq!(doc.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Page Number", "Title", "Layer 1"]);
+    let text = doc.spreads[0].items.iter().find(|i| matches!(i.content, pagenor_doc::Content::Text(_))).unwrap();
+    let background = doc.spreads[0].items.iter().find(|i| !matches!(i.content, pagenor_doc::Content::Text(_))).unwrap();
+    assert!(doc.layer_rank(text.layer) > doc.layer_rank(background.layer), "text must paint above background");
+    let reopened = pagenor_format::load(&pagenor_format::save(doc).unwrap()).unwrap();
+    assert_eq!(reopened.layers, doc.layers);
+    assert_eq!(
+        reopened.spreads[0].items.iter().map(|i| i.layer).collect::<Vec<_>>(),
+        doc.spreads[0].items.iter().map(|i| i.layer).collect::<Vec<_>>()
+    );
+}
+
+/// `text` with the value after every `open` (up to the next `close`) set to `value`, and how
+/// many values were replaced.
+fn replace_values(text: &str, open: &str, close: char, value: &str) -> (String, usize) {
+    let mut rest = text;
+    let mut new = String::new();
+    let mut count = 0;
+    while let Some(at) = rest.find(open) {
+        let start = at + open.len();
+        new.push_str(&rest[..start]);
+        new.push_str(value);
+        let end = rest[start..].find(close).map_or(rest.len(), |e| start + e);
+        rest = &rest[end..];
+        count += 1;
+    }
+    new.push_str(rest);
+    (new, count)
+}
+
+/// `package` with every `{name}="…"` attribute and `<{name}>…</{name}>` / `<{name} type="…">…`
+/// property element in its XML parts set to `value`, and how many values were replaced.
+fn with_attr_set(package: &[u8], name: &str, value: &str) -> (Vec<u8>, usize) {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(package)).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut count = 0;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i).unwrap();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut body).unwrap();
+        if f.name().ends_with(".xml")
+            && let Ok(text) = String::from_utf8(body.clone())
+        {
+            let (text, a) = replace_values(&text, &format!(" {name}=\""), '"', value);
+            let (text, b) = replace_values(&text, &format!("<{name}>"), '<', value);
+            let (text, c) = replace_values(&text, &format!("<{name} type=\"unit\">"), '<', value);
+            let (text, d) = replace_values(&text, &format!("<{name} type=\"double\">"), '<', value);
+            count += a + b + c + d;
+            body = text.into_bytes();
+        }
+        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, &body).unwrap();
+    }
+    (out.finish().unwrap().into_inner(), count)
+}
+
+/// Non-finite numbers in an IDML package never reach the model: the imported document saves
+/// and reopens. Every listed name occurs in the exported sample, so each case really rewrites
+/// values; names the sample lacks (feather `Width`, gradient start/length) go through `El::num`,
+/// covered in `xml.rs`.
+#[test]
+fn idml_non_finite_numbers_import_to_a_document_that_reopens() {
+    let package = pagenor_idml::export_idml(&crate::sample::magazine());
+    let attrs = [
+        "StrokeWeight",
+        "MiterLimit",
+        "Angle",
+        "FirstBaselineOffset",
+        "MinimumFirstBaselineOffset",
+        "SpaceBefore",
+        "SpaceAfter",
+        "LeftIndent",
+        "RightIndent",
+        "FirstLineIndent",
+        "PointSize",
+        "Tracking",
+        "Leading",
+        "FillTint",
+        "StrokeTint",
+        "GapTint",
+        "Position",
+        "BaselineShift",
+        "Skew",
+    ];
+    let mut failures = Vec::new();
+    for attr in attrs {
+        for value in ["NaN", "inf", "-inf"] {
+            let (bytes, replaced) = with_attr_set(&package, attr, value);
+            if replaced == 0 {
+                failures.push(format!("{attr}: not present in the exported package"));
+                continue;
+            }
+            let doc = match pagenor_idml::import_idml(&bytes) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    failures.push(format!("{attr}={value}: import failed: {e}"));
+                    continue;
+                }
+            };
+            match pagenor_format::save(&doc).map(|saved| pagenor_format::load(&saved)) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => failures.push(format!("{attr}={value}: saved but load failed: {e}")),
+                Err(e) => failures.push(format!("{attr}={value}: save failed: {e}")),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

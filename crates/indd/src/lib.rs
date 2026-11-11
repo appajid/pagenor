@@ -12,10 +12,10 @@
 //! - [`writer`]: the IDML package.
 //!
 //! ## Supported subset
-//! Spreads and pages, layers (order, visibility of items), rectangles/polygons/text frames/groups
+//! Spreads and pages, layers (order, empty user layers, visibility of items), rectangles/polygons/text frames/groups
 //! with path geometry, fill and stroke colours, process/spot swatches (CMYK, RGB, Lab), paragraph
 //! and character styles with overrides (font, style, size, leading, colour, justification),
-//! stories, and placed graphics (embedded PDF, the TIFF preview of embedded EPS, or InDesign's
+//! stories, multi-column count/gutter, and placed graphics (embedded PDF, the TIFF preview of embedded EPS, or InDesign's
 //! proxy image when the link was not embedded).
 //!
 //! ## TODO

@@ -1,16 +1,22 @@
 //! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
 //! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
-//! composite); SVG is parsed with usvg (text set in the bundled fonts) and rasterised with resvg
+//! composite); SVG is parsed with usvg (text set in document, bundled and installed fonts) and rasterised with resvg
 //! for the screen — PDF export draws the same tree as vectors.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+
+use pagenor_fonts::{FontDb, FontFace, ScopedFonts};
 
 pub use resvg::usvg;
 
 mod eps;
+mod metadata;
 mod psd;
+mod resolution;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
+pub use metadata::{ColorInfo, color_info, color_mode};
+pub use resolution::raster_resolution;
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
@@ -56,27 +62,123 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
 }
 
-fn svg_options() -> &'static usvg::Options<'static> {
-    static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
-    OPTS.get_or_init(|| {
-        let mut db = usvg::fontdb::Database::new();
-        for f in pagenor_fonts::bundled() {
-            db.load_font_data(f.to_vec());
-        }
-        // Japanese text in SVGs: the craft-fonts faces (none without CRAFT_FONTS_DIR).
-        for f in pagenor_fonts::japanese_document_fonts() {
-            db.load_font_data(f.bytes.to_vec());
-        }
-        db.set_serif_family("Source Serif 4");
-        db.set_sans_serif_family("Source Sans 3");
-        db.set_monospace_family("JetBrains Mono");
-        usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), ..Default::default() }
-    })
+/// Share only the font data needed by this SVG. Start with the document's default faces,
+/// so a document replacement takes precedence even over a bundled family of the same name.
+fn svg_options(fonts: ScopedFonts<'_>) -> usvg::Options<'_> {
+    let mut db = Arc::new(usvg::fontdb::Database::new());
+    for family in ["Source Serif 4", "Source Sans 3", "JetBrains Mono"] {
+        load_family(&mut db, &fonts, family);
+    }
+    let fallback_fonts = fonts.clone();
+    let loaded_fallback = usvg::FontResolver::default_fallback_selector();
+    let font_resolver = usvg::FontResolver {
+        select_font: Box::new(move |font, db| {
+            // Respect family-list order; a PostScript name already selects a face's style.
+            for family in font.families() {
+                let name = match family {
+                    usvg::FontFamily::Named(name) => name.as_str(),
+                    usvg::FontFamily::Monospace => "JetBrains Mono",
+                    usvg::FontFamily::SansSerif => "Source Sans 3",
+                    _ => "Source Serif 4",
+                };
+                if let Some(canonical) = fonts.canonical_family(name) {
+                    load_family(db, &fonts, &canonical);
+                    if let Some(id) = db.query(&usvg::fontdb::Query {
+                        families: &[usvg::fontdb::Family::Name(&canonical)],
+                        weight: usvg::fontdb::Weight(font.weight()),
+                        stretch: font.stretch().into(),
+                        style: font.style().into(),
+                    }) {
+                        return Some(id);
+                    }
+                } else if let Some((family, style)) = fonts.postscript_face(name)
+                    && let Some(id) = add_face(db, fonts.face(&family, &style))
+                {
+                    return Some(id);
+                }
+            }
+            load_family(db, &fonts, "Source Serif 4");
+            db.query(&usvg::fontdb::Query {
+                families: &[usvg::fontdb::Family::Name("Source Serif 4")],
+                weight: usvg::fontdb::Weight(font.weight()),
+                stretch: font.stretch().into(),
+                style: font.style().into(),
+            })
+        }),
+        select_fallback: Box::new(move |c, exclude, db| {
+            loaded_fallback(c, exclude, db).or_else(|| {
+                let id = add_face(db, fallback_fonts.fallback_for(c, 0, None)?)?;
+                (!exclude.contains(&id)).then_some(id)
+            })
+        }),
+    };
+    let default_data = usvg::ImageHrefResolver::default_data_resolver();
+    let image_href_resolver = usvg::ImageHrefResolver {
+        resolve_data: Box::new(move |mime, data, options| {
+            let raster = matches!(
+                image::guess_format(&data),
+                Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
+            );
+            if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
+                let xml = svg_data(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
+                charge_nested_svg(xml.len())?;
+                svg_preflight(&xml)?;
+                default_data(mime, Arc::new(xml.into_owned()), options)
+            } else {
+                default_data(mime, data, options)
+            }
+        }),
+        resolve_string: Box::new(|_, _| None),
+    };
+    usvg::Options { fontdb: db, font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
 }
 
-/// The parsed SVG.
+fn load_family(db: &mut Arc<usvg::fontdb::Database>, fonts: &ScopedFonts<'_>, family: &str) {
+    if !db.faces().any(|face| face.families.iter().any(|(name, _)| name == family)) && fonts.has_family(family) {
+        for style in fonts.styles(family) {
+            add_face(db, fonts.face(family, &style));
+        }
+    }
+}
+
+/// Own the Pagenor face rather than copying a file or native-service font's bytes.
+struct FaceBytes(Arc<FontFace>);
+impl AsRef<[u8]> for FaceBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.data()
+    }
+}
+
+fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<FontFace>) -> Option<usvg::fontdb::ID> {
+    let same = |f: &usvg::fontdb::FaceInfo| {
+        f.index == face.index()
+            && matches!(&f.source, usvg::fontdb::Source::Binary(b)
+            if std::ptr::eq(b.as_ref().as_ref().as_ptr(), face.data().as_ptr()))
+    };
+    if let Some(f) = db.faces().find(|f| same(f)) {
+        return Some(f.id);
+    }
+    let index = face.index();
+    // Parse collections privately: unrelated faces must not defeat a document replacement.
+    // The SVG database only receives the face selected by Pagenor; mutation stays additive.
+    let mut parsed = usvg::fontdb::Database::new();
+    let ids = parsed.load_font_source(usvg::fontdb::Source::Binary(Arc::new(FaceBytes(face))));
+    let info = ids.into_iter().find_map(|id| parsed.face(id).filter(|f| f.index == index).cloned())?;
+    Some(Arc::make_mut(db).push_face_info(info))
+}
+
+/// Parse with the shared font database. Other open documents' fonts are excluded.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    usvg::Tree::from_data(bytes, svg_options()).ok()
+    svg_tree_with_fonts(bytes, FontDb::global().scoped(0))
+}
+
+/// Parse with one document's font scope. usvg applies SVG variation settings to the original
+/// variable font; Pagenor's named-instance coordinates are not substituted for SVG CSS.
+pub fn svg_tree_with_fonts(bytes: &[u8], fonts: ScopedFonts<'_>) -> Option<usvg::Tree> {
+    let xml = svg_data(bytes, MAX_SVG_BYTES)?;
+    svg_preflight(&xml)?;
+    NESTED_SVG_BYTES.set(0);
+    usvg::Tree::from_data(&xml, &svg_options(fonts)).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -87,7 +189,10 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((s.width() as f64 * PT_PER_PX, s.height() as f64 * PT_PER_PX));
     }
     let (w, h) = pixel_size(bytes)?;
-    Some((w as f64, h as f64))
+    match raster_resolution(bytes) {
+        Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
+        _ => Some((w as f64, h as f64)),
+    }
 }
 
 /// Pixel dimensions of a raster.
@@ -97,15 +202,136 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
         return Some((be(18), be(14)));
     }
-    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+        .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
 /// Straight (non-premultiplied) RGBA8 of a raster.
+/// Global decoded raster budget, additional to the tighter untrusted-import limits.
+pub fn too_large_to_decode(bytes: &[u8]) -> bool {
+    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > (1 << 30))
+}
+
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
-    Some(image::load_from_memory(bytes).ok()?.to_rgba8())
+    image::load_from_memory(bytes).ok().map(|image| image.to_rgba8()).or_else(|| palette_tiff(bytes, 4_000_000))
+}
+
+/// Decode a bounded raster from an untrusted import. Header dimensions and decoder
+/// allocations are limited before pixel decoding; PSD/SVG/PDF are not accepted.
+pub fn decode_rgba_limited(bytes: &[u8], max_pixels: u64) -> Option<image::RgbaImage> {
+    let (w, h) = pixel_size(bytes)?;
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > max_pixels || max_pixels > 4_000_000 {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(w);
+    limits.max_image_height = Some(h);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok().map(|image| image.to_rgba8()).or_else(|| palette_tiff(bytes, max_pixels))
+}
+
+/// The locked TIFF decoder rejects RGBPalette. Decode single-channel 8-bit indices
+/// through a private grayscale view, then apply the original 16-bit RGB ColorMap.
+/// Original asset bytes stay unchanged; only the temporary interpretation tag changes.
+fn palette_tiff(bytes: &[u8], max_pixels: u64) -> Option<image::RgbaImage> {
+    use tiff::tags::Tag;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return None;
+    }
+    let offset = palette_tag_offset(bytes)?;
+    let mut original = tiff_decoder(bytes)?;
+    let (w, h) = original.dimensions().ok()?;
+    let count = u64::from(w) * u64::from(h);
+    if count == 0
+        || count > max_pixels
+        || count > 4_000_000
+        || original.get_tag_u16_vec(Tag::BitsPerSample).ok()? != [8]
+        || original.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok()?.unwrap_or(1) != 1
+        || original.find_tag_unsigned::<u16>(Tag::SampleFormat).ok()?.unwrap_or(1) != 1
+        || original.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok()?.unwrap_or(1) != 1
+    {
+        return None;
+    }
+    let colors = original.get_tag_u16_vec(Tag::ColorMap).ok()?;
+    if colors.len() != 768 {
+        return None;
+    }
+    let mut gray = bytes.to_vec();
+    let value = if bytes.starts_with(b"II") { 1u16.to_le_bytes() } else { 1u16.to_be_bytes() };
+    gray.get_mut(offset..offset.checked_add(2)?)?.copy_from_slice(&value);
+    let mut limits = tiff::decoder::Limits::default();
+    limits.decoding_buffer_size = 4_000_000;
+    limits.intermediate_buffer_size = 16 * 1024 * 1024;
+    limits.ifd_value_size = 1024 * 1024;
+    let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(&gray)).ok()?.with_limits(limits);
+    let tiff::decoder::DecodingResult::U8(indices) = decoder.read_image().ok()? else {
+        return None;
+    };
+    let count = usize::try_from(count).ok()?;
+    if indices.len() != count {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(count.checked_mul(4)?);
+    for index in indices {
+        let index = usize::from(index);
+        for plane in [0, 256, 512] {
+            let color = u32::from(*colors.get(index + plane)?);
+            rgba.push(((color * 255 + 32_767) / 65_535) as u8);
+        }
+        rgba.push(255);
+    }
+    image::RgbaImage::from_raw(w, h, rgba)
+}
+
+/// Locate one unambiguous classic-TIFF inline SHORT RGBPalette tag. Avoid changing
+/// any offsets, strips, palette entries, optional metadata or other source bytes.
+fn palette_tag_offset(bytes: &[u8]) -> Option<usize> {
+    let little = if bytes.starts_with(b"II*\0") {
+        true
+    } else if bytes.starts_with(b"MM\0*") {
+        false
+    } else {
+        return None;
+    };
+    let short = |at: usize| -> Option<u16> {
+        let value = bytes.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if little { u16::from_le_bytes(value) } else { u16::from_be_bytes(value) })
+    };
+    let long = |at: usize| -> Option<u32> {
+        let value = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(if little { u32::from_le_bytes(value) } else { u32::from_be_bytes(value) })
+    };
+    let ifd = usize::try_from(long(4)?).ok()?;
+    let entries = usize::from(short(ifd)?);
+    if entries > 4096 {
+        return None;
+    }
+    let start = ifd.checked_add(2)?;
+    let end = start.checked_add(entries.checked_mul(12)?)?;
+    bytes.get(start..end)?;
+    let mut found = None;
+    for i in 0..entries {
+        let at = start.checked_add(i.checked_mul(12)?)?;
+        if short(at)? == 262 {
+            if found.is_some() || short(at + 2)? != 3 || long(at + 4)? != 1 || short(at + 8)? != 3 {
+                return None;
+            }
+            found = Some(at + 8);
+        }
+    }
+    found
 }
 
 /// A CMYK raster's ink values, 8 bits per ink (0 = no ink, 255 = solid), as PDF's DeviceCMYK
@@ -138,6 +364,9 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// format, another ink set (InkSet 2), planar storage or premultiplied alpha — and for files
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     use tiff::tags::Tag;
     let mut d = tiff_decoder(bytes)?;
     let has_alpha = match d.colortype().ok()? {
@@ -181,13 +410,90 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.
 pub fn render_svg(bytes: &[u8], max_side: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let tree = svg_tree(bytes)?;
+    render_svg_with_fonts(bytes, max_side, FontDb::global().scoped(0))
+}
+
+/// Rasterise with the font scope used by document composition and PDF export.
+pub fn render_svg_with_fonts(bytes: &[u8], max_side: u32, fonts: ScopedFonts<'_>) -> Option<(Vec<u8>, u32, u32)> {
+    let tree = svg_tree_with_fonts(bytes, fonts)?;
     let s = tree.size();
     let k = max_side as f32 / s.width().max(s.height()).max(1e-3);
     let (w, h) = ((s.width() * k).round().max(1.0) as u32, (s.height() * k).round().max(1.0) as u32);
     let mut pm = resvg::tiny_skia::Pixmap::new(w, h)?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(k, k), &mut pm.as_mut());
     Some((pm.take(), w, h))
+}
+
+const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SVG_EVENTS: usize = 100_000;
+const MAX_SVG_DEPTH: usize = 64;
+
+/// SVG bytes the data images of one document may add up to, all levels together: each nested
+/// document gets the per-document limits, so without this one outer file could hold many of them.
+const MAX_NESTED_SVG_BYTES: usize = 32 * 1024 * 1024;
+
+thread_local! {
+    /// Nested SVG bytes taken so far by the parse running on this thread (see [`svg_tree`]).
+    static NESTED_SVG_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Take `n` bytes of the running parse's nested-SVG budget; `None` when they don't fit.
+fn charge_nested_svg(n: usize) -> Option<()> {
+    let used = NESTED_SVG_BYTES.get().checked_add(n).filter(|u| *u <= MAX_NESTED_SVG_BYTES)?;
+    NESTED_SVG_BYTES.set(used);
+    Some(())
+}
+
+/// Enforce the encoded-size cap, gunzip SVGZ data to at most `limit` bytes, and return the decoded content as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::io::Read;
+
+    if bytes.len() > MAX_SVG_BYTES {
+        return None;
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut xml = Vec::new();
+        flate2::read::GzDecoder::new(bytes).take(limit as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= limit).then_some(std::borrow::Cow::Owned(xml))
+    } else {
+        (bytes.len() <= limit).then_some(std::borrow::Cow::Borrowed(bytes))
+    }
+}
+
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in doctype.as_ref() {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -212,6 +518,166 @@ mod tests {
         assert_eq!(&px[(100 * 400 + 100) * 4..][..4], &[255, 0, 0, 255]);
         assert!(px.chunks(4).skip(220).step_by(7).any(|p| p[3] > 128 && p[0] < 100), "text pixels");
         assert!(!is_svg(b"\x89PNG"));
+    }
+
+    fn text_svg(family: &str, body: &str) -> Vec<u8> {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="{family}">{body}</text></svg>"#).into_bytes()
+    }
+
+    fn glyph_families(tree: &usvg::Tree) -> Vec<(String, u16)> {
+        fn walk(group: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+            for node in group.children() {
+                match node {
+                    usvg::Node::Group(group) => walk(group, tree, out),
+                    usvg::Node::Text(text) => {
+                        for glyph in text.layouted().iter().flat_map(|span| &span.positioned_glyphs) {
+                            let face = tree.fontdb().face(glyph.font).unwrap();
+                            out.push((face.families[0].0.clone(), glyph.id.0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(tree.root(), tree, &mut out);
+        out
+    }
+
+    #[test]
+    fn svg_named_and_fallback_text_share_memory_font_bytes_without_duplicates() {
+        let fonts = FontDb::with_font_dirs(Vec::new());
+        assert_eq!(fonts.add_font(pagenor_fonts::testing::font_with("Pagenor SVG Hangul", &['한', '글']).unwrap()), 1);
+        let svg = text_svg("pAgEnOr SvG hAnGuL", "한글");
+        let tree = svg_tree_with_fonts(&svg, fonts.scoped(0)).unwrap();
+        let glyphs = glyph_families(&tree);
+        assert_eq!(glyphs.len(), 2);
+        assert!(glyphs.iter().all(|(name, gid)| name == "Pagenor SVG Hangul" && *gid != 0));
+        let face = fonts.face("Pagenor SVG Hangul", "Regular");
+        let mut db = Arc::new(usvg::fontdb::Database::new());
+        let id = add_face(&mut db, face.clone()).unwrap();
+        assert_eq!(add_face(&mut db, face.clone()), Some(id));
+        assert_eq!(db.faces().count(), 1);
+        db.with_face_data(id, |data, index| {
+            assert!(std::ptr::eq(data.as_ptr(), face.data().as_ptr()));
+            assert_eq!(index, face.index());
+        })
+        .unwrap();
+        let fallback = svg_tree_with_fonts(&text_svg("Source Sans 3", "한글"), fonts.scoped(0)).unwrap();
+        assert!(glyph_families(&fallback).iter().all(|(_, gid)| *gid != 0));
+        // The SVG retains the bytes even after the originating database is dropped.
+        drop(fonts);
+        assert_eq!(glyph_families(&tree), glyphs);
+    }
+
+    #[test]
+    fn svg_uses_installed_fonts_and_keeps_two_document_replacements_isolated() {
+        let folder = std::env::temp_dir().join(format!("pagenor-svg-scopes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("installed")).unwrap();
+        for (name, glyph) in [("one", 'X'), ("two", 'W')] {
+            std::fs::create_dir_all(folder.join(name)).unwrap();
+            std::fs::write(folder.join(name).join("font.otf"), pagenor_fonts::testing::font_with_glyph("Source Sans 3", &['A'], glyph).unwrap())
+                .unwrap();
+        }
+        std::fs::write(folder.join("installed/font.ttf"), pagenor_fonts::testing::font_with("Pagenor SVG Installed", &['A']).unwrap()).unwrap();
+        let fonts = FontDb::with_font_dirs(vec![folder.join("installed")]);
+        let installed = svg_tree_with_fonts(&text_svg("Pagenor SVG Installed", "A"), fonts.scoped(0)).unwrap();
+        assert_eq!(glyph_families(&installed)[0].0, "Pagenor SVG Installed");
+        let one = fonts.load_document_fonts(&folder.join("one"));
+        let two = fonts.load_document_fonts(&folder.join("two"));
+        let svg = text_svg("Source Sans 3", "A");
+        let first = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap());
+        let second = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(two.scope)).unwrap());
+        let global = glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(0)).unwrap());
+        assert_ne!(first[0].1, second[0].1);
+        assert_ne!(first[0].1, global[0].1);
+        assert_ne!(second[0].1, global[0].1);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), first);
+        let ps = text_svg("SourceSans3-Regular", "A");
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), first);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(two.scope)).unwrap()), second);
+        fonts.close_scope(one.scope);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&svg, fonts.scoped(one.scope)).unwrap()), global);
+        assert_eq!(glyph_families(&svg_tree_with_fonts(&ps, fonts.scoped(one.scope)).unwrap()), global);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn svg_collection_selects_the_requested_face_index_once() {
+        let faces = [
+            pagenor_fonts::testing::font_with("Pagenor SVG Collection One", &['A']).unwrap(),
+            pagenor_fonts::testing::font_with("Pagenor SVG Collection Two", &['A']).unwrap(),
+        ];
+        let mut bytes = b"ttcf".to_vec();
+        bytes.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
+        bytes.extend_from_slice(&2_u32.to_be_bytes());
+        let mut base = 20;
+        for face in &faces {
+            bytes.extend_from_slice(&(base as u32).to_be_bytes());
+            base += face.len();
+        }
+        for face in faces {
+            let start = bytes.len() as u32;
+            let mut face = face;
+            let tables = u16::from_be_bytes([face[4], face[5]]) as usize;
+            for table in 0..tables {
+                let at = 12 + table * 16 + 8;
+                let offset = u32::from_be_bytes(face[at..at + 4].try_into().unwrap()) + start;
+                face[at..at + 4].copy_from_slice(&offset.to_be_bytes());
+            }
+            bytes.extend_from_slice(&face);
+        }
+        let fonts = FontDb::with_font_dirs(Vec::new());
+        assert_eq!(fonts.add_font(bytes), 2);
+        let face = fonts.face("Pagenor SVG Collection Two", "Regular");
+        assert_eq!(face.index(), 1);
+        let mut db = Arc::new(usvg::fontdb::Database::new());
+        let id = add_face(&mut db, face.clone()).unwrap();
+        assert_eq!(db.face(id).unwrap().index, 1);
+        assert_eq!(add_face(&mut db, face), Some(id));
+        assert_eq!(db.faces().count(), 1);
+        let tree = svg_tree_with_fonts(&text_svg("Pagenor SVG Collection Two", "A"), fonts.scoped(0)).unwrap();
+        assert_eq!(glyph_families(&tree)[0].0, "Pagenor SVG Collection Two");
+    }
+
+    /// The PostScript name of the face that sets the text of `svg` (one face for all of it).
+    fn text_face(svg_attrs: &str) -> String {
+        let svg =
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{svg_attrs}>ab</text></svg>"#);
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        let mut faces = Vec::new();
+        for n in tree.root().children() {
+            if let usvg::Node::Text(t) = n {
+                for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
+                    faces.extend(tree.fontdb().face(g.font).map(|f| f.post_script_name.clone()));
+                }
+            }
+        }
+        faces.dedup();
+        assert_eq!(faces.len(), 1, "{faces:?}");
+        faces.remove(0)
+    }
+
+    #[test]
+    fn svg_text_finds_fonts_by_postscript_name() {
+        // Bundled, as Illustrator's SVG export names it; any case.
+        assert_eq!(text_face(r#" font-family="'SourceSerif4-Semibold'""#), "SourceSerif4-Semibold");
+        assert_eq!(text_face(r#" font-family="sourceserif4-semibold""#), "SourceSerif4-Semibold");
+        // A shared font (as an installed one would be).
+        let font = pagenor_fonts::testing::font_with("Pagenor Test SVG PostScript", &['a', 'b']).unwrap();
+        pagenor_fonts::FontDb::global().add_font(font);
+        assert_eq!(text_face(r#" font-family="PagenorTestSVGPostScript-Regular""#), "PagenorTestSVGPostScript-Regular");
+        // The name picks that face: font-weight and font-style don't change it.
+        assert_eq!(text_face(r#" font-family="SourceSerif4-Semibold" font-weight="bold" font-style="italic""#), "SourceSerif4-Semibold");
+        // A family listed before it still comes first; one after it is a fallback.
+        assert_eq!(text_face(r#" font-family="'Source Sans 3', SourceSerif4-Bold""#), "SourceSans3-Regular");
+        assert_eq!(text_face(r#" font-family="NoSuch-Font, SourceSerif4-Bold, 'Source Sans 3'""#), "SourceSerif4-Bold");
+        // Family names work as before.
+        assert_eq!(text_face(r#" font-family="'Source Serif 4'" font-weight="bold""#), "SourceSerif4-Bold");
+        // An unknown name falls back as before (the serif default).
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), text_face(r#" font-family="No Such Font""#));
+        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), "SourceSerif4-Regular");
     }
 
     /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.
@@ -286,6 +752,33 @@ mod tests {
     }
 
     #[test]
+    fn indexed_tiff_palette_keeps_original_bytes_and_renders_exact_colors_with_limits() {
+        use tiff::encoder::colortype::Gray8;
+        use tiff::tags::Tag;
+        let mut bytes = Vec::new();
+        let mut colors = vec![0u16; 768];
+        colors[0] = 65_535;
+        colors[257] = 65_535;
+        colors[514] = 65_535;
+        let mut encoder = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut bytes)).unwrap();
+        let mut image = encoder.new_image::<Gray8>(3, 1).unwrap();
+        image.encoder().write_tag(Tag::PhotometricInterpretation, 3u16).unwrap();
+        image.encoder().write_tag(Tag::ColorMap, colors.as_slice()).unwrap();
+        image.write_data(&[0, 1, 2]).unwrap();
+        let original = bytes.clone();
+        assert_eq!(pixel_size(&bytes), Some((3, 1)));
+        let rgba = decode_rgba_limited(&bytes, 3).unwrap();
+        assert_eq!(rgba.as_raw(), &[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]);
+        assert_eq!(decode_rgba(&bytes).unwrap(), rgba);
+        assert_eq!(bytes, original);
+        assert!(decode_rgba_limited(&bytes, 2).is_none());
+        assert!(decode_rgba_limited(&bytes[..bytes.len() / 2], 3).is_none());
+        let offset = palette_tag_offset(&bytes).unwrap();
+        bytes[offset - 4..offset].copy_from_slice(&2u32.to_le_bytes());
+        assert!(palette_tiff(&bytes, 3).is_none(), "ambiguous/non-inline interpretation is refused");
+    }
+
+    #[test]
     fn bmp_decodes() {
         let mut bmp = Vec::new();
         image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 255, 255]))
@@ -294,5 +787,29 @@ mod tests {
         assert_eq!(mime(&bmp), "image/bmp");
         assert_eq!(pixel_size(&bmp), Some((3, 2)));
         assert_eq!(decode_rgba(&bmp).unwrap().get_pixel(1, 1).0, [0, 0, 255, 255]);
+    }
+}
+
+#[cfg(test)]
+mod review31;
+
+#[cfg(test)]
+mod upstream_review11_svg_tests {
+    use super::*;
+    #[test]
+    fn svg_xml_and_cumulative_data_budget() {
+        assert!(svg_preflight(b"<svg><g/></svg>").is_some());
+        assert!(svg_preflight(b"<!DOCTYPE svg [<!ENTITY x 'x'>]><svg/>").is_none());
+        let deep = format!("<svg>{}{}{}</svg>", "<g>".repeat(65), "", "</g>".repeat(65));
+        assert!(svg_tree(deep.as_bytes()).is_none());
+        NESTED_SVG_BYTES.set(0);
+        assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES - 1).is_some());
+        assert!(charge_nested_svg(2).is_none());
+        assert!(svg_data(b"12345", 4).is_none());
+    }
+    #[test]
+    fn external_image_urls_are_not_resolved() {
+        let opts = svg_options(FontDb::global().scoped(0));
+        assert!((opts.image_href_resolver.resolve_string)("/private/pagenor-nonexistent.png", &opts).is_none());
     }
 }

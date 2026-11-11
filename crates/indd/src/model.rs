@@ -22,7 +22,8 @@ pub(crate) const C_STYLE: u32 = 0x205;
 pub(crate) const C_FONT: u32 = 0x3E03;
 pub(crate) const C_SWATCH: u32 = 0x1F05;
 pub(crate) const C_BLOB: u32 = 0x129;
-const GRAPHIC_CLASSES: [u32; 2] = [0x2501, 0x6601];
+// Raster image, PDF and EPS page-item children.
+const GRAPHIC_CLASSES: [u32; 3] = [0x1702, 0x2501, 0x6601];
 const STRAND_TEXT: u32 = 0x234;
 const STRAND_CHARS: u32 = 0x235;
 const STRAND_PARAS: u32 = 0x236;
@@ -48,6 +49,8 @@ pub(crate) const TA_STYLE: u32 = 0x1B02;
 pub(crate) const TA_SIZE: u32 = 0x1B03;
 pub(crate) const TA_AUTOLEAD: u32 = 0x1B1A;
 pub(crate) const TA_LEADING: u32 = 0x1B1B;
+pub(crate) const TA_SPACE_BEFORE: u32 = 0x1B26;
+pub(crate) const TA_SPACE_AFTER: u32 = 0x1B27;
 pub(crate) const TA_FONT: u32 = 0x1B2B;
 pub(crate) const TA_JUSTIFY: u32 = 0x1B7E;
 
@@ -113,6 +116,8 @@ pub struct Item {
     pub stroke_weight: f64,
     pub stroke_tint: f64,
     pub story: Option<u32>,
+    pub text_columns: u32,
+    pub text_gutter: f64,
     pub children: Vec<Item>,
     pub graphic: Option<Graphic>,
     pub layer: Option<u32>,
@@ -135,6 +140,7 @@ pub struct Spread {
 
 #[derive(Debug, Clone)]
 pub struct Run {
+    /// Source text length in UTF-16 code units, not Unicode scalar values or UTF-8 bytes.
     pub length: usize,
     pub style: u32,
     pub attrs: Attrs,
@@ -257,8 +263,14 @@ impl<'a> Builder<'a> {
         out
     }
 
-    fn fonts(&self) -> BTreeMap<u32, String> {
-        self.objs.values().filter(|o| o.cls == C_FONT).filter_map(|o| Some((o.uid, read_string(o.block(0x3E05)?, 5)?.0))).collect()
+    fn fonts(&self) -> Result<BTreeMap<u32, String>> {
+        let mut fonts = BTreeMap::new();
+        for o in self.objs.values().filter(|o| o.cls == C_FONT) {
+            let Some(bytes) = o.block(0x3E05) else { continue };
+            let (name, _) = read_string(bytes, 5).ok_or_else(|| InddError::Damaged("invalid or truncated font name".into()))?;
+            fonts.insert(o.uid, name);
+        }
+        Ok(fonts)
     }
 
     fn styles(&self) -> BTreeMap<u32, Style> {
@@ -287,7 +299,11 @@ impl<'a> Builder<'a> {
                 && i >= 2
                 && let Some(&len) = b.get(i - 1)
             {
-                out.insert(o.uid, crate::text::cp1252(crate::bytes::clamp(b, i + 1, len as usize)));
+                let name = crate::text::cp1252(crate::bytes::clamp(b, i + 1, len as usize));
+                // The source application keeps pages on a private, non-UI layer.
+                if u16_at(b, 0) != Some(1) || name != "Internal_pages_layer_name" {
+                    out.insert(o.uid, name);
+                }
             }
         }
         out
@@ -326,23 +342,57 @@ impl<'a> Builder<'a> {
         found
     }
 
-    fn strand_data(&self, strand: u32) -> Option<&[u8]> {
-        let ln = self.block(strand, 0x261).filter(|b| b.len() >= 10)?;
-        self.block(u32_at(ln, 6)?, 0x262)
+    /// Strand index: u16 leaf count, then ordered (u32 text length, u32 leaf UID) pairs.
+    /// Large stories and their style strands span several leaves.
+    fn strand_data(&self, strand: u32) -> Result<Vec<&[u8]>> {
+        let damaged = || InddError::Damaged("invalid or missing story strand leaf".into());
+        let index = self.block(strand, 0x261).ok_or_else(damaged)?;
+        let n = usize::from(u16_at(index, 0).ok_or_else(damaged)?);
+        let end = n.checked_mul(8).and_then(|n| n.checked_add(2)).ok_or_else(damaged)?;
+        if end > index.len() {
+            return Err(damaged());
+        }
+        let mut leaves = Vec::with_capacity(n);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..n {
+            let uid = u32_at(index, 6 + 8 * i).ok_or_else(damaged)?;
+            if !seen.insert(uid) {
+                return Err(InddError::Damaged("repeated story strand leaf".into()));
+            }
+            leaves.push(self.block(uid, 0x262).ok_or_else(damaged)?);
+        }
+        Ok(leaves)
     }
 
-    fn story(&self, o: &Obj) -> Story {
+    fn story(&self, o: &Obj) -> Result<Story> {
         let (mut text, mut paras, mut chars) = (String::new(), Vec::new(), Vec::new());
         for s in self.strands(o) {
-            let Some(data) = self.strand_data(s) else { continue };
-            match self.cls(s) {
-                Some(STRAND_TEXT) => text = parse_text(data),
-                Some(STRAND_PARAS) => paras = parse_runs(data),
-                Some(STRAND_CHARS) => chars = parse_runs(data),
-                _ => {}
+            let cls = self.cls(s);
+            if !matches!(cls, Some(STRAND_TEXT | STRAND_PARAS | STRAND_CHARS)) {
+                continue;
+            }
+            for data in self.strand_data(s)? {
+                match cls {
+                    Some(STRAND_TEXT) => {
+                        let leaf = parse_text(data)?;
+                        if text.len().saturating_add(leaf.len()) > 4 << 20 {
+                            return Err(InddError::TooLarge("story text"));
+                        }
+                        text.push_str(&leaf);
+                    }
+                    Some(STRAND_PARAS | STRAND_CHARS) => {
+                        let runs = if cls == Some(STRAND_PARAS) { &mut paras } else { &mut chars };
+                        let leaf = parse_runs(data);
+                        if runs.len().saturating_add(leaf.len()) > MAX_ITEMS {
+                            return Err(InddError::TooLarge("story style runs"));
+                        }
+                        runs.extend(leaf);
+                    }
+                    _ => {}
+                }
             }
         }
-        Story { uid: o.uid, text, paras, chars }
+        Ok(Story { uid: o.uid, text, paras, chars })
     }
 
     /// Frame column (0x227) → story.
@@ -429,6 +479,8 @@ impl<'a> Builder<'a> {
             stroke_weight: 0.0,
             stroke_tint: -1.0,
             story: None,
+            text_columns: 1,
+            text_gutter: 12.0,
             children: Vec::new(),
             graphic: None,
             layer: None,
@@ -458,6 +510,11 @@ impl<'a> Builder<'a> {
             let Some(ko) = self.objs.get(&k) else { continue };
             if ko.cls == C_MCOL {
                 it.kind = Kind::Text;
+                // Multi-column preferences: count at 0, gutter at 4 in 0x2D1.
+                if let Some(prefs) = ko.block(0x2D1) {
+                    it.text_columns = u32_at(prefs, 0).filter(|n| (1..=40).contains(n)).unwrap_or(1);
+                    it.text_gutter = f64_at(prefs, 4).filter(|v| v.is_finite() && *v >= 0.0 && *v <= 10_000.0).unwrap_or(12.0);
+                }
                 if let Some(st) = self.kids(ko).iter().find_map(|col| w.f2s.get(col)) {
                     it.story = Some(*st);
                 }
@@ -476,7 +533,8 @@ impl<'a> Builder<'a> {
         let defaults = self.default_graphic_attrs();
         self.default_stroke = attrs::double(defaults.get(&GA_STROKE_WEIGHT)).unwrap_or(1.0);
         let f2s = self.frame_story();
-        let stories: BTreeMap<u32, Story> = self.objs.values().filter(|o| o.cls == C_STORY).map(|o| (o.uid, self.story(o))).collect();
+        let stories: BTreeMap<u32, Story> =
+            self.objs.values().filter(|o| o.cls == C_STORY).map(|o| self.story(o).map(|story| (o.uid, story))).collect::<Result<_>>()?;
         let names = self.layer_names();
         let doc = self.objs.get(&1).ok_or_else(|| InddError::Damaged("no document object".into()))?;
         let order = doc.block(0x301).map(|b| u32_list(b, 0)).unwrap_or_default();
@@ -532,7 +590,7 @@ impl<'a> Builder<'a> {
             major: self.c.major,
             minor: self.c.minor,
             swatches,
-            fonts: self.fonts(),
+            fonts: self.fonts()?,
             styles: self.styles(),
             stories,
             spreads,
@@ -574,22 +632,71 @@ pub fn parse_path(b: &[u8]) -> Vec<Subpath> {
 }
 
 /// Text strand data: u32 kind, u32 owner, u16 chunks; chunk = u32 size, u32 nchars, u16 tag, chars.
-pub fn parse_text(d: &[u8]) -> String {
-    let mut off = 8usize;
-    let Some(n) = u16_at(d, off) else { return String::new() };
-    off += 2;
-    let mut out = String::new();
+pub fn parse_text(d: &[u8]) -> Result<String> {
+    let damaged = || InddError::Damaged("invalid or truncated story text".into());
+    let n = u16_at(d, 8).ok_or_else(damaged)?;
+    let mut off = 10usize;
+    // Keep UTF-16 units across segments/chunks: a surrogate pair can cross a boundary.
+    let mut wide = Vec::new();
     for _ in 0..n {
-        let (Some(o4), Some(o8), Some(o10)) = (off.checked_add(4), off.checked_add(8), off.checked_add(10)) else { break };
-        let (Some(size), Some(nchars), Some(tag)) = (u32_at(d, off), u32_at(d, o4), u16_at(d, o8)) else { break };
-        if tag & 0x4000 != 0 {
-            out.push_str(&crate::text::cp1252(crate::bytes::clamp(d, o10, (tag & 0x3FFF) as usize)));
+        let o4 = off.checked_add(4).ok_or_else(damaged)?;
+        let o8 = off.checked_add(8).ok_or_else(damaged)?;
+        let size = u32_at(d, off).ok_or_else(damaged)? as usize;
+        let nchars = u32_at(d, o4).ok_or_else(damaged)? as usize;
+        let end = o4.checked_add(size).filter(|&end| end >= o8 + 2 && end <= d.len()).ok_or_else(damaged)?;
+        let before = wide.len();
+        let first = u16_at(d, o8).ok_or_else(damaged)?;
+        if first & 0xC000 == 0 {
+            // Untagged wide payload retained for the older single-segment layout.
+            let len = nchars.checked_mul(2).ok_or_else(damaged)?;
+            let start = o8 + 2;
+            let text_end = start.checked_add(len).filter(|&e| e == end).ok_or_else(damaged)?;
+            append_wide(&mut wide, d.get(start..text_end).ok_or_else(damaged)?)?;
         } else {
-            out.push_str(&crate::text::utf16le(crate::bytes::clamp(d, o10, (nchars as usize).saturating_mul(2))));
+            // Each record can alternate many byte and wide segments. The low 14 bits
+            // count this segment's units, not the whole record's character count.
+            let mut pos = o8;
+            while pos < end {
+                let tag = u16_at(d, pos).ok_or_else(damaged)?;
+                pos = pos.checked_add(2).ok_or_else(damaged)?;
+                let units = usize::from(tag & 0x3FFF);
+                let is_wide = match tag & 0xC000 {
+                    0x8000 => true,
+                    0x4000 => false,
+                    _ => return Err(damaged()),
+                };
+                let len = units.checked_mul(if is_wide { 2 } else { 1 }).ok_or_else(damaged)?;
+                let next = pos.checked_add(len).filter(|&e| e <= end).ok_or_else(damaged)?;
+                let bytes = d.get(pos..next).ok_or_else(damaged)?;
+                if is_wide {
+                    append_wide(&mut wide, bytes)?;
+                } else {
+                    let text = crate::text::cp1252(bytes);
+                    for unit in text.encode_utf16() {
+                        append_wide(&mut wide, &unit.to_le_bytes())?;
+                    }
+                }
+                pos = next;
+            }
         }
-        off = off.saturating_add(4).saturating_add(size as usize);
+        if (wide.len() - before) / 2 != nchars {
+            return Err(InddError::Damaged("story segment lengths disagree with character count".into()));
+        }
+        off = end;
     }
-    out
+    let out = crate::text::utf16le(&wide).ok_or_else(|| InddError::Damaged("invalid UTF-16 story text".into()))?;
+    if out.len() > 4 << 20 {
+        return Err(InddError::TooLarge("story text"));
+    }
+    Ok(out)
+}
+
+fn append_wide(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
+    if out.len().saturating_add(bytes.len()) > 8 << 20 {
+        return Err(InddError::TooLarge("UTF-16 story text"));
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// Run strand data: u32 kind, u32 owner, u16 runs; run = u32 size, u32 length, u32 style, attrs.

@@ -8,6 +8,7 @@ pub mod book;
 mod buttons;
 pub(crate) mod captions;
 mod changes;
+mod color_theme;
 mod colorsettings;
 mod conditions;
 mod datamerge;
@@ -16,7 +17,7 @@ mod editorial;
 mod endnotes;
 mod export;
 mod file;
-mod find;
+pub mod find;
 mod fonts;
 mod guides;
 mod index;
@@ -27,14 +28,19 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub use links::{LinkListChecks, list_document_links, preview_document_links};
 mod liquid;
 mod lists;
+mod masters;
 mod mathexpr;
 mod media;
 mod notes;
 mod object;
 mod overrides;
 mod package;
+mod pagemaker;
+mod paste_svg;
+pub use pagemaker::is_name as is_pagemaker_name;
 mod path_type;
 mod paths;
 mod pdflayers;
@@ -50,6 +56,7 @@ mod states;
 mod strokes;
 mod style;
 pub mod table;
+pub mod tabs;
 pub mod text;
 mod thread;
 mod toc;
@@ -118,6 +125,14 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// Why [`has_selection`] disables a command. A command that documents `ids` still runs when the
 /// call names its objects (see [`named_targets`]).
 pub const NOTHING_SELECTED: &str = "nothing selected";
+/// Why Object › Group is disabled for a selection it can't group. Like [`NOTHING_SELECTED`], a
+/// call that names its objects still runs, and the command checks those instead.
+pub const CANT_GROUP_SELECTION: &str = "select two or more objects on one spread, all top-level or all in the same group";
+
+/// Whether `reason` only concerns the selection, so a call that names its objects runs anyway.
+pub(crate) fn selection_reason(reason: &str) -> bool {
+    reason == NOTHING_SELECTED || reason == CANT_GROUP_SELECTION
+}
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| !d.selection.items.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }
@@ -157,6 +172,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(interchange::specs());
         v.extend(export::specs());
         v.extend(edit::specs());
+        v.extend(paste_svg::specs());
         v.extend(endnotes::specs());
         v.extend(editorial::specs());
         v.extend(object::specs());
@@ -167,6 +183,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(buttons::specs());
         v.extend(captions::specs());
         v.extend(colorsettings::specs());
+        v.extend(color_theme::specs());
         v.extend(changes::specs());
         v.extend(conditions::specs());
         v.extend(library::specs());
@@ -187,10 +204,12 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(package::specs());
         v.extend(print::specs());
         v.extend(text::specs());
+        v.extend(tabs::specs());
         v.extend(thread::specs());
         v.extend(style::specs());
         v.extend(table::specs());
         v.extend(layout::specs());
+        v.extend(masters::specs());
         v.extend(overrides::specs());
         v.extend(prefs::specs());
         v.extend(inspect::specs());
@@ -239,9 +258,14 @@ pub(crate) fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 }
 /// Plain text from a parameter, with CR LF and lone CR (classic Mac and InDesign line ends) as
 /// `\n`, the paragraph separator, as edit.paste and text import already do. Kept as they were,
-/// the CRs joined the paragraphs into one.
+/// the CRs joined the paragraphs into one. A vertical tab (Word's and PowerPoint's Shift+Enter,
+/// Chr(11)) is a forced line break: kept, it was drawn as a missing-glyph box.
 pub(crate) fn text_param(p: &Value, key: &str) -> String {
-    str_param(p, key).unwrap_or("").replace("\r\n", "\n").replace('\r', "\n")
+    str_param(p, key)
+        .unwrap_or("")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\u{B}', pagenor_doc::story::FORCED_LINE_BREAK.encode_utf8(&mut [0; 4]))
 }
 pub(crate) fn id_param(p: &Value, key: &str) -> Option<ItemId> {
     p.get(key).and_then(Value::as_u64).map(ItemId)
@@ -304,4 +328,7 @@ pub fn file_from(b: &[u8]) -> Result<pagenor_doc::Document> {
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
 pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
+pub use layout::chapter_numbering;
+pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;
+pub(crate) use place_text::autoflow_primary as place_text_autoflow_primary;

@@ -144,6 +144,26 @@ impl Document {
         self.item_at(&self.find(id)?)
     }
 
+    /// Repair stale thread references without discarding the story or its text.
+    /// Build ownership once, including grouped/master/anchored items, rather than searching
+    /// the document for every referenced frame. Other invalid document data still fails check.
+    pub fn drop_dangling_story_frames(&mut self) {
+        let mut owned = HashMap::new();
+        let mut items: Vec<&Item> = self.spreads.iter().chain(&self.parents).flat_map(|s| s.items.iter().map(AsRef::as_ref)).rev().collect();
+        while let Some(item) = items.pop() {
+            owned.entry(item.id).or_insert_with(|| item.text_frame().map(|t| t.story));
+            items.extend(item.children().iter().rev().map(AsRef::as_ref));
+        }
+        for (_, item) in self.anchored_items() {
+            owned.entry(item.id).or_insert_with(|| item.text_frame().map(|t| t.story));
+        }
+        for (sid, story) in &mut self.stories {
+            if story.frames.iter().any(|f| owned.get(f).copied().flatten() != Some(*sid)) {
+                Arc::make_mut(story).frames.retain(|f| owned.get(f).copied().flatten() == Some(*sid));
+            }
+        }
+    }
+
     /// Items embedded in stories (including footnotes and table cells), with their
     /// owning top-level story. Does not follow text-frame references between stories.
     pub fn anchored_items(&self) -> Vec<(StoryId, &Item)> {
@@ -184,6 +204,41 @@ impl Document {
     pub fn top_level_of(&self, id: ItemId) -> Option<ItemId> {
         let loc = self.find(id)?;
         Some(self.spread(loc.spread)?.items[loc.top()].id)
+    }
+
+    /// The immediate parent group of `id`, if `id` is nested inside a group. Only groups hold
+    /// items on a spread (see [`Item::children`]); anchored items live in stories and have no
+    /// parent here.
+    pub fn parent_of(&self, id: ItemId) -> Option<ItemId> {
+        let chain = self.ancestry_chain(id);
+        let (last, parents) = chain.split_last()?;
+        if *last != id {
+            return None;
+        }
+        parents.last().copied()
+    }
+
+    /// The item a Selection-tool click on the leaf `leaf` picks: the deepest ancestor (or `leaf`
+    /// itself) that `is_selected` says is already selected, so a click inside a selected group
+    /// keeps drilling at that level, otherwise the top-level item. Clicks and the context menu
+    /// share this so they agree.
+    pub fn selection_target(&self, leaf: ItemId, is_selected: impl Fn(ItemId) -> bool) -> ItemId {
+        self.ancestry_chain(leaf).into_iter().rev().find(|&i| is_selected(i)).or_else(|| self.top_level_of(leaf)).unwrap_or(leaf)
+    }
+
+    /// Item IDs along the ancestry path from top-level down to `id` (inclusive); empty when `id`
+    /// is not on a spread.
+    pub fn ancestry_chain(&self, id: ItemId) -> Vec<ItemId> {
+        let Some(loc) = self.find(id) else { return vec![] };
+        let Some(sp) = self.spread(loc.spread) else { return vec![] };
+        let mut items: &[Arc<Item>] = &sp.items;
+        let mut chain = Vec::with_capacity(loc.path.len());
+        for &i in &loc.path {
+            let Some(it) = items.get(i) else { break };
+            chain.push(it.id);
+            items = it.children();
+        }
+        chain
     }
 
     /// Spread-space transform of the parent group chain of the item at `loc` (identity at top level).
@@ -286,6 +341,7 @@ impl Document {
         if from == to {
             return Err(DocError::Invalid("cannot thread a frame to itself".into()));
         }
+        self.check_thread_links(from, to, false)?;
         let ts = self.frame_story(to)?;
         let fs = match self.frame_story(from)? {
             Some(s) => s,
@@ -298,7 +354,7 @@ impl Document {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             st.frames.insert(at, to);
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
             let it = self.item_mut(to).ok_or(DocError::NoItem(to))?;
             it.content = Content::Text(TextFrame { story: fs, options: TextFrameOptions::default() });
             return Ok(());
@@ -309,8 +365,16 @@ impl Document {
         let after = other.frames.split_off(pos_to);
         let before = std::mem::take(&mut other.frames);
         let (vertical, direction) = (other.vertical, other.direction);
+        let offset;
         {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
+            offset = if st.text.is_empty() {
+                0
+            } else if other.text.is_empty() {
+                st.len()
+            } else {
+                st.len().saturating_add(1)
+            };
             // The story keeps its own direction, even when it was empty and takes the other's text.
             let own = (st.vertical, st.direction);
             st.append_story(other);
@@ -319,8 +383,9 @@ impl Document {
             for (k, f) in after.iter().enumerate() {
                 st.frames.insert(at + k, *f);
             }
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
+        self.remap_thread_story_refs(ts, fs, offset);
         for f in &after {
             if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
                 t.story = fs;
@@ -351,16 +416,85 @@ impl Document {
         let ts = self.frame_story(to)?;
         let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
         let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else { return self.thread(from, to) };
+        self.check_thread_links(from, to, true)?;
         if let Some(fs) = fs {
             self.stories.remove(&fs);
+            self.remap_thread_story_refs(fs, ts, 0);
         }
         let st = self.story_mut(ts).ok_or(DocError::NoStory(ts))?;
         st.frames.insert(0, from);
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         let it = self.item_mut(from).ok_or(DocError::NoItem(from))?;
         match it.text_frame_mut() {
             Some(t) => t.story = ts,
             None => it.content = Content::Text(TextFrame { story: ts, options: TextFrameOptions::default() }),
+        }
+        Ok(())
+    }
+
+    fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
+        // The child's old snapshot is not a snapshot of the newly merged parent. Force it
+        // out of date even when the old and surviving revision numbers happen to coincide.
+        let stale_rev = self.story(to).map_or(0, |st| st.rev.wrapping_sub(1));
+        for st in self.stories.values_mut() {
+            if st.link.is_some_and(|(parent, _)| parent == from) {
+                Arc::make_mut(st).link = Some((to, stale_rev));
+            }
+        }
+        for link in &mut self.hyperlinks {
+            if let crate::HyperlinkSource::Text { story, start, end } = &mut link.source
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        for placeholder in &mut self.data_merge.placeholders {
+            if let crate::PlaceholderAnchor::Text { story, start, end } = &mut placeholder.anchor
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        if self.settings.primary_story == Some(from) {
+            self.settings.primary_story = Some(to);
+        }
+    }
+
+    /// A linked child is replaced wholesale on update. Only empty, unlinked frame
+    /// extensions can join it without losing a link or newly appended body text.
+    fn check_thread_links(&self, from: ItemId, to: ItemId, keep_to: bool) -> Result<()> {
+        let fs = self.frame_story(from)?;
+        let ts = self.frame_story(to)?;
+        let first = fs.and_then(|id| self.story(id));
+        let second = ts.and_then(|id| self.story(id));
+        let incompatible = if keep_to {
+            first.is_some_and(|st| st.link.is_some()) || second.is_some_and(|st| st.link.is_some_and(|(parent, _)| Some(parent) == fs))
+        } else {
+            second.is_some_and(|st| st.link.is_some())
+                || first.is_some_and(|st| {
+                    st.link.is_some()
+                        && second.is_some_and(|incoming| !incoming.text.is_empty() || st.link.is_some_and(|(parent, _)| parent == incoming.id))
+                })
+        };
+        // Removing any ancestor of the survivor would redirect a link back into its own chain.
+        let (removed, survivor) = if keep_to { (fs, second) } else { (ts, first) };
+        let mut parent = survivor.and_then(|st| st.link);
+        let mut absorbs_ancestor = false;
+        // Bound the walk even when an existing document already contains a link cycle.
+        for _ in 0..self.stories.len() {
+            let Some((id, _)) = parent else { break };
+            if Some(id) == removed {
+                absorbs_ancestor = true;
+                break;
+            }
+            parent = self.story(id).and_then(|st| st.link);
+        }
+        if incompatible || absorbs_ancestor {
+            return Err(DocError::Invalid("unlink the linked story before merging its text".into()));
         }
         Ok(())
     }
@@ -393,6 +527,9 @@ impl Document {
         if self.prev_frame(to).is_some() {
             return Err(DocError::Invalid(format!("text already flows into {to} from another frame: break that thread first")));
         }
+        let fs = self.frame_story(from)?;
+        let from_empty = fs.is_none_or(|id| self.story(id).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
+        self.check_thread_links(from, to, from_empty && self.frame_story(to)?.is_some())?;
         Ok(())
     }
 
@@ -425,7 +562,7 @@ impl Document {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             let p = st.frames.iter().position(|f| *f == frame).ok_or(DocError::NoItem(frame))?;
             let tail = st.frames.split_off(p + 1);
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
             (tail, st.vertical, st.direction)
         };
         if tail.is_empty() {
@@ -455,7 +592,7 @@ impl Document {
                 return Err(DocError::Invalid(format!("frame {frame} is not threaded to another frame")));
             }
             st.frames.retain(|f| *f != frame);
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
             (st.vertical, st.direction)
         };
         let nid = StoryId(self.alloc());
@@ -517,6 +654,22 @@ impl Document {
         None
     }
 
+    /// True if `id` itself is locked, sits on a locked layer, or has any locked ancestor group.
+    pub fn is_locked(&self, id: ItemId) -> bool {
+        let Some(it) = self.item(id) else { return false };
+        it.locked || self.layer(it.layer).is_some_and(|l| l.locked) || self.ancestor_locked(id)
+    }
+
+    /// True if a group around `id` is locked (the item's own lock and its layer's are not
+    /// looked at): the lock `id` inherits.
+    pub fn ancestor_locked(&self, id: ItemId) -> bool {
+        let chain = self.ancestry_chain(id);
+        match chain.split_last() {
+            Some((last, parents)) if *last == id => parents.iter().any(|&p| self.item(p).is_some_and(|g| g.locked)),
+            _ => false,
+        }
+    }
+
     /// Every item id (pre-order) on document spreads.
     pub fn all_items(&self) -> Vec<ItemId> {
         let mut v = Vec::new();
@@ -554,12 +707,15 @@ impl Document {
         st.tables.clear();
         st.notes.clear();
         st.fix_notes();
+        st.endnotes.clear();
+        st.fix_endnotes();
+        st.editorial.clear();
         st.anchors.clear();
         st.xrefs.clear();
         st.index_refs.clear();
         st.objects.clear();
         st.fix_marks();
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         Ok(())
     }
 }
@@ -599,4 +755,32 @@ fn grid_outline_hit(it: &Item, p: Point, tol: f64) -> bool {
     }
     let dividers = grid.divider_path(it.inner_bounds());
     pagenor_geom::hit::stroke_contains(&dividers, width, tol, inner)
+}
+
+/// The frontmost descendant of `it` under `p` that `want` accepts, looking inside nested groups;
+/// `it` itself when nothing inside it matches and `want` accepts it. `p` is in the space `it`
+/// sits in, as [`item_hit`] takes it.
+///
+/// Children are tried front to back and a hidden one is skipped, so of several that `want`
+/// accepts the answer is the one in front. Objects `want` rejects do not hide the ones behind
+/// them: a text frame under a rectangle in the same group is still found.
+pub fn hit_descendant(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool) -> Option<ItemId> {
+    hit_descendant_at(it, p, tol, want, 0)
+}
+
+fn hit_descendant_at(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool, depth: usize) -> Option<ItemId> {
+    if depth >= 64 || !item_hit(it, p, tol) {
+        return None;
+    }
+    let inner = it.xf.inverse() * p;
+    let children: Vec<&Arc<Item>> = it.shown_children().collect();
+    for c in children.into_iter().rev() {
+        if c.hidden {
+            continue;
+        }
+        if let Some(id) = hit_descendant_at(c, inner, tol, want, depth + 1) {
+            return Some(id);
+        }
+    }
+    want(it).then_some(it.id)
 }

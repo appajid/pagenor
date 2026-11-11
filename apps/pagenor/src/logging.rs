@@ -109,16 +109,8 @@ pub fn timestamp(t: SystemTime) -> String {
 /// Days since 1970-01-01 to a proleptic Gregorian (year, month, day) (Howard Hinnant's
 /// `civil_from_days`, unsigned because `timestamp` clamps at the epoch).
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + u64::from(m <= 2);
-    (y, m, d)
+    let (y, m, d) = pagenor_engine::doc::time::civil_from_days(i64::try_from(days).unwrap_or(i64::MAX));
+    (y.max(0) as u64, u64::from(m), u64::from(d))
 }
 
 fn numbered(dir: &Path, n: usize) -> PathBuf {
@@ -188,11 +180,25 @@ fn format_record(ts: &str, level: log::Level, thread: &str, target: &str, args: 
     if line.text.ends_with('\n') {
         line.text.pop();
     }
-    if truncated {
-        line.text.push_str(NOTE);
+    let mut escaped = BoundedLine { text: String::new(), max: MAX_RECORD_BYTES - NOTE.len() - 1 };
+    let mut escaped_truncated = false;
+    for c in line.text.chars() {
+        let result = match c {
+            '\n' => fmt::Write::write_str(&mut escaped, "\n\t"),
+            '\t' => fmt::Write::write_char(&mut escaped, c),
+            c if c.is_control() => fmt::write(&mut escaped, format_args!("{}", c.escape_default())),
+            c => fmt::Write::write_char(&mut escaped, c),
+        };
+        if result.is_err() {
+            escaped_truncated = true;
+            break;
+        }
     }
-    line.text.push('\n');
-    line.text
+    if truncated || escaped_truncated {
+        escaped.text.push_str(NOTE);
+    }
+    escaped.text.push('\n');
+    escaped.text
 }
 
 /// Where formatted lines go besides standard error: kept in memory until a file is attached,
@@ -465,7 +471,12 @@ mod tests {
             "2026-10-08T07:59:17.728Z ERROR [main] pagenor_engine::guard: command `frame.create` panicked: boom\n"
         );
         // A multi-line message (a panic with a backtrace) keeps its lines; the record still ends in one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\n\tb\n"));
+        // A name out of a document can't write a second record: its line breaks continue this
+        // one and a carriage return or an escape sequence is spelled out.
+        let forged =
+            format_line("t", log::Level::Warn, "w", "x", "cannot open `a.pgnr\n2026-01-01T00:00:00.000Z INFO  [main] x: all good\r\u{1b}[0m`");
+        assert_eq!(forged, "t WARN  [w] x: cannot open `a.pgnr\n\t2026-01-01T00:00:00.000Z INFO  [main] x: all good\\r\\u{1b}[0m`\n");
     }
 
     #[test]

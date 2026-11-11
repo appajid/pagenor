@@ -86,7 +86,8 @@ pub fn expand(definition: &str, v: &XrefValues) -> String {
         out.push_str(&rest[..i]);
         let Some(j) = rest[i..].find('>') else {
             out.push_str(&rest[i..]);
-            return out;
+            rest = "";
+            break;
         };
         let tag = rest[i + 1..i + j].trim().trim_end_matches('/').trim();
         let name = tag.split_whitespace().next().unwrap_or("");
@@ -347,13 +348,18 @@ impl Document {
         let (sid, pos) = self.find_anchor(id)?;
         let st = self.story(sid)?;
         let pi = st.para_at(pos);
-        let r = st.para_ranges()[pi].clone();
+        let ranges = st.para_ranges();
+        let r = ranges[pi].clone();
         let (pp, _) = self.styles.resolve_para(&st.paras[pi]);
         let para_num = match pp.list_type {
-            crate::ListType::Numbers => {
-                // Count the run of numbered paragraphs before this one.
-                let n = (0..=pi).rev().take_while(|&k| self.styles.resolve_para(&st.paras[k]).0.list_type == crate::ListType::Numbers).count();
-                format!("{}.", pp.number_style.format(n as u32))
+            crate::ListType::Numbers if !r.is_empty() => {
+                // Count the run of numbered paragraphs before this one (empty ones have no number).
+                let n = (0..=pi)
+                    .rev()
+                    .take_while(|&k| self.styles.resolve_para(&st.paras[k]).0.list_type == crate::ListType::Numbers)
+                    .filter(|&k| ranges.get(k).is_some_and(|r| !r.is_empty()))
+                    .count();
+                pp.number_label(u32::try_from(n).unwrap_or(u32::MAX)).trim_end().to_string()
             }
             _ => String::new(),
         };
@@ -362,7 +368,7 @@ impl Document {
             para_num,
             page: String::new(),
             anchor_name: self.anchor(id).map(|a| a.name.clone()).unwrap_or_default(),
-            chapter: self.settings.chapter_number.to_string(),
+            chapter: self.chapter_label(),
             file_name: self.title.clone(),
         })
     }
@@ -415,5 +421,15 @@ mod tests {
         s.delete(0..8);
         s.check().unwrap();
         assert!(s.anchors.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod upstream_review11_tests {
+    use super::*;
+    #[test]
+    fn unfinished_tag_keeps_typographic_quotes() {
+        let v = XrefValues { para: "Intro".into(), ..Default::default() };
+        assert_eq!(expand("\"<paraText />\" <", &v), "\u{201C}Intro\u{201D} <");
     }
 }

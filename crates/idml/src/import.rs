@@ -7,11 +7,10 @@ use std::sync::Arc;
 use pagenor_color::cms::lab;
 use pagenor_color::{Color, ColorType, Gradient, GradientKind, GradientStop, Swatch, SwatchValue, swatch};
 use pagenor_doc::{
-    AltFills, Asset, AssetId, BaselineGrid, Cell, CellRange, CellStroke, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind,
-    Content, DocSettings, Document, DropShadow, Effects, Fill, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer, LayerId,
-    ListType, Margins, ObjectStyle, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section, Shape,
-    SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, VerticalJustification,
-    story as st,
+    Asset, AssetId, BaselineGrid, CellRange, CharAttrs, CharFormat, CharRun, CharacterStyle, Columns, ColumnsKind, Content, DirectionalFeather,
+    DocSettings, Document, DropShadow, Effects, Fill, GradientFeather, GridAlign, GridRelative, Guide, Item, ItemId, Kerning, LAYER_COLORS, Layer,
+    LayerId, ListType, Margins, ObjectStyle, Page, PageId, PageSide, ParaAttrs, ParaFormat, ParagraphStyle, ParentInfo, RowHeightMode, Rule, Section,
+    Shape, SpanColumns, Spread, SpreadId, Story, StoryId, Stroke, Styles, TabStop, Table, TextFrame, TextFrameOptions, TextWrap, story as st,
 };
 use pagenor_geom::corners::{Corner, CornerOptions};
 use pagenor_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
@@ -19,6 +18,24 @@ use pagenor_geom::{Affine, Anchor, PathData, Point, Rect, SubPath};
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, unescape_id};
 use crate::xml::{El, Node, parse};
 use crate::{IdmlError, MIMETYPE, Result, base64_decode, sniff_image};
+
+/// Preserve the legacy uniform field only when all four sides explicitly specify every
+/// property. Partial records must stay sparse so they can inherit from a parent style.
+fn uniform_cell_stroke(edges: &[pagenor_doc::CellStrokeAttrs; 4]) -> Option<pagenor_doc::CellStroke> {
+    let first = edges.first()?;
+    if edges.iter().any(|edge| edge != first) {
+        return None;
+    }
+    let mut stroke = pagenor_doc::CellStroke {
+        weight: first.weight?,
+        color: first.color.clone()?,
+        tint: first.tint?,
+        kind: first.kind.clone()?,
+        ..Default::default()
+    };
+    first.apply_to(&mut stroke);
+    Some(stroke)
+}
 
 /// Import an IDML package. Linked images are read from disk when available (not on wasm).
 pub fn import_idml(bytes: &[u8]) -> Result<Document> {
@@ -39,46 +56,163 @@ fn default_reader(path: &str) -> Option<Vec<u8>> {
 
 /// Import with a custom reader for linked files (`path` → bytes).
 pub fn import_idml_with(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Document> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-    for i in 0..zip.len() {
-        let mut f = zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-        if f.is_dir() {
-            continue;
-        }
-        let name = f.name().to_string();
-        // The size is what the archive claims: don't reserve more than a sane part up front.
-        let mut buf = Vec::with_capacity((f.size() as usize).min(1 << 24));
-        f.read_to_end(&mut buf).map_err(|e| IdmlError::Part { part: name.clone(), msg: e.to_string() })?;
-        files.insert(name, buf);
-    }
-    if let Some(m) = files.get("mimetype")
-        && String::from_utf8_lossy(m).trim() != MIMETYPE
+    import_idml_report(bytes, read_link).map(|r| r.document)
+}
+
+/// An imported IDML document and what the import could not bring in.
+#[derive(Debug)]
+pub struct Imported {
+    pub document: Document,
+    /// One line per problem that did not stop the import (a part listed in `designmap.xml` but
+    /// absent from the package, …).
+    pub warnings: Vec<String>,
+    pub story_ids: HashMap<String, StoryId>,
+}
+
+/// Import with a custom reader for linked files, reporting the problems that did not stop it.
+pub fn import_idml_report(bytes: &[u8], read_link: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Imported> {
+    let mut pkg = Package::open(bytes)?;
+    if let Some(m) = pkg.part("mimetype")?
+        && String::from_utf8_lossy(&m).trim() != MIMETYPE
     {
-        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(m).trim())));
+        return Err(IdmlError::NotIdml(format!("unexpected mimetype `{}`", String::from_utf8_lossy(&m).trim())));
     }
-    let dm = files.get("designmap.xml").ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
-    let root = parse(dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
+    let dm = pkg.part("designmap.xml")?.ok_or_else(|| IdmlError::NotIdml("missing designmap.xml".into()))?;
+    let root = parse(&dm).map_err(|msg| IdmlError::Part { part: "designmap.xml".into(), msg })?;
     if root.local() != "Document" {
         return Err(IdmlError::NotIdml(format!("designmap root is <{}>", root.name)));
     }
     // Flatten includes: every `idPkg:*` child is replaced by the children of its part's root.
     let mut top: Vec<El> = Vec::new();
+    let mut warnings = Vec::new();
     for c in root.elements() {
         if c.name.starts_with("idPkg:") {
             let Some(src) = c.get("src") else { continue };
-            let Some(data) = files.get(src) else { continue };
-            let part = parse(data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
-            top.extend(part.elements().cloned());
+            let Some(data) = pkg.part(src)? else {
+                warnings.push(format!("{src}: listed in designmap.xml but missing from the package; its contents were not imported"));
+                continue;
+            };
+            let el = parse(&data).map_err(|msg| IdmlError::Part { part: src.into(), msg })?;
+            top.extend(el.elements().cloned());
         } else {
             top.push(c.clone());
         }
     }
     let mut im = Importer::new(read_link);
     im.run(&root, &top)?;
-    let d = im.finish(&root)?;
-    d.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
-    Ok(d)
+    warnings.extend(im.warnings.iter().cloned());
+    let story_ids = im.story_ids.clone();
+    let document = im.finish(&root).map_err(|e| match e {
+        // Without its spread parts there is nothing to open: say which parts were missing.
+        IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
+        e => e,
+    })?;
+    document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
+    Ok(Imported { document, warnings, story_ids })
+}
+
+/// Most entries an IDML package may hold.
+const MAX_ENTRIES: usize = 100_000;
+/// Most bytes one package part may expand to.
+const MAX_PART_BYTES: u64 = 512 << 20;
+/// Most bytes all the parts read from one package may expand to together.
+const MAX_TOTAL_BYTES: u64 = 2 << 30;
+
+/// An IDML package whose parts are decompressed only when the import asks for them, within
+/// byte budgets that don't trust the sizes the archive claims.
+struct Package<'a> {
+    zip: zip::ZipArchive<std::io::Cursor<&'a [u8]>>,
+    /// Normalised part name → entry name, first entry wins (zip order, so the choice is stable).
+    lenient: HashMap<String, String>,
+    /// Bytes the parts still to be read may expand to.
+    left: u64,
+}
+
+impl<'a> Package<'a> {
+    fn open(bytes: &'a [u8]) -> Result<Self> {
+        let directory =
+            pagenor_archive::preflight(bytes, pagenor_archive::Limits { max_entries: MAX_ENTRIES as u64, max_central_directory_bytes: 64 << 20 })
+                .map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        if directory.entries != zip.len() as u64 {
+            return Err(IdmlError::NotIdml("duplicate or inconsistent package entries".into()));
+        }
+        if zip.len() > MAX_ENTRIES {
+            return Err(IdmlError::NotIdml(format!("{} entries (at most {MAX_ENTRIES})", zip.len())));
+        }
+        let mut lenient: HashMap<String, String> = HashMap::new();
+        for i in 0..zip.len() {
+            let Some(name) = zip.name_for_index(i) else { continue };
+            if name.ends_with('/') {
+                continue;
+            }
+            lenient.entry(normalize_part_name(name)).or_insert_with(|| name.to_string());
+        }
+        Ok(Package { zip, lenient, left: MAX_TOTAL_BYTES })
+    }
+
+    /// The bytes of part `name` (matched exactly, then leniently), or `None` if the package has
+    /// no such part.
+    fn part(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        let exact = self.zip.index_for_name(name).filter(|_| !name.ends_with('/'));
+        let Some(i) = exact.or_else(|| self.lenient.get(&normalize_part_name(name)).and_then(|n| self.zip.index_for_name(n))) else {
+            return Ok(None);
+        };
+        let f = self.zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
+        let part = f.name().to_string();
+        let limit = MAX_PART_BYTES.min(self.left);
+        let too_big = || IdmlError::Part {
+            part: part.clone(),
+            msg: format!("larger than the {MAX_PART_BYTES}-byte part limit (or the package is larger than {MAX_TOTAL_BYTES} bytes)"),
+        };
+        if f.size() > limit {
+            return Err(too_big());
+        }
+        let mut buf = Vec::new();
+        f.take(limit.saturating_add(1)).read_to_end(&mut buf).map_err(|e| IdmlError::Part { part: part.clone(), msg: e.to_string() })?;
+        let n = buf.len() as u64;
+        if n > limit {
+            return Err(too_big());
+        }
+        self.left = self.left.saturating_sub(n);
+        Ok(Some(buf))
+    }
+}
+
+/// A package part name in the form the lookup compares: InDesign and other IDML writers differ
+/// in percent-encoding, case, path separators and a leading `./` or `/`.
+fn normalize_part_name(name: &str) -> String {
+    let decoded = percent_decode(&name.replace('\\', "/"));
+    let mut rest = decoded.as_str();
+    loop {
+        if let Some(r) = rest.strip_prefix("./") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix('/') {
+            rest = r;
+        } else {
+            break;
+        }
+    }
+    rest.to_lowercase()
+}
+
+/// Decode `%XX` escapes; anything else (including a malformed escape) is kept as written.
+pub(crate) fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while let Some(&c) = b.get(i) {
+        if c == b'%'
+            && let (Some(h), Some(l)) = (b.get(i + 1).and_then(|h| (*h as char).to_digit(16)), b.get(i + 2).and_then(|l| (*l as char).to_digit(16)))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 struct ItemCtx {
@@ -87,6 +221,7 @@ struct ItemCtx {
 }
 
 struct Importer<'r> {
+    warnings: Vec<String>,
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     next_id: u64,
     settings: DocSettings,
@@ -103,6 +238,7 @@ struct Importer<'r> {
     condition_names: HashMap<String, String>,
     inks: pagenor_doc::InkManager,
     stroke_styles: Vec<pagenor_doc::StrokeStyleDef>,
+    table_dash_patterns: HashMap<String, Vec<f64>>,
     styles: Styles,
     composite_names: HashMap<String, String>,
     mojikumi_names: HashMap<String, String>,
@@ -111,6 +247,8 @@ struct Importer<'r> {
     char_names: HashMap<String, String>,
     lists: Vec<pagenor_doc::NumberedList>,
     object_names: HashMap<String, String>,
+    cell_names: HashMap<String, String>,
+    table_names: HashMap<String, String>,
     /// Object style Self → element (attribute fallback for page items).
     object_els: HashMap<String, El>,
     layers: Vec<Layer>,
@@ -119,10 +257,14 @@ struct Importer<'r> {
     story_ids: HashMap<String, StoryId>,
     parents: Vec<Spread>,
     parent_ids: HashMap<String, SpreadId>,
+    default_parent_prefix: Option<String>,
     spreads: Vec<Spread>,
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Assets read from a link path, so later placements of that path reuse them unread.
+    linked_assets: HashMap<(String, u32, pagenor_doc::PdfCrop), AssetId>,
+    linked_files: HashMap<String, Arc<Vec<u8>>>,
     ctx: ItemCtx,
     sections: Vec<Section>,
     footnote_options: pagenor_doc::FootnoteOptions,
@@ -181,6 +323,52 @@ fn nums(s: &str) -> Vec<f64> {
     s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
 }
 
+/// Like [`nums`], but empty when any number is NaN or infinite.
+fn finite_nums(s: &str) -> Vec<f64> {
+    let v = nums(s);
+    if v.iter().all(|x| x.is_finite()) { v } else { Vec::new() }
+}
+
+/// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
+/// none): InDesign places such a file at one viewBox unit to the point.
+fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
+    use quick_xml::events::Event;
+    if data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
+        return None;
+    }
+    let mut r = quick_xml::Reader::from_reader(data);
+    let mut buf = Vec::new();
+    let root = loop {
+        match r.read_event_into(&mut buf).ok()? {
+            Event::Start(e) | Event::Empty(e) => break e.into_owned(),
+            Event::Eof => return None,
+            _ => buf.clear(),
+        }
+    };
+    if root.local_name().as_ref() != b"svg" {
+        return None;
+    }
+    let attr = |name: &[u8]| {
+        root.attributes()
+            .with_checks(false)
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .and_then(|a| a.normalized_value(Default::default()).ok().map(|v| v.to_string()))
+    };
+    let absolute = |name: &[u8]| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
+    if absolute(b"width") || absolute(b"height") {
+        return None;
+    }
+    let viewbox = attr(b"viewBox")?;
+    if viewbox.len() > 256 {
+        return None;
+    }
+    let mut values = viewbox.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty());
+    let mut next = || values.next()?.parse::<f64>().ok();
+    let (x, y, w, h) = (next()?, next()?, next()?, next()?);
+    (values.next().is_none() && [x, y, w, h].iter().all(|v| v.is_finite()) && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
 fn parse_affine(s: Option<&str>) -> Affine {
     match s.map(nums) {
         Some(v) if v.len() == 6 => Affine::new([v[0], v[1], v[2], v[3], v[4], v[5]]),
@@ -188,9 +376,49 @@ fn parse_affine(s: Option<&str>) -> Affine {
     }
 }
 
+/// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
+/// screen (IDML y points down, so `0 1 -1 0` is one clockwise turn). The spread's items and
+/// pages stay in unrotated spread coordinates, so only the rotation part is read. Anything other
+/// than an exact quarter turn (identity, scale, other angles, malformed numbers) is no rotation.
+fn spread_view_rotation(s: Option<&str>) -> u8 {
+    let parsed: std::result::Result<Vec<f64>, _> = s.unwrap_or("").split_whitespace().take(7).map(str::parse::<f64>).collect();
+    let Some([a, b, c, d, tx, ty]) = parsed.ok().and_then(|v| <[f64; 6]>::try_from(v).ok()) else { return 0 };
+    if ![a, b, c, d, tx, ty].iter().all(|n| n.is_finite()) {
+        return 0;
+    }
+    let is = |x: f64, y: f64| (x - y).abs() < 1e-6;
+    let quarter = |m: [f64; 4]| is(a, m[0]) && is(b, m[1]) && is(c, m[2]) && is(d, m[3]);
+    if quarter([0.0, 1.0, -1.0, 0.0]) {
+        1
+    } else if quarter([-1.0, 0.0, 0.0, -1.0]) {
+        2
+    } else if quarter([0.0, -1.0, 1.0, 0.0]) {
+        3
+    } else {
+        0
+    }
+}
+
 fn parse_point(s: Option<&str>) -> Option<Point> {
     let v = nums(s?);
     (v.len() >= 2).then(|| Point::new(v[0], v[1]))
+}
+
+/// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
+/// `ParagraphShading`): top left, top right, bottom right, bottom left. Unset when none is given.
+fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
+    let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+    let shapes = keys.map(|n| e.prop(&format!("{prefix}{n}CornerOption")));
+    let sizes = keys.map(|n| e.num(&format!("{prefix}{n}CornerRadius")));
+    if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
+        return None;
+    }
+    let mut out = [Corner::default(); 4];
+    for (c, (shape, size)) in out.iter_mut().zip(shapes.iter().zip(sizes)) {
+        c.shape = shape.as_deref().map_or(pagenor_geom::corners::CornerShape::None, |s| names::corner_in(s.trim()));
+        c.size = size.filter(|v| v.is_finite()).map_or(12.0, |v| v.max(0.0));
+    }
+    Some(out)
 }
 
 /// InDesign's corner size where a file gives a corner shape without one.
@@ -213,6 +441,7 @@ impl<'r> Importer<'r> {
         // Built-ins are replaced by the file's definitions when present.
         styles.paragraph.iter_mut().for_each(|s| s.based_on = None);
         Importer {
+            warnings: Vec::new(),
             read_link,
             next_id: 0,
             settings: DocSettings::default(),
@@ -226,6 +455,7 @@ impl<'r> Importer<'r> {
             condition_names: HashMap::new(),
             inks: Default::default(),
             stroke_styles: Vec::new(),
+            table_dash_patterns: HashMap::new(),
             styles,
             composite_names: HashMap::new(),
             mojikumi_names: HashMap::new(),
@@ -234,6 +464,8 @@ impl<'r> Importer<'r> {
             char_names: HashMap::new(),
             lists: Vec::new(),
             object_names: HashMap::new(),
+            cell_names: HashMap::new(),
+            table_names: HashMap::new(),
             object_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
@@ -241,10 +473,13 @@ impl<'r> Importer<'r> {
             story_ids: HashMap::new(),
             parents: Vec::new(),
             parent_ids: HashMap::new(),
+            default_parent_prefix: None,
             spreads: Vec::new(),
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            linked_assets: HashMap::new(),
+            linked_files: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
             footnote_options: Default::default(),
@@ -290,11 +525,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            pagenor_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
@@ -324,7 +565,7 @@ impl<'r> Importer<'r> {
                 .map(|c| pagenor_doc::cjk::CompositeFontEntry {
                     name: c.get("Name").unwrap_or("").into(),
                     characters: c.get("CustomCharacters").unwrap_or("").into(),
-                    family: c.prop("AppliedFont").unwrap_or_default(),
+                    family: c.prop("AppliedFont").as_deref().and_then(names::font_family_in).unwrap_or_default(),
                     style: c.get("FontStyle").unwrap_or("Regular").trim_start_matches("$ID/").into(),
                     relative_size: c.num("RelativeSize").unwrap_or(100.0) / 100.0,
                     horizontal_scale: c.num("HorizontalScale").unwrap_or(100.0) / 100.0,
@@ -393,6 +634,8 @@ impl<'r> Importer<'r> {
                 self.layer_ids.insert(s.to_string(), id);
             }
         }
+        // IDML lists layers back to front; `Document::layers` is front to back.
+        self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.alloc());
             self.layers.push(Layer {
@@ -494,6 +737,7 @@ impl<'r> Importer<'r> {
     }
 
     fn doc_prefs(&mut self, e: &El) {
+        self.default_parent_prefix = e.get("PagenorDefaultMaster").map(str::to_string);
         let s = &mut self.settings;
         if let Some(v) = e.get("OverprintBlack") {
             s.overprint_black = v != "false";
@@ -625,15 +869,28 @@ impl<'r> Importer<'r> {
         // Custom stroke styles.
         for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let nums = |k: &str| e.get(k).unwrap_or("").split_whitespace().filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<_>>();
             let kind = match e.local() {
                 "StripedStrokeStyle" => pagenor_doc::StrokeType::Stripes {
-                    bands: nums("StripeArray").as_chunks::<2>().0.iter().map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0)).collect(),
+                    bands: finite_nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
                 },
-                "DashedStrokeStyle" => pagenor_doc::StrokeType::Dashed { pattern: nums("DashArray") },
+                "DashedStrokeStyle" => pagenor_doc::StrokeType::Dashed { pattern: finite_nums(e.get("DashArray").unwrap_or("")) },
                 _ => pagenor_doc::StrokeType::Dotted,
             };
-            let _ = id;
+            // Only the complete generated identity is a concrete table dash resource.
+            // User-named custom styles keep their existing Style { name } representation.
+            if let pagenor_doc::StrokeType::Dashed { pattern } = &kind
+                && !pattern.is_empty()
+                && id == names::table_dash_style_id(pattern)
+                && name == id
+            {
+                self.table_dash_patterns.insert(id.to_string(), pattern.clone());
+                continue;
+            }
             self.stroke_styles.push(pagenor_doc::StrokeStyleDef { name: name.to_string(), kind });
         }
         // Ink Manager.
@@ -727,6 +984,15 @@ impl<'r> Importer<'r> {
     }
 
     /// A swatch reference (Self id) → our swatch name; unnamed colours become value-named swatches.
+    /// A `TextFramePreference`, with its column rule colour resolved to a swatch.
+    fn frame_options(&mut self, e: &El) -> TextFrameOptions {
+        let mut o = text_frame_options(&[e]);
+        if let Some(r) = e.get("ColumnRuleStrokeColor") {
+            o.column_rule_color = self.swatch_ref(r);
+        }
+        o
+    }
+
     fn swatch_ref(&mut self, r: &str) -> String {
         if let Some(n) = self.swatch_names.get(r) {
             return n.clone();
@@ -844,30 +1110,33 @@ impl<'r> Importer<'r> {
                 None => self.styles.character.push(s),
             }
         }
-        // Cell and table styles (the built-ins stay as they are).
-        let cell_ref = |r: &str| names::style_name_in(names::CELL_BUILTINS, &unescape_id(r.trim_start_matches("CellStyle/")));
+        // Keep built-ins as well: [Basic Table] is editable, and [No table style]
+        // supplies the defaults used by named styles in ordinary IDML files.
+        for (id, e) in &cell_styles {
+            self.cell_names.insert(id.clone(), names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or("")));
+        }
+        for (id, e) in &table_styles {
+            self.table_names.insert(id.clone(), names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or("")));
+        }
         for (_, e) in &cell_styles {
             let name = names::style_name_in(names::CELL_BUILTINS, e.get("Name").unwrap_or(""));
-            if name == pagenor_doc::NO_CELL_STYLE {
-                continue;
-            }
             let mut cs = pagenor_doc::CellStyle { name: name.clone(), ..Default::default() };
-            cs.fill = e.get("FillColor").map(|c| self.swatch_ref(c));
-            cs.fill_tint = e.num("FillTint").and_then(|v| tint(Some(v)));
-            let ins: Vec<Option<f64>> = ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().map(|k| e.num(k)).collect();
-            if ins.iter().all(Option::is_some) {
-                cs.insets = Some([ins[0].unwrap_or(0.0), ins[1].unwrap_or(0.0), ins[2].unwrap_or(0.0), ins[3].unwrap_or(0.0)]);
+            cs.based_on =
+                e.prop("BasedOn").map(|r| self.cell_style_ref(&r)).or_else(|| Some(pagenor_doc::NO_CELL_STYLE.into())).filter(|n| *n != name);
+            cs.fill = e.prop("FillColor").map(|c| self.swatch_ref(&c));
+            cs.fill_tint = tint(e.num("FillTint"));
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            cs.inset_overrides = inset_names.map(|(text, old)| e.num(text).or_else(|| e.num(old)).map(|v| v.max(0.0)));
+            if let [Some(top), Some(left), Some(bottom), Some(right)] = cs.inset_overrides {
+                cs.insets = Some([top, left, bottom, right]);
+                cs.inset_overrides = [None; 4];
             }
             cs.vj = e.get("VerticalJustification").map(names::vj_in);
-            if e.get("TopEdgeStrokeWeight").is_some() || e.get("TopEdgeStrokeColor").is_some() {
-                let mut st = CellStroke::default();
-                if let Some(w) = e.num("TopEdgeStrokeWeight") {
-                    st.weight = w.max(0.0);
-                }
-                if let Some(c) = e.get("TopEdgeStrokeColor") {
-                    st.color = self.swatch_ref(c);
-                }
-                cs.stroke = Some(st);
+            cs.strokes = ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].map(|side| self.cell_stroke_attrs(e, side));
+            if let Some(stroke) = uniform_cell_stroke(&cs.strokes) {
+                cs.stroke = Some(stroke);
+                cs.strokes = Default::default();
             }
             cs.paragraph_style = e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).filter(|n| n != pagenor_doc::NO_PARA_STYLE);
             match self.styles.cell.iter_mut().find(|c| c.name == name) {
@@ -877,26 +1146,29 @@ impl<'r> Importer<'r> {
         }
         for (_, e) in &table_styles {
             let name = names::style_name_in(names::TABLE_BUILTINS, e.get("Name").unwrap_or(""));
-            if name == pagenor_doc::BASIC_TABLE || name == "[No table style]" {
-                continue;
-            }
             let mut ts = pagenor_doc::TableStyle { name: name.clone(), ..Default::default() };
-            ts.header = e.get("HeaderRegionCellStyle").map(cell_ref).filter(|n| n != pagenor_doc::NO_CELL_STYLE);
-            ts.body = e.get("BodyRegionCellStyle").map(cell_ref).filter(|n| n != pagenor_doc::NO_CELL_STYLE);
-            ts.footer = e.get("FooterRegionCellStyle").map(cell_ref).filter(|n| n != pagenor_doc::NO_CELL_STYLE);
-            ts.left_column = e.get("LeftColumnRegionCellStyle").map(cell_ref).filter(|n| n != pagenor_doc::NO_CELL_STYLE);
-            ts.right_column = e.get("RightColumnRegionCellStyle").map(cell_ref).filter(|n| n != pagenor_doc::NO_CELL_STYLE);
-            if e.get("TopBorderStrokeWeight").is_some() {
-                let mut b = CellStroke::default();
-                if let Some(w) = e.num("TopBorderStrokeWeight") {
-                    b.weight = w.max(0.0);
-                }
-                if let Some(c) = e.get("TopBorderStrokeColor") {
-                    b.color = self.swatch_ref(c);
-                }
-                ts.border = Some(b);
+            ts.based_on =
+                e.prop("BasedOn").map(|r| self.table_style_ref(&r)).or_else(|| Some(pagenor_doc::NO_TABLE_STYLE.into())).filter(|n| *n != name);
+            ts.header = e.get("HeaderRegionCellStyle").map(|r| if r == "n" { pagenor_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.body = e.get("BodyRegionCellStyle").map(|r| if r == "n" { pagenor_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.footer = e.get("FooterRegionCellStyle").map(|r| if r == "n" { pagenor_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.left_column =
+                e.get("LeftColumnRegionCellStyle").map(|r| if r == "n" { pagenor_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.right_column =
+                e.get("RightColumnRegionCellStyle").map(|r| if r == "n" { pagenor_doc::NO_CELL_STYLE.into() } else { self.cell_style_ref(r) });
+            ts.header_same_as_body = e.boolean("HeaderRegionSameAsBodyRegion");
+            ts.footer_same_as_body = e.boolean("FooterRegionSameAsBodyRegion");
+            ts.left_column_same_as_body = e.boolean("LeftColumnRegionSameAsBodyRegion");
+            ts.right_column_same_as_body = e.boolean("RightColumnRegionSameAsBodyRegion");
+            ts.borders = ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].map(|side| self.cell_stroke_attrs(e, side));
+            if let Some(border) = uniform_cell_stroke(&ts.borders) {
+                ts.border = Some(border);
+                ts.borders = Default::default();
             }
-            ts.alt_rows = self.alt_fills(e, "Row").map(|a| AltFills { skip_first: 0, skip_last: 0, ..a });
+            ts.row_fills = self.alt_fill_attrs(e, "Row");
+            ts.column_fills = self.alt_fill_attrs(e, "Column");
+            ts.row_strokes = self.alt_stroke_attrs(e, "Row");
+            ts.column_strokes = self.alt_stroke_attrs(e, "Column");
             ts.space_before = e.num("SpaceBefore");
             ts.space_after = e.num("SpaceAfter");
             match self.styles.table.iter_mut().find(|c| c.name == name) {
@@ -926,7 +1198,7 @@ impl<'r> Importer<'r> {
                 .then(|| e.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)))
                 .flatten();
             let text_frame = if e.get("EnableTextFrameGeneralOptions") == Some("true") {
-                e.find("TextFramePreference").map(|t| text_frame_options(&[t]))
+                e.find("TextFramePreference").map(|t| self.frame_options(t))
             } else {
                 None
             };
@@ -1076,16 +1348,15 @@ impl<'r> Importer<'r> {
     }
 
     fn char_attrs(&mut self, e: &El) -> CharAttrs {
-        let mut a = CharAttrs::default();
-        if let Some(f) = e.prop("AppliedFont") {
-            let f = f.trim();
-            // Some writers append the style after a tab.
-            let fam = f.split('\t').next().unwrap_or(f);
-            if !fam.is_empty() && fam != "$ID/" {
-                a.font_family = Some(self.composite_names.get(fam).cloned().unwrap_or_else(|| fam.to_string()));
-            }
-        }
-        a.font_style = e.prop("FontStyle");
+        let mut a = CharAttrs {
+            font_family: e
+                .prop("AppliedFont")
+                .as_deref()
+                .and_then(names::font_family_in)
+                .map(|family| self.composite_names.get(&family).cloned().unwrap_or(family)),
+            ..Default::default()
+        };
+        a.font_style = e.prop("FontStyle").filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
         a.size = e.num("PointSize");
         a.leading = e.prop("Leading").and_then(|l| names::leading_in(l.trim()));
         // Automatic kerning may carry an inactive numeric value (including the
@@ -1281,6 +1552,7 @@ impl<'r> Importer<'r> {
             a.grep_styles = Some(v);
         }
         a.space_after = e.num("SpaceAfter");
+        a.same_para_style_spacing = e.prop("SameParaStyleSpacing").map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0));
         a.drop_cap_lines = u("DropCapLines");
         a.drop_cap_chars = u("DropCapCharacters");
         a.drop_cap_style = e.prop("DropCapStyle").map(|r| self.char_style_ref(r.trim()));
@@ -1299,8 +1571,12 @@ impl<'r> Importer<'r> {
                 GridAlign::AllLines
             });
         }
-        a.composer =
-            e.prop("Composer").map(|c| if c.contains("Single") { pagenor_doc::Composer::SingleLine } else { pagenor_doc::Composer::Paragraph });
+        a.composer = e.prop("Composer").map(|c| match (c.contains("Single"), c.trim().ends_with(" Optyca")) {
+            (false, false) => pagenor_doc::Composer::Paragraph,
+            (true, false) => pagenor_doc::Composer::SingleLine,
+            (false, true) => pagenor_doc::Composer::WorldReady,
+            (true, true) => pagenor_doc::Composer::WorldReadySingleLine,
+        });
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -1324,6 +1600,7 @@ impl<'r> Importer<'r> {
         a.single_word_justify = e.prop("SingleWordJustification").and_then(|v| names::align_in(v.trim()));
         a.kashidas = e.prop("Kashidas").and_then(|v| names::kashidas_in(v.trim()));
         a.keep_with_next = u("KeepWithNext");
+        a.keep_with_previous = e.boolean("KeepWithPrevious");
         a.keep_lines_together = e.boolean("KeepLinesTogether");
         a.keep_all_lines = e.boolean("KeepAllLinesTogether");
         a.keep_first = u("KeepFirstLines");
@@ -1337,6 +1614,8 @@ impl<'r> Importer<'r> {
                 _ => SpanColumns::Single,
             });
         }
+        a.split_inside_gutter = e.num("SplitColumnInsideGutter").filter(|v| v.is_finite());
+        a.split_outside_gutter = e.num("SplitColumnOutsideGutter").filter(|v| v.is_finite());
         a.rule_above = self.rule(e, "RuleAbove");
         a.rule_below = self.rule(e, "RuleBelow");
         if let Some(tl) = e.prop_el("TabList") {
@@ -1344,19 +1623,30 @@ impl<'r> Importer<'r> {
             for li in tl.find_all("ListItem") {
                 let get = |k: &str| li.find(k).map(|x| x.text_content());
                 tabs.push(TabStop {
-                    position: get("Position").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+                    position: get("Position").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0),
                     align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
                     leader: get("Leader").unwrap_or_default(),
                     align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
                 });
             }
-            a.tabs = Some(tabs);
+            a.tabs = Some(TabStop::sanitized_list(tabs));
         }
         a.list_type = e.prop("BulletsAndNumberingListType").map(|v| match v.trim() {
             "BulletList" => ListType::Bullets,
             "NumberedList" => ListType::Numbers,
             _ => ListType::None,
         });
+        // A format with no counterpart (CJK, Arabic, Hebrew numbering) is left unset: decimal.
+        a.number_style = e.prop("NumberingFormat").and_then(|v| names::numbering_format_in(&v));
+        a.number_expression = e.prop("NumberingExpression");
+        a.list_separator = e.prop("BulletsTextAfter");
+        if let Some(b) = e.prop_el("BulletChar") {
+            // A glyph of a named font (`GlyphWithFont`) has no character to map to.
+            let unicode = matches!(b.get("BulletCharacterType"), Some("UnicodeOnly" | "UnicodeWithFont"));
+            if let Some(c) = b.get("BulletCharacterValue").and_then(|v| v.trim().parse::<u32>().ok()).and_then(char::from_u32).filter(|_| unicode) {
+                a.bullet_char = Some(c.to_string());
+            }
+        }
         a.balance_ragged = e.prop("BalanceRaggedLines").map(|v| v.trim() != "NoBalancing" && v.trim() != "false");
         a.shading_on = e.boolean("ParagraphShadingOn");
         if let Some(c) = e.prop("ParagraphShadingColor") {
@@ -1375,6 +1665,50 @@ impl<'r> Importer<'r> {
         a.border_tint = tint(e.num("ParagraphBorderTint"));
         a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
         a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
+        a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
+        a.border_cap = e.prop("ParagraphBorderStrokeEndCap").map(|v| names::cap_in(v.trim()));
+        a.border_join = e.prop("ParagraphBorderStrokeEndJoin").map(|v| names::join_in(v.trim()));
+        a.border_corners = corners(e, "ParagraphBorder");
+        a.border_width = e.prop("ParagraphBorderWidth").map(|v| names::box_width_in(v.trim()));
+        a.border_top = e.prop("ParagraphBorderTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.border_bottom = e.prop("ParagraphBorderBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.border_display_if_splits = e.boolean("ParagraphBorderDisplayIfSplits");
+        a.border_merge = e.boolean("MergeConsecutiveParaBorders");
+        if let Some(c) = e.prop("ParagraphBorderGapColor") {
+            a.border_gap_color = Some(self.swatch_ref(c.trim()));
+        }
+        a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
+        a.shading_corners = corners(e, "ParagraphShading");
+        a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
+        a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
+        a.shading_bottom = e.prop("ParagraphShadingBottomOrigin").map(|v| names::box_bottom_in(v.trim()));
+        a.shading_clip = e.boolean("ParagraphShadingClipToFrame");
+        a.shading_nonprinting = e.boolean("ParagraphShadingSuppressPrinting");
+        a.span_space_before = e.num("SpanColumnMinSpaceBefore").filter(|v| v.is_finite());
+        a.span_space_after = e.num("SpanColumnMinSpaceAfter").filter(|v| v.is_finite());
+        a.list_level = e.num("NumberingLevel").filter(|v| v.is_finite()).map(|v| v.round().clamp(1.0, pagenor_doc::LIST_LEVELS as f64) as u32);
+        if let Some(c) = e.prop("BulletsCharacterStyle") {
+            a.bullet_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        if let Some(c) = e.prop("NumberingCharacterStyle") {
+            a.number_char_style = Some(self.char_style_ref(c.trim()));
+        }
+        a.bullet_align = e.prop("BulletsAlignment").map(|v| names::list_align_in(v.trim()));
+        a.number_align = e.prop("NumberingAlignment").map(|v| names::list_align_in(v.trim()));
+        a.restart_numbers = e.boolean("NumberingApplyRestartPolicy");
+        if let Some(r) = e.prop_el("NumberingRestartPolicies") {
+            // A specific level restarts after that level; any other policy after any higher one.
+            let level = r.get("LowerLevel").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+            a.restart_after_level = Some(if r.get("RestartPolicy").map(str::trim) == Some("SpecificPreviousLevel") { level } else { 0 });
+        }
+        if let Some(f) = e.prop("BulletsFont") {
+            let f = f.trim();
+            a.bullet_font = Some(if f == "$ID/" { String::new() } else { f.split('\t').next().unwrap_or(f).to_string() });
+        }
+        if let Some(f) = e.prop("BulletsFontStyle") {
+            let f = f.trim();
+            a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
+        }
         a
     }
 
@@ -1404,12 +1738,82 @@ impl<'r> Importer<'r> {
         Some(r)
     }
 
+    fn cell_style_ref(&self, reference: &str) -> String {
+        let reference = reference.trim();
+        self.cell_names
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| names::style_name_in(names::CELL_BUILTINS, &unescape_id(reference.trim_start_matches("CellStyle/"))))
+    }
+
+    fn table_style_ref(&self, reference: &str) -> String {
+        let reference = reference.trim();
+        self.table_names
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| names::style_name_in(names::TABLE_BUILTINS, &unescape_id(reference.trim_start_matches("TableStyle/"))))
+    }
+
+    fn table_stroke_type(&self, reference: &str) -> pagenor_doc::StrokeType {
+        self.table_dash_patterns
+            .get(reference)
+            .map(|pattern| pagenor_doc::StrokeType::Dashed { pattern: pattern.clone() })
+            .unwrap_or_else(|| names::stroke_type_in(reference))
+    }
+
+    fn cell_stroke_attrs(&mut self, el: &El, prefix: &str) -> pagenor_doc::CellStrokeAttrs {
+        pagenor_doc::CellStrokeAttrs {
+            weight: el.num(&format!("{prefix}StrokeWeight")).map(|v| v.max(0.0)),
+            color: el.prop(&format!("{prefix}StrokeColor")).map(|v| self.swatch_ref(&v)),
+            tint: tint(el.num(&format!("{prefix}StrokeTint"))),
+            kind: el.prop(&format!("{prefix}StrokeType")).map(|v| self.table_stroke_type(&v)),
+            gap_color: el.prop(&format!("{prefix}StrokeGapColor")).map(|v| self.swatch_ref(&v)),
+            gap_tint: tint(el.num(&format!("{prefix}StrokeGapTint"))),
+        }
+    }
+
+    fn alt_fill_attrs(&mut self, el: &El, kind: &str) -> pagenor_doc::AltFillsAttrs {
+        pagenor_doc::AltFillsAttrs {
+            first: el.num(&format!("Start{kind}FillCount")).map(|v| v.max(0.0) as u32),
+            first_color: el.prop(&format!("Start{kind}FillColor")).map(|v| self.swatch_ref(&v)),
+            first_tint: tint(el.num(&format!("Start{kind}FillTint"))),
+            next: el.num(&format!("End{kind}FillCount")).map(|v| v.max(0.0) as u32),
+            next_color: el.prop(&format!("End{kind}FillColor")).map(|v| self.swatch_ref(&v)),
+            next_tint: tint(el.num(&format!("End{kind}FillTint"))),
+            skip_first: el.num(&format!("SkipFirstAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
+            skip_last: el.num(&format!("SkipLastAlternatingFill{kind}s")).map(|v| v.max(0.0) as u32),
+        }
+    }
+
+    fn alt_stroke_attrs(&mut self, el: &El, kind: &str) -> pagenor_doc::AltStrokesAttrs {
+        let first_stroke = self.cell_stroke_attrs(el, &format!("Start{kind}"));
+        let mut next_stroke = self.cell_stroke_attrs(el, &format!("End{kind}"));
+        // IDML uses LineStyle for this one attribute (rather than StrokeType).
+        if kind == "Column"
+            && let Some(value) = el.prop("EndColumnLineStyle")
+        {
+            next_stroke.kind = Some(self.table_stroke_type(&value));
+        }
+        pagenor_doc::AltStrokesAttrs {
+            first: el.num(&format!("Start{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
+            next: el.num(&format!("End{kind}StrokeCount")).map(|v| v.max(0.0) as u32),
+            first_stroke,
+            next_stroke,
+            skip_first: el.num(&format!("SkipFirstAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
+            skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
+        }
+    }
+
     // ---------- stories ----------
 
     fn story(&mut self, id: StoryId, e: &El) -> Story {
+        self.story_with_para(id, e, ParaFormat::default())
+    }
+
+    fn story_with_para(&mut self, id: StoryId, e: &El, default_para: ParaFormat) -> Story {
         let mut b = StoryBuilder {
             text: String::new(),
-            paras: vec![ParaFormat::default()],
+            paras: vec![default_para.clone()],
             runs: Vec::new(),
             fresh: true,
             last: CharFormat::default(),
@@ -1421,7 +1825,7 @@ impl<'r> Importer<'r> {
             index_refs: Vec::new(),
             objects: Vec::new(),
         };
-        self.walk_story(e, &mut b, &ParaFormat::default(), &CharAttrs::default(), &CharFormat::default(), None);
+        self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
         let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, .. } = b;
         let mut chars: Vec<CharRun> = runs.into_iter().filter(|r| r.len > 0).collect();
         if chars.is_empty() {
@@ -1452,6 +1856,7 @@ impl<'r> Importer<'r> {
             text,
             paras,
             chars,
+            slice_has_eof_stage: false,
             frames: vec![],
             direction: if e.find("StoryPreference").and_then(|p| p.get("StoryDirection")) == Some("RightToLeftDirection") {
                 pagenor_doc::TextDirection::RightToLeft
@@ -1472,6 +1877,7 @@ impl<'r> Importer<'r> {
         };
         st.fix_notes();
         st.fix_marks();
+        crate::eof_typing::restore(e, &mut st);
         // Drop anything inconsistent (e.g. a table sharing a paragraph with another).
         if st.check().is_err() {
             st.tables.retain(|_, _| false);
@@ -1508,34 +1914,39 @@ impl<'r> Importer<'r> {
         if h.saturating_add(f) < nr {
             t.set_header_footer(h, f);
         }
-        let stroke = |me: &mut Self, el: &El, prefix: &str, base: &CellStroke| -> CellStroke {
-            let mut s = base.clone();
-            if let Some(w) = el.num(&format!("{prefix}StrokeWeight")) {
-                s.weight = w.max(0.0);
-            }
-            if let Some(c) = el.get(&format!("{prefix}StrokeColor")) {
-                s.color = me.swatch_ref(c);
-            }
-            if let Some(v) = el.num(&format!("{prefix}StrokeTint")) {
-                s.tint = tint(Some(v)).unwrap_or(1.0);
-            }
-            if let Some(v) = el.get(&format!("{prefix}StrokeType")) {
-                s.kind = names::stroke_type_in(v);
-            }
-            s
-        };
-        t.options.border = stroke(self, e, "TopBorder", &t.options.border);
+        let style_name = e.get("AppliedTableStyle").map(|r| self.table_style_ref(r)).unwrap_or_else(|| pagenor_doc::BASIC_TABLE.into());
+        let style = self.styles.resolve_table_style(&style_name);
+        style.apply_to(&mut t, &self.styles.cell);
+        // IDML distinguishes an explicit AppliedCellStyle from the effective region style.
+        for cell in &mut t.cells {
+            cell.style.clear();
+        }
+        // Table-local options override the named table style. Cell styles are already
+        // materialized independently, so their edges retain their higher precedence.
+        let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
+        for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
+            self.cell_stroke_attrs(e, side).apply_to(border);
+        }
+        t.options.border = borders[0].clone();
+        t.options.borders = borders.map(Some);
         t.options.space_before = e.num("SpaceBefore").unwrap_or(t.options.space_before);
         t.options.space_after = e.num("SpaceAfter").unwrap_or(t.options.space_after);
         t.options.repeat_header = e.get("HeaderBehavior") != Some("RepeatOnce");
         t.options.repeat_footer = e.get("FooterBehavior") != Some("RepeatOnce");
-        t.options.alt_rows = self.alt_fills(e, "Row");
-        t.options.alt_cols = self.alt_fills(e, "Column");
-        t.style = e
-            .get("AppliedTableStyle")
-            .map(|r| names::style_name_in(names::TABLE_BUILTINS, &unescape_id(r.trim_start_matches("TableStyle/"))))
-            .filter(|n| n != pagenor_doc::BASIC_TABLE && n != "[No table style]")
-            .unwrap_or_default();
+        // A local count may enable a pattern disabled by its parent style. Merge before
+        // materialization so the parent's colors/tints are still available in that case.
+        let mut row_fills = style.row_fills.clone();
+        row_fills.merge(&self.alt_fill_attrs(e, "Row"));
+        row_fills.apply_to(&mut t.options.alt_rows);
+        let mut column_fills = style.column_fills.clone();
+        column_fills.merge(&self.alt_fill_attrs(e, "Column"));
+        column_fills.apply_to(&mut t.options.alt_cols);
+        let mut row_strokes = style.row_strokes.clone();
+        row_strokes.merge(&self.alt_stroke_attrs(e, "Row"));
+        row_strokes.apply_to(&mut t.options.row_strokes);
+        let mut column_strokes = style.column_strokes.clone();
+        column_strokes.merge(&self.alt_stroke_attrs(e, "Column"));
+        column_strokes.apply_to(&mut t.options.column_strokes);
         let mut regions = Vec::new();
         for ce in e.find_all("Cell") {
             let Some((c, r)) =
@@ -1546,36 +1957,41 @@ impl<'r> Importer<'r> {
             if r >= nr || c >= nc {
                 continue;
             }
-            let rs = ce.num("RowSpan").unwrap_or(1.0).max(1.0) as usize;
-            let cs = ce.num("ColumnSpan").unwrap_or(1.0).max(1.0) as usize;
-            let text = self.story(StoryId(0), ce);
-            let mut cell = Cell { text, ..Default::default() };
-            cell.style = ce
-                .get("AppliedCellStyle")
-                .map(|r| names::style_name_in(names::CELL_BUILTINS, &unescape_id(r.trim_start_matches("CellStyle/"))))
-                .filter(|n| n != pagenor_doc::NO_CELL_STYLE)
-                .unwrap_or_default();
+            let rs = (span(ce, "RowSpan").max(1.0) as usize).min(nr - r);
+            let cs = (span(ce, "ColumnSpan").max(1.0) as usize).min(nc - c);
+            let mut cell = t.cell(r, c).cloned().unwrap_or_default();
+            let cell_style = ce.get("AppliedCellStyle").map(|r| self.cell_style_ref(r)).unwrap_or_else(|| pagenor_doc::NO_CELL_STYLE.into());
+            if cell_style != pagenor_doc::NO_CELL_STYLE {
+                pagenor_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
+            }
+            cell.style = if cell_style == pagenor_doc::NO_CELL_STYLE { String::new() } else { cell_style };
+            let default_para = cell.text.paras.first().cloned().unwrap_or_default();
+            cell.text = self.story_with_para(StoryId(0), ce, default_para);
             if let Some(fc) = ce.get("FillColor") {
                 cell.fill = self.swatch_ref(fc);
             }
-            cell.fill_tint = tint(ce.num("FillTint")).unwrap_or(1.0);
-            for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-                if let Some(v) = ce.num(k) {
+            if let Some(tint) = tint(ce.num("FillTint")) {
+                cell.fill_tint = tint;
+            }
+            let keys =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
+            for (i, (text, old)) in keys.iter().enumerate() {
+                if let Some(v) = ce.num(text).or_else(|| ce.num(old)) {
                     cell.insets[i] = v.max(0.0);
                 }
             }
-            cell.vj = match ce.get("VerticalJustification") {
-                Some("CenterAlign") => VerticalJustification::Center,
-                Some("BottomAlign") => VerticalJustification::Bottom,
-                Some("JustifyAlign") => VerticalJustification::Justify,
-                _ => VerticalJustification::Top,
-            };
+            if let Some(vj) = ce.get("VerticalJustification") {
+                cell.vj = names::vj_in(vj);
+            }
+            cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
             for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                let base = cell.strokes[i].clone();
-                cell.strokes[i] = stroke(self, ce, side, &base);
-                // A positive edge priority records a local cell override, including an
-                // explicit None stroke. Keep it when this edge meets the table perimeter.
-                cell.border_overrides[i] = ce.num(&format!("{side}StrokePriority")).is_some_and(|priority| priority > 0.0);
+                let attrs = self.cell_stroke_attrs(ce, side);
+                attrs.apply_to(&mut cell.strokes[i]);
+                cell.stroke_defined[i] |= !attrs.is_empty();
+                let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+                cell.stroke_priorities[i] = priority;
+                // Preserve style-defined edges and #102's positive-priority local overrides.
+                cell.border_overrides[i] |= priority > 0;
             }
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
@@ -1590,33 +2006,15 @@ impl<'r> Importer<'r> {
         t
     }
 
-    /// A table's or table style's alternating `kind` ("Row" or "Column") fills, when it has any;
-    /// unset values are InDesign's: the first Black 20 %, the next None.
-    fn alt_fills(&mut self, e: &El, kind: &str) -> Option<AltFills> {
-        let first = e.num(&format!("Start{kind}FillCount")).filter(|n| *n > 0.0)?;
-        let d = AltFills::default();
-        let count = |k: String, or: u32| e.num(&k).map_or(or, |v| v.max(0.0) as u32);
-        Some(AltFills {
-            first: first as u32,
-            first_color: e.get(&format!("Start{kind}FillColor")).map_or(d.first_color, |c| self.swatch_ref(c)),
-            first_tint: tint(e.num(&format!("Start{kind}FillTint"))).unwrap_or(d.first_tint),
-            next: count(format!("End{kind}FillCount"), d.next),
-            next_color: e.get(&format!("End{kind}FillColor")).map_or(d.next_color, |c| self.swatch_ref(c)),
-            next_tint: tint(e.num(&format!("End{kind}FillTint"))).unwrap_or(d.next_tint),
-            skip_first: count(format!("SkipFirstAlternatingFill{kind}s"), 0),
-            skip_last: count(format!("SkipLastAlternatingFill{kind}s"), 0),
-        })
-    }
-
     fn walk_story(&mut self, e: &El, b: &mut StoryBuilder, pf: &ParaFormat, pchars: &CharAttrs, cf: &CharFormat, brk: Option<&str>) {
         for n in &e.children {
             match n {
                 Node::El(c) => match c.local() {
                     "ParagraphStyleRange" => {
-                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| st::BASIC_PARAGRAPH.into());
+                        let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
                         let chars = self.char_attrs(c);
-                        let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
+                        let npf = ParaFormat { style, para, chars: CharAttrs::default(), eof_inherited_chars: None, table: None };
                         if b.fresh
                             && let Some(last) = b.paras.last_mut()
                         {
@@ -1653,21 +2051,22 @@ impl<'r> Importer<'r> {
                             }
                         }
                     }
-                    "Br" => match brk {
-                        Some(t) => {
+                    "Br" => {
+                        // A column, frame or page break ends its paragraph like a return does.
+                        if let Some(t) = brk {
                             let ch = match t {
                                 "NextColumn" => st::COLUMN_BREAK,
                                 "NextFrame" => st::FRAME_BREAK,
+                                "NextOddPage" => st::ODD_PAGE_BREAK,
+                                "NextEvenPage" => st::EVEN_PAGE_BREAK,
                                 _ => st::PAGE_BREAK,
                             };
                             b.push(&ch.to_string(), cf);
                         }
-                        None => {
-                            b.push("\n", cf);
-                            b.paras.push(pf.clone());
-                            b.fresh = true;
-                        }
-                    },
+                        b.push("\n", cf);
+                        b.paras.push(pf.clone());
+                        b.fresh = true;
+                    }
                     "Table" => {
                         let t = self.table(c);
                         b.push_table(t, pf, cf);
@@ -1715,20 +2114,32 @@ impl<'r> Importer<'r> {
                     "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame" => {
                         if let Some(item) = self.item(c, pagenor_geom::Affine::IDENTITY) {
                             use pagenor_doc::anchored::AnchorAlign as A;
-                            let set = c.find("AnchoredObjectSetting");
-                            let get = |k: &str| set.and_then(|s| s.num(k)).unwrap_or(0.0);
-                            let position = match set.and_then(|s| s.get("AnchoredPosition")) {
-                                Some("AboveLine") => pagenor_doc::AnchorPosition::AboveLine {
-                                    align: match set.and_then(|s| s.get("HorizontalAlignment")) {
-                                        Some("CenterAlign") => A::Center,
-                                        Some("RightAlign") => A::Right,
+                            let levels: Vec<&El> = std::iter::once(c).chain(self.object_style_chain(c)).collect();
+                            let s = |k: &str| {
+                                let value = levels.iter().filter_map(|l| l.find("AnchoredObjectSetting")).find_map(|x| x.get(k));
+                                value.unwrap_or(match k {
+                                    "AnchoredPosition" => "InlinePosition",
+                                    "AnchorPoint" => "BottomRightAnchor",
+                                    "HorizontalAlignment" => "LeftAlign",
+                                    "HorizontalReferencePoint" => "TextFrame",
+                                    "VerticalAlignment" => "BottomAlign",
+                                    "VerticalReferencePoint" => "LineBaseline",
+                                    "PinPosition" => "true",
+                                    _ => "",
+                                })
+                            };
+                            let get = |k: &str| s(k).trim().parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+                            let position = match s("AnchoredPosition") {
+                                "AboveLine" => pagenor_doc::AnchorPosition::AboveLine {
+                                    align: match s("HorizontalAlignment") {
+                                        "CenterAlign" => A::Center,
+                                        "RightAlign" => A::Right,
                                         _ => A::Left,
                                     },
                                     space_before: get("AnchorSpaceAbove"),
                                     space_after: get("AnchorYoffset"),
                                 },
-                                Some("Anchored") => {
-                                    let s = |k: &str| set.and_then(|x| x.get(k)).unwrap_or("");
+                                "Anchored" => {
                                     let col = match s("HorizontalAlignment") {
                                         "CenterAlign" => 1,
                                         "RightAlign" => 2,
@@ -1742,7 +2153,8 @@ impl<'r> Importer<'r> {
                                     pagenor_doc::AnchorPosition::Custom {
                                         x_relative: names::anchor_rel_in(s("HorizontalReferencePoint")),
                                         y_relative: names::anchor_rel_in(s("VerticalReferencePoint")),
-                                        x_offset: get("AnchorXoffset"),
+                                        // IDML measures a left-aligned object's X offset leftwards.
+                                        x_offset: if col == 0 { 0.0 - get("AnchorXoffset") } else { get("AnchorXoffset") },
                                         y_offset: get("AnchorYoffset"),
                                         object_point: names::anchor_in(s("AnchorPoint")),
                                         ref_point: row * 3 + col,
@@ -1789,6 +2201,7 @@ impl<'r> Importer<'r> {
         let shift = Affine::translate((-min_x, -min_y));
         let show = e.get("ShowMasterItems") != Some("false");
         let first_abs: usize = self.spreads.iter().map(|s| s.pages.len()).sum();
+        let view_rotation = if master { 0 } else { spread_view_rotation(e.get("ItemTransform")) };
         let mut out_pages = Vec::new();
         for (i, (r, p)) in pages.iter().enumerate() {
             let pid = PageId(self.alloc());
@@ -1817,13 +2230,14 @@ impl<'r> Importer<'r> {
                 margins,
                 columns,
                 parent,
+                inherit_parent_settings: p.get("PagenorInheritParentSettings") == Some("true"),
                 side,
                 overridden: vec![],
                 guides: Vec::<Guide>::new(),
                 show_parent_items: show,
                 liquid: Default::default(),
                 transition: None,
-                view_rotation: 0,
+                view_rotation: if i == 0 { view_rotation } else { 0 },
             });
         }
         let overrides: Vec<Vec<String>> =
@@ -1867,8 +2281,7 @@ impl<'r> Importer<'r> {
         })
     }
 
-    /// An item's object style chain: its applied style, the styles that one is based on, then
-    /// `[None]` (cycle-safe).
+    /// Applied and based-on object styles, then [None], nearest first and cycle-safe.
     fn object_style_chain(&self, e: &El) -> Vec<&El> {
         let mut chain: Vec<&El> = Vec::new();
         let mut os = e.get("AppliedObjectStyle").map(str::to_string);
@@ -1891,9 +2304,44 @@ impl<'r> Importer<'r> {
         chain
     }
 
-    /// Resolve an item attribute, falling back to its object style chain.
     fn attr_or_style(&self, e: &El, k: &str) -> Option<String> {
         e.get(k).or_else(|| self.object_style_chain(e).into_iter().find_map(|s| s.get(k))).map(str::to_string)
+    }
+
+    /// The item's child element `name` laid over the same element of each style in its object style
+    /// chain: attributes and nested elements merge one by one, nearer levels winning. IDML writes on an
+    /// item only the values that differ from its style. Effects whose category the applied style turns
+    /// off (`ObjectStyle*EffectsCategorySettings`) come from the item alone.
+    fn with_style(&self, e: &El, name: &str) -> Option<El> {
+        let chain = self.object_style_chain(e);
+        let category = match name {
+            "TransparencySetting" => Some("ObjectStyleObjectEffectsCategorySettings"),
+            "StrokeTransparencySetting" => Some("ObjectStyleStrokeEffectsCategorySettings"),
+            "FillTransparencySetting" => Some("ObjectStyleFillEffectsCategorySettings"),
+            "ContentTransparencySetting" => Some("ObjectStyleContentEffectsCategorySettings"),
+            _ => None,
+        };
+        let enabled = |effect: &str| {
+            let Some(flag) = category.and_then(|_| effect_flag(effect)) else { return true };
+            chain.iter().find_map(|s| category.and_then(|c| s.find(c)).and_then(|c| c.get(flag))) != Some("false")
+        };
+        let mut out: Option<El> = None;
+        for s in chain.iter().rev() {
+            let Some(c) = s.find(name) else { continue };
+            let mut c = c.clone();
+            c.children.retain(|n| !matches!(n, Node::El(x) if !enabled(x.local())));
+            match &mut out {
+                Some(o) => overlay(o, &c, 0),
+                None => out = Some(c),
+            }
+        }
+        if let Some(c) = e.find(name) {
+            match &mut out {
+                Some(o) => overlay(o, c, 0),
+                None => out = Some(c.clone()),
+            }
+        }
+        out
     }
 
     fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
@@ -1903,7 +2351,7 @@ impl<'r> Importer<'r> {
         if let Some(c) = color {
             s.swatch = self.swatch_ref(&c);
         }
-        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse().ok()) {
+        if let Some(w) = g(self, "StrokeWeight").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.weight = w;
         }
         if let Some(t) = g(self, "StrokeTint").and_then(|v| v.parse().ok()) {
@@ -1921,7 +2369,7 @@ impl<'r> Importer<'r> {
         if let Some(v) = g(self, "EndJoin") {
             s.join = names::join_in(&v);
         }
-        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse().ok()) {
+        if let Some(v) = g(self, "MiterLimit").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
             s.miter_limit = v;
         }
         if let Some(v) = g(self, "LeftLineEnd") {
@@ -1986,7 +2434,7 @@ impl<'r> Importer<'r> {
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| s.split_whitespace().filter_map(|v| v.parse().ok()).collect());
+            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| finite_nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
                 && len > 0.0
             {
@@ -2016,7 +2464,7 @@ impl<'r> Importer<'r> {
             }
         }
         // Transparency.
-        if let Some(t) = e.find("TransparencySetting") {
+        if let Some(t) = self.with_style(e, "TransparencySetting") {
             if let Some(bs) = t.find("BlendingSetting") {
                 if let Some(o) = bs.num("Opacity") {
                     it.opacity = (o / 100.0).clamp(0.0, 1.0) as f32;
@@ -2047,20 +2495,22 @@ impl<'r> Importer<'r> {
             {
                 it.effects = Effects { feather: f.num("Width").unwrap_or(9.0), ..it.effects.clone() };
             }
+            if let Some(g) = t.find("GradientFeatherSetting")
+                && g.boolean("Applied") == Some(true)
+            {
+                it.effects.gradient_feather = gradient_feather_in(g);
+            }
+            if let Some(df) = t.find("DirectionalFeatherSetting")
+                && df.boolean("Applied") == Some(true)
+            {
+                let w = |k: &str| finite(df.num(k)).unwrap_or(0.0).max(0.0);
+                it.effects.directional_feather =
+                    DirectionalFeather { on: true, widths: [w("TopWidth"), w("LeftWidth"), w("BottomWidth"), w("RightWidth")] };
+            }
         }
         // Text wrap.
-        if let Some(w) = e.find("TextWrapPreference") {
-            let mut tw = TextWrap {
-                mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
-                invert: w.get("Inverse") == Some("true"),
-                side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
-                ..TextWrap::default()
-            };
-            if let Some(o) = w.prop_el("TextWrapOffset") {
-                tw.offsets =
-                    [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
-            }
-            it.wrap = tw;
+        if let Some(w) = self.with_style(e, "TextWrapPreference") {
+            it.wrap = text_wrap(&w);
         }
         // Type on a path.
         if tag != "TextFrame"
@@ -2083,20 +2533,25 @@ impl<'r> Importer<'r> {
         // Content.
         match tag {
             "TextFrame" => {
-                let story_self = e.get("ParentStory").unwrap_or("n").to_string();
+                let mut story_self = e.get("ParentStory").unwrap_or("n").to_string();
                 let story = match self.story_ids.get(&story_self) {
                     Some(s) => *s,
                     None => {
                         let sid = StoryId(self.alloc());
                         self.stories.insert(sid, Story::new(sid));
-                        self.story_ids.insert(format!("#orphan{}", sid.0), sid);
+                        story_self = format!("#orphan{}", sid.0);
+                        self.story_ids.insert(story_self.clone(), sid);
                         sid
                     }
                 };
                 // Options the frame doesn't set come from its object style chain.
                 let prefs: Vec<&El> = std::iter::once(e).chain(self.object_style_chain(e)).filter_map(|s| s.find("TextFramePreference")).collect();
                 let mut options = text_frame_options(&prefs);
-                if let Some(g) = e.find("BaselineFrameGridOption")
+                let rule_color = Prefs(&prefs).get("ColumnRuleStrokeColor").map(str::to_string);
+                if let Some(color) = rule_color {
+                    options.column_rule_color = self.swatch_ref(&color);
+                }
+                if let Some(g) = self.with_style(e, "BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
                     options.baseline_grid =
@@ -2124,7 +2579,7 @@ impl<'r> Importer<'r> {
             _ => {
                 if let Some(g) = e.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG")) {
                     it.content = self.graphic(g);
-                    if let (Some(ff), Content::Graphic(gr)) = (e.elements().find(|c| c.local() == "FrameFittingOption"), &mut it.content) {
+                    if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut it.content) {
                         gr.crop = [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0));
                         gr.fit_align = ff.get("FittingAlignment").map_or(4, names::anchor_in);
                         if ff.get("AutoFit") == Some("true") {
@@ -2135,6 +2590,9 @@ impl<'r> Importer<'r> {
                         }
                     }
                 } else {
+                    // An empty frame keeps its Frame Fitting Options for what is placed later: its
+                    // own, over those of its object style chain, as for a frame with a graphic.
+                    it.empty_fitting = self.with_style(e, "FrameFittingOption").as_ref().and_then(empty_fitting);
                     // Page items pasted into this frame (Paste Into).
                     let kids: Vec<Arc<Item>> = e
                         .elements()
@@ -2160,15 +2618,44 @@ impl<'r> Importer<'r> {
             None => (0.0, 0.0, 0.0, 0.0),
         };
         let size = ((r - l).abs(), (b - t).abs());
+        let clip = clipping_path(g, Affine::translate((-l, -t)));
         let link = g.find("Link");
         let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
-        let mut data = g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default();
+        let graphic = |asset, size| {
+            Content::Graphic(pagenor_doc::Graphic {
+                asset,
+                size,
+                xf: gxf * Affine::translate((l, t)),
+                clip: clip.clone(),
+                auto_fit: Default::default(),
+                fit_align: 4,
+                crop: [0.0; 4],
+                wrap: g.find("TextWrapPreference").map(text_wrap).unwrap_or_default(),
+            })
+        };
+        let mut data = Arc::new(g.prop_el("Contents").map(|c| base64_decode(&c.text_content())).unwrap_or_default());
+        let page = pdf_page_in(g);
+        let pdf_crop = pdf_attribute(g).and_then(|a| a.get("PDFCrop")).map_or(pagenor_doc::PdfCrop::Crop, names::pdf_crop_in);
+        let mut read_from = None;
         if data.is_empty()
             && let Some(p) = &uri
-            && let Some(d) = (self.read_link)(p)
         {
-            data = d;
+            // Every placement of a linked file shares one asset; read the file once.
+            let key = (p.clone(), page, pdf_crop);
+            if let Some(id) = self.linked_assets.get(&key) {
+                let size = self.assets.get(id).and_then(|a| svg_viewbox_size(&a.data)).unwrap_or(size);
+                return graphic(*id, size);
+            }
+            if let Some(bytes) = self.linked_files.get(p) {
+                data = bytes.clone();
+                read_from = Some(key);
+            } else if let Some(bytes) = (self.read_link)(p) {
+                data = Arc::new(bytes);
+                self.linked_files.insert(p.clone(), data.clone());
+                read_from = Some(key);
+            }
         }
+        let size = svg_viewbox_size(&data).unwrap_or(size);
         let (mime, px) = sniff_image(&data);
         let mime = mime.map(str::to_string).unwrap_or_else(|| match link.and_then(|k| k.get("LinkResourceFormat")).unwrap_or("") {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
@@ -2184,17 +2671,16 @@ impl<'r> Importer<'r> {
         });
         let name =
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
-        let id = AssetId(self.alloc());
+        let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        self.assets.insert(id, Arc::new(Asset { page: 0, id, name, mime, link: link_path, data: Arc::new(data), pixels }));
-        Content::Graphic(pagenor_doc::Graphic {
-            asset: id,
-            size,
-            xf: gxf * Affine::translate((l, t)),
-            auto_fit: Default::default(),
-            fit_align: 4,
-            crop: [0.0; 4],
-        })
+        let id = pagenor_doc::insert_asset(
+            &mut self.assets,
+            Asset { page, pdf_crop, id: fresh, name, mime, link: link_path, data, pixels, ..Default::default() },
+        );
+        if let Some(p) = read_from {
+            self.linked_assets.insert(p, id);
+        }
+        graphic(id, size)
     }
 
     fn link_threads(&mut self) {
@@ -2263,6 +2749,8 @@ impl<'r> Importer<'r> {
         if self.spreads.is_empty() {
             return Err(IdmlError::Invalid("document has no spreads".into()));
         }
+        self.settings.default_parent =
+            self.parents.iter().find(|p| p.parent.as_ref().is_some_and(|i| Some(&i.prefix) == self.default_parent_prefix.as_ref())).map(|p| p.id);
         self.settings.lists = std::mem::take(&mut self.lists);
         // Make sure built-in paragraph styles exist and are first.
         let d = Document {
@@ -2304,7 +2792,176 @@ impl<'r> Importer<'r> {
     }
 }
 
+/// The object style category flag that turns an effect element on or off.
+fn effect_flag(effect: &str) -> Option<&'static str> {
+    Some(match effect {
+        "BlendingSetting" => "EnableTransparency",
+        "DropShadowSetting" => "EnableDropShadow",
+        "FeatherSetting" => "EnableFeather",
+        "InnerShadowSetting" => "EnableInnerShadow",
+        "OuterGlowSetting" => "EnableOuterGlow",
+        "InnerGlowSetting" => "EnableInnerGlow",
+        "BevelAndEmbossSetting" => "EnableBevelEmboss",
+        "SatinSetting" => "EnableSatin",
+        "DirectionalFeatherSetting" => "EnableDirectionalFeather",
+        "GradientFeatherSetting" => "EnableGradientFeather",
+        _ => return None,
+    })
+}
+
+/// Lays `top` over `base`: attributes one by one, child elements matched by name and merged the same
+/// way, text replaced. A property given in one form (attribute or `Properties` child) replaces the
+/// other form in `base`.
+fn overlay(base: &mut El, top: &El, depth: usize) {
+    if depth > 32 {
+        *base = top.clone();
+        return;
+    }
+    for (k, v) in &top.attrs {
+        base.set(k, v);
+        if let Some(Node::El(p)) = base.children.iter_mut().find(|n| matches!(n, Node::El(p) if p.local() == "Properties")) {
+            p.children.retain(|n| !matches!(n, Node::El(x) if x.local() == k));
+        }
+    }
+    if let Some(p) = top.find("Properties") {
+        let names: Vec<&str> = p.elements().map(El::local).collect();
+        base.attrs.retain(|(k, _)| !names.contains(&k.as_str()));
+    }
+    let has_text = top.children.iter().any(|n| matches!(n, Node::Text(t) | Node::CData(t) if !t.trim().is_empty()));
+    if has_text {
+        base.children.retain(|n| !matches!(n, Node::Text(_) | Node::CData(_)));
+    }
+    // The k-th child of a name merges with the k-th child of that name in `base` (repeated elements
+    // such as gradient stops pair up in order).
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for n in &top.children {
+        match n {
+            Node::El(c) => {
+                let k = seen.entry(c.local()).or_insert(0);
+                let slot = base
+                    .children
+                    .iter_mut()
+                    .filter_map(|b| match b {
+                        Node::El(b) if b.local() == c.local() => Some(b),
+                        _ => None,
+                    })
+                    .nth(*k);
+                *k += 1;
+                match slot {
+                    Some(b) => overlay(b, c, depth + 1),
+                    None => base.children.push(n.clone()),
+                }
+            }
+            Node::Text(_) | Node::CData(_) if has_text => base.children.push(n.clone()),
+            _ => {}
+        }
+    }
+}
+
+/// A cell span count; an infinite span is kept so it clamps to the table edge.
+fn span(e: &El, k: &str) -> f64 {
+    e.prop(k).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0)
+}
+
+fn finite(v: Option<f64>) -> Option<f64> {
+    v.filter(|v| v.is_finite())
+}
+
+/// A `GradientFeatherSetting`. The model holds two opacity stops at the ends of the gradient: the
+/// first and last `OpacityGradientStop` give them; with a linear vector, their `Location`s move its
+/// ends.
+fn gradient_feather_in(g: &El) -> GradientFeather {
+    let def = GradientFeather::default();
+    let angle = finite(g.num("Angle")).unwrap_or(0.0);
+    let mut stops: Vec<(f64, f64)> = g
+        .find_all("OpacityGradientStop")
+        .filter_map(|s| Some((finite(s.num("Location"))?.clamp(0.0, 100.0) / 100.0, finite(s.num("Opacity"))?.clamp(0.0, 100.0) / 100.0)))
+        .collect();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (first, last) = match (stops.first(), stops.last()) {
+        (Some(&a), Some(&b)) => (a, b),
+        _ => ((0.0, def.start as f64), (1.0, def.end as f64)),
+    };
+    let start: Option<[f64; 2]> = g
+        .prop("GradientStart")
+        .and_then(|s| s.split_whitespace().map(|v| v.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<Vec<f64>>>())
+        .and_then(|v| v.try_into().ok());
+    let radial = g.get("Type") == Some("Radial");
+    let vector = match (start, finite(g.num("Length"))) {
+        (Some([x, y]), Some(len)) if len > 0.0 => {
+            let a = angle.to_radians();
+            let (dx, dy) = (len * a.cos(), -len * a.sin());
+            let (l0, l1) = if !radial && last.0 > first.0 { (first.0, last.0) } else { (0.0, 1.0) };
+            Some([x + dx * l0, y + dy * l0, x + dx * l1, y + dy * l1])
+        }
+        _ => None,
+    };
+    GradientFeather { on: true, radial, angle, start: first.1 as f32, end: last.1 as f32, vector }
+}
+
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
+/// A `TextWrapPreference` element (of a page item or a placed graphic).
+/// Anchors a custom text wrap boundary may have.
+const MAX_WRAP_PATH_ANCHORS: usize = 4096;
+
+/// A custom text wrap boundary (`TextWrapPreference/Properties/PathGeometry`), in the item's inner
+/// space like its own path. Hostile input is an error: too many anchors, a malformed or non-finite
+/// point, or no points at all.
+fn wrap_path_of(pg: &El) -> std::result::Result<PathData, &'static str> {
+    let finite = |s: Option<&str>| -> std::result::Result<Option<Point>, &'static str> {
+        let Some(s) = s else { return Ok(None) };
+        let v = nums(s);
+        match (v.first(), v.get(1)) {
+            (Some(&x), Some(&y)) if v.len() == 2 && x.is_finite() && y.is_finite() => Ok(Some(Point::new(x, y))),
+            _ => Err("malformed or non-finite point"),
+        }
+    };
+    let mut subs = Vec::new();
+    let mut n = 0usize;
+    for g in pg.find_all("GeometryPathType") {
+        let closed = g.get("PathOpen") != Some("true");
+        let mut anchors = Vec::new();
+        for p in g.find("PathPointArray").into_iter().flat_map(|arr| arr.find_all("PathPointType")) {
+            n = n.saturating_add(1);
+            if n > MAX_WRAP_PATH_ANCHORS {
+                return Err("too many points");
+            }
+            let a = finite(p.get("Anchor"))?.ok_or("point without an anchor")?;
+            let hin = finite(p.get("LeftDirection"))?.unwrap_or(a);
+            let hout = finite(p.get("RightDirection"))?.unwrap_or(a);
+            anchors.push(Anchor::with_handles(a, hin, hout));
+        }
+        if !anchors.is_empty() {
+            subs.push(SubPath::new(anchors, closed));
+        }
+    }
+    if subs.is_empty() {
+        return Err("no points");
+    }
+    Ok(PathData::new(subs))
+}
+
+/// A `TextWrapPreference` element (of a page item or a placed graphic).
+fn text_wrap(w: &El) -> TextWrap {
+    let mut tw = TextWrap {
+        mode: names::wrap_mode_in(w.get("TextWrapMode").unwrap_or("None")),
+        invert: w.get("Inverse") == Some("true"),
+        side: names::wrap_side_in(w.get("TextWrapSide").unwrap_or("BothSides")),
+        contour: names::contour_type_in(w.find("ContourOption").and_then(|c| c.get("ContourType")).unwrap_or("SameAsClipping")),
+        ..TextWrap::default()
+    };
+    if let Some(o) = w.prop_el("TextWrapOffset") {
+        tw.offsets = [o.num("Top").unwrap_or(0.0), o.num("Left").unwrap_or(0.0), o.num("Bottom").unwrap_or(0.0), o.num("Right").unwrap_or(0.0)];
+    }
+    if let Some(pg) = w.prop_el("PathGeometry") {
+        match wrap_path_of(pg) {
+            Ok(path) => tw.path = Some(path),
+            Err(why) => eprintln!("IDML: custom text wrap boundary dropped: {why}"),
+        }
+    }
+    tw
+}
+
 fn names_angle(x: f64, y: f64) -> f64 {
     if x == 0.0 && y == 0.0 {
         return 135.0;
@@ -2435,6 +3092,24 @@ fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
     if let Some(v) = e.get("AutoSizingReferencePoint") {
         o.auto_size_ref = names::REF_POINTS.iter().position(|p| *p == v).unwrap_or(1) as u8;
     }
+    // Column rules (the colour is a swatch reference: see `Importer::frame_options`).
+    o.column_rule = e.get("ColumnRuleOverride") == Some("true");
+    let finite = |k: &str| e.num(k).filter(|v| v.is_finite());
+    if let Some(v) = finite("ColumnRuleStrokeWidth") {
+        o.column_rule_weight = v.clamp(0.0, 1000.0);
+    }
+    if let Some(t) = tint(finite("ColumnRuleStrokeTint")) {
+        o.column_rule_tint = t.clamp(0.0, 1.0);
+    }
+    for (k, v) in [
+        ("ColumnRuleOffset", &mut o.column_rule_offset),
+        ("ColumnRuleTopInset", &mut o.column_rule_top_inset),
+        ("ColumnRuleBottomInset", &mut o.column_rule_bottom_inset),
+    ] {
+        if let Some(x) = finite(k) {
+            *v = x.clamp(-1440.0, 1440.0);
+        }
+    }
     o
 }
 
@@ -2446,7 +3121,7 @@ impl Prefs<'_> {
         self.0.iter().find_map(|e| e.get(k))
     }
     fn num(&self, k: &str) -> Option<f64> {
-        self.get(k).and_then(|v| v.trim().parse().ok())
+        self.get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())
     }
 }
 
@@ -2476,19 +3151,71 @@ fn inset_spacing(e: &El) -> Option<[f64; 4]> {
     }
 }
 
+/// A graphic's `ClippingPathSettings` with its saved geometry, moved into graphic space by
+/// `to_graphic`. `None` for type None, an unknown type, or no geometry (the outline is never
+/// traced here).
+fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<pagenor_doc::ClippingPath>> {
+    let cs = g.find("ClippingPathSettings")?;
+    let kind = names::clipping_kind_in(cs.get("ClippingType").unwrap_or("None"))?;
+    let geometry = cs.prop_el("ClippingPathGeometry").or_else(|| cs.find("ClippingPathGeometry")).or_else(|| g.prop_el("ClippingPathGeometry"))?;
+    let mut path = path_capped(geometry, pagenor_doc::MAX_CLIP_ANCHORS);
+    path.subpaths.retain(|sp| sp.anchors.len() > 1 && sp.anchors.iter().all(|a| a.p.is_finite() && a.h_in.is_finite() && a.h_out.is_finite()));
+    if path.is_empty() {
+        return None;
+    }
+    if !to_graphic.as_coeffs().iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    path.transform(to_graphic);
+    path.subpaths.retain(|sp| sp.anchors.iter().all(|a| a.p.is_finite() && a.h_in.is_finite() && a.h_out.is_finite()));
+    if path.is_empty() {
+        return None;
+    }
+    let finite = |v: Option<f64>, def: f64| v.filter(|v| v.is_finite()).unwrap_or(def);
+    let mut c = pagenor_doc::ClippingPath::new(kind, path);
+    c.invert = cs.boolean("InvertPath").unwrap_or(false);
+    c.include_inside_edges = cs.boolean("IncludeInsideEdges").unwrap_or(false);
+    c.restrict_to_frame = cs.boolean("RestrictToFrame").unwrap_or(false);
+    c.use_high_resolution = cs.boolean("UseHighResolutionImage").unwrap_or(true);
+    c.threshold = finite(cs.num("Threshold"), c.threshold).clamp(0.0, 255.0);
+    c.tolerance = finite(cs.num("Tolerance"), c.tolerance).clamp(0.0, 10.0);
+    c.inset = finite(cs.num("InsetFrame"), 0.0);
+    c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
+    c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
+    Some(Arc::new(c))
+}
+
+/// A `FrameFittingOption` on a frame with no graphic; `None` when it sets nothing.
+fn empty_fitting(ff: &El) -> Option<pagenor_doc::EmptyFrameFitting> {
+    let f = pagenor_doc::EmptyFrameFitting {
+        fitting: ff.get("FittingOnEmptyFrame").map_or(pagenor_doc::Fitting::None, names::fitting_in),
+        auto_fit: ff.get("AutoFit") == Some("true"),
+        align: ff.get("FittingAlignment").map_or(4, names::anchor_in),
+        crop: [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0)),
+    };
+    (!f.is_default()).then_some(f)
+}
+
 fn path_of(pg: &El) -> PathData {
+    path_capped(pg, usize::MAX)
+}
+
+/// The path of a `…Geometry` element, keeping at most `max` anchors.
+fn path_capped(pg: &El, max: usize) -> PathData {
     let mut subs = Vec::new();
+    let mut left = max;
     for g in pg.find_all("GeometryPathType") {
         let closed = g.get("PathOpen") != Some("true");
         let mut anchors = Vec::new();
         if let Some(arr) = g.find("PathPointArray") {
-            for p in arr.find_all("PathPointType") {
+            for p in arr.find_all("PathPointType").take(left) {
                 let Some(a) = parse_point(p.get("Anchor")) else { continue };
                 let hin = parse_point(p.get("LeftDirection")).unwrap_or(a);
                 let hout = parse_point(p.get("RightDirection")).unwrap_or(a);
                 anchors.push(Anchor::with_handles(a, hin, hout));
             }
         }
+        left = left.saturating_sub(anchors.len());
         if !anchors.is_empty() {
             subs.push(SubPath::new(anchors, closed));
         }
@@ -2496,25 +3223,76 @@ fn path_of(pg: &El) -> PathData {
     PathData::new(subs)
 }
 
+/// A placed PDF's `PDFAttribute` (Image Import Options), as a child or a property.
+fn pdf_attribute(g: &El) -> Option<&El> {
+    g.find("PDFAttribute").or_else(|| g.prop_el("PDFAttribute"))
+}
+
+/// The page a placed PDF shows (0-based), from `PDFAttribute/@PageNumber` (1-based). A missing or
+/// malformed value means page 1; a page the PDF lacks draws nothing and is left out of PDF export.
+fn pdf_page_in(g: &El) -> u32 {
+    pdf_attribute(g)
+        .and_then(|a| a.get("PageNumber"))
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|n| u32::try_from(n.saturating_sub(1)).ok())
+        .unwrap_or(0)
+}
+
 /// IDML link URI → file system path (`file:/a%20b` → `/a b`, `file:///C:/x` → `C:/x`).
 pub(crate) fn uri_to_path(uri: &str) -> String {
-    let rest = uri.strip_prefix("file://").or_else(|| uri.strip_prefix("file:")).unwrap_or(uri);
+    let rest = uri.strip_prefix("file:").unwrap_or(uri);
+    // A URI with an authority denotes a UNC share. Keep its leading double slash.
+    // Three slashes denote an absolute local path instead.
+    let rest = if rest.starts_with("///") { rest.strip_prefix("//").unwrap_or(rest) } else { rest };
     // `file:///C:/…` → `/C:/…` → `C:/…`
-    let rest = if rest.len() > 3 && rest.starts_with('/') && rest.as_bytes()[2] == b':' { &rest[1..] } else { rest };
-    let mut out = Vec::with_capacity(rest.len());
-    let b = rest.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && i + 2 < b.len()
-            && let Ok(v) = u8::from_str_radix(&rest[i + 1..i + 3], 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
+    let rest = match rest.as_bytes() {
+        [b'/', _, b':', _, ..] => rest.get(1..).unwrap_or(rest),
+        _ => rest,
+    };
+    percent_decode(rest)
+}
+
+#[cfg(test)]
+mod svg_viewbox_tests {
+    use super::svg_viewbox_size;
+    #[test]
+    fn viewbox_only_sizes_require_exactly_four_finite_values() {
+        assert_eq!(svg_viewbox_size(br#"<svg viewBox="0 0 200 100"/>"#), Some((200.0, 100.0)));
+        for value in ["0 0 200 100 junk", "NaN 0 200 100", "0 0 inf 100", "0 0 -2 100"] {
+            let svg = format!("<svg viewBox=\"{value}\"/>");
+            assert_eq!(svg_viewbox_size(svg.as_bytes()), None, "{value}");
         }
-        out.push(b[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(test)]
+mod package_budget_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn actual_inflated_bytes_are_bounded_when_the_size_header_lies() {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer.start_file("part", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(&vec![b'x'; 1024]).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let mut patched = 0;
+        for i in 0..bytes.len().saturating_sub(46) {
+            let (size_at, len_at, name_at) = match bytes.get(i..i + 4) {
+                Some(b"PK\x03\x04") => (22, 26, 30),
+                Some(b"PK\x01\x02") => (24, 28, 46),
+                _ => continue,
+            };
+            let len = u16::from_le_bytes([bytes[i + len_at], bytes[i + len_at + 1]]) as usize;
+            if bytes.get(i + name_at..i + name_at + len) == Some(b"part".as_slice()) {
+                bytes[i + size_at..i + size_at + 4].copy_from_slice(&1u32.to_le_bytes());
+                patched += 1;
+            }
+        }
+        assert_eq!(patched, 2);
+        let mut package = Package::open(&bytes).unwrap();
+        package.left = 64;
+        let err = package.part("part").unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
+    }
 }

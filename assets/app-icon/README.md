@@ -41,7 +41,7 @@ bundle; `--release` selects the release profile. App arguments follow `--`.
 
 ## Editing the artwork
 
-The nine `Pagenor-*.svg` files are the exact supplied originals. The two
+The `Pagenor-*.svg` files in `assets/brand/` are the exact supplied originals. The two
 `pagenor-*-editable.svg` screens are editable runtime adaptations: decorative window
 buttons and the sample loading bar are removed, branding attribution is updated,
 and About's placeholder version is omitted so Rust draws the current Cargo version.
@@ -49,3 +49,22 @@ Edit these adapted screens when changing the running splash/About artwork.
 `runtime-*.svg` files are generated derivatives with text outlined for consistent
 rendering across platforms. Their names are deliberately different from the
 originals on both case-sensitive and case-insensitive filesystems.
+
+## Document icons and small macOS icons
+
+`assets/brand/Pagenor-Document-Icon.svg` is Appaji Ambarisha's supplied original
+(2026-10-10). Its outlined derivative is `pagenor-document.svg`; generated files
+include `pagenor-document-1024.png`, `pagenor-document.icns`,
+`pagenor-document.ico` and `hicolor/*/mimetypes/org.pagenor.app.document.*`.
+The macOS bundle includes `PagenorDocument.icns` for both `.pgnr` and legacy
+`.pagenor`; Windows installs the ICO separately and Linux uses the MIME icon.
+Application, Dock, launcher and installer icons continue to use the app artwork.
+Run `packaging/icons.sh --documents-only` to regenerate just document assets.
+
+The portable ICNS packer writes classic RGB plus separate alpha masks at 16/32
+pixels and PNG entries for Retina/large sizes. PNG bytes in the previous classic
+small slots produced corrupted colours in Apple's native icon reader, affecting
+Login Items and file-info headers. A macOS regression checks native decoding at
+16/32/64 pixels with transparent, translucent and opaque pixels. Regenerate both
+ICNS files after changing their packer; reading embedded PNG bytes alone does
+not validate what macOS displays.

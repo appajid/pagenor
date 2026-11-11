@@ -28,9 +28,17 @@
 - 0x151 item transform: 6 doubles (a b c d tx ty). 0x162b path geometry. 0x565 spread bounds.
 - 0x501 spread, 0x1401 master spread, 0x3301 page, 0x6201 spline item, 0x401 group,
   0x263 multi-column text frame, 0x227 frame column, 0x2501/0x6601 placed graphics.
-- Text: impl 0x262 in strand objects: owner story uid, chunks of (u32 n, u16 0x4000|n, 8-bit text).
+- Text-leaf 0x262: u32 kind, u32 owner strand, u16 record count, records.
+  A record has u32 size (excluding that size word), u32 UTF-16 unit count,
+  then one or more tagged text segments. A u16 tag's low 14 bits count this
+  segment's units: 0x4000 is byte text, 0x8000 is UTF-16LE. Mixed segments
+  share a record; their headers are not characters. An untagged wide single
+  segment is also retained. Invalid lengths/counts/surrogates return errors.
+  The writer maps style run lengths from UTF-16 units to scalar positions.
+  P11.6 reads every ordered leaf of both text and style strands.
 
 ## Semantics found so far (2026-10-07)
+- Doc uid 1: 0x301 = document layer order (u32 n, uids), back-to-front like IDML; retain empty user layers. The private page-storage layer has flag 1 at 0x304 offset 0 and the sentinel name `Internal_pages_layer_name`; it is not a user layer.
 - Doc uid 1: 0x501 = spread order (u32 n, uids). Spread 0x503 = spread layers; spread layer (0x301): 0x303 kids back-to-front, 0x302 = (doc layer uid, u16 guides flag).
 - Page 0x50F: 0x5DD bounds (l t r b), 0x5CC transform. Doc prefs uid 6 0x533 = page W/H.
 - Spline 0x6201: 0x162B path (u32 nsub; u32 npts; per point u32 kind: 2 = anchor only, else left/anchor/right; u16 open flag),
@@ -40,12 +48,13 @@
   Value types: 0x117 uid, 0x6E68 double, 0x6E69 point, 0x6E67 int, 0x6E65 bool, 0x6E63 meta.
 - Swatch 0x1F05: 0x1F10 name, 0x1F01 (u32 space 5 RGB/6 CMYK/7 LAB, u16 n, n doubles 0..1 (LAB raw)).
 - Story 0x201: 0x223 lists strands. Strand classes: 0x234 text, 0x236 paragraph runs, 0x235 character runs, 0x228 frame list.
-  Strand 0x261 = (u16, u32 len, u32 data uid); data 0x262 = (u32 kind, u32 owner, u16 n, runs).
+  Strand 0x261 = u16 leaf count followed by `(u32 text length, u32 data UID)` pairs; data 0x262 = (u32 kind, u32 owner, u16 n, runs).
   Runs: u32 size, u32 length, u32 style uid, text attr list (u16 n; u32 id, u16 len, typed values).
 - Style 0x205: 0x230 name + u32 based-on @4, 0x23F attrs. Chain root "[No paragraph style]" / "[No character style]".
 - Text attrs: 0x1B01 colour, 0x1B02 font style (string), 0x1B03 size, 0x1B1B leading (-1 auto), 0x1B1A auto-leading,
   0x1B2B font family uid (0x3E03 objects, name in 0x3E05), 0x1B7E justification (0 left, 1 centre, 2 right, 3..6 justified).
-- Frames: column 0x227 -> 0x220 frame-list strand -> story. Graphic 0x2501/0x6601 -> 0x8CBC link 0x8C42 -> 0x8C9B
+- Multi-column object 0x263: preferences 0x2D1 = u32 column count at 0, f64 gutter at 4; columns bounded to 1..40 and finite gutter to 0..10,000 points.
+- Frames: column 0x227 -> 0x220 frame-list strand -> story. Graphic 0x1702 (raster)/0x2501 (PDF)/0x6601 (EPS) -> 0x8CBC link 0x8C42 -> 0x8C9B
   resource 0x8C41 (0x8C92: file URI + embedded blob uid). Bounds 0x1633; placed PDF inner y = t + b - y_pdf.
 
 ## Embedded graphics
@@ -75,3 +84,19 @@ Tests use synthetic documents constructed in Rust. Real-file version breadth,
 layout fidelity and native platform execution are not established by these tests.
 Unsupported options are listed above and in the import warning. An IDML export
 from the source application remains the broader interchange route.
+
+P11.6 owner-authorized real-file observations extend the original clean-room
+notes without committing source files or fonts. Paragraph spacing uses 0x1B26
+(before) and 0x1B27 (after); justification 4 preserves a left-aligned final line.
+[Measured recovery, tests and remaining pagination limits](pagenor/INDD_RECOVERY.md).
+
+## Portfolio validation (2026-10-11)
+
+The owner supplied `Appaji_Portfolio2.indd` and asked to preserve layer sequence.
+Observed against its companion IDML/PDF and linked-image folder, read only:
+version 21.6, sequence 11, 22 pages, 57 placed raster images, six user layers.
+The prior IDML conversion reversed the layer list and omitted class 0x1702.
+The local fix preserves layer order and empty layers, restores image proxies
+and carries multi-column count/gutter through the existing IDML import.
+No owner file, linked artwork or proprietary font is included in repository tests.
+[Measured results and fidelity limits](pagenor/INDD_PORTFOLIO.md).

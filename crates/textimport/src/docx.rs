@@ -60,7 +60,7 @@ impl El {
         self.child(name).map(|e| e.attr("val").unwrap_or("true").to_string())
     }
     fn on(&self, name: &str) -> Option<bool> {
-        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none"))
+        self.val(name).map(|v| !matches!(v.as_str(), "0" | "false" | "none" | "off"))
     }
 }
 
@@ -146,6 +146,16 @@ fn parse_with_limits(xml: &str, limits: XmlLimits) -> Result<El, ImportError> {
                     p.kids.push(Node::Text(s));
                 }
             }
+            Event::CData(t) => {
+                nodes = nodes.saturating_add(1);
+                if nodes > limits.nodes {
+                    return Err(ImportError::Corrupt(format!("XML contains more than {} nodes", limits.nodes)));
+                }
+                let s = t.decode().map_err(|e| ImportError::Corrupt(format!("Invalid XML CDATA: {e}")))?.into_owned();
+                if let Some(p) = stack.last_mut() {
+                    p.kids.push(Node::Text(s));
+                }
+            }
             Event::GeneralRef(e) => {
                 nodes = nodes.saturating_add(1);
                 if nodes > limits.nodes {
@@ -158,8 +168,12 @@ fn parse_with_limits(xml: &str, limits: XmlLimits) -> Result<El, ImportError> {
                     "gt" => ">".into(),
                     "quot" => "\"".into(),
                     "apos" => "'".into(),
-                    n if n.starts_with("#x") => u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
-                    n if n.starts_with('#') => n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default(),
+                    n if n.starts_with("#x") && n[2..].bytes().all(|b| b.is_ascii_hexdigit()) => {
+                        u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
+                    n if n.starts_with('#') && !n.starts_with("#x") && n[1..].bytes().all(|b| b.is_ascii_digit()) => {
+                        n[1..].parse::<u32>().ok().and_then(char::from_u32).map(String::from).unwrap_or_default()
+                    }
                     _ => String::new(),
                 };
                 if let Some(p) = stack.last_mut() {
@@ -204,13 +218,14 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
         _ => None,
     };
     if let Some(u) = r.val("u") {
-        a.underline = Some(u != "none" && u != "0" && u != "false");
+        a.underline = Some(!matches!(u.as_str(), "none" | "0" | "false" | "off"));
     }
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
     }
-    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()) {
-        a.size = Some(sz / 2.0);
+    // Half-points; sizes outside the engine's 0.1–1296 pt range (or non-finite) are dropped.
+    if let Some(pt) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).map(|sz| sz / 2.0).filter(|pt| (0.1..=1296.0).contains(pt)) {
+        a.size = Some(pt);
     }
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
         a.font_family = Some(f.to_string());
@@ -232,7 +247,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
 fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     let mut a = ParaAttrs::default();
     let Some(p) = ppr else { return a };
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0);
+    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
     if let Some(sp) = p.child("spacing") {
         a.space_before = tw(sp.attr("before"));
         a.space_after = tw(sp.attr("after"));
@@ -335,7 +350,12 @@ impl Ctx {
         for e in p.els() {
             match e.name.as_str() {
                 "r" => self.run(e, st, allow_notes)?,
-                "hyperlink" | "smartTag" | "ins" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
+                "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes)?,
+                "sdt" => {
+                    if let Some(content) = e.child("sdtContent") {
+                        self.inline(content, st, allow_notes)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -365,9 +385,13 @@ impl Ctx {
                         // Word puts the reference mark in the note text: we generate the number.
                         self.budget.add_text(pagenor_doc::FOOTNOTE_REF.len_utf8())?;
                         let len = st.len();
-                        let id = st.insert_note(len, "", ParaFormat::default());
-                        if let Some(n) = st.note_mut(id) {
-                            n.text = ns;
+                        match st.insert_note(len, "", ParaFormat::default()) {
+                            Some(id) => {
+                                if let Some(n) = st.note_mut(id) {
+                                    n.text = ns;
+                                }
+                            }
+                            None => self.warnings.push("A footnote in the Word file could not be imported.".into()),
                         }
                     }
                     continue;
@@ -455,8 +479,11 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
     if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
-        let ids: HashMap<String, String> =
-            styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?.to_string(), s.val("name")?))).collect();
+        let ids: HashMap<String, String> = styles
+            .els()
+            .filter(|s| s.name == "style")
+            .filter_map(|s| Some((s.attr("styleId")?.to_string(), crate::capped_name(s.val("name")?))))
+            .collect();
         for s in styles.els().filter(|s| s.name == "style") {
             let (Some(id), Some(name)) = (s.attr("styleId"), s.val("name")) else { continue };
             let kind = s.attr("type").unwrap_or("paragraph");
@@ -464,7 +491,7 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
             let name = match (kind, name.as_str()) {
                 ("paragraph", "Normal") => BASIC_PARAGRAPH.to_string(),
                 ("character", "Default Paragraph Font") => NO_CHAR_STYLE.to_string(),
-                _ => name.clone(),
+                _ => crate::capped_name(name.clone()),
             };
             let based_on = s.val("basedOn").and_then(|b| ids.get(&b).cloned()).map(|b| if b == "Normal" { BASIC_PARAGRAPH.to_string() } else { b });
             let imp = ImportedStyle { name: name.clone(), based_on, para: para_attrs(s.child("pPr")), chars: run_attrs(s.child("rPr")) };
@@ -496,6 +523,8 @@ fn import_with_limits(bytes: &[u8], output_limits: OutputLimits) -> Result<Impor
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
     ctx.blocks(body, &mut st, true)?;
+    // A page or column break ends its paragraph.
+    st.end_paragraphs_at_breaks();
     // Only styles that are used, plus what they are based on.
     let used_p: HashSet<String> = st.paras.iter().map(|p| p.style.clone()).collect();
     let used_c: HashSet<String> = st.runs().map(|(_, f)| f.style.clone()).collect();
@@ -567,6 +596,24 @@ mod tests {
         assert_eq!(i.para_styles[0].chars.size, Some(16.0));
         assert_eq!(i.para_styles[0].para.space_before, Some(12.0));
         assert_eq!(i.char_styles[0].chars.font_style.as_deref(), Some("Italic"));
+    }
+
+    /// A page break ends its paragraph: the text after it is a paragraph of its own (same style).
+    #[test]
+    fn page_break_ends_its_paragraph() {
+        let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="H"><w:name w:val="Chapter"/></w:style></w:styles>"#);
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>End of one</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>
+              <w:p><w:pPr><w:pStyle w:val="H"/></w:pPr><w:r><w:br w:type="page"/><w:t>Two</w:t><w:br w:type="column"/></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, &styles, "")).unwrap().story;
+        st.check().unwrap();
+        let (pb, cb) = (pagenor_doc::PAGE_BREAK, pagenor_doc::COLUMN_BREAK);
+        assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
+        let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+        assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
     }
 
     #[test]
@@ -655,5 +702,109 @@ mod tests {
         let imported = import(&docx(&xml, "", "")).unwrap();
         assert_eq!(imported.story.text, "தமிழ் 😀 𠮷 & <");
         assert_eq!(imported.story.chars[0].format.over.font_family.as_deref(), Some("A&B"));
+    }
+    #[test]
+    fn tracked_changes_import_as_accepted_including_moves() {
+        // Regression (#256): text in a tracked move destination (`w:moveTo`) vanished on import.
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t xml:space="preserve">Kept text. </w:t></w:r>
+                <w:moveTo w:id="1" w:author="A"><w:r><w:t xml:space="preserve">MOVED HERE.</w:t></w:r>
+                  <w:del w:id="5" w:author="A"><w:r><w:delText>MOVED THEN DELETED</w:delText></w:r></w:del></w:moveTo>
+                <w:r><w:t xml:space="preserve"> Plain </w:t></w:r>
+                <w:ins w:id="2" w:author="A"><w:r><w:t>INSERTED</w:t></w:r></w:ins>
+                <w:del w:id="3" w:author="A"><w:r><w:delText>DELETED</w:delText></w:r></w:del></w:p>
+              <w:p><w:moveFrom w:id="4" w:author="A"><w:r><w:t>MOVED HERE.</w:t></w:r></w:moveFrom><w:r><w:t>End.</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let i = import(&docx(&document, "", "")).unwrap();
+        i.story.check().unwrap();
+        assert_eq!(i.story.text, "Kept text. MOVED HERE. Plain INSERTED\nEnd.");
+    }
+
+    /// `ST_OnOff` is a boolean plus the words `on` and `off`: an explicit `off` is off.
+    #[test]
+    fn off_valued_toggles_stay_off() {
+        let document = format!(
+            r#"<w:document {W}><w:body><w:p>
+              <w:r><w:rPr><w:b w:val="off"/><w:i w:val="0"/><w:strike w:val="off"/><w:u w:val="off"/><w:caps w:val="off"/></w:rPr><w:t>plain</w:t></w:r>
+              <w:r><w:rPr><w:b w:val="on"/></w:rPr><w:t>bold</w:t></w:r>
+            </w:p></w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let plain = st.format_after(st.text.find("plain").unwrap()).clone().over;
+        assert_eq!(plain.font_style.as_deref(), Some("Regular"), "an explicit `off` is not bold");
+        assert_eq!(plain.strikethrough, Some(false));
+        assert_eq!(plain.underline, Some(false));
+        assert_eq!(plain.capitalization, None, "no all-caps");
+        let on = st.format_after(st.text.find("bold").unwrap()).clone().over;
+        assert_eq!(on.font_style.as_deref(), Some("Bold"), "`on` is still on");
+    }
+    /// A content control inside a paragraph (`w:sdt`) keeps its text, also around a hyperlink.
+    #[test]
+    fn inline_content_control_text_is_kept() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t xml:space="preserve">Date: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="d"/></w:sdtPr><w:sdtContent><w:r><w:t>1 May 2026</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r></w:p>
+              <w:p><w:sdt><w:sdtContent><w:hyperlink><w:r><w:t>Link</w:t></w:r></w:hyperlink></w:sdtContent></w:sdt></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        assert_eq!(st.text, "Date: 1 May 2026.\nLink");
+    }
+
+    #[test]
+    fn inline_content_controls_preserve_telugu_and_joiners() {
+        let text = "ఉదయం తెలుగు ఫాంట్‌";
+        let document = format!(
+            r#"<w:document {W}><w:body><w:p><w:sdt><w:sdtPr><w:alias w:val="ignored metadata"/></w:sdtPr><w:sdtContent><w:r><w:t>{text}</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#
+        );
+        let imported = import(&docx(&document, "", "")).unwrap();
+        assert_eq!(imported.story.text, text);
+        imported.story.check().unwrap();
+    }
+    /// `str::parse::<f64>` accepts "NaN"/"inf"; sizes, spacing and indents must ignore them.
+    #[test]
+    fn non_finite_sizes_spacing_and_indents_are_ignored() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:pPr><w:spacing w:before="NaN" w:after="inf"/><w:ind w:left="-inf" w:right="NaN" w:firstLine="-inf"/></w:pPr>
+                <w:r><w:rPr><w:sz w:val="NaN"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="inf"/></w:rPr><w:t>b</w:t></w:r></w:p>
+              <w:p><w:pPr><w:ind w:hanging="inf"/></w:pPr><w:r><w:t>c</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        let fin = |v: Option<f64>| v.is_none_or(f64::is_finite);
+        for p in &st.paras {
+            let p = &p.para;
+            assert!(fin(p.space_before) && fin(p.space_after), "{p:?}");
+            assert!(fin(p.left_indent) && fin(p.right_indent) && fin(p.first_line_indent), "{p:?}");
+        }
+        for at in [0, 1] {
+            assert!(fin(st.format_after(at).over.size), "{:?}", st.format_after(at).over.size);
+        }
+    }
+
+    #[test]
+    fn out_of_range_sizes_are_dropped() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="99999999"/></w:rPr><w:t>b</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        for at in [0, 1] {
+            assert_eq!(st.format_after(at).over.size, None, "run {at}");
+        }
+    }
+
+    #[test]
+    fn cdata_text() {
+        let limits = XmlLimits { nodes: 2, ..XML_LIMITS };
+        assert!(parse_with_limits("<a><![CDATA[x]]><![CDATA[y]]></a>", limits).is_err());
+        let el = parse("<a><t><![CDATA[x < y]]></t></a>").unwrap();
+        assert_eq!(el.child("t").unwrap().text(), "x < y");
     }
 }

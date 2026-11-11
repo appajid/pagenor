@@ -45,6 +45,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.add_space(2.0);
             let current = app.session.tool_id();
             let mut chosen: Option<&'static str> = None;
+            let mut opened_now = false;
             let mut row_items = Vec::new();
             for (gi, g) in TOOL_GROUPS.iter().enumerate() {
                 if g.is_empty() {
@@ -89,18 +90,44 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         Stroke::NONE,
                                     ));
                                 }
+                                let mods = ui.input(|i| {
+                                    i.events
+                                        .iter()
+                                        .rev()
+                                        .find_map(|event| match event {
+                                            egui::Event::PointerButton {
+                                                pos,
+                                                button: egui::PointerButton::Primary,
+                                                pressed: false,
+                                                modifiers,
+                                                ..
+                                            } if resp.rect.contains(*pos) || i.pointer.press_origin().is_some_and(|p| resp.rect.contains(p)) => {
+                                                Some(*modifiers)
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or(i.modifiers)
+                                });
+                                let modified = mods.alt || mods.shift || mods.ctrl || mods.command;
+                                let previous_key = egui::Id::new(("tool-click-mod", gi));
+                                let previous_modified = ui.data(|d| d.get_temp::<bool>(previous_key)).unwrap_or(false);
                                 if resp.clicked() {
-                                    chosen = Some(shown.id);
+                                    chosen = Some(if mods.alt && g.len() > 1 {
+                                        let next = (g.iter().position(|tl| tl.id == current).unwrap_or(0) + 1) % g.len();
+                                        g.get(next).map_or(shown.id, |tl| tl.id)
+                                    } else {
+                                        shown.id
+                                    });
+                                    ui.data_mut(|d| d.insert_temp(previous_key, modified));
                                 }
+                                let plain_double = resp.double_clicked() && !modified && !previous_modified;
                                 // Double-click a polygon tool: Polygon Settings.
-                                if resp.double_clicked() && matches!(shown.id, "polygon" | "polygonFrame") {
+                                if plain_double && matches!(shown.id, "polygon" | "polygonFrame") {
                                     let cur = app.session.execute("tool.polygonSettings", &json!({})).unwrap_or_default();
                                     app.ui.dialog = Some(crate::dialogs::Dialog::new("polygonSettings", cur));
                                 }
                                 // Double-click a transform tool: its Object › Transform dialog.
-                                if resp.double_clicked()
-                                    && let Some(cmd) = transform_dialog_of(shown.id)
-                                {
+                                if plain_double && let Some(cmd) = transform_dialog_of(shown.id) {
                                     crate::menus::activate(app, cmd, &Value::Null);
                                 }
                                 if g.len() > 1
@@ -109,6 +136,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         || (resp.is_pointer_button_down_on()
                                             && ui.input(|i| i.pointer.press_start_time().is_some_and(|s| i.time - s > 0.35))))
                                 {
+                                    opened_now |= app.ui.flyout != Some(gi);
                                     app.ui.flyout = Some(gi);
                                 }
                                 if app.ui.flyout == Some(gi) {
@@ -148,6 +176,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                                 t.text_dim,
                                                             );
                                                         }
+                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl.label));
                                                         if row.clicked() {
                                                             chosen = Some(tl.id);
                                                         }
@@ -169,8 +198,18 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             if let Some(id) = chosen {
                 app.select_tool(id);
             }
-            if app.ui.flyout.is_some() && ui.input(|i| i.pointer.any_click()) && chosen.is_none() && !ui.ctx().is_pointer_over_egui() {
-                app.ui.flyout = None;
+            // As InDesign's, an open flyout closes on Esc and on a click anywhere outside it (a
+            // panel, a swatch, the canvas), not only on the canvas.
+            if let Some(gi) = app.ui.flyout
+                && chosen.is_none()
+                && !opened_now
+            {
+                let area = ui.ctx().memory(|m| m.area_rect(egui::Id::new(("flyout", gi))));
+                let outside = ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| area.is_none_or(|a| !a.contains(p))));
+                let esc = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                if outside || esc {
+                    app.ui.flyout = None;
+                }
             }
             ui.add_space(8.0);
             fill_stroke_proxy(app, ui, width);
@@ -201,7 +240,10 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
     let (fill_sw, stroke_sw) = match &target {
         Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
-        None => ("[None]".to_string(), "[Black]".to_string()),
+        // Nothing selected: the colours new shapes are drawn with.
+        None => doc
+            .as_ref()
+            .map_or(("[None]".to_string(), "[Black]".to_string()), |d| (d.settings.new_object.fill.clone(), d.settings.new_object.stroke.clone())),
     };
     let x0 = ui.max_rect().min.x + (width - 30.0) / 2.0;
     // Row 1: default colours + swap.
@@ -273,16 +315,34 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
         crate::rtl::label(ui, fill_tip);
     });
     fresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fill_tip));
+    let stroke_tip = crate::i18n::tr(&app.ui.language, "Stroke (X)");
     let sresp = ui.interact(stroke_r.translate(vec2(0.0, 0.0)), ui.id().with("proxy_stroke"), Sense::click()).on_hover_ui(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Stroke (X)"));
+        crate::rtl::label(ui, stroke_tip);
     });
+    sresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, stroke_tip));
     if fresp.clicked() || sresp.clicked() {
         let front =
             if stroke_front { !fresp.clicked() } else { sresp.clicked() && !fill_r.contains(sresp.interact_pointer_pos().unwrap_or_default()) };
         ui.data_mut(|d| d.insert_temp(stroke_front_id, front));
     }
+    // A double-click opens the Color Picker for that box (as InDesign's), with the selection's
+    // colour: the selected text's when text is selected.
     if fresp.double_clicked() || sresp.double_clicked() {
-        let _ = app.run("window.panel", json!({"panel": "swatches"}));
+        let on_fill = fresp.double_clicked() && (!stroke_front || !sresp.double_clicked());
+        let stroke = !on_fill;
+        let text = if text_mode { crate::panels::text_attrs(app) } else { None };
+        let current = match text {
+            Some(a) => a["chars"][if stroke { "stroke" } else { "fill" }].as_str().unwrap_or("[None]").to_string(),
+            None if stroke => stroke_sw.clone(),
+            None => fill_sw.clone(),
+        };
+        let rgb = doc.as_ref().and_then(|d| d.resolve_color(&current, 1.0)).map_or([0.0; 3], |c| c.to_rgb());
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let hex = format!("#{:02x}{:02x}{:02x}", byte(rgb[0]), byte(rgb[1]), byte(rgb[2]));
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            "colorPicker",
+            json!({"target": if stroke { "stroke" } else { "fill" }, "hex": hex, "text": text_mode}),
+        ));
     }
     ui.add_space(3.0);
     // Formatting affects container / text.
@@ -332,8 +392,11 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32) {
     separator(ui, &t);
     // Utility (frame options).
     ui.vertical_centered(|ui| {
-        if tool_button(ui, "frame-options", false, crate::i18n::tr(&app.ui.language, "Text Frame Options")).clicked() {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
+        let options = tool_button(ui, "frame-options", false, crate::i18n::tr(&app.ui.language, "Text Frame Options"));
+        #[cfg(test)]
+        ui.data_mut(|data| data.insert_temp(egui::Id::new("r6_tfo_toolbar_button"), options.rect));
+        if options.clicked() {
+            crate::dialogs::open_text_frame_options(app);
         }
     });
     separator(ui, &t);
@@ -438,6 +501,39 @@ mod tests {
         h.get_by_label(label).rect()
     }
 
+    /// As InDesign's: a tool group's flyout closes on Esc and on a click outside it (the fill
+    /// swatch, a panel), not only on the canvas.
+    #[test]
+    fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
+        use egui::{Event, Modifiers, PointerButton};
+        use egui_kittest::kittest::Queryable;
+        let app = crate::DesignApp::new(pagenor_engine::Session::new(), crate::Services::default());
+        let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+        let open = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
+            let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
+            h.input_mut().events.push(Event::PointerMoved(at));
+            for pressed in [true, false] {
+                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            }
+            h.run_steps(3);
+            assert!(h.state().app.ui.flyout.is_some(), "a right-click opens the flyout");
+            let _ = h.get_by_label("Ellipse Frame Tool");
+        };
+        open(&mut h);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().app.ui.flyout.is_none(), "Esc closes it");
+        // A click on a panel closes it.
+        open(&mut h);
+        crate::test_window::click_at(&mut h, egui::pos2(1300.0, 700.0));
+        assert!(h.state().app.ui.flyout.is_none(), "a click elsewhere closes it");
+        // Choosing a tool in it closes it and selects the tool.
+        open(&mut h);
+        h.get_by_label("Ellipse Frame Tool").click();
+        h.run_steps(3);
+        assert_eq!((h.state().app.session.tool_id(), h.state().app.ui.flyout), ("ellipseFrame", None));
+    }
+
     #[test]
     fn a_short_window_reaches_every_tool() {
         for double in [false, true] {
@@ -470,6 +566,53 @@ mod tests {
         h.run_steps(4);
         assert_eq!(test_window::panel_rect(&h, "tools").width(), column_width(1.0));
         assert!(!h.state().app.ui.tools_double_column);
+    }
+
+    #[test]
+    fn double_clicking_fill_and_stroke_preserves_frame_and_text_targets() {
+        for (target, text) in [("fill", false), ("stroke", false), ("fill", true), ("stroke", true)] {
+            let mut app = app(false);
+            app.run("file.new", serde_json::json!({})).unwrap();
+            let id =
+                app.run("frame.create", serde_json::json!({"rect": [72, 72, 200, 200], "content": "text", "text": "Colour target"})).unwrap()["id"]
+                    .clone();
+            app.run("selection.set", serde_json::json!({"ids": [id]})).unwrap();
+            app.run("object.color", serde_json::json!({"color": "#456daf", "ids": [id], "target": target, "text": text})).unwrap();
+            app.ui.formatting_affects_text = text;
+            let before = app.session.active().unwrap().doc.clone();
+            // Frames 1 ms apart, so two clicks make a double-click.
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+                |ui, app: &mut crate::DesignApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+            h.run_steps(6);
+            let at = h.get_by_label(if target == "fill" { FILL } else { "Stroke (X)" }).rect().center();
+            h.hover_at(at);
+            h.step();
+            for pressed in [true, false, true, false] {
+                h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+                h.step();
+            }
+            h.run_steps(3);
+            let d = h.state().ui.dialog.clone().expect("the Color Picker opened");
+            assert_eq!(d.id, "colorPicker");
+            assert_eq!((d.fields["target"].as_str(), d.fields["hex"].as_str()), (Some(target), Some("#456daf")), "{:?}", d.fields);
+            assert_eq!(d.fields["text"], text);
+            h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("hex".into(), serde_json::json!("#125678"));
+            crate::dialogs::confirm(h.state_mut()).unwrap();
+            let after = &h.state().session.active().unwrap().doc;
+            assert_ne!(after, &before);
+            if text {
+                assert_eq!(after.spreads[0].items[0].fill, before.spreads[0].items[0].fill);
+                assert_eq!(after.spreads[0].items[0].stroke, before.spreads[0].items[0].stroke);
+            }
+            h.state_mut().run("edit.undo", serde_json::json!({})).unwrap();
+            assert_eq!(h.state().session.active().unwrap().doc, before);
+        }
     }
 
     #[test]

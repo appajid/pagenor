@@ -18,10 +18,17 @@ feature group. Use a prerelease suffix such as `0.5.0-rc.1` for candidates; remo
 it only when the intended release validation is complete. Do not increment for
 each PR or claim a release merely because the local source version changed.
 
-The local 2026-10-10 checkpoint is 0.2.1 → 0.3.0 for accumulated application
-features, release auditing and distribution additions. The owner has requested
-that the version stay at 0.3.0 during this work; do not advance it until that
-instruction changes. Pagenor owns its version sequence independently of upstream.
+The 2026-10-10 checkpoint advanced 0.2.1 → 0.3.0. On 2026-10-11 the owner
+lifted the version hold and authorised relevant minor updates. The local version
+advances to **0.4.0** for accumulated Welcome/recent-document, keyboard/input,
+new-document, chapter/section/tab-stop and editor improvements, plus the branded
+macOS installer. This is a local development checkpoint, not a published stable
+release. Pagenor owns its version sequence independently of upstream.
+
+The next completed selected upstream group advances **0.4.0 → 0.5.0** on
+2026-10-11: 47 proposals plus two prerequisite changes, full local quality gates
+and an inspected Mac build. This is a local development checkpoint; native
+Windows/Linux validation and publication remain separate milestone work.
 
 The native document format version is separate. Changing the application version
 does not migrate or rename `.pgnr` documents. File-format changes require their
@@ -35,3 +42,45 @@ platform/package validation and signing/notarization status accurately. A stable
 cross-platform release requires the actual native matrix/package validation at
 the milestone, following PHASE_STATUS.md. Never reuse a published version for
 different artifacts.
+
+The next maintenance checkpoint is **0.5.1**, for canvas/table/panel usability and
+a larger status bar. This continues the 0.5 editor group; the native document
+format remains 3. Local verification is recorded in EDITOR_USABILITY.md.
+
+The 2026-10-12 selected UI/publishing group advances to **0.6.0**. At the
+owner's request, the native Windows/Linux package matrix and quality gates were
+completed and a matching universal Mac build was published as a GitHub
+development prerelease. This does not add a Cargo prerelease suffix or claim a
+stable signed release. See [distribution evidence](DESKTOP_RELEASE_060.md).
+Further source checks preserve that release's artifacts; a later binary update
+requires a new version.
+
+The completed 26-proposal/six-increment batch advances **0.6.0 → 0.7.0** on
+2026-10-12. It groups editor/UI, graphics, fonts, import/composition, reflow, blank-EOF
+typing, native printing and user guides. The native document capability advances
+separately to format 5. Published 0.6.0 artifacts remain immutable. The 0.7.0
+desktop preview is published after native Mac/Windows/Linux and Rust 1.95 gates,
+package/installer checks and all 20 payload checksums pass. Further source-only
+documentation records preserve these immutable binaries.
+
+The 21 October 2026 local UI/import milestone advances **0.9.0 → 0.10.0**
+(P11.20). This is a minor application version for the grouped editor controls
+and import reliability changes. Native capability stays **6**; 0.9.0 readers
+remain compatible with the unchanged model. Published previews stay immutable.
+The new build remains local; native Windows/Linux package validation and
+publication are separate pending steps. See [the adoption log](UPSTREAM_ADOPTION_0100.md).
+
+The 2026-10-22 editor/publishing group advances **0.10.0 → 0.11.0** (P11.21).
+Appearance/tool preferences, accessible effects controls, multi-selection fixes,
+typographic rendering, export diagnostics and interchange validation form the
+local feature milestone. Native document capability stays 6. No external pins
+change. The published desktop preview remains 0.7.0; native Windows/Linux
+validation and publication remain separate. See UPSTREAM_ADOPTION_0110.md.
+
+The 25 October 2026 queued editor/master workflow group advances **0.11.0 →
+0.12.0** (P11.22): inline object renaming, page/master navigation, Insert Pages,
+master deletion and linked paragraph controls. Native capability remains 6 and
+external dependency pins do not change. The local Mac bundle is separate from
+the owner’s running app. Published 0.7.0 artifacts remain immutable; native
+Windows/Linux package validation and publication remain pending. See
+[the adoption log](UPSTREAM_ADOPTION_0120.md).

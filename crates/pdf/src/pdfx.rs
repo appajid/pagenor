@@ -462,7 +462,7 @@ mod tests {
         let asset = AssetId(d.alloc());
         let mime = pagenor_images::mime(&data).into();
         let pixels = pagenor_images::pixel_size(&data);
-        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, link: None, data: data.into(), pixels, page: 0 }));
+        d.assets.insert(asset, Arc::new(Asset { id: asset, name: name.into(), mime, data: data.into(), pixels, ..Default::default() }));
         let lid = d.default_layer();
         let id = ItemId(d.alloc());
         let r = Rect::new(at.0, at.1, at.0 + 100.0, at.1 + 50.0);
@@ -471,9 +471,11 @@ mod tests {
             asset,
             size,
             xf: Affine::translate(at) * Affine::scale(100.0 / size.0),
+            clip: None,
             auto_fit: Fitting::FillProportionally,
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
         });
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
     }

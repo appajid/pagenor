@@ -232,10 +232,9 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
             id: asset,
             name: "scan.tif".into(),
             mime,
-            link: None,
             data: data.into(),
             pixels: Some(px),
-            page: 0,
+            ..Default::default()
         }),
     );
     let lid = d.default_layer();
@@ -245,9 +244,11 @@ fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
         asset,
         size: (px.0 as f64, px.1 as f64),
         xf: pagenor_geom::Affine::translate((72.0, 72.0)) * pagenor_geom::Affine::scale(50.0),
+        clip: None,
         auto_fit: pagenor_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
     });
     d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
 }
@@ -425,6 +426,62 @@ fn missing_glyphs_print_as_boxes() {
 }
 
 #[test]
+fn column_rules_are_drawn() {
+    let rules = |on: bool| {
+        let mut d = doc_with_text("Column text");
+        let fid = d.stories.values().next().unwrap().frames[0];
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.columns = 3;
+        o.gutter = 12.0;
+        o.inset = [0.0; 4];
+        o.column_rule = on;
+        o.column_rule_weight = 2.0;
+        let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.into_iter().filter(|r| (r.width() - 2.0).abs() < 0.01 && (r.height() - 264.0).abs() < 0.01).map(|r| r.center().x).collect::<Vec<_>>()
+    };
+    // 540 pt wide in three columns with 12 pt gutters: columns of 172 pt from x 36.
+    let xs = rules(true);
+    assert_eq!(xs.len(), 2, "{xs:?}");
+    assert!((xs[0] - 214.0).abs() < 0.01 && (xs[1] - 398.0).abs() < 0.01, "{xs:?}");
+    assert!(rules(false).is_empty());
+}
+
+/// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
+#[test]
+fn clipping_path_clips_the_image() {
+    let png = |d: &mut Document| {
+        let mut b = Vec::new();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        place(d, b, (4, 4));
+    };
+    let clips = |s: &str| s.lines().filter(|l| matches!(l.trim(), "W" | "W*")).count();
+    let mut d = doc_with_text("x");
+    png(&mut d);
+    let plain = uncompressed(&d, PdfOptions::default());
+    let id = d.spreads[0].items.iter().find(|i| i.graphic().is_some()).unwrap().id;
+    let triangle = pagenor_geom::PathData::single(pagenor_geom::path::SubPath::polyline(
+        &[pagenor_geom::Point::new(0.0, 4.0), pagenor_geom::Point::new(2.0, 0.0), pagenor_geom::Point::new(4.0, 4.0)],
+        true,
+    ));
+    let mut clip = pagenor_doc::ClippingPath::new(pagenor_doc::ClippingKind::DetectEdges, triangle);
+    let set = |d: &mut Document, c: &pagenor_doc::ClippingPath| {
+        if let Some(pagenor_doc::Content::Graphic(g)) = d.item_mut(id).map(|it| &mut it.content) {
+            g.clip = Some(std::sync::Arc::new(c.clone()));
+        }
+    };
+    set(&mut d, &clip);
+    let clipped = uncompressed(&d, PdfOptions::default());
+    assert_eq!(clips(&clipped), clips(&plain) + 1, "{clipped}");
+    // The triangle's apex: graphic (2, 0) → page (172, 72) → PDF y = page height − 72.
+    let apex_y = d.spreads[0].pages[0].height - 72.0;
+    assert!(clipped.contains(&format!("172 {apex_y} l")), "{clipped}");
+    clip.invert = true;
+    set(&mut d, &clip);
+    assert!(uncompressed(&d, PdfOptions::default()).lines().any(|l| l.trim() == "W*"), "an inverted clip is even-odd");
+}
+#[test]
 fn exports_embedded_text_from_footnotes() {
     use pagenor_doc::{AnchorPosition, AnchoredObject};
     use std::sync::Arc;
@@ -451,4 +508,52 @@ fn fills_open_contours_without_changing_strokes() {
     d.item_mut(id).unwrap().path.subpaths[0].closed = false;
     let (_, paths) = drawn(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
     assert!(paths.iter().any(|r| (r.width() - 22.0).abs() < 0.01 && (r.height() - 17.0).abs() < 0.01), "{paths:?}");
+}
+
+/// A placed image whose linked file wasn't found has no data: the warning says it is missing,
+/// not that it could not be decoded.
+#[test]
+fn a_missing_linked_image_is_reported_as_missing() {
+    let mut d = doc_with_text("still here");
+    place(&mut d, Vec::new(), (64, 64));
+    if let Some(a) = d.assets.values_mut().next() {
+        std::sync::Arc::make_mut(a).link = Some("/gone/curtains.jpeg".into());
+    }
+    let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("is missing (/gone/curtains.jpeg) and was skipped")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("could not be decoded")), "{:?}", r.warnings);
+}
+
+#[test]
+fn small_caps_and_small_cap_figures_extract_as_typed() {
+    // Source Sans 3 substitutes letters and figures under `smcp` / `c2sc` (`one` → `one.s`),
+    // in typed text, in a page number and in a list label alike (each with its own figures, so
+    // one's mapping can't stand in for another's).
+    use pagenor_doc::{Capitalization, ListType, story::PAGE_NUMBER};
+    for caps in [Capitalization::SmallCaps, Capitalization::OpenTypeAllSmallCaps] {
+        let text = format!("Abc 234 x{PAGE_NUMBER}\nItem");
+        let mut d = doc_with_text(&text);
+        let sid = *d.stories.keys().next().unwrap();
+        let st = d.story_mut(sid).unwrap();
+        st.format_paras(0..text.len(), |f| {
+            f.chars.font_family = Some("Source Sans 3".into());
+            f.chars.capitalization = Some(caps);
+        });
+        st.format_paras(text.len() - 1..text.len(), |f| {
+            f.para.list_type = Some(ListType::Numbers);
+            f.para.start_at = Some(Some(5));
+        });
+        let got = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+        assert!(!got.contains('\u{FFFD}'), "{caps:?}: {got:?}");
+        assert_eq!(got.split_whitespace().collect::<Vec<_>>(), ["Abc", "234", "x15.Item"], "{caps:?}: {got:?}");
+    }
+    // All small caps draws `A` and `a` with one glyph, which one ToUnicode entry can't cover: the
+    // second spelling goes out as ActualText (which this extractor doesn't read).
+    let mut d = doc_with_text("Aa");
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..2, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.capitalization = Some(Capitalization::OpenTypeAllSmallCaps);
+    });
+    assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
 }
