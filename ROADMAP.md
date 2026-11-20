@@ -1,11 +1,20 @@
 # Pagenor roadmap
 
-P11.30: **0.15.0 installer release preparation**. Preserve every 0.14.2 Windows
-installer/updater/PageMaker and performance change. Add a required universal
-Mac PageMaker helper to the app and CLI ZIP, with source/notices and inside-out
-signing. Standard GitHub Mac/Windows/Linux build jobs and packaged-helper checks
-gate publication. Local helper recovers three pages on both ARM64 and Intel.
-All seven local quality gates pass (3,212 tests, seven existing ignores; 20 WASM packages), as do 19 packaging checks and workflow lint. The owner sample retains 28 pages, 169 frames and 110 stories without changing its source. GitHub installer checks will gate publication.
+P11.30: published **0.15.0 desktop development preview** on 20 November 2026.
+All 0.14.2 Windows installer/updater/PageMaker and performance changes are retained.
+The universal Mac app and CLI ZIP now also bundle the PageMaker converter and its
+MPL source/notices. All seven hosted quality gates pass on Mac (3,212 tests),
+Windows (3,198) and Linux (3,209), with zero failures. All 22 local packaging
+contracts pass. Windows x64/x86/ARM64 pass fresh MSI/portable PageMaker and actual
+0.14.1 upgrade checks, including Finish UI, shortcuts, settings and saved documents.
+Finished Mac DMG/install-copy signatures and packaged converter checks pass; the
+published DMG's CLI reopens the owner's 28-page sample without changing the original.
+All twenty payload digests match the published checksum manifest (21 assets).
+Binary tag: `beb93a754ac4`; verification/publication source: `d6466dc163aa`.
+Initial Mac check syntax and Windows verification checkout-order failures are
+recorded and corrected. Packages remain unsigned/ad-hoc signed; interactive
+Windows/Linux UI and Windows 10 performance retests remain pending. The current
+Mac session is unchanged. [Release and evidence](docs/releases/0.15.0.md#completed-distribution).
 
 P11.29: local **0.15.0** adapts thirty compatible upstream proposal scopes
 from an open/closed review through #3048: editor/search and table fixes, IDML style

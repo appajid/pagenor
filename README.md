@@ -15,16 +15,19 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current local milestone: **0.15.0** — thirty selected upstream scopes improve
+Current development milestone: **0.15.0** — thirty selected upstream scopes improve
 editing, table rules, IDML styles, dialogs, image paste and Indic word breaking.
 All seven gates pass: 3,212 tests, zero failures, 7 existing ignores and
 twenty WASM packages; Windows/Linux shared-library checks pass.
 [Adaptation notes, limitations and remaining queue](docs/upstream-adoption-20261120.md).
 
-Published desktop preview: [0.14.1](https://github.com/appajid/pagenor/releases/tag/v0.14.1).
-The separately verified [0.14.2 Windows update candidates](docs/releases/0.14.2.md)
-remain unchanged. The 0.15.0 installer milestone is now being prepared on GitHub; Windows and Mac
-packages carry the PageMaker converter. Native packaged checks gate publication.
+Published desktop preview: [0.15.0](https://github.com/appajid/pagenor/releases/tag/v0.15.0).
+Mac and Windows include the experimental PageMaker converter. All three platforms'
+source quality gates pass; Windows fresh installs, portable import and 0.14.1
+upgrades pass on x64/x86/ARM64. Twenty package payloads and a checksum manifest
+are published. Packages remain unsigned/ad-hoc signed; original legacy fonts are
+required. [Release verification and limits](docs/releases/0.15.0.md#completed-distribution).
+The earlier [0.14.2 Windows update candidates](docs/releases/0.14.2.md) remain unchanged.
 
 ## The sample magazine
 

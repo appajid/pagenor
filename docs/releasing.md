@@ -7,8 +7,8 @@ desktop development preview; [distribution notes](pagenor/DESKTOP_RELEASE_060.md
 record the native evidence and signing/interactive limits. Keep routine work
 local and publish versioned artifacts at milestones.
 
-Latest verified desktop preview: [0.14.1](releases/0.14.1.md#completed-distribution),
-with matching Mac/Windows/Linux packages and source integrated into main.
+Latest verified desktop preview: [0.15.0](releases/0.15.0.md#completed-distribution),
+with matching Mac/Windows/Linux packages and a pinned binary-source tag.
 
 ## Local prerequisites and commands
 
@@ -94,7 +94,7 @@ hosts before describing them as working installers or publishing them.
 
 The focused desktop-release.yml runs on build/pagenor-*-desktop branches.
 It builds an ad-hoc signed universal Mac DMG/CLI ZIP, unsigned Windows x64/x86/ARM64 and native Linux x86_64/ARM64 packages,
-runs the full Windows/Linux quality gates, verifies MSI install/associations/
+runs the full Mac/Windows/Linux quality gates, verifies MSI install/associations/
 icons/export/uninstall and Linux/Flatpak execution, then publishes a development
 prerelease only after all checks pass. Actions and the optional font input are
 pinned. Publishing alone has contents-write permission; signing secrets and
@@ -118,3 +118,15 @@ mounted volume is named Pagenor to resolve the background alias; output files
 retain their version/architecture. Generation tools are optional development
 inputs, not release-job dependencies. See that directory’s README for portable
 regeneration and attribution. Signing/notarization remains the existing flow.
+
+If a verification-only workflow defect blocks otherwise completed packages,
+`windows-maintenance.yml` can reuse their run with `package_run` and
+`artifact_prefix=release-windows`. Checkout precedes artifact downloads. The
+optional `publish=true` path requires all three native Windows verification jobs,
+all twelve original desktop source/build jobs, an ancestor binary commit and
+application-source identity (only workflow, packaging-test and release-note
+changes are allowed). It requires exactly twenty nonempty versioned payloads,
+generates checksums and tags the original binary commit. Default runs verify
+only; published versions are never replaced. Link both the original build and
+final verification run in the completion record, rather than describing a run
+with a corrected harness failure as entirely successful.
