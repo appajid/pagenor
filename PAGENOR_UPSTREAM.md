@@ -1160,3 +1160,14 @@ Completion: all seven local gates pass (3,212 tests, 7 existing ignores,
 20 WASM packages), as do 19 packaging checks and both eight-library platform
 compile checks. Four offscreen views are inspected; native Windows/Linux runtime
 validation remains pending. No current application session is closed.
+
+## P11.30 — 0.15.0 Mac and Windows converter packaging
+
+The owner requests GitHub installers and confirms the PageMaker converter must
+ship in both Windows and Mac versions. Retain the 0.14.2 Windows MSI/portable
+helper, upgrade identity, Finish screen, desktop shortcut, shared undo history
+and background preflight. Extend only release packaging: build the existing
+MPL byte-v2 helper for both Mac architectures and include it beside both Mac
+executables, with corresponding source/notices. No converter parser, private
+publication or font is added. Mac builds use standard hosted runners and verify
+the finished DMG and CLI package before publication.

@@ -55,6 +55,60 @@ jobs:
           } >>"$GITHUB_OUTPUT"
           echo "### Pagenor v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
     timeout-minutes: 90
+  macos:
+    name: macOS universal
+    if: needs.version.outputs.build == 'true'
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Check out pinned release fonts
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: 1.99.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: release-macos-universal
+          cache-on-failure: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Build universal app and required PageMaker helper
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: packaging/macos/package.sh --arch universal
+      - name: Verify finished DMG and extracted CLI PageMaker support
+        run: |
+          set -euo pipefail
+          python3 packaging/tests/pagemaker_fixture.py "$RUNNER_TEMP/three-pages.p65"
+          mount="$RUNNER_TEMP/pagenor-dmg"
+          mkdir -p "$mount" "$RUNNER_TEMP/pagenor-cli"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "dist/release/pagenor-$PAGENOR_VERSION-macos-universal.dmg"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          python3 packaging/macos/verify-pagemaker.py --arch universal --fixture "$RUNNER_TEMP/three-pages.p65" \
+            --directory "$mount/Pagenor.app/Contents/MacOS" --legal "$mount/Pagenor.app/Contents/Resources/Legal/licenses/pagemaker"
+          ditto -x -k "dist/release/pagenor-cli-$PAGENOR_VERSION-macos-universal.zip" "$RUNNER_TEMP/pagenor-cli"
+          cli="$RUNNER_TEMP/pagenor-cli/pagenor-cli-$PAGENOR_VERSION-macos-universal"
+          python3 packaging/macos/verify-pagemaker.py --arch universal --fixture "$RUNNER_TEMP/three-pages.p65" \
+            --directory "$cli" --legal "$cli/licenses/pagemaker"
+          "$cli/pagenor-cli" run --sample --export "$RUNNER_TEMP/mac-smoke.pdf"
+          test -s "$RUNNER_TEMP/mac-smoke.pdf"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
   windows:
     name: Windows ${{ matrix.arch }}
     if: needs.version.outputs.build == 'true'
@@ -225,6 +279,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
+          - macos-15
           - windows-latest
           - ubuntu-22.04
     steps:
@@ -331,6 +386,7 @@ jobs:
     needs:
       - version
       - quality
+      - macos
       - windows
       - linux
       - flatpak

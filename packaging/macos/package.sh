@@ -54,6 +54,17 @@ fi
 
 echo "==> Pagenor $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $NOTARIZE"
 
+# Required byte-preserving PageMaker process, compiled for the same slices as the app.
+HELPER_STAGE="$CARGO_TARGET_DIR/pagemaker-stage-$ARCH"
+python3 "$ROOT/packaging/pagemaker/build.py" --macos-arch "$ARCH" \
+  --work "$CARGO_TARGET_DIR/pagemaker-macos-$ARCH" --output "$HELPER_STAGE"
+HELPER="$HELPER_STAGE/helpers/pmd2raw-byte-v2"
+case "$ARCH" in
+  universal) lipo -verify_arch arm64 x86_64 "$HELPER" ;;
+  aarch64) lipo -verify_arch arm64 "$HELPER" ;;
+  x86_64) lipo -verify_arch x86_64 "$HELPER" ;;
+esac
+
 # ---- build -------------------------------------------------------------------------------------
 if [ "$SKIP_BUILD" = 0 ]; then
   args=()
@@ -99,7 +110,8 @@ notarize() {
 
 # ---- Pagenor.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS/helpers" "$APP/Contents/Resources"
+cp "$HELPER" "$APP/Contents/MacOS/helpers/pmd2raw-byte-v2"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/pagenor" "$APP/Contents/MacOS/Pagenor"
 cp "$WORK/bin/pagenor-cli" "$APP/Contents/MacOS/pagenor-cli"
@@ -110,6 +122,8 @@ copy_font_licences "$APP/Contents/Resources"
 # The GUI app must carry software/provenance/owner notices independently of the CLI ZIP.
 mkdir -p "$APP/Contents/Resources/Legal"
 copy_docs "$APP/Contents/Resources/Legal"
+mkdir -p "$APP/Contents/Resources/Legal/licenses"
+cp -R "$HELPER_STAGE/licenses/pagemaker" "$APP/Contents/Resources/Legal/licenses/"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${PAGENOR_BUILD_SHA:-unknown}/g" \
   "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"
@@ -121,6 +135,7 @@ xattr -cr "$APP"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
 # Both executables must be signed before signing their enclosing bundle.
+sign --options runtime "$APP/Contents/MacOS/helpers/pmd2raw-byte-v2"
 sign --options runtime "$APP/Contents/MacOS/pagenor-cli"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/Pagenor"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
@@ -218,6 +233,10 @@ CLI_DIR="$WORK/pagenor-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/pagenor-cli" "$CLI_DIR/"
 copy_docs "$CLI_DIR"
+cp -R "$HELPER_STAGE/helpers" "$CLI_DIR/"
+mkdir -p "$CLI_DIR/licenses"
+cp -R "$HELPER_STAGE/licenses/pagemaker" "$CLI_DIR/licenses/"
+sign --options runtime "$CLI_DIR/helpers/pmd2raw-byte-v2"
 sign --options runtime "$CLI_DIR/pagenor-cli"
 codesign --verify --strict --verbose=2 "$CLI_DIR/pagenor-cli"
 rm -f "$CLI_ZIP"

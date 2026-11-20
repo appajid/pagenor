@@ -23,8 +23,8 @@ twenty WASM packages; Windows/Linux shared-library checks pass.
 
 Published desktop preview: [0.14.1](https://github.com/appajid/pagenor/releases/tag/v0.14.1).
 The separately verified [0.14.2 Windows update candidates](docs/releases/0.14.2.md)
-remain unchanged. The current task updates local source without replacing the
-installed app or publishing a new release.
+remain unchanged. The 0.15.0 installer milestone is now being prepared on GitHub; Windows and Mac
+packages carry the PageMaker converter. Native packaged checks gate publication.
 
 ## The sample magazine
 

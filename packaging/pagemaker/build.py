@@ -90,12 +90,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--arch', choices=['x64', 'x86', 'arm64'])
+    architectures = parser.add_mutually_exclusive_group()
+    architectures.add_argument('--arch', choices=['x64', 'x86', 'arm64'])
+    architectures.add_argument('--macos-arch', choices=['universal', 'aarch64', 'x86_64'])
     parser.add_argument('--boost-include', type=Path)
     args = parser.parse_args()
     if sys.version_info < (3, 12):
         parser.error('building the helper requires Python 3.12 or newer (not needed to run Pagenor)')
+    if args.macos_arch and sys.platform != 'darwin':
+        parser.error('--macos-arch requires a macOS build host')
     generator_args = windows_cmake_args(args.arch) if args.arch else []
+    if args.macos_arch:
+        slices = {'universal': 'arm64;x86_64', 'aarch64': 'arm64', 'x86_64': 'x86_64'}
+        generator_args += [f'-DCMAKE_OSX_ARCHITECTURES={slices[args.macos_arch]}', '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0']
     root = Path(__file__).resolve().parent
     work, output = args.work.resolve(), args.output.resolve()
     cache, sources = work / 'downloads', work / 'sources'

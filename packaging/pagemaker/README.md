@@ -14,6 +14,13 @@ selected target architecture) are needed on the build machine only:
     python packaging/pagemaker/build.py --arch x64 --work target/pagemaker-x64 --output target/helper-x64
 
 Use x86 or arm64 for those Windows packages; omit --arch for a native Unix build.
+For Mac release bundles use --macos-arch universal (both arm64 and x86_64),
+aarch64 or x86_64. A Mac with Xcode command-line tools and CMake builds these;
+no Visual Studio is involved. The app carries the helper inside
+Contents/MacOS/helpers, with corresponding source/notices under
+Contents/Resources/Legal/licenses/pagemaker. The standalone CLI ZIP also carries
+helpers and licenses/pagemaker. All helper libraries are linked statically; only
+macOS system libraries are permitted by the packaged-helper verification.
 The helper and C/C++ runtime are statically linked on Windows. Users need neither
 a development environment, Homebrew/MSYS2, nor a separate helper installation.
 Packaging must fail if it cannot build this required component.

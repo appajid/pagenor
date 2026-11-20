@@ -168,9 +168,9 @@ in docs/upstream-adoption-20261031.md; applicable upstream notices remain above.
 The complete licence texts for these additions are in docs/licenses/
 (craft-dialogs-MIT.txt, craft-dialogs-APACHE.txt and fancy-regex-MIT.txt).
 
-Windows PageMaker compatibility helper
+Windows and macOS PageMaker compatibility helper
 
-Windows installers and portable packages include pmd2raw-byte-v2 as a separate
+Windows MSI/portable and macOS app/CLI packages include pmd2raw-byte-v2 as a separate
 process. libpagemaker 0.0.4 is MPL-2.0; librevenge 0.0.6 is distributed under its
 MPL-2.0 option. Their original source archives, original notices and Pagenor's
 MPL-2.0 modifications/build recipe accompany the executable in licenses/pagemaker.

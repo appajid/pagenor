@@ -93,7 +93,7 @@ FreeBSD/Windows applications on macOS. Test the real artifacts on their native
 hosts before describing them as working installers or publishing them.
 
 The focused desktop-release.yml runs on build/pagenor-*-desktop branches.
-It builds unsigned Windows x64/x86/ARM64 and native Linux x86_64/ARM64 packages,
+It builds an ad-hoc signed universal Mac DMG/CLI ZIP, unsigned Windows x64/x86/ARM64 and native Linux x86_64/ARM64 packages,
 runs the full Windows/Linux quality gates, verifies MSI install/associations/
 icons/export/uninstall and Linux/Flatpak execution, then publishes a development
 prerelease only after all checks pass. Actions and the optional font input are
@@ -102,8 +102,7 @@ paid Mac runners are not required. A duplicate version skips artifact rebuilding
 and keeps source quality checks active. Published artifacts are never replaced.
 Publication requires nonempty `docs/releases/<version>.md` notes for the exact
 workspace version; it refuses to fall back to an older release's description.
-Matching universal Mac packages can be appended under unique filenames with
-their own checksum manifest after verification.
+The matching universal Mac packages are included in the same gated build and checksum manifest. Both the finished DMG and extracted CLI ZIP must open the synthetic PageMaker document using their bundled helpers, with isolated HOME/PATH and no non-system helper libraries.
 
 The broader release.yml retains Mac/Windows signing, FreeBSD, RISC-V and web
 jobs and its restricted release environment. Those platforms and stable signed

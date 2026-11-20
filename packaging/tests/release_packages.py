@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -32,9 +33,10 @@ class ReleasePackages(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn(f'build={str(not exists).lower()}', output.read_text())
-        for name in ['windows', 'linux', 'flatpak', 'install', 'publish']:
+        for name in ['macos', 'windows', 'linux', 'flatpak', 'install', 'publish']:
             self.assertEqual(jobs[name]['if'], "needs.version.outputs.build == 'true'")
         self.assertNotIn('if', jobs['quality'])
+        self.assertTrue({'quality', 'macos', 'windows', 'linux', 'flatpak', 'install'} <= set(jobs['publish']['needs']))
 
     def test_publish_requires_notes_for_the_matching_version(self):
         import yaml
@@ -382,6 +384,27 @@ elif args[0]=='attach':
 elif args[0]!='detach':
     raise SystemExit('unsupported synthetic hdiutil operation')
 """)
+        self.tool('python3', """#!/usr/bin/env python3
+from pathlib import Path
+import sys
+args=sys.argv[1:]
+assert Path(args[0]).name=='build.py'
+assert args[args.index('--macos-arch')+1]=='aarch64'
+out=Path(args[args.index('--output')+1])
+helper=out/'helpers/pmd2raw-byte-v2'
+helper.parent.mkdir(parents=True,exist_ok=True)
+helper.write_bytes(b'synthetic packaged helper')
+helper.chmod(0o755)
+legal=out/'licenses/pagemaker'
+legal.mkdir(parents=True,exist_ok=True)
+for name in ['libpagemaker-0.0.4.tar.xz','librevenge-0.0.6.tar.xz','pmd2raw-byte-v2.patch','LICENSE-MPL-2.0.txt','LICENSE-Boost.txt','LICENSE-zlib.txt','build.py','CMakeLists.txt']:
+    (legal/name).write_text('synthetic corresponding source/notice')
+""")
+        # Keep helper-builder substitution separate from the Python tool shims.
+        for tool in self.shims.iterdir():
+            contents=tool.read_text()
+            if contents.startswith('#!/usr/bin/env python3'):
+                tool.write_text(contents.replace('#!/usr/bin/env python3', '#!'+sys.executable, 1))
         inputs = Path(self.env['CARGO_TARGET_DIR']) / 'aarch64-apple-darwin/release'
         inputs.mkdir(parents=True)
         for name in ['pagenor', 'pagenor-cli']:
@@ -407,6 +430,11 @@ elif args[0]!='detach':
         self.assertEqual(info['CFBundleShortVersionString'],VERSION)
         self.assertEqual(info['CFBundleIconFile'],'Pagenor.icns')
         self.assertTrue(all(t['CFBundleTypeIconFile']=='PagenorDocument.icns' for t in info['CFBundleDocumentTypes']))
+        self.assertEqual((app/'MacOS/helpers/pmd2raw-byte-v2').read_bytes(),b'synthetic packaged helper')
+        self.assertTrue((app/'Resources/Legal/licenses/pagemaker/LICENSE-MPL-2.0.txt').is_file())
+        cli=Path(self.env['CARGO_TARGET_DIR'])/f'macos-package/pagenor-cli-{VERSION}-macos-aarch64'
+        self.assertEqual((cli/'helpers/pmd2raw-byte-v2').read_bytes(),b'synthetic packaged helper')
+        self.assertTrue((cli/'licenses/pagemaker/libpagemaker-0.0.4.tar.xz').is_file())
         self.assertTrue((stage/'.background/LICENSE-Pagenor-brand.txt').is_file())
         self.assertTrue((stage/'.background/OFL-Inter.txt').is_file())
         for name in ['LICENSE-MIT','LICENSE-APACHE','NOTICE','PAGENOR_UPSTREAM.md','LICENSE-Pagenor-brand.txt','LICENSE-Pagenor-app-icon.txt']:
