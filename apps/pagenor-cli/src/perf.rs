@@ -333,6 +333,9 @@ fn row(rows: &mut Vec<Row>, name: impl Into<String>, ms: f64, budget: Option<f64
 
 /// Measure `doc`. `runs` = repetitions per row (median).
 fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
+    if doc.spreads.is_empty() {
+        return Err("cannot benchmark a document with no spreads".into());
+    }
     let mut rows = vec![];
     let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
     let chars: usize = doc.stories.values().map(|s| s.text.len()).sum();
@@ -601,4 +604,14 @@ pub fn bench(args: &[String]) -> Result<(), String> {
     outln!("{file}: {} pages, {} stories, {} assets (opened in {open:.0} ms)", doc.page_count(), doc.stories.len(), doc.assets.len());
     let rows = measure(&doc, runs)?;
     print("", &rows, noisy)
+}
+
+#[cfg(test)]
+mod upstream_empty_document_tests {
+    #[test]
+    fn benchmarking_an_empty_import_returns_an_error() {
+        let mut doc = pagenor_doc::Document::new(&Default::default());
+        doc.spreads.clear();
+        assert!(matches!(super::measure(&doc, 1), Err(error) if error.contains("no spreads")));
+    }
 }

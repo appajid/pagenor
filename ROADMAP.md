@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+P11.29: local **0.15.0** adapts thirty compatible upstream proposal scopes
+from an open/closed review through #3048: editor/search and table fixes, IDML style
+references, safer font/image handling, dialog controls, GPU limits, CLI checks,
+eleven Indic pattern languages and native menu image paste, including inline
+objects at ordinary text carets. All seven gates pass: 3,212 tests, zero failures,
+7 existing ignores and twenty WASM packages; 19 packaging contracts and
+eight-library Windows/Linux checks pass. Four offscreen views are inspected.
+Native Windows/Linux execution remains pending. Source is local; the running Mac
+session and prior tested Windows candidates are retained.
+[Source pins, validation, clipboard limits and remaining queue](docs/upstream-adoption-20261120.md).
+
 P11.28: **0.14.2 Windows update candidate verified** (20 November 2026).
 All three architectures pass fresh MSI/portable PageMaker and actual 0.14.1 upgrade
 checks: success/Finish dialog, desktop shortcut, one installed product and retained

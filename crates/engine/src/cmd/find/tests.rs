@@ -677,7 +677,7 @@ fn assert_child_scope_requests_rejected(s: &mut Session) {
 }
 
 #[test]
-fn find_scope_children_error_atomically_and_parent_requests_stay_top_level() {
+fn find_scope_children_error_atomically_and_explicit_parent_requests_stay_top_level() {
     for note in [false, true] {
         for child in ["red", "red x", "é red red red red red"] {
             let (mut s, sid, mut selected) = child_scope_session(note, child);
@@ -692,8 +692,8 @@ fn find_scope_children_error_atomically_and_parent_requests_stay_top_level() {
                     p["story"] = json!(sid.0);
                     p["scope"] = json!("selection");
                 }
-                // Document scope also covers table cells (#1624); an explicit story and footnotes stay top-level.
-                let in_cell = if explicit || note { 0 } else { child.matches("red").count() };
+                // Document scope covers table cells and footnotes; an explicit parent story remains top-level.
+                let in_cell = if explicit { 0 } else { child.matches("red").count() };
                 let changed = if in_cell > 0 { child.replace("red", "blue") } else { child.to_string() };
                 s.doc_mut().unwrap().selection = selection.clone();
                 assert_eq!(s.execute("find.find", &p).unwrap().as_array().unwrap().len(), 1 + in_cell);

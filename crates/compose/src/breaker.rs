@@ -296,6 +296,9 @@ fn hang_right(g: &Glyph) -> f64 {
 
 /// Advance of the hyphen glyph that would follow `g` (cached per face).
 fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
+    if crate::shape::breaks_without_hyphen(g) {
+        return 0.0;
+    }
     let id = g.face.id();
     let units = match cache.iter().find(|c| c.0 == id) {
         Some(c) => c.1,
@@ -668,6 +671,23 @@ fn kp_pass(
     Some(breaks_from_positions(items, ig, glyphs, &chain))
 }
 
+/// Where the visible glyphs of a line `start..end` stop: before its trailing spaces, and before
+/// the spaces in front of a forced line break (the break glyph leaves the range with them, so the
+/// line is as wide as its last word).
+fn visible_end(glyphs: &[Glyph], start: usize, end: usize) -> usize {
+    let spaces = |mut at: usize| {
+        while at > start && glyphs.get(at - 1).is_some_and(Glyph::is_space) {
+            at -= 1;
+        }
+        at
+    };
+    let vis_end = spaces(end);
+    if vis_end > start + 1 && glyphs.get(vis_end - 1).is_some_and(|g| is_forced(g.ch)) && glyphs.get(vis_end - 2).is_some_and(Glyph::is_space) {
+        return spaces(vis_end - 1);
+    }
+    vis_end
+}
+
 fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: &[usize]) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::with_capacity(chain.len());
@@ -679,15 +699,17 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
                 let e = ig[b].min(n);
                 // A flagged penalty with width = an inserted hyphen (not an explicit '-').
                 let explicit = e > 0 && matches!(glyphs[e - 1].ch, '-' | '\u{2010}');
-                (e, it.flagged && it.w > 0.0 && !explicit || (it.flagged && e > 0 && glyphs[e - 1].ch == SOFT_HYPHEN), it.p <= -INF)
+                (
+                    e,
+                    it.flagged && (it.w > 0.0 || e > 0 && crate::shape::breaks_without_hyphen(&glyphs[e - 1])) && !explicit
+                        || (it.flagged && e > 0 && glyphs[e - 1].ch == SOFT_HYPHEN),
+                    it.p <= -INF,
+                )
             }
             Kind::Glue | Kind::Box => (ig[b], false, false),
         };
         // Trim trailing spaces from the visible range; skip leading spaces of the next line.
-        let mut vis_end = end;
-        while vis_end > start && glyphs[vis_end - 1].is_space() {
-            vis_end -= 1;
-        }
+        let vis_end = visible_end(glyphs, start, end);
         let mut next = end;
         while next < n && glyphs[next].is_space() {
             next += 1;
@@ -742,10 +764,15 @@ pub fn greedy(
         let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
+        // Carry the preceding real glyph through runs of discretionary hyphens.
+        let mut hyphen_base = glyphs[..start].iter().rev().find(|g| g.ch != SOFT_HYPHEN);
         let mut i = start;
         let mut brk: Option<(usize, bool, bool)> = None;
         while i < n {
             let g = &glyphs[i];
+            if g.ch != SOFT_HYPHEN {
+                hyphen_base = Some(g);
+            }
             if is_forced(g.ch) {
                 brk = Some((i + 1, false, true));
                 break;
@@ -800,7 +827,8 @@ pub fn greedy(
                         last_natural = last_ok;
                     }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
+                    let base = hyphen_base.unwrap_or(g);
+                    let hy = hyphen_width(base, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
                     if x + hy <= w + shrink {
                         last_ok = Some((i + 1, true));
                     }
@@ -810,10 +838,7 @@ pub fn greedy(
         }
         let (end, hyphen, forced) = brk.unwrap_or((n, false, true));
         hyphens = if hyphen { hyphens + 1 } else { 0 };
-        let mut vis_end = end;
-        while vis_end > start && glyphs[vis_end - 1].is_space() {
-            vis_end -= 1;
-        }
+        let vis_end = visible_end(glyphs, start, end);
         let mut next = end;
         while next < n && glyphs[next].is_space() {
             next += 1;

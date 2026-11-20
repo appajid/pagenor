@@ -548,8 +548,13 @@ fn boundary_stroke<'a>(
     pattern: Option<&'a CellStroke>,
 ) -> Option<(&'a CellStroke, i32, EdgeSource)> {
     let supplied = |cell: &Cell, side: usize| cell.stroke_defined[side] || cell.border_overrides[side] || cell.stroke_priorities[side] != 0;
+    // Formatting the edge actually has (a cell style's or a local rule, or a native override). A priority
+    // alone isn't a rule: an IDML cell without stroke attributes on a side shares its neighbour's stroke
+    // there (InDesign shows the neighbour's on both cells), so its 1 pt default never wins against one.
+    let formatted = |cell: &Cell, side: usize| cell.stroke_defined[side] || (cell.border_overrides[side] && cell.stroke_priorities[side] == 0);
+    let priority_only = |cell: &Cell, side: usize| !cell.stroke_defined[side] && cell.stroke_priorities[side] != 0;
     let rank =
-        |cell: &Cell, side: usize| (cell.stroke_priorities[side], supplied(cell, side), supplied(cell, side) && cell.strokes[side].is_visible());
+        |cell: &Cell, side: usize| (cell.stroke_priorities[side], formatted(cell, side), formatted(cell, side) && cell.strokes[side].is_visible());
     let (owner, cell, side, outer) = match (before, after) {
         (Some((ao, a)), Some((bo, b))) => {
             // Table patterns supply missing interior edges; cell styles and local edits
@@ -566,7 +571,15 @@ fn boundary_stroke<'a>(
             // unspecified: prefer supplied formatting, then a visible supplied rule.
             // Metadata-free native / legacy cells retain lower/right top/left ownership,
             // including explicit None already stored there by older native editing code.
-            if rank(a, before_side) > rank(b, after_side) { (ao, a, before_side, false) } else { (bo, b, after_side, false) }
+            if priority_only(b, after_side) && formatted(a, before_side) {
+                (ao, a, before_side, false)
+            } else if priority_only(a, before_side) && formatted(b, after_side) {
+                (bo, b, after_side, false)
+            } else if rank(a, before_side) > rank(b, after_side) {
+                (ao, a, before_side, false)
+            } else {
+                (bo, b, after_side, false)
+            }
         }
         (Some((owner, a)), None) => (owner, a, before_side, true),
         (None, Some((owner, b))) => (owner, b, after_side, true),
@@ -1241,6 +1254,54 @@ mod border_tests {
             let composed = compose_table(table);
             assert!(composed.frames[0].tables[0].strokes.is_empty());
         }
+    }
+
+    /// A spacer row in IDML with `[None]` cell style and only edge priorities (no stroke of its own)
+    /// between a row whose style draws a thin rule and a row whose style draws none: at equal priority
+    /// the styled edges win, so the 1 pt default draws no lines across the table (price table, 84202).
+    #[test]
+    fn a_priority_without_a_rule_loses_an_equal_priority_tie_to_a_styled_edge() {
+        let mut table = rule_table(3, 2, 0, 0);
+        for col in 0..2 {
+            set_rule(&mut table, 0, col, 2, 0.5, 34);
+            set_rule(&mut table, 2, col, 0, 0.0, 11);
+            table.cell_mut(2, col).unwrap().border_overrides[0] = true;
+            let spacer = table.cell_mut(1, col).unwrap();
+            spacer.strokes[0] = CellStroke::default();
+            spacer.strokes[2] = CellStroke::default();
+            spacer.stroke_priorities[0] = 34;
+            spacer.stroke_priorities[2] = 11;
+            spacer.border_overrides[0] = true;
+            spacer.border_overrides[2] = true;
+        }
+        let composed = compose_table(table);
+        let fragment = &composed.frames[0].tables[0];
+        let top = fragment.cell(1, 0).unwrap().rect.y0;
+        assert_eq!(fragment.strokes.len(), 2, "{:?}", fragment.strokes);
+        assert!(fragment.strokes.iter().all(|s| s.a.y == top && s.b.y == top && s.stroke.weight == 0.5), "{:?}", fragment.strokes);
+        assert_no_overlapping_rules(fragment);
+    }
+
+    /// The same spacer under a cell spanning many rows, whose bottom has a lower priority than the
+    /// spacer's top: InDesign still shows the spanning cell's rule there (the spacer has none of its own).
+    #[test]
+    fn a_priority_without_a_rule_loses_even_at_a_higher_priority() {
+        // Rows 0 and 1 merged into one cell, the spacer in row 2.
+        let mut table = rule_table(3, 1, 0, 0);
+        table.merge(CellRange::new(0, 0, 1, 0)).unwrap();
+        set_rule(&mut table, 0, 0, 2, 0.5, 1);
+        let spacer = table.cell_mut(2, 0).unwrap();
+        spacer.strokes[0] = CellStroke::default();
+        spacer.stroke_priorities[0] = 82;
+        spacer.border_overrides[0] = true;
+        let composed = compose_table(table);
+        let fragment = &composed.frames[0].tables[0];
+        let y = fragment.cell(2, 0).unwrap().rect.y0;
+        assert_eq!(fragment.cell(0, 0).unwrap().rect.y1, y, "the merged cell spans the two rows above the spacer");
+        assert_eq!(fragment.strokes.len(), 1, "{:?}", fragment.strokes);
+        let rule = &fragment.strokes[0];
+        assert!(rule.a.y == y && rule.b.y == y && rule.stroke.weight == 0.5, "{rule:?}");
+        assert_eq!(rule.b.x - rule.a.x, 100.0);
     }
 
     #[test]

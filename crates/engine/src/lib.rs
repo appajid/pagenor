@@ -552,6 +552,7 @@ impl Session {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
                 st.doc = Arc::new(d);
+                st.revision = st.revision.saturating_add(1);
             }
         }
         self.record_undo_step(spec, before, nested);
@@ -660,6 +661,11 @@ impl Session {
         }
         list.push((id.to_string(), p));
         *was_live = live;
+    }
+
+    /// Whether system text still identifies the current internal object clipboard.
+    pub fn matches_object_clipboard(&self, text: &str) -> bool {
+        self.clipboard.is_some() && self.object_clipboard_marker.as_deref() == Some(text)
     }
 
     pub fn commands(&self) -> Vec<CommandInfo> {

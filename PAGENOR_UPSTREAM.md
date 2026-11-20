@@ -1136,3 +1136,27 @@ The owner explicitly authorizes the public upload and Windows tests on 20 Novemb
 The final verification scripts are at 77ebd33; subsequent completion notes do not
 rebuild or replace those tested binaries. Windows 10 interactive responsiveness
 and code signing remain separate; no formal 0.14.2 release is published.
+
+## 2026-11-20 — P11.29 selected upstream adaptations (local 0.15.0)
+
+Review 440 distinct updated open/closed proposals through #3048, inspecting 84
+candidate file/patch inventories. Adapt thirty compatible scopes for editing,
+footnote search, table rules, IDML style references, safer font/image handling,
+GPU limits, command-line validation, dialog controls, Indic pattern breaking and
+native menu image paste. Source authors, immutable heads, exact adapted scopes
+and the remaining reviewed queue are in
+[the adoption ledger](docs/upstream-adoption-20261120.md). Original MIT OR Apache-2.0
+notices remain applicable; Indic pattern sets select their MIT alternative.
+
+Pagenor retains its architecture, branding, scoped/live fonts, inline Indic IME,
+.pgnr files, native capability 8, independent master pages and guarded dialogs.
+The image-paste adaptation inserts an inline object at an ordinary text caret;
+bitmap-only keyboard paste and table/footnote image insertion remain explicit
+limitations. No whole upstream branch or frontend upgrade is merged.
+Local source advances to 0.15.0; the previously verified 0.14.2 Windows binaries,
+published 0.14.1 release and current Mac application/session are unchanged.
+
+Completion: all seven local gates pass (3,212 tests, 7 existing ignores,
+20 WASM packages), as do 19 packaging checks and both eight-library platform
+compile checks. Four offscreen views are inspected; native Windows/Linux runtime
+validation remains pending. No current application session is closed.

@@ -229,15 +229,28 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
 /// Decode a bounded raster from an untrusted import. Header dimensions and decoder
 /// allocations are limited before pixel decoding; PSD/SVG/PDF are not accepted.
 pub fn decode_rgba_limited(bytes: &[u8], max_pixels: u64) -> Option<image::RgbaImage> {
+    if max_pixels > 4_000_000 {
+        return None;
+    }
+    decode_bounded_raster(bytes, max_pixels, 64 * 1024 * 1024)
+}
+
+/// A user-requested clipboard bitmap: larger than a small imported preview, still bounded
+/// before decoding. Keep the existing 4-million-pixel import contract unchanged.
+pub fn decode_clipboard_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
+    decode_bounded_raster(bytes, 64_000_000, 384 * 1024 * 1024)
+}
+
+fn decode_bounded_raster(bytes: &[u8], max_pixels: u64, max_alloc: u64) -> Option<image::RgbaImage> {
     let (w, h) = pixel_size(bytes)?;
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > max_pixels || max_pixels > 4_000_000 {
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > max_pixels {
         return None;
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(w);
     limits.max_image_height = Some(h);
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_alloc = Some(max_alloc);
     reader.limits(limits);
     reader.decode().ok().map(|image| image.to_rgba8()).or_else(|| palette_tiff(bytes, max_pixels))
 }
@@ -812,4 +825,12 @@ mod upstream_review11_svg_tests {
         let opts = svg_options(FontDb::global().scoped(0));
         assert!((opts.image_href_resolver.resolve_string)("/private/pagenor-nonexistent.png", &opts).is_none());
     }
+}
+
+/// Encode unpremultiplied RGBA rows as a PNG without a stored resolution.
+pub fn png_from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+    Some(png)
 }

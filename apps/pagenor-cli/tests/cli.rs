@@ -253,3 +253,35 @@ fn run_scale_that_is_not_finite_and_positive_is_an_error() {
     assert!(!png.exists(), "nothing is exported when the scale is wrong");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn upstream_commands_json_flag_is_not_a_filter_and_unknown_options_are_rejected() {
+    let out = cli().args(["commands", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let commands: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(commands.as_array().unwrap().len() > 100);
+    let out = cli().args(["commands", "--wrong"]).output().unwrap();
+    assert!(!out.status.success());
+}
+#[test]
+fn upstream_unknown_run_options_are_rejected_before_any_export() {
+    let dir = std::env::temp_dir().join(format!("pagenor-cli-nov20-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("should-not-exist.png");
+    for option in ["--wrong", "--page"] {
+        let out = cli().args(["run", "--export"]).arg(&path).arg(option).output().unwrap();
+        assert!(!out.status.success());
+        assert!(!path.exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn upstream_keep_going_runs_later_commands_but_reports_failure() {
+    let mut child = cli().args(["script", "-", "--keep-going"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"not.a.command {}\nframe.create {\"rect\":[10,10,100,100]}\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["results"][0]["error"].is_string(), "{report}");
+    assert!(report["results"][1]["id"].is_number(), "{report}");
+}

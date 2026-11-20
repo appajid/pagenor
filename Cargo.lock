@@ -2248,6 +2248,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypher"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f2b4f6b5da34d400d4c112eadcc14512cc5d04307a8eee182586d9bebd7ce6"
+
+[[package]]
 name = "icu_collections"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3458,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "arboard",
  "async-channel",
@@ -3486,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ai"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -3503,11 +3509,11 @@ dependencies = [
 
 [[package]]
 name = "pagenor-archive"
-version = "0.14.2"
+version = "0.15.0"
 
 [[package]]
 name = "pagenor-cli"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3523,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-color"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "kurbo",
  "moxcms",
@@ -3536,9 +3542,10 @@ dependencies = [
 
 [[package]]
 name = "pagenor-compose"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "fancy-regex",
+ "hypher",
  "log",
  "miniz_oxide 0.8.9",
  "pagenor-color",
@@ -3555,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-doc"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-color",
  "pagenor-geom",
@@ -3567,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-engine"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "caseless",
  "craft-print",
@@ -3601,13 +3608,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-segmentation",
  "wasm-bindgen-test",
  "zip",
 ]
 
 [[package]]
 name = "pagenor-epub"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-color",
  "pagenor-doc",
@@ -3616,7 +3624,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-fonts"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "core-text",
  "fontconfig",
@@ -3632,7 +3640,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-format"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3644,7 +3652,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-geom"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -3657,7 +3665,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-idml"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-color",
@@ -3673,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-images"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "flate2",
  "image",
@@ -3686,7 +3694,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-indd"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3695,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-mcp"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "image",
  "log",
@@ -3708,7 +3716,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pdf"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "hayro-cmap",
  "hayro-interpret",
@@ -3730,7 +3738,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-pptx"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "image",
  "pagenor-color",
@@ -3748,7 +3756,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-render"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "hayro",
  "image",
@@ -3766,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-textimport"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-archive",
  "pagenor-doc",
@@ -3777,7 +3785,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-tools"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "pagenor-color",
  "pagenor-compose",
@@ -3789,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-ui-egui"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "craft-dialogs",
  "craft-ui",
@@ -3822,7 +3830,7 @@ dependencies = [
 
 [[package]]
 name = "pagenor-web"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "eframe",
  "egui",
@@ -6888,7 +6896,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "resvg",
  "serde_json",

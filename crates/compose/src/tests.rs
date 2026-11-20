@@ -5698,3 +5698,124 @@ fn a_feature_switch_keeps_kerning() {
     d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.ligatures = Some(false));
     assert_eq!(xs(&d), kerned);
 }
+
+#[test]
+fn indic_pattern_wraps_keep_graphemes_whole_and_do_not_draw_latin_hyphens() {
+    use pagenor_fonts::testing::font_with;
+    use unicode_segmentation::UnicodeSegmentation;
+    for (language, text) in [("Telugu", "విశ్వవిద్యాలయం విశ్వవిద్యాలయం"), ("Hindi", "विश्वविद्यालय विश्वविद्यालय")]
+    {
+        let chars: Vec<_> = text.chars().collect();
+        let db = FontDb::with_font_dirs(vec![]);
+        db.set_system_fallback(false);
+        db.add_font(font_with("Pagenor Indic Patterns", &chars).unwrap());
+        let (mut doc, sid, _) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 35.0, 700.0),
+            ParaAttrs {
+                hyphenate: Some(true),
+                hyph_min_word: Some(2),
+                hyph_after_first: Some(1),
+                hyph_before_last: Some(1),
+                hyph_last_word: Some(true),
+                ..Default::default()
+            },
+        );
+        doc.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("Pagenor Indic Patterns".into());
+            f.over.language = Some(language.into());
+        });
+        let composed = compose_with_db(&doc, doc.story(sid).unwrap(), &frame_specs(&doc, sid), &ComposeOptions::default(), &db, StoryContext::Outer);
+        let lines = all_lines(&composed);
+        assert!(!composed.is_overset());
+        assert!(lines.len() > 2, "{language}: {lines:?}");
+        let boundaries: Vec<_> = text.grapheme_indices(true).map(|(i, _)| i).chain(std::iter::once(text.len())).collect();
+        for line in lines {
+            assert!(boundaries.contains(&line.range.start), "{language}: {:?}", line.range);
+            assert!(boundaries.contains(&line.range.end), "{language}: {:?}", line.range);
+            assert!(line.glyphs.iter().all(|g| g.rendered_char != '-' && g.rendered_char != '\u{2010}'));
+        }
+    }
+}
+
+/// A group's text wrap acts on other text, not on the text of a frame inside that group: a note
+/// grouped with its artwork, the group set to Jump Object, keeps its lines (InDesign sets it as if
+/// the group had no wrap). A frame outside the group still jumps the group.
+#[test]
+fn a_groups_wrap_does_not_push_the_text_of_a_frame_inside_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let rect = Rect::new(36.0, 100.0, 236.0, 160.0);
+    let (fid, inside) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, "A note in its group", ParaFormat::default()).unwrap();
+    let (_, outside) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 90.0, 236.0, 400.0), lid, "Other text", ParaFormat::default()).unwrap();
+    let mut g = pagenor_doc::Item::new(ItemId(d.alloc()), lid, pagenor_doc::Shape::Group, pagenor_geom::PathData::default());
+    g.wrap.mode = WrapMode::JumpObject;
+    let sp = Arc::make_mut(&mut d.spreads[0]);
+    let at = sp.items.iter().position(|it| it.id == fid).unwrap();
+    g.content = pagenor_doc::Content::Group { items: vec![sp.items.remove(at)] };
+    sp.items.push(Arc::new(g));
+    let own = compose_story(&d, inside, &ComposeOptions::default());
+    assert!(!own.is_overset() && own.frames[0].lines.len() == 1, "the note's own group pushed it out: {} lines", own.frames[0].lines.len());
+    assert!((own.frames[0].lines[0].baseline - 100.0) < 20.0, "the note starts at the top of its frame");
+    // The other frame starts above the group and overlaps it: its first line jumps below the group.
+    let other = compose_story(&d, outside, &ComposeOptions::default());
+    assert!(other.frames[0].lines[0].baseline > 160.0, "text outside the group still jumps it: {}", other.frames[0].lines[0].baseline);
+}
+
+/// The spaces before a forced line break take no room in the line, as the spaces a soft break
+/// trims take none: a right-aligned "Total ⏎Eclipse" ends its first line on the `l` at the frame's
+/// edge (InDesign sets it so; with the space counted the word stood a space short of the edge).
+#[test]
+fn spaces_before_a_forced_line_break_do_not_count_in_the_line() {
+    let rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+    let end_of_first = |text: &str, composer| {
+        let para = ParaAttrs { align: Some(Align::Right), composer: Some(composer), ..Default::default() };
+        let (d, sid, _) = doc_with(text, rect, para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        let last = l.glyphs.iter().rev().find(|g| g.visible && g.adv > 0.0 && !g.rendered_char.is_whitespace()).unwrap();
+        last.x + last.adv
+    };
+    for composer in [pagenor_doc::Composer::Paragraph, pagenor_doc::Composer::SingleLine] {
+        let plain = end_of_first("Total\u{2028}Eclipse", composer);
+        let spaced = end_of_first("Total \u{2028}Eclipse", composer);
+        assert!((plain - 200.0).abs() < 0.01, "{composer:?}: the line without a space ends at the edge: {plain}");
+        assert!((spaced - plain).abs() < 0.01, "{composer:?}: the space before the break moved the line: {spaced} vs {plain}");
+    }
+}
+
+/// A frame whose insets fill its height has a text area with no height, and no line fits in it,
+/// with a fixed first baseline of 0 as with the other first baselines: the text is overset. A
+/// line set there had its baseline on the top inset and its descenders below the frame.
+#[test]
+fn a_text_area_with_no_height_sets_no_line() {
+    use pagenor_doc::FirstBaseline;
+    for inset in [[299.0, 0.0, 2.0, 0.0], [270.0, 0.0, 30.0, 0.0], [0.0, 0.0, 310.0, 0.0]] {
+        for kind in [FirstBaseline::Fixed, FirstBaseline::Ascent, FirstBaseline::Leading] {
+            let (mut d, sid, fid) = doc_with("One", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+            let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+            o.inset = inset;
+            o.first_baseline = kind;
+            o.first_baseline_min = 0.0;
+            assert_eq!(d.item(fid).unwrap().text_area().height(), 0.0, "{inset:?}");
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(
+                all_lines(&cs).is_empty(),
+                "{inset:?} {kind:?}: {:?}",
+                all_lines(&cs).iter().map(|l| (l.baseline, l.descent)).collect::<Vec<_>>()
+            );
+            assert_eq!(cs.overset_at, Some(0), "{inset:?} {kind:?}");
+        }
+    }
+    // A text area 1 pt tall still holds the line at its top with a fixed first baseline of 0.
+    let (mut d, sid, fid) = doc_with("One", Rect::new(0.0, 0.0, 200.0, 300.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.inset = [289.0, 0.0, 10.0, 0.0];
+    o.first_baseline = FirstBaseline::Fixed;
+    o.first_baseline_min = 0.0;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1);
+    assert!((lines[0].baseline - 289.0).abs() < 1e-6, "baseline {}", lines[0].baseline);
+    assert_eq!(cs.overset_at, None);
+}

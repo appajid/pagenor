@@ -573,7 +573,8 @@ fn wrap_obstacles(it: &Item, parent: Affine, inv: Affine, left: bool, skip: Item
         return;
     }
     let xf = parent * it.xf;
-    if it.wrap.mode != WrapMode::None {
+    // A group wraps outside text, while its own text frames keep their lines.
+    if it.wrap.mode != WrapMode::None && !group_holds(it, skip, 0) {
         out.push(exclusion(it, xf, inv, left));
     }
     match &it.content {
@@ -591,6 +592,11 @@ fn wrap_obstacles(it: &Item, parent: Affine, inv: Affine, left: bool, skip: Item
         }
         _ => {}
     }
+}
+
+/// Whether a bounded group traversal finds the text frame being composed.
+fn group_holds(it: &Item, id: ItemId, depth: usize) -> bool {
+    matches!(it.content, Content::Group { .. }) && depth <= MAX_WRAP_DEPTH && it.shown_children().any(|c| c.id == id || group_holds(c, id, depth + 1))
 }
 
 /// Build the frame specs of a story from the document (geometry, wrap, page names, grid).
@@ -1566,7 +1572,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 } else {
                     0.0
                 };
-                let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+                let fits = f.area.height() > 0.0 && baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
                 if !fits {
                     if cur.can_next_sub() {
                         g0 = s;
@@ -3054,7 +3060,10 @@ fn layout_line(
             g.shift += cjk_alignment_shift(g, &reference);
         }
     }
-    if hyphen && let Some(g) = line.last() {
+    if hyphen
+        && line.iter().rev().find(|g| g.ch != shape::SOFT_HYPHEN).is_none_or(|g| !shape::breaks_without_hyphen(g))
+        && let Some(g) = line.last()
+    {
         let h = shape::hyphen_after(g);
         line.push(h);
     }
@@ -3686,7 +3695,7 @@ fn prepend_label(
     *glyphs = pre;
 }
 
-type LimitsKey = (usize, usize, usize, bool);
+type LimitsKey = (usize, usize, usize, bool, Option<hypher::Lang>);
 
 /// Mark glyphs after which a hyphen may be inserted (dictionary/pattern points within the
 /// paragraph's limits; words with discretionary hyphens break only there).
@@ -3726,22 +3735,7 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
     };
     // Words repeat a lot: remember their points per set of limits.
     static CACHE: Mutex<Vec<(LimitsKey, HashMap<Box<str>, Box<[usize]>>)>> = Mutex::new(Vec::new());
-    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let idx = match guard.iter().position(|e| e.0 == key) {
-        Some(i) => i,
-        None => {
-            if guard.len() > 32 {
-                guard.clear();
-            }
-            guard.push((key, HashMap::new()));
-            guard.len() - 1
-        }
-    };
-    let cache = &mut guard[idx].1;
-    if cache.len() > 100_000 {
-        cache.clear();
-    }
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -3749,7 +3743,10 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
             continue;
         }
         let mut j = i;
-        while j < glyphs.len() && (glyphs[j].is_letter() || glyphs[j].len == 0 || glyphs[j].ch == shape::SOFT_HYPHEN) && !glyphs[j].no_break {
+        while j < glyphs.len()
+            && (glyphs[j].is_letter() || glyphs[j].len == 0 || glyphs[j].ch == shape::SOFT_HYPHEN || hyphen::indic::joiner(glyphs[j].ch))
+            && !glyphs[j].no_break
+        {
             j += 1;
         }
         // A no-break letter can't start a hyphenatable word.
@@ -3759,23 +3756,53 @@ fn hyphenation_points(text: &str, glyphs: &[Glyph], pp: &ParaProps, exceptions: 
         }
         // A discretionary hyphen in a word (or right before it) replaces automatic hyphenation.
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
-        let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
+        let (a, b) = (glyphs[i].byte, glyphs[i..j].iter().map(|g| g.byte.saturating_add(g.len)).max().unwrap_or(glyphs[i].byte));
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
-            let in_foreign = foreign.iter().any(|r| r.contains(&a));
-            if !is_last_word && !in_foreign {
+            let language = glyphs[i].lang.and_then(hyphen::indic::language);
+            let in_foreign = foreign.iter().any(|r| r.contains(&a)) && language.is_none();
+            let one_language = language.is_none() || glyphs[i..j].iter().all(|g| g.lang == glyphs[i].lang);
+            if !is_last_word && !in_foreign && one_language {
+                let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized, language);
+                let idx = match guard.iter().position(|e| e.0 == key) {
+                    Some(i) => i,
+                    None => {
+                        if guard.len() > 32 {
+                            guard.clear();
+                        }
+                        guard.push((key, HashMap::new()));
+                        guard.len() - 1
+                    }
+                };
+                let cache = &mut guard[idx].1;
+                if cache.len() > 100_000 {
+                    cache.clear();
+                }
+
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry(word.into()).or_insert_with(|| hyphen::hyphen_points(word, &lim).into_boxed_slice()),
+                    None => cache.entry(word.into()).or_insert_with(|| {
+                        language.map_or_else(|| hyphen::hyphen_points(word, &lim), |lang| hyphen::indic::points(word, lang, &lim)).into_boxed_slice()
+                    }),
                 };
+                let char_bytes: Vec<usize> = word.char_indices().map(|(b, _)| b).collect();
+                let mut ending = HashMap::new();
+                let mut cluster = None;
+                for (k, g) in glyphs.iter().enumerate().take(j).skip(i) {
+                    if g.len > 0 {
+                        cluster = Some(g.byte.saturating_add(g.len));
+                    }
+                    if let Some(end) = cluster {
+                        ending.insert(end, k);
+                    }
+                }
                 for &p in pts.iter() {
-                    // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
-                    if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
+                    let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                    if let Some(&k) = ending.get(&byte) {
                         out[k] = true;
                     }
                 }

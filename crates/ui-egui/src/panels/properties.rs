@@ -1432,7 +1432,7 @@ fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
             if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
@@ -1676,6 +1676,17 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Korean",
     "Arabic",
     "Hebrew",
+    "Hindi",
+    "Marathi",
+    "Bengali",
+    "Assamese",
+    "Gujarati",
+    "Punjabi",
+    "Odia",
+    "Tamil",
+    "Telugu",
+    "Kannada",
+    "Malayalam",
 ];
 
 /// The Language list (Character panel, Properties ▸ Character): picking one sets the language of

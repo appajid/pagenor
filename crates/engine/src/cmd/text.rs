@@ -158,8 +158,9 @@ pub fn specs() -> Vec<CommandSpec> {
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
-        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…}", has_text_or_frames, |s, p| {
-            format_paras(s, &json!({"align": p.get("align").cloned().unwrap_or(json!("left"))}))
+        cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
+            let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;
+            format_paras(s, &json!({ "align": align }))
         }),
         cmd!("type.alignLeft", "Align Left", [], Some("Cmd+Shift+L"), "{}", has_text_or_frames, |s, _| format_paras(s, &json!({"align": "left"}))),
         cmd!("type.alignCenter", "Align Center", [], Some("Cmd+Shift+C"), "{}", has_text_or_frames, |s, _| format_paras(
@@ -1058,8 +1059,14 @@ fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"pos": new}))
 }
 
+/// The line the caret at `pos` is on. At a soft wrap, where one line ends and the next starts at
+/// `pos`, the caret is on the next line (only a paragraph's last line owns its end).
 fn line_of(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
-    cs.frames.iter().flat_map(|f| f.lines.iter()).find(|l| pos >= l.range.start && pos <= l.range.end).map(|l| (l.range.start, l.range.end))
+    let lines = || cs.frames.iter().flat_map(|f| f.lines.iter());
+    lines()
+        .find(|l| pos >= l.range.start && (pos < l.range.end || (pos == l.range.end && l.last_in_para)))
+        .or_else(|| lines().find(|l| pos >= l.range.start && pos <= l.range.end))
+        .map(|l| (l.range.start, l.range.end))
 }
 
 fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> {
@@ -1140,6 +1147,9 @@ pub(crate) fn retain_pending_typing_format(s: &mut Session) {
 }
 
 pub(crate) fn validate_char_fill(document: &pagenor_doc::Document, attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    if attrs.stroke_weight.is_some_and(|weight| !(0.0..=800.0).contains(&weight)) {
+        return Err(bad(command_id, "strokeWeight must be 0 to 800 pt"));
+    }
     if let Some(fill) = &attrs.fill
         && document.swatch(fill).is_none()
     {
@@ -1525,10 +1535,14 @@ pub(crate) fn format_targets_pub(s: &Session) -> Vec<Target> {
 
 /// The case-changed text of `src`, char by char (a char may map to several, e.g. ß → SS).
 pub(crate) fn case_map(src: &str, case: &str) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let mut out = Vec::with_capacity(src.len());
+    let mut graphemes = src.grapheme_indices(true).peekable();
     let mut prev = ' ';
     let mut sentence_start = true;
-    for c in src.chars() {
+    for (at, c) in src.char_indices() {
+        let grapheme_start = graphemes.next_if(|(i, _)| *i == at).is_some();
         let word_start = !(prev.is_alphanumeric() || matches!(prev, '\'' | '\u{2019}'));
         let up = |c: char| c.to_uppercase().collect::<String>();
         let low = |c: char| c.to_lowercase().collect::<String>();
@@ -1556,7 +1570,10 @@ pub(crate) fn case_map(src: &str, case: &str) -> Vec<String> {
             sentence_start = true;
         }
         out.push(m);
-        prev = c;
+        // Attached marks and joiners must not turn the next letter into a word initial.
+        if grapheme_start || c.is_alphanumeric() || matches!(c, '\'' | '\u{2019}') {
+            prev = c;
+        }
     }
     out
 }
@@ -2564,4 +2581,43 @@ pub(crate) fn effective_char_format(s: &Session, t: &Target) -> Result<pagenor_d
         apply_typing_format(&mut cf, f);
     }
     Ok(cf)
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::case_map;
+
+    #[test]
+    fn title_case_keeps_attached_marks_inside_the_word() {
+        for (source, expected) in
+            [("e\u{301}CLAIR", "E\u{301}clair"), ("a\u{308}\u{301}BC", "A\u{308}\u{301}bc"), ("ÉCLAIR E\u{301}CLAIR", "Éclair E\u{301}clair")]
+        {
+            let mapped = case_map(source, "title");
+            assert_eq!(mapped.len(), source.chars().count(), "one mapping per source character");
+            assert_eq!(mapped.concat(), expected);
+        }
+    }
+
+    #[test]
+    fn title_case_preserves_existing_word_boundaries() {
+        for (source, expected) in [
+            ("don't stop o’NEILL", "Don't Stop O’neill"),
+            ("'HELLO' ’WORLD’", "'hello' ’world’"),
+            ("alpha-beta.gamma/delta_OMEGA", "Alpha-Beta.Gamma/Delta_Omega"),
+            ("123ABC abc123DEF", "123abc Abc123def"),
+            ("\u{600}HELLO", "\u{600}Hello"),
+            ("\u{600}'HELLO", "\u{600}'hello"),
+            ("\u{600}’HELLO", "\u{600}’hello"),
+            ("\u{301}HELLO", "\u{301}Hello"),
+        ] {
+            assert_eq!(case_map(source, "title").concat(), expected);
+        }
+    }
+
+    #[test]
+    fn case_mapping_preserves_other_modes_and_script_policy() {
+        assert_eq!(case_map("ßİ", "upper"), ["SS", "İ"]);
+        assert_eq!(case_map("ßİ", "lower"), ["ß", "i\u{307}"]);
+        assert_eq!(case_map("HELLO. E\u{301}CLAIR!", "sentence").concat(), "Hello. E\u{301}clair!");
+    }
 }

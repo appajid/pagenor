@@ -76,6 +76,10 @@ pub struct PasteRequest {
     document: std::sync::Arc<pagenor_doc::Document>,
     selection: pagenor_doc::Selection,
     story_editor: Option<pagenor_doc::StoryId>,
+    was_text: bool,
+    layer: pagenor_doc::LayerId,
+    parent_mode: bool,
+    image_placement: Value,
 }
 
 pub type OpenAsyncFn = Box<dyn FnMut(ImportRequest)>;
@@ -989,12 +993,32 @@ impl DesignApp {
         r
     }
 
+    fn image_paste_placement(&self) -> Value {
+        let fallback = if self.session.active().is_some_and(|st| st.editing_parents) {
+            pagenor_doc::SpreadRef::Parent(0)
+        } else {
+            pagenor_doc::SpreadRef::Doc(0)
+        };
+        let (spread, page) = crate::canvas::current_spread_page(self).unwrap_or((fallback, 0));
+        let center = self.session.active().and_then(|st| st.doc.spread(spread)).and_then(|sp| sp.pages.get(page)).map(|pg| pg.bounds().center());
+        match center {
+            Some(c) => json!({"spread":spread,"at":[c.x,c.y]}),
+            None => json!({"spread":spread}),
+        }
+    }
+
     fn queue_clipboard_paste(&mut self) {
+        let was_text = self.session.wants_text();
+        let image_placement = self.image_paste_placement();
         self.pending_clipboard_paste = self.session.active().map(|state| PasteRequest {
             target: state.uid,
             document: state.doc.clone(),
             selection: state.selection.clone(),
             story_editor: self.story_editor,
+            was_text,
+            layer: state.active_layer,
+            parent_mode: state.editing_parents,
+            image_placement,
         });
     }
 
@@ -1003,19 +1027,46 @@ impl DesignApp {
         if self.closing {
             return false;
         }
-        self.session.wants_text()
+        self.session.wants_text() == request.was_text
             && !ctx.text_edit_focused()
             && self.ui.dialog.is_none()
             && self.story_editor == request.story_editor
             && self.session.active().is_some_and(|state| {
-                state.uid == request.target && std::sync::Arc::ptr_eq(&state.doc, &request.document) && state.selection == request.selection
+                state.uid == request.target
+                    && state.editing_parents == request.parent_mode
+                    && state.active_layer == request.layer
+                    && std::sync::Arc::ptr_eq(&state.doc, &request.document)
+                    && state.selection == request.selection
             })
     }
 
     /// Complete a host clipboard read only while its original editing context is current.
     /// Apply immediately so later input cannot route a delayed paste event to another target.
     pub fn receive_clipboard_paste(&mut self, ctx: &egui::Context, request: PasteRequest, text: String) -> bool {
-        self.paste_target_matches(ctx, &request) && self.run("edit.paste", json!({"text": text})).is_ok()
+        if !self.paste_target_matches(ctx, &request) {
+            return false;
+        }
+        if !request.was_text && !self.session.matches_object_clipboard(&text) {
+            if pagenor_engine::cmd::is_svg_markup(&text) {
+                let mut params = request.image_placement;
+                params["svg"] = json!(text);
+                return self.run("edit.pasteSvg", params).is_ok();
+            }
+            self.status("The clipboard contains no image or Pagenor objects to paste.");
+            return false;
+        }
+        self.run("edit.paste", json!({"text": text})).is_ok()
+    }
+
+    /// Deliver a native image only to the exact document and selection that requested it.
+    pub fn receive_clipboard_image(&mut self, ctx: &egui::Context, request: PasteRequest, name: &str, bytes: &[u8]) -> bool {
+        if !self.paste_target_matches(ctx, &request) {
+            return false;
+        }
+        let mut params = request.image_placement;
+        params["base64"] = json!(pagenor_engine::cmd::base64_encode(bytes));
+        params["name"] = json!(name);
+        self.run("edit.pasteImage", params).is_ok()
     }
 
     // Called only at frame start, before publishing any queued Copy/Cut. A menu request
@@ -3474,4 +3525,10 @@ fn is_graphic_path(path: &str) -> bool {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff" | "bmp" | "psd" | "svg" | "pdf" | "ai" | "eps"
         )
     })
+}
+
+/// A single image address is a bitmap-paste candidate; ordinary text retains text semantics.
+pub fn clipboard_image_address(text: &str) -> bool {
+    let text = text.trim();
+    !text.chars().any(char::is_whitespace) && ["https://", "http://", "file://", "data:image/"].iter().any(|prefix| text.starts_with(prefix))
 }

@@ -11,6 +11,7 @@
 //! Then the paragraph's limits ([`Limits`]) are applied.
 
 pub mod dict;
+pub(crate) mod indic;
 pub mod patgen;
 pub mod patterns;
 

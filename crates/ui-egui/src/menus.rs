@@ -805,12 +805,15 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             });
             let Some((auto_fit, fitting, align, crop)) = opts else { return Some(Err("select a graphic frame or an empty frame".into())) };
             let fitting = serde_json::to_value(fitting).unwrap_or(json!("none"));
-            let c = |v: f64| json!(pagenor_geom::format_measure(v, pagenor_geom::Unit::Points));
-            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            let unit = app.session.active().map_or(pagenor_geom::Unit::Picas, |st| st.doc.settings.horizontal_units);
+            let c = |v: f64| json!(pagenor_geom::format_measure(v, unit));
+            let mut dialog = crate::dialogs::Dialog::new(
                 "fittingOptions",
                 json!({"document": app.session.active().map(|st|st.uid),"selection":app.session.active().and_then(|st|serde_json::to_value(&st.selection).ok()),"autoFit": auto_fit, "fitting": fitting, "align": align,
                     "cropTop": c(crop[0]), "cropLeft": c(crop[1]), "cropBottom": c(crop[2]), "cropRight": c(crop[3])}),
-            ));
+            );
+            dialog.unit = unit;
+            app.ui.dialog = Some(dialog);
             Ok(Value::Null)
         }
         "app.userDictionary" => {
@@ -1836,6 +1839,9 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "edit.paste" && app.services.request_paste.is_some() {
+        return app.session.active().is_some();
+    }
     if id == "app.graphicCell" {
         return enabled(app, "table.placeGraphic");
     }
@@ -2242,6 +2248,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "edit.paste" && app.services.request_paste.is_some() {
+        return app.session.active().is_some();
+    }
     if id == "app.graphicCell" {
         return enabled(app, "table.placeGraphic");
     }
@@ -2298,7 +2307,7 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
         crate::effects_dialog::open(app, page);
         return;
     }
-    if params.is_null() && id == "edit.paste" && app.session.wants_text() {
+    if params.is_null() && id == "edit.paste" && (app.session.wants_text() || app.services.request_paste.is_some()) {
         // User Paste must read the system clipboard before the engine can choose a payload.
         // Explicit app.run/engine calls with no text keep their internal-clipboard semantics.
         app.queue_clipboard_paste();

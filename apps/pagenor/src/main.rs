@@ -14,8 +14,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod appearance;
+mod clipboard_image;
 mod control_server;
 mod gpu;
+mod gpu_limits;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -76,6 +78,9 @@ struct App {
     clipboard: std::sync::Arc<NativeClipboard>,
     paste_requests: std::sync::mpsc::Receiver<PasteRequest>,
     paste_completions: Vec<(PasteRequest, String)>,
+    image_reader: Option<clipboard_image::Reader>,
+    image_pending: Option<(u64, PasteRequest, Option<String>, std::time::Instant)>,
+    image_completions: Vec<(PasteRequest, clipboard_image::ImageFile)>,
     #[cfg(target_os = "macos")]
     menu: Option<native_menu::NativeMenu>,
     /// The window's start: the adapter and backend chosen for it; see `gpu`.
@@ -110,12 +115,50 @@ impl eframe::App for App {
         self.app.logic(ctx);
         self.startup.leave();
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        // Read once before the UI passes, after the previous frame's complete
-        // clipboard output. Keyboard Paste remains ordinary input.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some((ticket, result)) = self.image_reader.as_mut().and_then(|reader| reader.poll())
+            && let Some((wanted, request, text, _)) = self.image_pending.take()
+            && ticket == wanted
+        {
+            match result {
+                Ok(Some(image)) => self.image_completions.push((request, image)),
+                Ok(None) => {
+                    if let Some(completion) = clipboard_paste_completion(request, text.filter(|t| !t.is_empty())) {
+                        self.app.ui.status.clear();
+                        self.paste_completions.push(completion);
+                    } else {
+                        self.app.status("The clipboard contains no supported image.");
+                    }
+                }
+                Err(error) => self.app.status(error),
+            }
+        }
+        if self.image_pending.as_ref().is_some_and(|(_, _, _, at)| at.elapsed() >= clipboard_image::WAIT) {
+            self.image_pending = None;
+            self.app.status("The clipboard did not answer. Please copy the image again and retry Paste.");
+        }
+        // Copy output has already reached the native adapter before these queued requests.
         while let Ok(request) = self.paste_requests.try_recv() {
             let text = self.clipboard.adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get();
-            if let Some(completion) = clipboard_paste_completion(request, text) {
+            let image = text.as_ref().is_none_or(|text| text.is_empty() || clipboard_image::image_address(text))
+                && !(text.as_deref() == Some("") && self.app.session.has_usable_empty_text_clipboard());
+            if image {
+                if self.image_reader.is_none() {
+                    match clipboard_image::Reader::new() {
+                        Ok(reader) => self.image_reader = Some(reader),
+                        Err(error) => {
+                            self.app.status(error);
+                            continue;
+                        }
+                    }
+                }
+                if let Some(ticket) = self.image_reader.as_mut().and_then(|reader| reader.request(ctx)) {
+                    self.image_pending = Some((ticket, request, text, std::time::Instant::now()));
+                    self.app.status("Reading clipboard image…");
+                } else {
+                    self.app.status("Clipboard image reading is still in progress.");
+                }
+            } else if let Some(completion) = clipboard_paste_completion(request, text) {
                 self.paste_completions.push(completion);
             }
         }
@@ -124,6 +167,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.startup.enter();
         ui_with_clipboard_paste(&mut self.app, ui, &mut self.paste_completions);
+        for (request, image) in self.image_completions.drain(..) {
+            if self.app.receive_clipboard_image(ui.ctx(), request, &image.name, &image.bytes) {
+                self.app.ui.status.clear();
+            }
+        }
         self.app.show_file_dialogs(Some(&*frame));
         self.app.handle_close_request(ui.ctx());
         self.startup.leave();
@@ -329,6 +377,7 @@ fn main() -> std::process::ExitCode {
     }
     // The graphics backend, decided before the window exists: a driver that faults takes the
     // process down before any Rust code can catch it (see `gpu::backend`).
+    gpu_limits::request_adapter_sizes(&mut options);
     let fallback = gpu::backend::Fallback::begin(
         if no_prefs() { None } else { profile::config_dir().map(|d| d.join(gpu::backend::FILE)) },
         env!("CARGO_PKG_VERSION"),
@@ -469,6 +518,9 @@ fn main() -> std::process::ExitCode {
                     clipboard,
                     paste_requests,
                     paste_completions: Vec::new(),
+                    image_reader: None,
+                    image_pending: None,
+                    image_completions: Vec::new(),
                     #[cfg(target_os = "macos")]
                     menu: None,
                     startup: created,

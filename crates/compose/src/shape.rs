@@ -1363,6 +1363,11 @@ fn upright_features(feats: &[Feature], horizontal_kana: bool) -> Vec<Feature> {
     out
 }
 
+/// Supported Indic scripts split at syllables without an inserted hyphen glyph.
+pub(crate) fn breaks_without_hyphen(g: &Glyph) -> bool {
+    g.lang.and_then(crate::hyphen::indic::language).is_some() && matches!(g.ch as u32, 0x0900..=0x0dff)
+}
+
 #[cfg(test)]
 mod queued_cluster_tests {
     use super::cuts_inside;

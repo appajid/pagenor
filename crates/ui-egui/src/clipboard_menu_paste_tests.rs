@@ -360,3 +360,56 @@ fn host_paste_cancels_after_input_in_following_frame() {
     }
     assert_eq!(app.session.journal, journal);
 }
+
+#[test]
+fn upstream_image_paste_is_inline_and_delayed_results_cannot_change_a_new_selection() {
+    for moved in [false, true] {
+        let (mut app, sid, _) = fixture(false);
+        let reads = host_reader(&mut app);
+        let ctx = Context::default();
+        frame(&mut app, &ctx, vec![], false);
+        frame(&mut app, &ctx, vec![], true);
+        frame(&mut app, &ctx, vec![], false);
+        let request = reads.lock().unwrap().pop().unwrap();
+        if moved {
+            app.run("text.select", json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        }
+        let before = app.session.doc().unwrap().doc.clone();
+        let bytes = pagenor_engine::cmd::pasted_png(2, 2, vec![255; 16]).unwrap();
+        assert_eq!(app.receive_clipboard_image(&ctx, request, "Clipboard.png", &bytes), !moved);
+        let st = app.session.doc().unwrap();
+        if moved {
+            assert!(Arc::ptr_eq(&before, &st.doc));
+        } else {
+            assert_eq!(st.doc.story(sid).unwrap().text, format!("O{OBJECT_MARK}D"));
+            assert_eq!(st.doc.story(sid).unwrap().objects.len(), 1);
+        }
+    }
+}
+#[test]
+fn upstream_external_plain_text_cannot_paste_stale_objects_on_the_canvas() {
+    let (mut app, _, _) = fixture(true);
+    app.session.set_tool("selection");
+    app.run("selection.set", json!({"ids":[]})).unwrap();
+    let ctx = Context::default();
+    app.queue_clipboard_paste();
+    let request = app.pending_clipboard_paste.take().unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    assert!(!app.receive_clipboard_paste(&ctx, request, "సాధారణ పాఠ్యం".into()));
+    assert!(Arc::ptr_eq(&before, &app.session.doc().unwrap().doc));
+}
+
+#[test]
+fn upstream_delayed_object_image_cancels_when_switching_master_editing_mode() {
+    let (mut app, _, _) = fixture(true);
+    app.session.set_tool("selection");
+    app.run("selection.set", json!({"ids":[]})).unwrap();
+    let ctx = Context::default();
+    app.queue_clipboard_paste();
+    let request = app.pending_clipboard_paste.take().unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    app.run("layout.parents.edit", json!({"on":true})).unwrap();
+    let bytes = pagenor_engine::cmd::pasted_png(2, 2, vec![255; 16]).unwrap();
+    assert!(!app.receive_clipboard_image(&ctx, request, "Clipboard.png", &bytes));
+    assert!(Arc::ptr_eq(&before, &app.session.doc().unwrap().doc));
+}

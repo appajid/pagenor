@@ -865,8 +865,11 @@ fn _r(_: Result<()>) {}
 /// Layout › Page Size (the Page tool): resize pages one by one. Left pages grow to the left
 /// (the spine stays put); objects move with their page.
 fn page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
-    let pages: Vec<usize> =
-        p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as usize).collect()).unwrap_or_default();
+    let pages: Vec<usize> = p
+        .get("pages")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok())).collect::<Option<Vec<_>>>())
+        .unwrap_or_default();
     let n = s.doc()?.doc.page_count();
     if pages.is_empty() || pages.iter().any(|x| *x == 0 || *x > n) {
         return Err(bad("layout.pageSize", "give `pages` (1-based)"));

@@ -124,7 +124,7 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
     pub results: Vec<Value>,
-    /// The failing step (index, command, message); later steps didn't run.
+    /// The first failing step (index, command, message), if any.
     pub failed: Option<(usize, String, String)>,
 }
 

@@ -86,3 +86,8 @@ Headless window screenshots (locked screen, hidden window): `cargo run -p pageno
 The MCP server (`pagenor-cli mcp`) wraps the same methods for Claude and other agents.
 
 AI window, background tasks and review commands are documented in [AI assistant](ai-assistant.md).
+
+`ui.paste` also accepts `{ "image": "<base64 raster file>", "name": "image.png" }`
+when the document has focus. An ordinary text insertion point receives an inline
+image; otherwise it fills a selected empty frame or creates an embedded graphic.
+Pixel/byte limits and the same atomic command validation apply as `edit.pasteImage`.

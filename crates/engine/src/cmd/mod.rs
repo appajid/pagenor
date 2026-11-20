@@ -28,6 +28,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+mod paste_image;
 pub use links::{LinkListChecks, list_document_links, preview_document_links};
 mod liquid;
 mod lists;
@@ -172,6 +173,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(interchange::specs());
         v.extend(export::specs());
         v.extend(edit::specs());
+        v.extend(paste_image::specs());
         v.extend(paste_svg::specs());
         v.extend(endnotes::specs());
         v.extend(editorial::specs());
@@ -332,3 +334,5 @@ pub use layout::chapter_numbering;
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;
 pub(crate) use place_text::autoflow_primary as place_text_autoflow_primary;
+
+pub use paste_image::{IMAGE_EXTENSIONS, MAX_PASTED_PIXELS, check_pasted_size, pasted_png};

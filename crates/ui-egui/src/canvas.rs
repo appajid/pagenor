@@ -2560,6 +2560,9 @@ impl CanvasInput {
                 egui::Event::Paste(t) if !wants_text && pagenor_engine::cmd::is_svg_markup(&t) => {
                     let _ = app.run("edit.paste", json!({"text":t}));
                 }
+                egui::Event::Paste(t) if app.services.request_paste.is_some() && crate::clipboard_image_address(&t) => {
+                    app.queue_clipboard_paste();
+                }
                 egui::Event::Paste(t) if wants_text => {
                     // Formatted when the system clipboard still holds what was copied here;
                     // Shift (⇧⌘V) pastes without formatting.

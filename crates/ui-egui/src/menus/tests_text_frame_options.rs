@@ -1309,3 +1309,25 @@ fn r28_tfo_open_dropdown_keeps_checkbox_and_cancel_enter_behavior() {
         }
     }
 }
+
+#[test]
+fn upstream_columns_focus_supports_arrows_without_stealing_later_focus() {
+    let (mut app, frames) = configured_frames();
+    app.run("selection.set", json!({"ids":[frames[1].0]})).unwrap();
+    activate(&mut app, "object.textFrameOptions", &Value::Null);
+    let mut h = dialog(app);
+    assert!(h.ctx.text_edit_focused());
+    h.key_press(egui::Key::ArrowUp);
+    h.run();
+    h.key_press(egui::Key::ArrowUp);
+    h.run();
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().n("columns"), Some(4.0));
+    edit_measure(&mut h, "Gutter", "12 pt");
+    h.key_press(egui::Key::ArrowUp);
+    h.run();
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().n("columns"), Some(4.0));
+    h.get_by_label("  OK  ").click();
+    h.run();
+    assert!(h.state().ui.dialog.is_none());
+    assert_eq!(h.state().session.doc().unwrap().doc.item(frames[1]).unwrap().text_frame().unwrap().options.columns, 4);
+}

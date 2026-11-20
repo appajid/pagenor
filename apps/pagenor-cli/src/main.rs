@@ -3,7 +3,7 @@
 //! ```text
 //! pagenor-cli run [--in FILE.pgnr|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.pgnr|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
 //! Export options --page, --scale and --pdf-options apply to the exports that follow them.
-//! pagenor-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
+//! pagenor-cli commands [FILTER] [--json]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
 //! pagenor-cli describe ID          # one command: label, menu, shortcut, parameters
 //! pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
 //!                                      # run a command script (crates/engine/src/script.rs): `$N.path` references
@@ -36,7 +36,7 @@ use pagenor_engine::Session;
 use serde_json::{Value, json};
 
 /// Usage for explicit help and invalid commands.
-const USAGE: &str = "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli validate-pdf FILE.pdf\n       pagenor-cli links\n       pagenor-cli --version";
+const USAGE: &str = "usage: pagenor-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n       pagenor-cli commands [FILTER] [--json]\n       pagenor-cli describe COMMAND\n       pagenor-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       pagenor-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       pagenor-cli mcp [--connect PORT] [--sample]\n       pagenor-cli perf [--pages N] [--runs N] [--strict]\n       pagenor-cli bench FILE [--runs N]\n       pagenor-cli validate-pdf FILE.pdf\n       pagenor-cli links\n       pagenor-cli --version";
 
 fn usage_footer() -> String {
     format!("\nProject: {}  ·  Issues: {}", pagenor_engine::links::GITHUB, pagenor_engine::links::ISSUES)
@@ -60,19 +60,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => report(run(&args[1..])),
-        Some("commands") => {
-            let s = Session::new();
-            let filter = args.get(1).map(|f| f.to_lowercase());
-            let list: Vec<Value> = serde_json::to_value(s.commands())
-                .ok()
-                .and_then(|v| v.as_array().cloned())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| filter.as_ref().is_none_or(|f| c.to_string().to_lowercase().contains(f.as_str())))
-                .collect();
-            outln!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
-            ExitCode::SUCCESS
-        }
+        Some("commands") => report(commands(&args[1..])),
         Some("describe") => report(describe(args.get(1).map(String::as_str))),
         Some("script") => report(script(&args[1..])),
         Some("app") => report(app(&args[1..])),
@@ -96,6 +84,38 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `commands [FILTER] [--json]`: the catalogue as JSON, optionally only the entries whose JSON
+/// contains FILTER (case-insensitive).
+///
+/// The output is always JSON. `--json` is accepted because the other Craft CLIs list their
+/// catalogue as JSON with it; before, it was taken as a FILTER no command contains, so it printed
+/// `[]` and succeeded. Any other option is an error, not an empty list.
+fn commands(args: &[String]) -> Result<(), String> {
+    let mut filter: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            other if other.starts_with('-') => return Err(format!("unknown option {other}")),
+            other => {
+                // The first one is the FILTER, as before.
+                if filter.is_none() {
+                    filter = Some(other.to_lowercase());
+                }
+            }
+        }
+    }
+    let s = Session::new();
+    let list: Vec<Value> = serde_json::to_value(s.commands())
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| filter.as_ref().is_none_or(|f| c.to_string().to_lowercase().contains(f.as_str())))
+        .collect();
+    outln!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
+    Ok(())
 }
 
 fn report(r: Result<(), String>) -> ExitCode {
@@ -218,6 +238,16 @@ impl Export {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    let mut checked = args.iter();
+    while let Some(option) = checked.next() {
+        match option.as_str() {
+            "--sample" => {}
+            "--in" | "--cmd" | "--page" | "--scale" | "--pdf-options" | "--export" | "--all-pages" => {
+                checked.next().ok_or_else(|| format!("{option} needs a value"))?;
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
@@ -411,11 +441,15 @@ fn script(args: &[String]) -> Result<(), String> {
     let report = if keep_going {
         // Run every step; failures become {"error": …} results.
         let mut results: Vec<Value> = Vec::new();
-        for st in &steps {
+        let mut failed = None;
+        for (i, st) in steps.iter().enumerate() {
             let r = pagenor_engine::script::resolve(&st.params, &results).and_then(|p| exec(b, &st.command, p));
-            results.push(r.unwrap_or_else(|e| json!({"error": e, "command": st.command})));
+            results.push(r.unwrap_or_else(|e| {
+                failed.get_or_insert_with(|| (i, st.command.clone(), e.clone()));
+                json!({"error": e, "command": st.command})
+            }));
         }
-        pagenor_engine::script::Report { results, failed: None }
+        pagenor_engine::script::Report { results, failed }
     } else {
         pagenor_engine::script::run(&steps, |id, p| exec(b, id, p))
     };

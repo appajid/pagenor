@@ -193,7 +193,16 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
         // What Ctrl/Cmd+V delivers from the system clipboard: text, or SVG markup copied in an
         // illustration app (pasted as editable paths when no text is being edited).
         "ui.paste" => {
-            let Some(text) = s("text") else { return err("missing `text`") };
+            if let Some(image) = s("image") {
+                if ctx.text_edit_focused() || app.ui.dialog.is_some() {
+                    return err("focus the document before pasting an image");
+                }
+                let mut params = app.image_paste_placement();
+                params["base64"] = json!(image);
+                params["name"] = p.get("name").cloned().unwrap_or(Value::Null);
+                return wrap(app.run("edit.pasteImage", params));
+            }
+            let Some(text) = s("text") else { return err("missing `text` or `image`") };
             app.synthetic.push(egui::Event::Paste(text.to_string()));
             ctx.request_repaint();
             ok(Value::Null)

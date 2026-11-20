@@ -15,12 +15,16 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current milestone: **0.14.1** — reject QR data-merge bindings that
-would retain a stale standalone code, across both command entry points. Valid
-frame-based merging and native format 8 remain unchanged. All seven gates pass:
-3,163 tests, seven existing skips and twenty WASM packages.
-[Download the 0.14.1 desktop preview](https://github.com/appajid/pagenor/releases/tag/v0.14.1) · [Native validation and release notes](docs/releases/0.14.1.md).
-[Changes, checks and compatibility notes](docs/qr-merge-adoption-20261111.md).
+Current local milestone: **0.15.0** — thirty selected upstream scopes improve
+editing, table rules, IDML styles, dialogs, image paste and Indic word breaking.
+All seven gates pass: 3,212 tests, zero failures, 7 existing ignores and
+twenty WASM packages; Windows/Linux shared-library checks pass.
+[Adaptation notes, limitations and remaining queue](docs/upstream-adoption-20261120.md).
+
+Published desktop preview: [0.14.1](https://github.com/appajid/pagenor/releases/tag/v0.14.1).
+The separately verified [0.14.2 Windows update candidates](docs/releases/0.14.2.md)
+remain unchanged. The current task updates local source without replacing the
+installed app or publishing a new release.
 
 ## The sample magazine
 

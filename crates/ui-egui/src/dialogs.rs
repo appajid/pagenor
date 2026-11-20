@@ -739,7 +739,40 @@ fn show_text_frame_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(&lang, s);
     egui::Grid::new("tfo").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         let label = crate::rtl::label(ui, tr("Number of columns"));
-        text_field_with_label(ui, d, "columns", 80.0, Some(label.id));
+        ui.horizontal(|ui| {
+            // Retain raw edits, including returning to the original mixed value.
+            // Confirmation still validates the text before editing the document.
+            let mut text = d.s("columns");
+            let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(60.0)).labelled_by(label.id);
+            if response.changed() {
+                d.fields.insert("columns".into(), json!(text));
+            }
+            if !d.fields.contains_key("_focusColumns") {
+                response.request_focus();
+                d.fields.insert("_focusColumns".into(), json!(true));
+            }
+            let mut delta = 0;
+            if response.has_focus() {
+                delta = ui.input_mut(|input| {
+                    let step = if input.modifiers.shift { 10 } else { 1 };
+                    let up =
+                        input.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp) || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                    let down = input.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown)
+                        || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+                    (i32::from(up) - i32::from(down)) * step
+                });
+            }
+            if ui.small_button("+").on_hover_text("Increase number of columns").clicked() {
+                delta = 1;
+            }
+            if ui.small_button("−").on_hover_text("Decrease number of columns").clicked() {
+                delta = -1;
+            }
+            if delta != 0 {
+                let value = d.n("columns").filter(|v| v.is_finite()).unwrap_or(1.0);
+                d.fields.insert("columns".into(), json!((value + f64::from(delta)).round().clamp(1.0, 216.0).to_string()));
+            }
+        });
         ui.end_row();
         let label = crate::rtl::label(ui, tr("Gutter"));
         text_field_with_label(ui, d, "gutter", 80.0, Some(label.id));
@@ -2525,7 +2558,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             });
                         });
                         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Crop Amount")).font(semibold(12.0)));
-                        egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+                        egui::Grid::new("ff_crop").num_columns(4).min_col_width(80.0).spacing([8.0, 6.0]).show(ui, |ui| {
                             for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
                                 text_field(ui, &mut d, k, 70.0);
@@ -3609,7 +3642,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         ),
         "fittingOptions" => {
             check_dialog_selection(app,&d,"Frame Fitting Options")?;
-            let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
+            let m = |k: &str| d.m(k).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
@@ -3831,6 +3864,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+    });
+    ui.horizontal_wrapped(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         for (id, label) in [("worldReady", "World-Ready Paragraph Composer"), ("worldReadySingleLine", "World-Ready Single-line Composer")] {
@@ -3849,20 +3884,20 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         {
             d.fields.insert(format!("{prefix}composer"), json!("singleLine"));
         }
-        ui.end_row();
-        for (label, key, text, default) in [
-            ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
-            ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
-        ] {
+    });
+    for (label, key, text, default) in [
+        ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
+        ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
+    ] {
+        ui.horizontal_wrapped(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = cur(d, key);
             let mut on = v.as_bool().unwrap_or(default);
             if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, text))).indeterminate(v.is_null())).changed() {
                 d.fields.insert(format!("{prefix}{key}"), json!(on));
             }
-            ui.end_row();
-        }
-    });
+        });
+    }
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));
@@ -9924,5 +9959,33 @@ mod queued_dialog_tests {
         let before = h.state().session.doc().unwrap().doc.clone();
         assert!(confirm(h.state_mut()).is_err());
         assert!(std::sync::Arc::ptr_eq(&before, &h.state().session.doc().unwrap().doc));
+    }
+    #[test]
+    fn upstream_fitting_uses_ruler_units_for_bare_crop_values() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits":"millimeters"})).unwrap();
+        let frame = app.run("frame.create", json!({"rect":[100,100,300,300]})).unwrap();
+        let id = pagenor_doc::ItemId(frame["id"].as_u64().unwrap());
+        app.run("object.fittingOptions", json!({"crop":[1,2,3,4]})).unwrap();
+        app.run("app.fittingOptions", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().unit, pagenor_geom::Unit::Millimeters);
+        let mut h = fixture(app);
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("cropTop".into(), json!("2"));
+        h.run_steps(3);
+        capture(&mut h, "fitting-ruler-units");
+        confirm(h.state_mut()).unwrap();
+        let crop = h.state().session.doc().unwrap().doc.item(id).unwrap().empty_fitting.unwrap().crop;
+        assert!((crop[0] - 2.0 * pagenor_geom::units::PT_PER_MM).abs() < 1e-6);
+    }
+    #[test]
+    fn upstream_justification_controls_remain_visible_in_compact_dialog() {
+        let mut app = DesignApp::new(pagenor_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[36,36,300,300],"content":"text","text":"Alignment controls"})).unwrap();
+        app.run("app.justificationDialog", json!({})).unwrap();
+        let mut h = fixture(app);
+        let _ = h.get_by_label("World-Ready Paragraph Composer");
+        capture(&mut h, "justification-compact");
     }
 }
