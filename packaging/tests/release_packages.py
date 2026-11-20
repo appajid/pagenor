@@ -118,10 +118,12 @@ class ReleasePackages(unittest.TestCase):
         source.mkdir(parents=True)
         subprocess.run(['git', 'init', '--quiet', str(outer)], check=True)
         (outer / 'sample.txt').write_text('parent must stay unchanged\n')
-        (source / 'sample.txt').write_text('before\n')
+        (source / 'sample.txt').write_bytes(b'before\n')
         patch = self.path / 'helper.patch'
-        patch.write_text('--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n')
-        module.apply_patch(source, patch)
+        patch.write_bytes(b'--- a/sample.txt\r\n+++ b/sample.txt\r\n@@ -1 +1 @@\r\n-before\r\n+after\r\n')
+        from unittest.mock import patch as mock_patch
+        with mock_patch.dict(os.environ, {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.autocrlf', 'GIT_CONFIG_VALUE_0': 'true'}):
+            module.apply_patch(source, patch)
         self.assertEqual((source / 'sample.txt').read_text(), 'after\n')
         self.assertEqual((outer / 'sample.txt').read_text(), 'parent must stay unchanged\n')
 

@@ -42,8 +42,14 @@ def apply_patch(source, patch):
     # A build under the Pagenor checkout must not let git discover its parent
     # repository: otherwise git apply can silently skip every upstream path.
     subprocess.run(['git', 'init', '--quiet', str(source)], check=True)
-    subprocess.run(['git', 'apply', str(patch)], cwd=source, check=True)
-    subprocess.run(['git', 'apply', '--reverse', '--check', str(patch)], cwd=source, check=True)
+    # Windows checkouts may convert the patch to CRLF, while the checksum-pinned
+    # upstream tarballs contain LF. Normalize only the patch and ignore the build
+    # machine's Git newline preferences; keep the original archives unchanged.
+    normalized = source.parent / 'pagenor-helper.lf.patch'
+    normalized.write_bytes(patch.read_bytes().replace(b'\r\n', b'\n'))
+    command = ['git', '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', 'apply']
+    subprocess.run([*command, str(normalized)], cwd=source, check=True)
+    subprocess.run([*command, '--reverse', '--check', str(normalized)], cwd=source, check=True)
 
 
 def main():

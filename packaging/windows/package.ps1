@@ -56,6 +56,26 @@ if (-not $env:PAGENOR_BUILD_DATE) { $env:PAGENOR_BUILD_DATE = (Get-Date).ToUnive
 
 Write-Output "Pagenor $Version for Windows $Arch ($Target)"
 
+function Get-PeHeader([string] $Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
+}
+$Machine = switch ($Arch) { 'x64' { 0x8664 } 'x86' { 0x14C } 'arm64' { 0xAA64 } }
+
+$Stage = Join-Path $TargetDir "windows-package\$Arch"
+Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+
+# Required external PageMaker process: build for the package architecture, never
+# depend on a developer's PATH or a helper installed on the build machine.
+Invoke-Native 'build PageMaker helper' {
+  python (Join-Path $Root 'packaging/pagemaker/build.py') --arch $Arch `
+    --work (Join-Path $TargetDir "pagemaker-$Arch") --output $Stage
+}
+$Helper = Join-Path $Stage 'helpers/pmd2raw-byte-v2.exe'
+if ((Get-PeHeader $Helper).Machine -ne $Machine) { throw 'PageMaker helper architecture mismatch' }
+
 if (-not $SkipBuild) {
   # Static CRT: no VC++ redistributable needed. Scoped to the target so host build scripts and
   # proc-macros are unaffected.
@@ -72,32 +92,14 @@ $Bin = Join-Path $TargetDir "$Target\release"
 # x64 build can never ship labelled arm64. Subsystem (optional header): 2 = Windows GUI, 3 = console.
 # The app must be GUI (no console window opens with it); the CLI must stay console so its output
 # reaches the terminal.
-function Get-PeHeader([string] $Path) {
-  $bytes = [System.IO.File]::ReadAllBytes($Path)
-  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
-  return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
-}
-$Machine = switch ($Arch) { 'x64' { 0x8664 } 'x86' { 0x14C } 'arm64' { 0xAA64 } }
 foreach ($check in @(@('pagenor.exe', 2), @('pagenor-cli.exe', 3))) {
   $h = Get-PeHeader (Join-Path $Bin $check[0])
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
   Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
 }
-$Stage = Join-Path $TargetDir "windows-package\$Arch"
-Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item (Join-Path $Bin 'pagenor.exe'), (Join-Path $Bin 'pagenor-cli.exe') $Stage
 Copy-Item (Join-Path $Root 'assets\app-icon\pagenor-document.ico') $Stage
-
-# Required external PageMaker process: build for the package architecture, never
-# depend on a developer's PATH or a helper installed on the build machine.
-Invoke-Native 'build PageMaker helper' {
-  python (Join-Path $Root 'packaging/pagemaker/build.py') --arch $Arch `
-    --work (Join-Path $TargetDir "pagemaker-$Arch") --output $Stage
-}
-$Helper = Join-Path $Stage 'helpers/pmd2raw-byte-v2.exe'
-if ((Get-PeHeader $Helper).Machine -ne $Machine) { throw 'PageMaker helper architecture mismatch' }
 
 # The installed app and the portable build carry the same software, branding and
 # embedded-font notices. Stage them before WiX harvests the installer payload.
