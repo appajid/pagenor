@@ -2,9 +2,16 @@ name: Windows maintenance verification
 'on':
   push:
     branches: [codex/pagenor-0142-windows]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      package_run:
+        description: 'Reuse packages from this run for verification only (blank builds new packages)'
+        type: string
+        default: ''
+        required: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: windows-maintenance-${{ github.ref }}
   cancel-in-progress: true
@@ -14,6 +21,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
 jobs:
   package:
+    if: ${{ inputs.package_run == '' }}
     runs-on: windows-latest
     timeout-minutes: 120
     strategy:
@@ -55,6 +63,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   verify:
+    if: ${{ always() && !cancelled() && (needs.package.result == 'success' || inputs.package_run != '') }}
     needs: package
     timeout-minutes: 30
     runs-on: ${{ matrix.runner }}
@@ -77,6 +86,8 @@ jobs:
         with:
           name: windows-maintenance-${{ matrix.arch }}
           path: dist
+          run-id: ${{ inputs.package_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Verify installer and portable converter
         shell: pwsh
         run: |

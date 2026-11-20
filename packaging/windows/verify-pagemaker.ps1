@@ -11,19 +11,19 @@ $Fixture = (Resolve-Path -LiteralPath $Fixture).Path
 if ($Msi) {
   $installer = New-Object -ComObject WindowsInstaller.Installer
   $db = $installer.OpenDatabase((Resolve-Path -LiteralPath $Msi).Path, 0)
-  function Query-Msi([string] $Query) {
+  function Query-Msi([string] $Query, [switch] $Integer) {
     $view = $db.OpenView($Query)
-    $view.Execute()
+    [void] $view.Execute()
     $record = $view.Fetch()
     if (-not $record) { throw "MSI is missing required UI row: $Query" }
-    $value = $record.StringData(1)
-    $view.Close()
+    $value = if ($Integer) { [int] $record.IntegerData(1) } else { [string] $record.StringData(1) }
+    [void] $view.Close()
     return $value
   }
   # Validate the actual compiled database, not just the source XML. -1 schedules
   # ExitDialog on successful interactive completion; /qn intentionally skips UI.
-  $sequence = Query-Msi 'SELECT `Sequence` FROM `InstallUISequence` WHERE `Action` = ''ExitDialog'''
-  if ($sequence -ne '-1') { throw 'MSI has no success exit dialog' }
+  $sequence = Query-Msi 'SELECT `Sequence` FROM `InstallUISequence` WHERE `Action` = ''ExitDialog''' -Integer
+  if ($sequence -ne -1) { throw "MSI success-dialog sequence is $($sequence | ConvertTo-Json -Compress); expected -1" }
   $finish = Query-Msi 'SELECT `Argument` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish'' AND `Event` = ''EndDialog'''
   if ($finish -ne 'Return') { throw 'MSI success dialog has no working Finish button' }
   $text = Query-Msi 'SELECT `Value` FROM `Property` WHERE `Property` = ''WIXUI_EXITDIALOGOPTIONALTEXT'''
