@@ -776,14 +776,25 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
                 ui.add_space(8.0);
                 // Open the live Preflight details from either the indicator or count.
-                let errors = panels::preflight_errors(app);
+                let report = app.preflight.get(&app.session, ui.ctx());
+                let errors = report.issues.iter().filter(|i| i.severity == "error").count();
                 let (r, indicator) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
                 ui.painter().circle_filled(
                     r.center(),
                     4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
+                    if report.checking || report.unavailable {
+                        Color32::from_rgb(230, 170, 40)
+                    } else if errors == 0 {
+                        Color32::from_rgb(60, 200, 90)
+                    } else {
+                        Color32::from_rgb(235, 50, 50)
+                    },
                 );
-                let text = if errors == 0 {
+                let text = if report.unavailable {
+                    "Preflight unavailable ▾".to_string()
+                } else if report.checking {
+                    "Checking… ▾".to_string()
+                } else if errors == 0 {
                     format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
                 } else {
                     format!(

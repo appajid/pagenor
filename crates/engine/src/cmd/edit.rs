@@ -220,8 +220,8 @@ pub fn specs() -> Vec<CommandSpec> {
             if !matches!(e.label.as_str(), "New AI Conversation" | "Clear AI Records") {
                 super::ai::preserve_records(&mut restored, &st.doc)?;
             }
-            st.history.undo.pop();
-            st.history.redo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
+            Arc::make_mut(&mut st.history.undo).pop();
+            Arc::make_mut(&mut st.history.redo).push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
             st.doc = if restored.ai == e.doc.ai { e.doc } else { Arc::new(restored) };
             st.selection = e.selection;
             st.revision += 1;
@@ -234,8 +234,8 @@ pub fn specs() -> Vec<CommandSpec> {
             if !matches!(e.label.as_str(), "New AI Conversation" | "Clear AI Records") {
                 super::ai::preserve_records(&mut restored, &st.doc)?;
             }
-            st.history.redo.pop();
-            st.history.undo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
+            Arc::make_mut(&mut st.history.redo).pop();
+            Arc::make_mut(&mut st.history.undo).push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
             st.doc = if restored.ai == e.doc.ai { e.doc } else { Arc::new(restored) };
             st.selection = e.selection;
             st.revision += 1;

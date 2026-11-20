@@ -349,7 +349,7 @@ fn host_paste_cancels_after_input_in_following_frame() {
     assert!(Arc::ptr_eq(&state.doc, &before.doc));
     for (actual, expected) in [(&state.history.undo, &before.history.undo), (&state.history.redo, &before.history.redo)] {
         assert_eq!(actual.len(), expected.len());
-        for (actual, expected) in actual.iter().zip(expected) {
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(actual.label, expected.label);
             assert_eq!(actual.selection, expected.selection);
             assert!(Arc::ptr_eq(&actual.doc, &expected.doc));

@@ -166,6 +166,38 @@ mod tests {
         assert_eq!(st.doc.spreads[0].items.len(), 0, "the document is the one from before the command");
     }
 
+    #[test]
+    fn large_undo_histories_are_shared_by_readonly_guard_snapshots_and_isolated_on_edit() {
+        use std::sync::Arc;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let st = s.active_mut().unwrap();
+        let entry = crate::HistoryEntry { label: "Earlier edit".into(), doc: st.doc.clone(), selection: st.selection.clone() };
+        Arc::make_mut(&mut st.history.undo).resize(1000, entry);
+        let history = st.history.undo.clone();
+        // UI attribute queries run several times on every cursor repaint. They
+        // retain the existing history allocation, regardless of its length.
+        for _ in 0..100 {
+            s.execute("type.selectionAttrs", &json!({})).unwrap();
+            assert!(Arc::ptr_eq(&history, &s.active().unwrap().history.undo));
+        }
+        s.guarded("test.readonly", |s| {
+            assert!(Arc::ptr_eq(&history, &s.active().unwrap().history.undo));
+            assert!(Arc::strong_count(&history) >= 3, "the guard shares history instead of copying entries");
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        let result = s.guarded("test.failed_history_edit", |s| {
+            s.execute("frame.create", &json!({"rect":[0,0,100,100]}))?;
+            assert!(!Arc::ptr_eq(&history, &s.active().unwrap().history.undo));
+            panic!("synthetic rollback after history mutation");
+        });
+        assert!(result.is_err());
+        assert!(Arc::ptr_eq(&history, &s.active().unwrap().history.undo));
+        assert_eq!(s.active().unwrap().history.undo.len(), 1000);
+        assert!(s.active().unwrap().doc.spreads[0].items.is_empty());
+    }
+
     /// A command that opens another document and then panics leaves none of it behind (#742).
     #[test]
     fn a_panicking_command_restores_the_document_set() {

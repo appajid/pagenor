@@ -79,6 +79,52 @@ class ReleasePackages(unittest.TestCase):
         self.assertEqual(payload.attrib['Directory'], 'LICENSEFOLDER')
         self.assertEqual(payload.attrib['Include'], r'$(var.BinDir)\licenses\**')
 
+    def test_windows_interactive_setup_includes_success_and_required_converter(self):
+        ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs', 'ui': 'http://wixtoolset.org/schemas/v4/wxs/ui'}
+        wix = ET.parse(ROOT / 'packaging/windows/pagenor.wxs')
+        ui = wix.find('.//ui:WixUI', ns)
+        self.assertEqual(ui.attrib, {'Id': 'WixUI_InstallDir', 'InstallDirectory': 'INSTALLFOLDER'})
+        text = wix.find('.//w:Property[@Id="WIXUI_EXITDIALOGOPTIONALTEXT"]', ns)
+        self.assertIn('installed successfully', text.attrib['Value'])
+        helper = wix.find('.//w:File[@Id="PageMakerHelperExe"]', ns)
+        self.assertEqual(helper.attrib['Source'], r'$(var.BinDir)\helpers\pmd2raw-byte-v2.exe')
+        package = (ROOT / 'packaging/windows/package.ps1').read_text()
+        self.assertIn('WixToolset.UI.wixext/5.0.2', package)
+        self.assertIn("packaging/pagemaker/build.py", package)
+        self.assertIn("Copy-Item (Join-Path $Stage 'helpers') $Portable -Recurse", package)
+        self.assertIn('PageMaker helper architecture mismatch', package)
+        desktop = wix.find('.//w:Shortcut[@Id="DesktopShortcut"]', ns)
+        self.assertEqual(desktop.attrib['Directory'], 'DesktopFolder')
+        self.assertEqual(desktop.attrib['WorkingDirectory'], 'INSTALLFOLDER')
+        self.assertEqual(desktop.attrib['Icon'], 'PagenorIcon.ico')
+        self.assertIsNotNone(wix.find('.//w:MajorUpgrade', ns))
+
+    def test_helper_download_rejects_changed_source_before_extracting(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('pagemaker_build', ROOT / 'packaging/pagemaker/build.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (self.path / 'libpagemaker-0.0.4.tar.xz').write_bytes(b'corrupt source archive')
+        with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
+            module.fetch('libpagemaker-0.0.4', self.path)
+
+    def test_helper_patch_is_applied_inside_a_parent_checkout(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('pagemaker_build', ROOT / 'packaging/pagemaker/build.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        outer = self.path / 'checkout'
+        source = outer / 'target/upstream'
+        source.mkdir(parents=True)
+        subprocess.run(['git', 'init', '--quiet', str(outer)], check=True)
+        (outer / 'sample.txt').write_text('parent must stay unchanged\n')
+        (source / 'sample.txt').write_text('before\n')
+        patch = self.path / 'helper.patch'
+        patch.write_text('--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n')
+        module.apply_patch(source, patch)
+        self.assertEqual((source / 'sample.txt').read_text(), 'after\n')
+        self.assertEqual((outer / 'sample.txt').read_text(), 'parent must stay unchanged\n')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='pagenor-packaging-')
         self.addCleanup(self.temp.cleanup)

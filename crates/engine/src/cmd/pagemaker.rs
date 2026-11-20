@@ -309,6 +309,12 @@ mod native {
 
     use super::*;
 
+    fn bundled_helper(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+        let name = if cfg!(target_os = "windows") { "pmd2raw-byte-v2.exe" } else { "pmd2raw-byte-v2" };
+        let path = executable.parent()?.join("helpers").join(name);
+        path.is_file().then_some(path)
+    }
+
     fn helper() -> (std::ffi::OsString, u8) {
         if let Some(path) = std::env::var_os("PAGENOR_PAGEMAKER_CONVERTER") {
             let mode = match std::env::var("PAGENOR_PAGEMAKER_BYTE_OUTPUT").as_deref() {
@@ -317,6 +323,9 @@ mod native {
                 _ => 0,
             };
             return (path, mode);
+        }
+        if let Some(path) = std::env::current_exe().ok().and_then(|exe| bundled_helper(&exe)) {
+            return (path.into(), 2);
         }
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let data = if cfg!(target_os = "macos") {
@@ -346,6 +355,26 @@ mod native {
         (if cfg!(target_os = "windows") { "pmd2raw.exe".into() } else { "pmd2raw".into() }, 0)
     }
 
+    #[cfg(test)]
+    #[test]
+    fn bundled_converter_is_application_relative_and_uses_only_v2() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("Pagenor portable with spaces");
+        std::fs::create_dir_all(app.join("helpers")).unwrap();
+        let executable = app.join("pagenor.exe");
+        assert!(bundled_helper(&executable).is_none());
+        // A stock helper or an old byte-v1 helper is not the bundled V2 profile.
+        for name in ["pmd2raw", "pmd2raw.exe", "pmd2raw-byte-v1", "pmd2raw-byte-v1.exe"] {
+            std::fs::write(app.join("helpers").join(name), b"wrong profile").unwrap();
+        }
+        assert!(bundled_helper(&executable).is_none());
+        let name = if cfg!(target_os = "windows") { "pmd2raw-byte-v2.exe" } else { "pmd2raw-byte-v2" };
+        let helper = app.join("helpers").join(name);
+        std::fs::write(&helper, b"synthetic helper").unwrap();
+        assert_eq!(bundled_helper(&executable), Some(helper));
+        assert!(bundled_helper(&root.path().join("other/pagenor.exe")).is_none());
+    }
+
     fn read_pipe(reader: impl Read, limit: usize, exceeded: &AtomicBool) -> std::io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
         reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
@@ -362,8 +391,15 @@ mod native {
         input.flush().map_err(|e| bad("file.open", e.to_string()))?;
         // No shell, no source-file-controlled executable or switches. The helper only sees
         // our bounded temporary copy, even if the original is modified during conversion.
-        let mut child = Command::new(helper).arg(input.path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().map_err(|e| bad("file.open", format!("PageMaker helper unavailable: {e}. Install pmd2raw (libpagemaker), or set PAGENOR_PAGEMAKER_CONVERTER to its executable path.")))?;
+        let mut command = Command::new(helper);
+        // A GUI import must not flash a console window on Windows.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command.arg(input.path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().map_err(|e| bad("file.open", format!("PageMaker helper unavailable: {e}. Reinstall Pagenor using the complete installer or extract the entire portable ZIP, including its helpers folder. Advanced users can set PAGENOR_PAGEMAKER_CONVERTER to a compatible converter.")))?;
         let Some(stdout) = child.stdout.take() else {
             let _ = child.kill();
             let _ = child.wait();

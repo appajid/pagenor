@@ -167,3 +167,14 @@ in docs/upstream-adoption-20261031.md; applicable upstream notices remain above.
 
 The complete licence texts for these additions are in docs/licenses/
 (craft-dialogs-MIT.txt, craft-dialogs-APACHE.txt and fancy-regex-MIT.txt).
+
+Windows PageMaker compatibility helper
+
+Windows installers and portable packages include pmd2raw-byte-v2 as a separate
+process. libpagemaker 0.0.4 is MPL-2.0; librevenge 0.0.6 is distributed under its
+MPL-2.0 option. Their original source archives, original notices and Pagenor's
+MPL-2.0 modifications/build recipe accompany the executable in licenses/pagemaker.
+The helper uses Boost headers (Boost Software License 1.0) and zlib 1.3.1 (zlib
+licence). Those notices and pinned source URLs are supplied in the same folder.
+No proprietary fonts or user publications are included. The Rust application is
+not linked to these libraries and retains its MIT OR Apache-2.0 licensing.

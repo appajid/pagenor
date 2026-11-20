@@ -468,7 +468,7 @@ fn assert_owner_document_unchanged(actual: &pagenor_engine::DocState, before: &p
     assert_eq!(actual.history.limit, before.history.limit);
     for (actual, before) in [(&actual.history.undo, &before.history.undo), (&actual.history.redo, &before.history.redo)] {
         assert_eq!(actual.len(), before.len());
-        for (actual, before) in actual.iter().zip(before) {
+        for (actual, before) in actual.iter().zip(before.iter()) {
             assert_eq!(actual.label, before.label);
             assert!(std::sync::Arc::ptr_eq(&actual.doc, &before.doc));
             assert_eq!(*actual.doc, *before.doc);
@@ -842,7 +842,7 @@ fn r12_tfo_status_valid_enter_and_ok_preserve_success_and_undo() {
         assert_roundtrip(harness.state_mut(), &before.doc, &expected, &before.selection, before.history.undo.len());
         let after = harness.state().session.doc().unwrap();
         assert!(after.history.redo.is_empty(), "the valid edit replaces the old redo branch");
-        for (actual, prior) in after.history.undo.iter().zip(&before.history.undo) {
+        for (actual, prior) in after.history.undo.iter().zip(before.history.undo.iter()) {
             assert_eq!(actual.label, prior.label);
             assert!(std::sync::Arc::ptr_eq(&actual.doc, &prior.doc));
             assert_eq!(*actual.doc, *prior.doc);

@@ -11,7 +11,8 @@
   zip needs the Visual C++ redistributable. Signing is delegated to sign.ps1 (skipped with a
   warning when no signing secrets are set).
 
-  Needs: Rust (MSVC toolchain + the target), the Windows SDK (rc.exe, signtool.exe),
+  Needs: Rust (MSVC toolchain + the target), Python 3.12+, CMake 3.20+,
+  Visual Studio 2022 C++ tools for the target, the Windows SDK (rc.exe, signtool.exe),
   and WiX v5: dotnet tool install --global wix --version 5.0.2
 
 .EXAMPLE
@@ -89,6 +90,15 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 Copy-Item (Join-Path $Bin 'pagenor.exe'), (Join-Path $Bin 'pagenor-cli.exe') $Stage
 Copy-Item (Join-Path $Root 'assets\app-icon\pagenor-document.ico') $Stage
 
+# Required external PageMaker process: build for the package architecture, never
+# depend on a developer's PATH or a helper installed on the build machine.
+Invoke-Native 'build PageMaker helper' {
+  python (Join-Path $Root 'packaging/pagemaker/build.py') --arch $Arch `
+    --work (Join-Path $TargetDir "pagemaker-$Arch") --output $Stage
+}
+$Helper = Join-Path $Stage 'helpers/pmd2raw-byte-v2.exe'
+if ((Get-PeHeader $Helper).Machine -ne $Machine) { throw 'PageMaker helper architecture mismatch' }
+
 # The installed app and the portable build carry the same software, branding and
 # embedded-font notices. Stage them before WiX harvests the installer payload.
 $Notices = Join-Path $Stage 'licenses'
@@ -107,14 +117,15 @@ if ($env:CRAFT_FONTS_DIR) {
   }
 }
 
-& (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'pagenor.exe') (Join-Path $Stage 'pagenor-cli.exe')
+& (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'pagenor.exe') (Join-Path $Stage 'pagenor-cli.exe') $Helper
 
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "pagenor-$Version-windows-$Arch.msi"
+Invoke-Native 'install WiX UI extension' { wix extension add -g WixToolset.UI.wixext/5.0.2 }
 Invoke-Native 'wix build' {
   wix build (Join-Path $PSScriptRoot 'pagenor.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\pagenor.ico')" `
-    -o $Msi
+    -ext WixToolset.UI.wixext/5.0.2 -d "LicensePath=$(Join-Path $PSScriptRoot 'license.rtf')" -o $Msi
 }
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
@@ -126,7 +137,9 @@ Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 Copy-Item (Join-Path $Stage 'pagenor-document.ico') $Portable
-Copy-Item (Join-Path $Notices '*') $Portable
+Get-ChildItem -LiteralPath $Notices -File | Copy-Item -Destination $Portable
+Copy-Item $Notices $Portable -Recurse
+Copy-Item (Join-Path $Stage 'helpers') $Portable -Recurse
 Set-Content -LiteralPath (Join-Path $Portable 'portable.txt') -Value 'Pagenor portable settings and recovery' -Encoding utf8
 $Zip = Join-Path $Dist "pagenor-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue

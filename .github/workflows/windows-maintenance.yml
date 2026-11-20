@@ -1,0 +1,98 @@
+name: Windows maintenance verification
+'on':
+  push:
+    branches: [codex/pagenor-0142-windows]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: windows-maintenance-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86, arm64]
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - name: Check out pinned release fonts
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: 1.99.0
+          targets: x86_64-pc-windows-msvc,i686-pc-windows-msvc,aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: release-windows-${{ matrix.arch }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build complete package
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-maintenance-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+  verify:
+    needs: package
+    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            program_files: ProgramFiles
+          - arch: x86
+            runner: windows-latest
+            program_files: ProgramFiles(x86)
+          - arch: arm64
+            runner: windows-11-arm
+            program_files: ProgramFiles
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-maintenance-${{ matrix.arch }}
+          path: dist
+      - name: Verify installer and portable converter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python packaging/tests/pagemaker_fixture.py "$env:RUNNER_TEMP/three-pages.p65"
+          if ($LASTEXITCODE -ne 0) { throw 'fixture generation failed' }
+          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
+          $proc = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw 'MSI installation failed' }
+          try {
+            $directory = Join-Path ([Environment]::GetEnvironmentVariable('${{ matrix.program_files }}')) 'Pagenor'
+            ./packaging/windows/verify-pagemaker.ps1 -Directory $directory -Msi $msi -Fixture "$env:RUNNER_TEMP/three-pages.p65"
+            Expand-Archive (Get-ChildItem dist/*-portable.zip | Select-Object -First 1).FullName "$env:RUNNER_TEMP/portable"
+            $portable = (Get-ChildItem "$env:RUNNER_TEMP/portable" -Directory | Select-Object -First 1).FullName
+            ./packaging/windows/verify-pagemaker.ps1 -Directory $portable -Fixture "$env:RUNNER_TEMP/three-pages.p65"
+          } finally {
+            $proc = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw 'MSI uninstall failed' }
+          }
+          ./packaging/windows/verify-upgrade.ps1 -Arch ${{ matrix.arch }} -Msi $msi -Directory $directory -Fixture "$env:RUNNER_TEMP/three-pages.p65"

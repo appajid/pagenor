@@ -30,7 +30,7 @@ fn run(s: &mut crate::Session, p: &Value) -> Result<Value> {
         && Some(st.uid) == uid
         && st.history.undo.len() > before
     {
-        st.history.undo.truncate(before);
+        std::sync::Arc::make_mut(&mut st.history.undo).truncate(before);
     }
     let out = json!({"results": report.results, "steps": steps.len()});
     match report.failed {

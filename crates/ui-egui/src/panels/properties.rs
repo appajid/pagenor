@@ -2885,7 +2885,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = pagenor_engine::cmd::preflight::check(&app.session, 150.0);
+    let report = app.preflight.get(&app.session, ui.ctx());
+    if report.checking || report.unavailable {
+        ui.label(if report.checking { "Checking document…" } else { "Live document checking is unavailable." });
+        return;
+    }
+    let issues = report.issues;
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
@@ -2909,7 +2914,7 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     });
     divider(ui);
-    for i in issues {
+    for i in issues.iter() {
         let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
         let text = format!("{}  {}", if i.severity == "error" { "⛔" } else { "⚠" }, i.message);
         let resp = ui.add(egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false));

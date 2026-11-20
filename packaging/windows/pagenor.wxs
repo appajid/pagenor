@@ -6,7 +6,8 @@
 
   Per-machine install into Program Files with a Start Menu shortcut.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
       Name="Pagenor"
       Manufacturer="Appaji Ambarisha"
@@ -20,6 +21,10 @@
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
         DowngradeErrorMessage="A newer version of Pagenor is already installed." />
+    <!-- Full interactive setup, including a success/Finish page. /qn remains silent. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicensePath)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Pagenor has been installed successfully. Open Pagenor using the desktop shortcut or Start menu." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="PagenorIcon.ico" SourceFile="$(var.IconPath)" />
@@ -28,9 +33,11 @@
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Pagenor">
         <Directory Id="LICENSEFOLDER" Name="licenses" />
+        <Directory Id="HELPERFOLDER" Name="helpers" />
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
 
     <Feature Id="Main" Title="Pagenor" Level="1">
       <ComponentGroupRef Id="PagenorFiles" />
@@ -40,9 +47,15 @@
   <Fragment>
     <ComponentGroup Id="PagenorFiles" Directory="INSTALLFOLDER">
       <Files Include="$(var.BinDir)\licenses\**" Directory="LICENSEFOLDER" />
+      <Component Id="PagenorPageMakerHelper" Directory="HELPERFOLDER">
+        <File Id="PageMakerHelperExe" Source="$(var.BinDir)\helpers\pmd2raw-byte-v2.exe" KeyPath="yes" />
+      </Component>
       <Component Id="PagenorApp" Guid="54E2E178-B8D0-54DC-B725-D4F32DDA891F">
         <File Id="PagenorExe" Source="$(var.BinDir)\pagenor.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Pagenor"
+              Description="Pagenor page layout and publishing" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+              Icon="PagenorIcon.ico" IconIndex="0" />
+          <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="Pagenor"
               Description="Pagenor page layout and publishing" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
               Icon="PagenorIcon.ico" IconIndex="0" />
         </File>

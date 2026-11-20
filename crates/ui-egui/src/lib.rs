@@ -29,6 +29,7 @@ mod page_history;
 mod page_thumbnails;
 mod panel_docking;
 pub mod panels;
+mod preflight_worker;
 mod prefs;
 pub mod recent_documents;
 mod recent_previews;
@@ -589,6 +590,7 @@ pub struct DesignApp {
     pub(crate) page_histories: HashMap<u64, page_history::PageHistory>,
     pub(crate) replaying_page_history: bool,
     pub(crate) page_thumbnails: page_thumbnails::Thumbnails,
+    pub(crate) preflight: preflight_worker::State,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
     #[cfg(not(target_arch = "wasm32"))]
@@ -684,6 +686,7 @@ impl DesignApp {
             page_histories: HashMap::new(),
             replaying_page_history: false,
             page_thumbnails: page_thumbnails::Thumbnails::default(),
+            preflight: preflight_worker::State::default(),
             canvas: CanvasCache::new(),
             #[cfg(not(target_arch = "wasm32"))]
             links_worker: links_worker::State::default(),
@@ -1276,6 +1279,10 @@ impl DesignApp {
         }
         self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ai::poll(self, ctx);
+        if self.session.active().is_none() {
+            // Closing the last document releases cached reports and the worker's cache.
+            self.preflight.clear(ctx);
+        }
         if !self.color_applied {
             self.color_applied = true;
             if let Some(cs) = self.ui.color_settings.clone() {

@@ -1094,3 +1094,40 @@ placeholder targets; extend the same guard to Pagenor's QR-generator field bindi
 Valid frame contents and hyperlink bindings remain supported. This selected
 adaptation does not introduce upstream product identifiers, dependencies or assets.
 [Review, safeguards and checks](docs/qr-merge-adoption-20261111.md).
+
+## 2026-11-20 — P11.28 local maintenance (0.14.2 work in progress)
+
+Owner reports Windows 0.14.1 has no installer completion screen and cannot open
+PageMaker because its optional helper is absent. The existing WiX package had no
+UI dialog set and never staged a converter. Add WiX UI 5.0.2 InstallDir/ExitDialog,
+package and discover a static byte-v2 helper for each Windows architecture, preserve
+the original document-icon associations and keep existing releases immutable.
+The helper recipe uses SHA-256-pinned public MPL libpagemaker/librevenge sources;
+librevenge's MPL alternative is selected. The existing locally verified V2 patch
+is now supplied under MPL with corresponding source/notices in each package.
+No Apscribe/Scribus/Adobe implementation or private fonts/publications are copied.
+
+Owner also reports slow typing/scroll/zoom. Live preflight previously ran full
+document inspection synchronously on each document snapshot, and the open panel
+repeated it every paint. Replace those paths with one bounded background worker
+per native app and an owned exact-snapshot cache, separate from the UI composition
+cache; preserve synchronous explicit checks and WASM. Completion updates are
+document/font-generation checked. This addresses a concrete blocking path, not
+a claim that all performance causes are solved. Validation pending; details in
+docs/releases/0.14.2.md. Current Mac session and installed app stay untouched.
+
+The owner clarifies Windows 10 cursor response is slow although their other
+layout application runs normally. Inspection also found every guarded panel query
+cloning each open document's entire undo/redo vectors. Change only history storage
+to Arc-backed copy-on-write vectors: read-only snapshots share allocations, writes
+retain rollback isolation. No guard is removed. A 1,000-entry regression verifies
+query sharing and exact restoration after a synthetic nested history mutation/panic;
+existing script, undo/redo and rollback tests still apply.
+
+Owner additionally requests an updater for existing 0.14.1 installations and a
+desktop app shortcut. Keep the standard MSI as the update installer using the
+existing UpgradeCode/MajorUpgrade mechanism; add an advertised desktop shortcut
+owned by the application component. A native regression installs the pinned,
+immutable 0.14.1 MSI, creates synthetic saved settings/document, applies 0.14.2,
+checks preservation, one installed product, shortcut, old-document reopening and
+PageMaker availability, then uninstalls. Native results remain pending.

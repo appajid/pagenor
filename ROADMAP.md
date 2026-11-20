@@ -1,5 +1,11 @@
 # Pagenor roadmap
 
+P11.28: local **0.14.2 maintenance work in progress** (20 November 2026):
+Windows installer completion, bundled PageMaker helper and background live preflight.
+Validation pending; published desktop preview remains **0.14.1**.
+See [0.14.2 work and verification notes](docs/releases/0.14.2.md).
+
+
 P11.27: published **0.14.1 desktop development preview** on 2026-11-11.
 All 20 package payloads were downloaded and matched the two official SHA-256
 manifests; 22 assets cover universal Mac, Windows x64/x86/ARM64 and Linux

@@ -702,7 +702,7 @@ mod native_clipboard_paste_tests {
         assert_eq!(after.revision, before.revision);
         for (old, new) in [(&before.history.undo, &after.history.undo), (&before.history.redo, &after.history.redo)] {
             assert_eq!(old.len(), new.len());
-            for (old, new) in old.iter().zip(new) {
+            for (old, new) in old.iter().zip(new.iter()) {
                 assert_eq!(old.label, new.label);
                 assert_eq!(old.selection, new.selection);
                 assert!(Arc::ptr_eq(&old.doc, &new.doc));

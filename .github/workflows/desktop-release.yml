@@ -88,6 +88,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: release-windows-${{ matrix.arch }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
       - name: Install WiX
         shell: pwsh
         run: dotnet tool install --global wix --version 5.0.2
@@ -259,6 +262,7 @@ jobs:
         with:
           name: release-windows-${{ matrix.arch }}
           path: dist
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
       - name: Install, verify associations and icons, export PDF, uninstall
         shell: pwsh
         run: |
@@ -292,10 +296,17 @@ jobs:
           foreach ($notice in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'LICENSE-Pagenor-brand.txt', 'LICENSE-Pagenor-app-icon.txt', 'OFL-Inter.txt') {
             if (-not (Test-Path (Join-Path $dir "licenses\$notice"))) { throw "missing installed notice: $notice" }
           }
+          python packaging/tests/pagemaker_fixture.py "$env:RUNNER_TEMP/three-pages.p65"
+          if ($LASTEXITCODE -ne 0) { throw 'PageMaker fixture generation failed' }
+          ./packaging/windows/verify-pagemaker.ps1 -Directory $dir -Msi $msi -Fixture "$env:RUNNER_TEMP/three-pages.p65"
+          Expand-Archive (Get-ChildItem dist/*-portable.zip | Select-Object -First 1).FullName "$env:RUNNER_TEMP/portable"
+          $portable = (Get-ChildItem "$env:RUNNER_TEMP/portable" -Directory | Select-Object -First 1).FullName
+          ./packaging/windows/verify-pagemaker.ps1 -Directory $portable -Fixture "$env:RUNNER_TEMP/three-pages.p65"
           $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
           if (Test-Path (Join-Path $dir 'pagenor.exe')) { throw 'uninstall left pagenor.exe behind' }
           Write-Output 'ok uninstalled'
+          ./packaging/windows/verify-upgrade.ps1 -Arch ${{ matrix.arch }} -Msi $msi -Directory $dir -Fixture "$env:RUNNER_TEMP/three-pages.p65"
     strategy:
       fail-fast: false
       matrix:

@@ -1,0 +1,198 @@
+--- a/src/lib/OutputShape.cpp
++++ b/src/lib/OutputShape.cpp
+@@ -23,6 +23,7 @@
+     std::shared_ptr<libpagemaker::OutputShape> ptrToOutputShape(
+       new OutputShape(ptrToLineSet->getIsClosed(), ptrToLineSet->shapeType(), ptrToLineSet->getRotation(), ptrToLineSet->getSkew(), ptrToLineSet->getText(), ptrToLineSet->getCharProperties(), ptrToLineSet->getParaProperties()));
+ 
++    ptrToOutputShape->setSourceStoryId(ptrToLineSet->getSourceStoryId());
+     PMDShapePoint bboxTopLeft = ptrToLineSet->getBboxTopLeft();
+     PMDShapePoint bboxBotRight = ptrToLineSet->getBboxBotRight();
+     ptrToOutputShape->setBoundingBox(InchPoint((bboxTopLeft.m_x.toInches() + translate.m_x),(bboxTopLeft.m_y.toInches() + translate.m_y)), InchPoint((bboxBotRight.m_x.toInches() + translate.m_x),(bboxBotRight.m_y.toInches() + translate.m_y)));
+--- a/src/lib/OutputShape.h
++++ b/src/lib/OutputShape.h
+@@ -35,6 +35,7 @@
+   std::vector<PMDParaProperties> m_paraProps;
+   librevenge::RVNGBinaryData m_bitmap;
+   double m_width,m_height;
++  uint32_t m_sourceStoryId = 0;
+ 
+ public:
+   OutputShape(bool isClosed, int shape, double rotation, double skew, const PMDFillProperties &fillProps, const PMDStrokeProperties &strokeProps)
+@@ -57,6 +58,9 @@
+       m_strokeProps(),
+       m_text(), m_charProps(), m_paraProps(), m_bitmap(bitmap), m_width(), m_height()
+   { }
++
++  uint32_t getSourceStoryId() const { return m_sourceStoryId; }
++  void setSourceStoryId(uint32_t id) { m_sourceStoryId = id; }
+ 
+   unsigned numPoints() const
+   {
+--- a/src/lib/PMDCollector.cpp
++++ b/src/lib/PMDCollector.cpp
+@@ -29,7 +29,12 @@
+ {
+   if (!text.empty())
+   {
+-    painter->insertText(text.c_str());
++    // Diagnostic drawing strings are UTF-8; transport source 8-bit text as
++    // ASCII hex so incomplete UTF-8 sequences cannot discard terminal bytes.
++    const char hex[] = "0123456789abcdef";
++    std::string encoded = "@PAGENOR-BYTES-V2@";
++    for (const unsigned char c : text) { encoded.push_back(hex[c >> 4]); encoded.push_back(hex[c & 15]); }
++    painter->insertText(encoded.c_str());
+     text.clear();
+   }
+ }
+@@ -278,6 +283,9 @@
+     textbox.insert("draw:fill", "none");
+     textbox.insert("librevenge:rotate", shape.getRotation() * 180 / M_PI);
+ 
++    librevenge::RVNGString sourceStory;
++    sourceStory.sprintf("%u", shape.getSourceStoryId());
++    textbox.insert("pagenor:story-id", sourceStory);
+     painter->startTextObject(textbox);
+ 
+     uint16_t paraStart = 0;
+@@ -624,6 +632,11 @@
+                              const std::vector<std::shared_ptr<const OutputShape> > &outputShapes) const
+ {
+   librevenge::RVNGPropertyList pageProps;
++  librevenge::RVNGString count;
++  count.sprintf("%u", m_sourcePageRecords);
++  pageProps.insert("pagenor:source-page-records", count);
++  if (!m_doubleSided) pageProps.insert("pagenor:source-page-count", count);
++
+   if (m_pageWidth.is_initialized())
+   {
+     double widthInInches = m_pageWidth.get().toInches();
+--- a/src/lib/PMDCollector.h
++++ b/src/lib/PMDCollector.h
+@@ -51,6 +51,7 @@
+   std::vector<PMDColor> m_color;
+   std::vector<PMDFont> m_font;
+   bool m_doubleSided;
++  uint32_t m_sourcePageRecords = 0;
+ 
+   void writePage(const PMDPage &,
+                  librevenge::RVNGDrawingInterface *,
+@@ -66,6 +67,7 @@
+   PMDCollector();
+ 
+   /* State-mutating functions */
++  void setSourcePageRecords(uint32_t count) { m_sourcePageRecords = count; }
+   void setPageWidth(PMDShapeUnit);
+   void setPageHeight(PMDShapeUnit);
+   void setDoubleSided(bool);
+--- a/src/lib/PMDParser.cpp
++++ b/src/lib/PMDParser.cpp
+@@ -10,6 +10,7 @@
+ #include "PMDParser.h"
+ 
+ #include <cassert>
++#include <cstdio>
+ #include <iterator>
+ #include <limits>
+ #include <memory>
+@@ -452,7 +453,7 @@
+     }
+   }
+ 
+-  std::shared_ptr<PMDLineSet> newShape(new PMDTextBox(bboxTopLeft, bboxBotRight, xFormContainer, text, charProps, paraProps));
++  std::shared_ptr<PMDLineSet> newShape(new PMDTextBox(textBoxTextBlockId, bboxTopLeft, bboxBotRight, xFormContainer, text, charProps, paraProps));
+   m_collector->addShapeToPage(pageID, newShape);
+ 
+ }
+@@ -636,11 +637,9 @@
+     bitmap.append(tempBytes,tiffContainer.m_numRecords);
+   }
+ 
++  // Continuation is optional: some complete images occupy only the primary
++  // sequence. Keep validating the resulting raster in the Rust importer.
+   tiffIt = beginRecordsWithSeqNumber(bitmapRecordSeqNum + 1);
+-  if (tiffIt == endRecords())
+-  {
+-    throw RecordNotFoundException(TIFF, bitmapRecordSeqNum);
+-  }
+   for (; tiffIt != endRecords(); ++tiffIt)
+   {
+     const PMDRecordContainer &tiffSecondContainer = *tiffIt;
+@@ -985,7 +984,18 @@
+   if (i != m_records.end()
+       && !(i->second.empty()))
+   {
+-    parsePages(m_recordsInOrder[i->second[0]]);
++    uint32_t sourcePageRecords = 0;
++    for (const auto index : i->second) {
++      sourcePageRecords += m_recordsInOrder.at(index).m_numRecords;
++      if (sourcePageRecords > 1000) throw PMDParseException("Page record count exceeds limit");
++    }
++    m_collector->setSourcePageRecords(sourcePageRecords);
++
++    for (const auto index : i->second)
++    {
++      const auto &pageContainer = m_recordsInOrder.at(index);
++      parsePages(pageContainer);
++    }
+   }
+   else
+   {
+--- a/src/lib/PMDocument.cpp
++++ b/src/lib/PMDocument.cpp
+@@ -13,6 +13,7 @@
+ #include <libpagemaker/libpagemaker.h>
+ 
+ #include "PMDCollector.h"
++#include "PMDExceptions.h"
+ #include "PMDParser.h"
+ #include "libpagemaker_utils.h"
+ 
+@@ -44,10 +45,12 @@
+   collector.draw(painter);
+   return true;
+ }
++catch (const PMDParseException &e)
++{ std::fprintf(stderr, "PageMaker parse: %s\n", e.m_message.c_str()); return false; }
++catch (const std::exception &e)
++{ std::fprintf(stderr, "PageMaker error: %s\n", e.what()); return false; }
+ catch (...)
+-{
+-  return false;
+-}
++{ std::fprintf(stderr, "PageMaker parser encountered an unknown exception\n"); return false; }
+ 
+ }
+ 
+--- a/src/lib/geometry.h
++++ b/src/lib/geometry.h
+@@ -63,6 +63,7 @@
+   virtual PMDFillProperties getFillProperties() const = 0;
+   virtual PMDStrokeProperties getStrokeProperties() const = 0;
+   virtual std::string getText() const = 0;
++  virtual uint32_t getSourceStoryId() const { return 0; }
+   virtual std::vector<PMDCharProperties> getCharProperties() const = 0;
+   virtual std::vector<PMDParaProperties> getParaProperties() const = 0;
+   virtual librevenge::RVNGBinaryData getBitmap() const = 0;
+@@ -291,6 +292,7 @@
+ 
+ class PMDTextBox : public PMDLineSet
+ {
++  uint32_t m_sourceStoryId;
+   PMDShapePoint m_bboxTopLeft;
+   PMDShapePoint m_bboxBotRight;
+   PMDXForm m_xFormContainer;
+@@ -299,9 +301,11 @@
+   std::vector<PMDParaProperties> m_paraProps;
+ 
+ public:
+-  PMDTextBox(const PMDShapePoint &bboxTopLeft, const PMDShapePoint &bboxBotRight, const PMDXForm &xFormContainer, const std::string text, const std::vector<PMDCharProperties> charProps, const std::vector<PMDParaProperties> paraProps)
+-    : m_bboxTopLeft(bboxTopLeft), m_bboxBotRight(bboxBotRight),m_xFormContainer(xFormContainer), m_text(text), m_charProps(charProps), m_paraProps(paraProps)
+-  { }
++  PMDTextBox(uint32_t sourceStoryId, const PMDShapePoint &bboxTopLeft, const PMDShapePoint &bboxBotRight, const PMDXForm &xFormContainer, const std::string text, const std::vector<PMDCharProperties> charProps, const std::vector<PMDParaProperties> paraProps)
++    : m_sourceStoryId(sourceStoryId), m_bboxTopLeft(bboxTopLeft), m_bboxBotRight(bboxBotRight),m_xFormContainer(xFormContainer), m_text(text), m_charProps(charProps), m_paraProps(paraProps)
++  { }
++
++  uint32_t getSourceStoryId() const override { return m_sourceStoryId; }
+ 
+   double getRotation() const override
+   {

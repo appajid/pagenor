@@ -3,6 +3,16 @@
 Local Pagenor 0.5.2 addition, 2026-10-11. This is an initial text-recovery
 compatibility importer, not a complete PageMaker reader or a fidelity milestone.
 
+## Windows packaging update (0.14.2 work in progress)
+
+Windows 0.14.1 packages omitted the external converter, so a clean installation
+could not open PageMaker files. The 0.14.2 packaging recipe builds and supplies
+byte-v2 in both MSI and portable ZIP packages, with its source/notices. It is
+selected beside the application; an ordinary Windows user needs no separate
+converter installation. Native package validation is pending. The rest of this
+page records the original optional-helper implementation and its initial limits.
+See [current work and verification](../releases/0.14.2.md).
+
 ## Opening files
 
 Desktop File → Open accepts PageMaker 6.5/7 document and template extensions

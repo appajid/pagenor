@@ -72,8 +72,10 @@ pub struct HistoryEntry {
 
 #[derive(Clone, Debug, Default)]
 pub struct History {
-    pub undo: Vec<HistoryEntry>,
-    pub redo: Vec<HistoryEntry>,
+    /// Command rollback snapshots share history; read-only panel queries must not
+    /// clone every undo entry in every open document on each pointer repaint.
+    pub undo: Arc<Vec<HistoryEntry>>,
+    pub redo: Arc<Vec<HistoryEntry>>,
     pub limit: usize,
 }
 
@@ -847,10 +849,10 @@ fn reflow_formats_same(
 }
 
 fn push_undo(st: &mut DocState, e: HistoryEntry) {
-    st.history.undo.push(e);
-    st.history.redo.clear();
+    Arc::make_mut(&mut st.history.undo).push(e);
+    st.history.redo = Arc::default();
     if st.history.undo.len() > st.history.limit.max(1) {
-        st.history.undo.remove(0);
+        Arc::make_mut(&mut st.history.undo).remove(0);
     }
 }
 
