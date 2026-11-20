@@ -60,9 +60,9 @@ python3 "$ROOT/packaging/pagemaker/build.py" --macos-arch "$ARCH" \
   --work "$CARGO_TARGET_DIR/pagemaker-macos-$ARCH" --output "$HELPER_STAGE"
 HELPER="$HELPER_STAGE/helpers/pmd2raw-byte-v2"
 case "$ARCH" in
-  universal) lipo -verify_arch arm64 x86_64 "$HELPER" ;;
-  aarch64) lipo -verify_arch arm64 "$HELPER" ;;
-  x86_64) lipo -verify_arch x86_64 "$HELPER" ;;
+  universal) lipo "$HELPER" -verify_arch arm64 && lipo "$HELPER" -verify_arch x86_64 ;;
+  aarch64) lipo "$HELPER" -verify_arch arm64 ;;
+  x86_64) lipo "$HELPER" -verify_arch x86_64 ;;
 esac
 
 # ---- build -------------------------------------------------------------------------------------

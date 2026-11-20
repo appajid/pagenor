@@ -23,7 +23,8 @@ def main():
             raise RuntimeError(f'missing helper source/notice: {name}')
     slices = {'universal': ['arm64', 'x86_64'], 'aarch64': ['arm64'], 'x86_64': ['x86_64']}[args.arch]
     for binary in [helper, cli]:
-        subprocess.run(['/usr/bin/lipo', '-verify_arch', *slices, str(binary)], check=True)
+        for architecture in slices:
+            subprocess.run(['/usr/bin/lipo', str(binary), '-verify_arch', architecture], check=True)
         subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(binary)], check=True)
     linked = subprocess.check_output(['/usr/bin/otool', '-L', str(helper)], text=True)
     for line in linked.splitlines():

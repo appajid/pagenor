@@ -360,7 +360,15 @@ for source in args[:-1]:
         # Exercise the real staging script on any host; only platform tools are shims.
         self.tool('lipo', """#!/usr/bin/env python3
 import shutil, sys
-if sys.argv[1]=='-create': shutil.copy2(sys.argv[-1], sys.argv[sys.argv.index('-output')+1])
+from pathlib import Path
+if sys.argv[1]=='-create':
+    shutil.copy2(sys.argv[-1], sys.argv[sys.argv.index('-output')+1])
+elif '-verify_arch' in sys.argv:
+    assert sys.argv[2]=='-verify_arch', 'lipo input must precede the architecture list'
+    assert Path(sys.argv[1]).is_file()
+    assert len(sys.argv)==4 and sys.argv[3] in ['arm64','x86_64'], 'verify one slice per invocation'
+elif sys.argv[1]!='-info':
+    raise SystemExit('unsupported lipo operation')
 """)
         for name in ['codesign', 'plutil', 'xattr']:
             self.tool(name, '#!/bin/sh\nexit 0\n')
