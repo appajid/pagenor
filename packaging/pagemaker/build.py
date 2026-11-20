@@ -6,6 +6,8 @@ if this build fails; users must never receive a silently incomplete installer.
 """
 import argparse
 import hashlib
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -52,6 +54,38 @@ def apply_patch(source, patch):
     subprocess.run([*command, '--reverse', '--check', str(normalized)], cwd=source, check=True)
 
 
+def select_visual_studio(instances, generators):
+    choices = []
+    for instance in instances:
+        version = instance.get('installationVersion', '').split('.')[0]
+        path = instance.get('installationPath')
+        if not version.isdigit() or not path:
+            continue
+        for generator in generators:
+            name = generator.get('name', '')
+            if name.startswith(f'Visual Studio {version} '):
+                choices.append((int(version), name, path))
+    if not choices:
+        raise RuntimeError('No installed Visual Studio C++ toolchain is supported by this CMake. Update CMake or install the C++ build tools.')
+    _, name, path = max(choices)
+    return name, path
+
+
+def windows_cmake_args(arch):
+    base = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
+    vswhere = Path(base) / 'Microsoft Visual Studio/Installer/vswhere.exe'
+    if not vswhere.is_file():
+        raise RuntimeError('Visual Studio Installer/vswhere.exe is missing; install Visual Studio C++ build tools')
+    instances = json.loads(subprocess.check_output([
+        str(vswhere), '-products', '*', '-requires',
+        'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'], text=True, encoding='utf-8-sig'))
+    capabilities = json.loads(subprocess.check_output(['cmake', '-E', 'capabilities'], text=True, encoding='utf-8-sig'))
+    name, path = select_visual_studio(instances, capabilities.get('generators', []))
+    print(f'Building the helper with {name}: {path}', flush=True)
+    return ['-G', name, '-A', {'x64': 'x64', 'x86': 'Win32', 'arm64': 'ARM64'}[arch],
+            f'-DCMAKE_GENERATOR_INSTANCE={path}']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
@@ -61,6 +95,7 @@ def main():
     args = parser.parse_args()
     if sys.version_info < (3, 12):
         parser.error('building the helper requires Python 3.12 or newer (not needed to run Pagenor)')
+    generator_args = windows_cmake_args(args.arch) if args.arch else []
     root = Path(__file__).resolve().parent
     work, output = args.work.resolve(), args.output.resolve()
     cache, sources = work / 'downloads', work / 'sources'
@@ -85,8 +120,7 @@ def main():
     shutil.rmtree(build, ignore_errors=True)
     cmd = ['cmake', '-S', str(root), '-B', str(build), '-DCMAKE_BUILD_TYPE=Release',
            f'-DHELPER_SOURCES={sources}', f'-DBOOST_INCLUDE_DIR={boost.resolve()}']
-    if args.arch:
-        cmd += ['-G', 'Visual Studio 17 2022', '-A', {'x64': 'x64', 'x86': 'Win32', 'arm64': 'ARM64'}[args.arch]]
+    cmd += generator_args
     subprocess.run(cmd, check=True)
     subprocess.run(['cmake', '--build', str(build), '--config', 'Release', '--parallel', '2'], check=True)
     subprocess.run(['cmake', '--install', str(build), '--config', 'Release', '--prefix', str(output)], check=True)

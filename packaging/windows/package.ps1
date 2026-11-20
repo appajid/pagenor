@@ -12,7 +12,7 @@
   warning when no signing secrets are set).
 
   Needs: Rust (MSVC toolchain + the target), Python 3.12+, CMake 3.20+,
-  Visual Studio 2022 C++ tools for the target, the Windows SDK (rc.exe, signtool.exe),
+  Visual Studio C++ tools (2022 or newer) for the target, the Windows SDK (rc.exe, signtool.exe),
   and WiX v5: dotnet tool install --global wix --version 5.0.2
 
 .EXAMPLE

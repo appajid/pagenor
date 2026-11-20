@@ -8,7 +8,7 @@ All inputs and checksums are pinned in `build.py`; no proprietary fonts or user
 publications are included. Source URLs in that file are the upstream projects'
 public distributions, not files from any Adobe installation.
 
-Python 3.12+, Git, CMake 3.20+ and Visual Studio 2022 C++ tools (including the
+Python 3.12+, Git, CMake 3.20+ (on Windows, a version supporting the installed Visual Studio) and Visual Studio C++ tools (2022 or newer) (including the
 selected target architecture) are needed on the build machine only:
 
     python packaging/pagemaker/build.py --arch x64 --work target/pagemaker-x64 --output target/helper-x64

@@ -127,6 +127,20 @@ class ReleasePackages(unittest.TestCase):
         self.assertEqual((source / 'sample.txt').read_text(), 'after\n')
         self.assertEqual((outer / 'sample.txt').read_text(), 'parent must stay unchanged\n')
 
+    def test_helper_selects_a_cmake_generator_matching_installed_visual_studio(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('pagemaker_build', ROOT / 'packaging/pagemaker/build.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        generators = [{'name': 'Visual Studio 17 2022'}, {'name': 'Visual Studio 18 2026'}]
+        modern = {'installationVersion': '18.0.1', 'installationPath': 'C:/VS2026'}
+        older = {'installationVersion': '17.14.0', 'installationPath': 'C:/VS2022'}
+        self.assertEqual(module.select_visual_studio([modern], generators), ('Visual Studio 18 2026', 'C:/VS2026'))
+        self.assertEqual(module.select_visual_studio([older], generators), ('Visual Studio 17 2022', 'C:/VS2022'))
+        self.assertEqual(module.select_visual_studio([older, modern], generators), ('Visual Studio 18 2026', 'C:/VS2026'))
+        with self.assertRaisesRegex(RuntimeError, 'No installed Visual Studio'):
+            module.select_visual_studio([modern], generators[:1])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='pagenor-packaging-')
         self.addCleanup(self.temp.cleanup)
