@@ -46,6 +46,65 @@ class ReleasePackages(unittest.TestCase):
             download = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('actions/download-artifact@'))
             self.assertLess(checkout, download, f'{workflow}: checkout deletes previously downloaded packages')
 
+    def test_reused_publication_requires_original_build_gates_and_unchanged_source(self):
+        import yaml
+        job = yaml.safe_load((ROOT / '.github/workflows/windows-maintenance.yml').read_text())['jobs']['publish']
+        self.assertEqual(job['needs'], 'verify')
+        self.assertIn("needs.verify.result == 'success'", job['if'])
+        step = next(s for s in job['steps'] if s.get('id') == 'gate')
+        names = ['version', 'macOS universal', 'Windows x64', 'Windows x86', 'Windows arm64',
+                 'Linux x86_64', 'Linux aarch64', 'Flatpak x86_64', 'Flatpak aarch64',
+                 'Quality (macos-15)', 'Quality (windows-latest)', 'Quality (ubuntu-22.04)']
+        self.tool('gh', '#!/bin/sh\ncat "$PAGENOR_TEST_RUN_METADATA"\n')
+        self.tool('git', '#!/bin/sh\ncase "$1" in merge-base) exit 0;; diff) printf "%s" "$PAGENOR_TEST_CHANGED";; *) exit 2;; esac\n')
+        metadata = self.path / 'build.json'
+        env = dict(self.env, PACKAGE_RUN='123', ARTIFACT_PREFIX='release-windows',
+                   GITHUB_REPOSITORY='appajid/pagenor', RUNNER_TEMP=str(self.path),
+                   GITHUB_OUTPUT=str(self.path / 'gate-output'), PAGENOR_TEST_RUN_METADATA=str(metadata),
+                   PAGENOR_TEST_CHANGED='')
+        for variant in ['ok', 'failed-quality', 'missing-mac', 'running', 'wrong-workflow', 'changed-source']:
+            data = dict(workflowName='Desktop release', status='completed', headSha='a' * 40,
+                        jobs=[dict(name=n, conclusion='success') for n in names])
+            if variant == 'failed-quality': data['jobs'][-1]['conclusion'] = 'failure'
+            if variant == 'missing-mac': data['jobs'] = [j for j in data['jobs'] if j['name'] != 'macOS universal']
+            if variant == 'running': data['status'] = 'in_progress'
+            if variant == 'wrong-workflow': data['workflowName'] = 'Unrelated workflow'
+            metadata.write_text(json.dumps(data))
+            run_env = dict(env, PAGENOR_TEST_CHANGED='Cargo.toml\n' if variant == 'changed-source' else '')
+            result = subprocess.run(['bash', '-c', step['run']], cwd=ROOT, env=run_env, capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, variant == 'ok', variant + ': ' + result.stdout + result.stderr)
+
+    def test_reused_publication_requires_exact_twenty_payloads(self):
+        import yaml
+        job = yaml.safe_load((ROOT / '.github/workflows/windows-maintenance.yml').read_text())['jobs']['publish']
+        step = next(s for s in job['steps'] if s.get('name') == 'Publish exact verified desktop artifacts')
+        root = self.path / 'reused-release'
+        assets = root / 'dist/release'
+        assets.mkdir(parents=True)
+        names = {f'pagenor-{VERSION}-macos-universal.dmg', f'pagenor-cli-{VERSION}-macos-universal.zip'}
+        names |= {f'pagenor-{VERSION}-windows-{a}{s}' for a in ['x64', 'x86', 'arm64'] for s in ['.msi', '-portable.zip']}
+        names |= {f'pagenor-{VERSION}-linux-{a}{s}' for a in ['x86_64', 'aarch64'] for s in ['.AppImage', '.AppImage.zsync', '.deb', '.rpm', '.tar.gz', '.flatpak']}
+        for name in names: (assets / name).write_bytes(b'original synthetic payload')
+        notes = root / f'docs/releases/{VERSION}.md'
+        notes.parent.mkdir(parents=True)
+        notes.write_text('Release verification test\n')
+        capture = self.path / 'reused-gh-args'
+        self.tool('gh', '#!/bin/sh\ncase "$1 $2" in "release view") exit 1;; "release create") printf "%s\\n" "$@" > "$PAGENOR_TEST_CAPTURE";; *) exit 2;; esac\n')
+        self.tool('sha256sum', '#!/usr/bin/env python3\nimport hashlib,sys\nfor f in sys.argv[1:]: print(hashlib.sha256(open(f,"rb").read()).hexdigest()+"  "+f)\n')
+        env = dict(self.env, VERSION=VERSION, SOURCE_SHA='a' * 40, PACKAGE_RUN='123',
+                   GITHUB_RUN_ID='456', RUNNER_TEMP=str(self.path), PAGENOR_TEST_CAPTURE=str(capture))
+        result = subprocess.run(['bash', '-c', step['run']], cwd=root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = capture.read_text().splitlines()
+        self.assertEqual(args[args.index('--target') + 1], 'a' * 40)
+        self.assertEqual(len(list(assets.iterdir())), 21)
+        capture.unlink()
+        (assets / 'SHA256SUMS.txt').unlink()
+        (assets / next(iter(names))).unlink()
+        result = subprocess.run(['bash', '-c', step['run']], cwd=root, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(capture.exists(), 'missing payload must stop publication')
+
     def test_publish_requires_notes_for_the_matching_version(self):
         import yaml
         jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']

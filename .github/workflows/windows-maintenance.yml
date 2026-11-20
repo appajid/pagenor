@@ -15,6 +15,11 @@ name: Windows maintenance verification
         options: [windows-maintenance, release-windows]
         default: windows-maintenance
         required: false
+      publish:
+        description: 'Publish the verified desktop artifacts after all original source/build gates pass'
+        type: boolean
+        default: false
+        required: false
 permissions:
   contents: read
   actions: read
@@ -137,3 +142,91 @@ jobs:
             if ($proc.ExitCode -ne 0) { throw 'MSI uninstall failed' }
           }
           ./packaging/windows/verify-upgrade.ps1 -Arch ${{ matrix.arch }} -Msi $msi -Directory $directory -Fixture "$env:RUNNER_TEMP/three-pages.p65"
+
+  publish:
+    if: ${{ always() && !cancelled() && inputs.publish && needs.verify.result == 'success' }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          fetch-depth: 0
+      - name: Validate original desktop build gates and unchanged application source
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN: ${{ inputs.package_run }}
+          ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
+        run: |
+          set -euo pipefail
+          test "$ARTIFACT_PREFIX" = release-windows
+          [[ "$PACKAGE_RUN" =~ ^[0-9]+$ ]]
+          gh run watch "$PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --interval 30 > "$RUNNER_TEMP/source-build-watch.log"
+          gh run view "$PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --json headSha,status,jobs,workflowName > "$RUNNER_TEMP/desktop-build.json"
+          python3 - <<'PYGATE'
+          import json, os, re, tomllib
+          from pathlib import Path
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'desktop-build.json').read_text())
+          required = {'version', 'macOS universal', 'Windows x64', 'Windows x86', 'Windows arm64',
+                      'Linux x86_64', 'Linux aarch64', 'Flatpak x86_64', 'Flatpak aarch64',
+                      'Quality (macos-15)', 'Quality (windows-latest)', 'Quality (ubuntu-22.04)'}
+          passed = {job['name'] for job in data['jobs'] if job['conclusion'] == 'success'}
+          if data['workflowName'] != 'Desktop release' or data['status'] != 'completed' or not required <= passed:
+              raise SystemExit('Original desktop source/build gates have not all passed: ' + repr(sorted(required - passed)))
+          source = data['headSha']
+          if not re.fullmatch('[0-9a-f]{40}', source):
+              raise SystemExit('Invalid source commit')
+          version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
+          (Path(os.environ['RUNNER_TEMP']) / 'desktop-source').write_text(source)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'source={source}\nversion={version}\n')
+          PYGATE
+          source="$(cat "$RUNNER_TEMP/desktop-source")"
+          git merge-base --is-ancestor "$source" HEAD
+          git diff --name-only "$source" HEAD > "$RUNNER_TEMP/desktop-source-changes"
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/desktop-release.yml|.github/workflows/windows-maintenance.yml|packaging/tests/release_packages.py|docs/releases/*.md) ;;
+              *) echo "::error::Application source differs from the built artifacts: $path"; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/desktop-source-changes"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+          run-id: ${{ inputs.package_run }}
+          github-token: ${{ github.token }}
+      - name: Publish exact verified desktop artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.gate.outputs.version }}
+          SOURCE_SHA: ${{ steps.gate.outputs.source }}
+          PACKAGE_RUN: ${{ inputs.package_run }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYPAYLOAD'
+          import os
+          from pathlib import Path
+          version = os.environ['VERSION']
+          expected = {f'pagenor-{version}-macos-universal.dmg', f'pagenor-cli-{version}-macos-universal.zip'}
+          expected |= {f'pagenor-{version}-windows-{arch}{suffix}' for arch in ['x64', 'x86', 'arm64'] for suffix in ['.msi', '-portable.zip']}
+          expected |= {f'pagenor-{version}-linux-{arch}{suffix}' for arch in ['x86_64', 'aarch64'] for suffix in ['.AppImage', '.AppImage.zsync', '.deb', '.rpm', '.tar.gz', '.flatpak']}
+          actual = {p.name for p in Path('dist/release').iterdir() if p.is_file() and p.stat().st_size > 0}
+          if actual != expected:
+              raise SystemExit('Unexpected/incomplete desktop payloads: ' + repr(sorted(actual ^ expected)))
+          text = Path(f'docs/releases/{version}.md').read_text()
+          text = text.replace('(../upstream-adoption-20261120.md)', f'(https://github.com/appajid/pagenor/blob/{os.environ["SOURCE_SHA"]}/docs/upstream-adoption-20261120.md)')
+          text += f'\nVerified builds: https://github.com/appajid/pagenor/actions/runs/{os.environ["PACKAGE_RUN"]}\n\nWindows MSI/portable/upgrade verification: https://github.com/appajid/pagenor/actions/runs/{os.environ["GITHUB_RUN_ID"]}\n\nArtifacts are built from `{os.environ["SOURCE_SHA"]}`; the verification-only checkout repair does not alter their application source.\n'
+          (Path(os.environ['RUNNER_TEMP']) / 'release-notes.md').write_text(text)
+          PYPAYLOAD
+          (cd dist/release && sha256sum ./* > SHA256SUMS.txt)
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Release v$VERSION exists; refusing replacement"
+            exit 1
+          fi
+          gh release create "v$VERSION" dist/release/* --target "$SOURCE_SHA" --title "Pagenor $VERSION — desktop development preview" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md"
