@@ -1,9 +1,12 @@
 # Pagenor development phases
 
-P11.28: local **0.14.2 maintenance work in progress** (20 November 2026):
-Windows installer completion, bundled PageMaker helper and background live preflight.
-Validation pending; published desktop preview remains **0.14.1**.
-See [0.14.2 work and verification notes](docs/releases/0.14.2.md).
+P11.28: **0.14.2 Windows update candidate verified** (20 November 2026).
+All three architectures pass fresh MSI/portable PageMaker and actual 0.14.1 upgrade
+checks: success/Finish dialog, desktop shortcut, one installed product and retained
+document/settings. Seven local quality gates and 19 packaging checks pass.
+Published desktop preview remains **0.14.1**; Windows 10 interactive responsiveness
+still needs the affected user's retest. The current Mac session stays open.
+See [0.14.2 changes, source pins and verification](docs/releases/0.14.2.md).
 
 
 P11.27: published **0.14.1 desktop development preview** on 2026-11-11.
@@ -55,7 +58,7 @@ No install, upload, publication or new test release bundle. The installed app an
 original user files remain unchanged. Native Windows/Linux execution remains pending.
 [Source pins, compatibility decisions and deferred scopes](docs/upstream-adoption-20261111.md).
 
-Current local source: **0.14.2**, under verification (P11.28). Published desktop preview: **0.14.1** (P11.27; verified native distribution). The installed Mac app remains **0.14.0**, preserving the owner's current session.
+Current source: **0.14.2**, Windows update candidate verified (P11.28). Published desktop preview: **0.14.1** (P11.27; verified native distribution). The installed Mac app remains **0.14.0**, preserving the owner's current session.
 0.6.0 and v0.3.0 packages remain intact.
 
 P11.23: local **0.13.0** adapts 38 reviewed upstream proposal scopes through

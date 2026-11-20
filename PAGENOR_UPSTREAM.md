@@ -1095,7 +1095,7 @@ Valid frame contents and hyperlink bindings remain supported. This selected
 adaptation does not introduce upstream product identifiers, dependencies or assets.
 [Review, safeguards and checks](docs/qr-merge-adoption-20261111.md).
 
-## 2026-11-20 — P11.28 local maintenance (0.14.2 work in progress)
+## 2026-11-20 — P11.28 maintenance (0.14.2 Windows update candidate verified)
 
 Owner reports Windows 0.14.1 has no installer completion screen and cannot open
 PageMaker because its optional helper is absent. The existing WiX package had no
@@ -1113,7 +1113,7 @@ repeated it every paint. Replace those paths with one bounded background worker
 per native app and an owned exact-snapshot cache, separate from the UI composition
 cache; preserve synchronous explicit checks and WASM. Completion updates are
 document/font-generation checked. This addresses a concrete blocking path, not
-a claim that all performance causes are solved. Validation pending; details in
+a claim that all performance causes are solved. Validation results and limits are in
 docs/releases/0.14.2.md. Current Mac session and installed app stay untouched.
 
 The owner clarifies Windows 10 cursor response is slow although their other
@@ -1130,4 +1130,9 @@ existing UpgradeCode/MajorUpgrade mechanism; add an advertised desktop shortcut
 owned by the application component. A native regression installs the pinned,
 immutable 0.14.1 MSI, creates synthetic saved settings/document, applies 0.14.2,
 checks preservation, one installed product, shortcut, old-document reopening and
-PageMaker availability, then uninstalls. Native results remain pending.
+PageMaker availability, then uninstalls. All three native Windows verification
+jobs pass in run 44693527474, using packages built from 848f169 in run 44689540242.
+The owner explicitly authorizes the public upload and Windows tests on 20 November.
+The final verification scripts are at 77ebd33; subsequent completion notes do not
+rebuild or replace those tested binaries. Windows 10 interactive responsiveness
+and code signing remain separate; no formal 0.14.2 release is published.

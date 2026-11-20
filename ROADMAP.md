@@ -1,9 +1,12 @@
 # Pagenor roadmap
 
-P11.28: local **0.14.2 maintenance work in progress** (20 November 2026):
-Windows installer completion, bundled PageMaker helper and background live preflight.
-Validation pending; published desktop preview remains **0.14.1**.
-See [0.14.2 work and verification notes](docs/releases/0.14.2.md).
+P11.28: **0.14.2 Windows update candidate verified** (20 November 2026).
+All three architectures pass fresh MSI/portable PageMaker and actual 0.14.1 upgrade
+checks: success/Finish dialog, desktop shortcut, one installed product and retained
+document/settings. Seven local quality gates and 19 packaging checks pass.
+Published desktop preview remains **0.14.1**; Windows 10 interactive responsiveness
+still needs the affected user's retest. The current Mac session stays open.
+See [0.14.2 changes, source pins and verification](docs/releases/0.14.2.md).
 
 
 P11.27: published **0.14.1 desktop development preview** on 2026-11-11.
