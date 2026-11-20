@@ -9,6 +9,12 @@ name: Windows maintenance verification
         type: string
         default: ''
         required: false
+      artifact_prefix:
+        description: 'Artifact family of the package run being verified'
+        type: choice
+        options: [windows-maintenance, release-windows]
+        default: windows-maintenance
+        required: false
 permissions:
   contents: read
   actions: read
@@ -84,7 +90,7 @@ jobs:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: windows-maintenance-${{ matrix.arch }}
+          name: ${{ inputs.artifact_prefix || 'windows-maintenance' }}-${{ matrix.arch }}
           path: dist
           run-id: ${{ inputs.package_run || github.run_id }}
           github-token: ${{ github.token }}
@@ -99,6 +105,29 @@ jobs:
           if ($proc.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw 'MSI installation failed' }
           try {
             $directory = Join-Path ([Environment]::GetEnvironmentVariable('${{ matrix.program_files }}')) 'Pagenor'
+            $manifest = Get-Content Cargo.toml -Raw
+            $version = [regex]::Match($manifest, '(?ms)^\[workspace\.package\]\s*.*?^version\s*=\s*"([^"]+)"').Groups[1].Value
+            if (-not $version) { throw 'workspace version is missing' }
+            $machine = @{x64=0x8664; x86=0x14c; arm64=0xaa64}['${{ matrix.arch }}']
+            foreach ($exe in 'pagenor.exe', 'pagenor-cli.exe', 'helpers/pmd2raw-byte-v2.exe') {
+              $bytes = [IO.File]::ReadAllBytes((Join-Path $directory $exe))
+              if ([BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3c) + 4) -ne $machine) { throw "wrong architecture: $exe" }
+            }
+            $cli = Join-Path $directory 'pagenor-cli.exe'
+            $actual = & $cli --version | Out-String
+            if ($LASTEXITCODE -ne 0 -or $actual -notmatch [regex]::Escape($version)) { throw "wrong installed version: $actual" }
+            & $cli run --sample --export "$env:RUNNER_TEMP/smoke.pdf"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$env:RUNNER_TEMP/smoke.pdf")) { throw 'installed CLI PDF export failed' }
+            foreach ($extension in '.pgnr', '.pagenor') {
+              $association = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\$extension"
+              if ($association.'(default)' -ne 'Pagenor.Document') { throw "missing $extension association" }
+            }
+            $icon = Get-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Pagenor.Document\DefaultIcon'
+            if ($icon.'(default)' -notmatch 'pagenor-document.ico') { throw 'incorrect document icon' }
+            foreach ($notice in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'LICENSE-Pagenor-brand.txt', 'LICENSE-Pagenor-app-icon.txt', 'OFL-Inter.txt') {
+              if (-not (Test-Path (Join-Path $directory "licenses/$notice"))) { throw "missing installed notice: $notice" }
+            }
+            Write-Output "ok fresh $version MSI: native ${{ matrix.arch }}, PDF export, associations, document icon, notices"
             ./packaging/windows/verify-pagemaker.ps1 -Directory $directory -Msi $msi -Fixture "$env:RUNNER_TEMP/three-pages.p65"
             Expand-Archive (Get-ChildItem dist/*-portable.zip | Select-Object -First 1).FullName "$env:RUNNER_TEMP/portable"
             $portable = (Get-ChildItem "$env:RUNNER_TEMP/portable" -Directory | Select-Object -First 1).FullName

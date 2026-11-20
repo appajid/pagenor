@@ -38,6 +38,14 @@ class ReleasePackages(unittest.TestCase):
         self.assertNotIn('if', jobs['quality'])
         self.assertTrue({'quality', 'macos', 'windows', 'linux', 'flatpak', 'install'} <= set(jobs['publish']['needs']))
 
+    def test_installer_artifacts_survive_source_checkout(self):
+        import yaml
+        for workflow, job in [('desktop-release.yml', 'install'), ('windows-maintenance.yml', 'verify')]:
+            steps = yaml.safe_load((ROOT / '.github/workflows' / workflow).read_text())['jobs'][job]['steps']
+            checkout = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('actions/checkout@'))
+            download = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('actions/download-artifact@'))
+            self.assertLess(checkout, download, f'{workflow}: checkout deletes previously downloaded packages')
+
     def test_publish_requires_notes_for_the_matching_version(self):
         import yaml
         jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']
