@@ -1171,3 +1171,17 @@ MPL byte-v2 helper for both Mac architectures and include it beside both Mac
 executables, with corresponding source/notices. No converter parser, private
 publication or font is added. Mac builds use standard hosted runners and verify
 the finished DMG and CLI package before publication.
+
+
+## PDF export progress — P11.31 (2026-11-21)
+
+Selected background-export behavior is adapted from MIT OR Apache-2.0 upstream
+[#1106](https://github.com/storytold/designcraft/pull/1106), @ForestParks,
+`608e10665afaceba656769caf136199aa62ddb6f`, and
+[#2990](https://github.com/storytold/designcraft/pull/2990), @Pazaak,
+`1baa5ac4c1a0a484a2263e622980d963f653273f`. Original licences/notices remain.
+Pagenor retains its shared PDF backend, guarded exports, document font scopes,
+nonblocking file choosers, native atomic writer, `.pgnr` and owner branding.
+The adapted progress/completion window covers every native interactive export,
+including one page; broader upstream job panels and mutation-lock registries are
+not adopted. [Review, source pins, scope and checks](docs/pdf-export-progress-20261121.md).

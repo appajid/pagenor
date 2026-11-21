@@ -557,3 +557,50 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
     });
     assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
 }
+
+#[test]
+fn export_progress_reports_selected_sheets_in_order_even_for_one_page() {
+    for pages in [1, 12] {
+        let doc = Document::new(&NewDocument { pages, ..Default::default() });
+        let opts = PdfOptions { pages: Some(vec![0]), created: Some(1_700_000_000), ..Default::default() };
+        let mut seen = Vec::new();
+        let report = export_pdf_with_progress(&doc, &Cache::new(), &opts, &mut |p| {
+            seen.push(p);
+            true
+        })
+        .unwrap();
+        assert_eq!(report.pages, 1);
+        assert_eq!(seen, [ExportProgress::Pages { done: 0, total: 1 }, ExportProgress::Pages { done: 1, total: 1 }, ExportProgress::Finishing]);
+        assert_eq!(report.bytes, export_pdf(&doc, &Cache::new(), &opts).unwrap());
+    }
+}
+
+#[test]
+fn cancelling_between_pdf_sheets_stops_before_finishing() {
+    let doc = Document::new(&NewDocument { pages: 12, ..Default::default() });
+    let mut seen = Vec::new();
+    let result = export_pdf_with_progress(&doc, &Cache::new(), &PdfOptions::default(), &mut |p| {
+        seen.push(p);
+        p != ExportProgress::Pages { done: 1, total: 12 }
+    });
+    assert_eq!(result.unwrap_err(), PdfError::Cancelled);
+    assert_eq!(seen, [ExportProgress::Pages { done: 0, total: 12 }, ExportProgress::Pages { done: 1, total: 12 }]);
+}
+
+#[test]
+fn export_progress_counts_selected_ranges_and_spreads_not_document_pages() {
+    let doc = Document::new(&NewDocument { pages: 8, ..Default::default() });
+    for spreads in [false, true] {
+        let options = PdfOptions { pages: Some(vec![0, 2, 5]), spreads, ..Default::default() };
+        let mut counts = Vec::new();
+        let report = export_pdf_with_progress(&doc, &Cache::new(), &options, &mut |p| {
+            if let ExportProgress::Pages { done, total } = p {
+                counts.push((done, total));
+            }
+            true
+        })
+        .unwrap();
+        assert_eq!(counts, (0..=report.pages).map(|done| (done, report.pages)).collect::<Vec<_>>());
+        assert!(report.pages < doc.page_count());
+    }
+}

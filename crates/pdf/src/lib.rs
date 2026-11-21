@@ -37,8 +37,8 @@ mod forms;
 mod pdfx;
 mod transitions;
 pub use export::{
-    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,
-    merge_pdfs, sheet_spreads, shown_parent_items,
+    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_progress, export_pdf_with_report,
+    item_exported, layer_exported, merge_pdfs, sheet_spreads, shown_parent_items,
 };
 pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
@@ -143,6 +143,14 @@ impl Default for PdfOptions {
     }
 }
 
+/// Actual PDF work completed; finishing includes font subsetting and serialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportProgress {
+    Preparing,
+    Pages { done: usize, total: usize },
+    Finishing,
+}
+
 /// Bytes plus non-fatal warnings (features approximated or dropped).
 #[derive(Clone, Debug)]
 pub struct ExportReport {
@@ -153,6 +161,8 @@ pub struct ExportReport {
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum PdfError {
+    #[error("PDF export cancelled")]
+    Cancelled,
     #[error("nothing to export (no pages selected)")]
     NoPages,
     #[error("page {0} does not exist")]

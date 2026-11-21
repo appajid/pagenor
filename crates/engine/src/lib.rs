@@ -32,6 +32,7 @@ use serde_json::Value;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_save::{replace_with as write_atomic_with, write as write_atomic};
 
+pub use cmd::export::{PdfExportProgress, PdfExportReport, pdf_export_report};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use pagenor_compose as compose;
 pub use pagenor_doc as doc;

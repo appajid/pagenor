@@ -29,6 +29,7 @@ mod page_history;
 mod page_thumbnails;
 mod panel_docking;
 pub mod panels;
+mod pdf_export_job;
 mod preflight_worker;
 mod prefs;
 pub mod recent_documents;
@@ -56,6 +57,8 @@ use serde_json::{Value, json};
 pub use control::{ControlRequest, ControlResponse};
 
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
+/// Optional native writer invoked on the PDF worker; must preserve atomic-save semantics.
+pub type BackgroundWriteFn = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<(), String> + Send + Sync>;
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 /// Context captured before any host file-picker or read await.
@@ -103,6 +106,7 @@ pub struct Services {
     pub pick_save: Option<PickFn>,
     pub read: Option<ReadFn>,
     pub write: Option<WriteFn>,
+    pub background_write: Option<BackgroundWriteFn>,
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
     /// through [`Services::inbox`]. Used when `pick_open` is unset (web).
     pub open_async: Option<OpenAsyncFn>,
@@ -586,6 +590,7 @@ pub struct DesignApp {
     canvas_ime: canvas_ime::Composition,
     recent_previews: recent_previews::Previews,
     pending_pdf: Option<ImportedFile>,
+    pdf_export_job: pdf_export_job::State,
     pub ai: ai::Assistant,
     pub session: Session,
     pub ui: UiState,
@@ -682,6 +687,7 @@ impl DesignApp {
             canvas_ime: Default::default(),
             recent_previews: Default::default(),
             pending_pdf: None,
+            pdf_export_job: Default::default(),
             ai: ai::Assistant::default(),
             session,
             ui: UiState::default(),
@@ -1324,6 +1330,8 @@ impl DesignApp {
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_arch = "wasm32"))]
+        pdf_export_job::poll(self);
+        #[cfg(not(target_arch = "wasm32"))]
         if self.closing {
             self.handle_close_request(ctx);
             return;
@@ -1457,6 +1465,10 @@ impl DesignApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn request_quit(&mut self) -> Result<Value, String> {
+        if self.pdf_export_job.busy() {
+            self.status("Wait for PDF export to finish, or cancel it before quitting.");
+            return Ok(Value::Null);
+        }
         if self.quit_confirming || self.quit_requested || self.closing || self.file_dialogs_pending() {
             return Ok(Value::Null);
         }
@@ -1504,6 +1516,11 @@ impl DesignApp {
     /// commands later in a closing frame cannot leave newer edits outside the checkpoint.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if self.pdf_export_job.busy() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.status("Wait for PDF export to finish, or cancel it before quitting.");
+            return;
+        }
         if ctx.viewport_id() != egui::ViewportId::ROOT {
             return;
         }

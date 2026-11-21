@@ -648,7 +648,15 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
     s[i..].split_whitespace().next()?.parse().ok()
 }
 
-fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
+pub use pagenor_pdf::{ExportProgress as PdfExportProgress, ExportReport as PdfExportReport};
+
+/// Shared read-only backend for `file.exportPdf` and native interactive export jobs.
+/// The caller retains its immutable document/font scope and composition cache until
+/// this returns. Parameters are the command's normal PDF options; `path` is ignored.
+/// Reports contain final bytes, output sheet count and all existing export warnings.
+/// Invalid options, PDF failures or a progress callback returning false are errors.
+/// Writing is the caller's responsibility, so cancellation cannot leave a partial file.
+pub fn pdf_export_report(s: &Session, p: &Value, progress: &mut dyn FnMut(PdfExportProgress) -> bool) -> Result<PdfExportReport> {
     let st = s.doc()?;
     let opts = options(p, st.doc.page_count())?;
     // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
@@ -662,16 +670,23 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
             v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad("file.exportPdf", "`flatten`: high|medium|low or 36–1200 ppi"))?,
         ),
     };
+    let mut preparing = || {
+        if progress(PdfExportProgress::Preparing) { Ok(()) } else { Err(EngineError::Other("PDF export cancelled".into())) }
+    };
+    preparing()?;
     let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
+    preparing()?;
     // Placed PDFs with hidden layers go out as images showing just their visible layers.
     let base: &pagenor_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
     let (layered, layer_count) = rasterize_layered(base);
     let base2: &pagenor_doc::Document = layered.as_ref().unwrap_or(base);
+    preparing()?;
     let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache)?;
     let doc: &pagenor_doc::Document = fx_doc.as_ref().unwrap_or(base2);
     let boxed = super::interchange::with_pdf_boxes(doc);
     let doc: &pagenor_doc::Document = &boxed;
-    let r = pagenor_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    preparing()?;
+    let r = pagenor_pdf::export_pdf_with_progress(doc, &s.cache, &opts, progress).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = pagenor_pdf::sheet_spreads(doc, &opts);
@@ -747,6 +762,11 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
     r.warnings.extend(super::preflight::overset_warnings(s, opts.pages.as_deref()));
+    Ok(r)
+}
+
+fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
+    let r = pdf_export_report(s, p, &mut |_| true)?;
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;

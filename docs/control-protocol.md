@@ -91,3 +91,21 @@ AI window, background tasks and review commands are documented in [AI assistant]
 when the document has focus. An ordinary text insertion point receives an inline
 image; otherwise it fills a selected empty frame or creates an embedded graphic.
 Pixel/byte limits and the same atomic command validation apply as `edit.pasteImage`.
+
+
+### Interactive PDF export feedback
+
+`file.exportPdf` and `app.exportPdf` with an explicit `path` retain their synchronous
+results (`path`, `bytes`, `pages`, `warnings`). Native picker-driven UI exports run
+asynchronously. A UI command with `background: true` and a path opts into that
+same behavior and returns `{queued: true, operationId, path}`. Engine/CLI commands
+do not opt in through this UI-only parameter.
+
+Poll `ui.inspect.pdfExport`: while pending it contains `busy: true`, `operationId`,
+`phase` (`preparing`, `pages`, `finishing`, `saving` or `cancelling`), `done`, `total`
+and `last: null`. Counts refer to output PDF pages, including spreads. Completion
+has `busy: false` and `last` with the matching `operationId` and `path`, plus either
+`bytes`, `pages`, `warnings`; `error`; or `cancelled: true`. No job yet is reported
+with operationId 0 and last null. Only one interactive job can be active; the next
+started job replaces the previous terminal result. The native host must continue
+processing frames. Direct synchronous results do not use this UI job state.

@@ -1,5 +1,16 @@
 # Pagenor roadmap
 
+P11.31: local **PDF export progress** work after 0.15.0. Every native interactive
+export, including one page, shows actual page progress and finishing/saving phases.
+A successful save closes progress and reports PDF export completed; failures retain
+options. Snapshot/font lifetime, native background atomic writing, pre-save cancel
+and synchronous explicit-path automation are retained. Relevant parts of upstream
+#1106/#2990 are adapted; other export proposals are reviewed separately. Local
+checks pass: all seven gates, 3,223 tests with zero failures/seven existing ignores,
+and twenty WASM packages. Two progress/completion views were inspected; the native
+chooser regression fails without its fix. Published installers and the running Mac
+session are unchanged. [Behavior, review and validation](docs/pdf-export-progress-20261121.md).
+
 P11.30: published **0.15.0 desktop development preview** on 20 November 2026.
 All 0.14.2 Windows installer/updater/PageMaker and performance changes are retained.
 The universal Mac app and CLI ZIP now also bundle the PageMaker converter and its

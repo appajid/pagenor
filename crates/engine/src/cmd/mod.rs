@@ -15,7 +15,7 @@ mod datamerge;
 mod edit;
 mod editorial;
 mod endnotes;
-mod export;
+pub(crate) mod export;
 mod file;
 pub mod find;
 mod fonts;

@@ -103,6 +103,17 @@ pub(crate) fn mark_start(opts: &PdfOptions, bleed: [f64; 4]) -> f64 {
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
 pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
+    export_pdf_with_progress(doc, cache, opts, &mut |_| true)
+}
+
+/// Export with real sheet progress. Returning false stops before the next sheet or
+/// serialization; no output file is written by this byte-producing function.
+pub fn export_pdf_with_progress(
+    doc: &Document,
+    cache: &Cache,
+    opts: &PdfOptions,
+    progress: &mut dyn FnMut(crate::ExportProgress) -> bool,
+) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
     let warnings = Vec::new();
     let (version, archival) = match opts.standard {
@@ -170,6 +181,9 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         pdf.set_outline(o);
     }
     for (sheet_idx, sh) in sheets.iter().enumerate() {
+        if !progress(crate::ExportProgress::Pages { done: sheet_idx, total: sheets.len() }) {
+            return Err(PdfError::Cancelled);
+        }
         let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;
         let local = |r: Rect| {
             krilla::geom::Rect::from_ltrb(
@@ -202,6 +216,9 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
             page.add_annotation(a);
         }
         page.finish();
+    }
+    if !progress(crate::ExportProgress::Pages { done: sheets.len(), total: sheets.len() }) || !progress(crate::ExportProgress::Finishing) {
+        return Err(PdfError::Cancelled);
     }
     if opts.tagged {
         pdf.set_tag_tree(ex.tag_tree());

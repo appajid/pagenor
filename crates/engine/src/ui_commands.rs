@@ -82,7 +82,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.exportPdf",
         "Export PDF…",
         None,
-        "{path?, …file.exportPdf options} — opens export options without parameters; explicit options export directly",
+        "{path?, background?: bool, …file.exportPdf options} — opens export options without parameters; native picker exports report progress; explicit path stays synchronous unless background=true; queued jobs return {queued, operationId, path}, polled via ui.inspect.pdfExport",
     ),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some(if cfg!(target_os = "macos") { "Cmd+," } else { "Cmd+K" }), "{}"),

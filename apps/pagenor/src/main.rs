@@ -287,6 +287,9 @@ fn services() -> Services {
     Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string()))),
+        background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| {
+            pagenor_engine::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string())
+        })),
         reveal: Some(Box::new(reveal::reveal)),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok())),
         ..Default::default()

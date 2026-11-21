@@ -1810,6 +1810,9 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
 }
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    if crate::pdf_export_job::show(app, ctx) {
+        return;
+    }
     let Some(mut d) = app.ui.dialog.clone() else { return };
     let text_frame_popup_focused = d.id == "textFrameOptions"
         && egui::Popup::is_any_open(ctx)
@@ -3459,8 +3462,10 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 }
                 let settings = serde_json::from_value(Value::Object(d.fields.values.clone())).map_err(|e| e.to_string())?;
                 let params = pdf_export_params(&d)?;
+                // Keep the source options with the asynchronous save continuation.
+                app.ui.dialog = Some(d.clone());
                 let result = crate::menus::export_pdf(app, &params)?;
-                if !result.is_null() {
+                if !result.is_null() && result["queued"] != true {
                     app.ui.pdf_export = settings;
                 }
                 Ok(result)
@@ -3468,10 +3473,8 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             match &result {
                 Err(error) => { let mut d = d; d.fields.insert("error".into(), json!(error)); app.ui.dialog = Some(d); }
                 Ok(Value::Null) => app.ui.dialog = Some(d),
-                Ok(r) => {
-                    let warnings = r["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
-                    if !warnings.is_empty() { app.ui.dialog = Some(Dialog::new("alert", json!({"title":"PDF Export Warnings","message":warnings}))); }
-                }
+                Ok(r) if r["queued"] == true => {},
+                Ok(r) => crate::pdf_export_job::completed(app, r["path"].as_str().unwrap_or_default(), &r["pages"], &r["warnings"]),
             }
             result
         }
@@ -7586,6 +7589,7 @@ mod pptx_options_tests {
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod pdf_export_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
@@ -7650,9 +7654,16 @@ mod pdf_export_tests {
             d.fields.insert("preset".into(), json!("Press Quality"));
             d.fields.insert("pages".into(), json!("2"));
             d.fields.insert("marksWeight".into(), json!("0p1"));
-            let r = confirm(&mut app).unwrap();
+            let mut r = confirm(&mut app).unwrap();
+            if !browser {
+                assert_eq!(r["queued"], true);
+                assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfExportProgress");
+                crate::pdf_export_job::tests::finish(&mut app);
+                r = app.pdf_export_job.last.clone().unwrap();
+            }
             assert_eq!(r["pages"], 1);
-            assert!(app.ui.dialog.is_none());
+            assert_eq!(app.ui.dialog.as_ref().unwrap().id, "alert");
+            assert!(app.ui.dialog.as_ref().unwrap().s("message").contains("PDF export completed."));
             assert_eq!(app.ui.pdf_export.preset, "Press Quality");
             assert!(app.ui.pdf_export.marks_crop);
             let bytes = writes.lock().unwrap();
@@ -7669,8 +7680,10 @@ mod pdf_export_tests {
         app.services.write = Some(Box::new(|_, _| Err("disk full".into())));
         open_pdf_export(&mut app);
         app.ui.dialog.as_mut().unwrap().fields.insert("marksCrop".into(), json!(true));
-        assert_eq!(confirm(&mut app).unwrap_err(), "disk full");
-        assert!(app.ui.dialog.is_some());
+        assert_eq!(confirm(&mut app).unwrap()["queued"], true);
+        crate::pdf_export_job::tests::finish(&mut app);
+        assert_eq!(app.pdf_export_job.last.as_ref().unwrap()["error"], "disk full");
+        assert_eq!(app.ui.dialog.as_ref().unwrap().s("error"), "disk full");
         assert!(!app.ui.pdf_export.marks_crop);
         app.session.execute("file.new", &json!({})).unwrap();
         assert!(confirm(&mut app).unwrap_err().contains("document changed"));

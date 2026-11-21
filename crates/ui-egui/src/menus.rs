@@ -1801,7 +1801,11 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
         let st = app.session.active().ok_or("no document")?;
         let name = format!("{}.pdf", st.doc.title);
         let params = p.clone();
-        return app.ask_save(&name, Bound::Document, move |app, path| export_pdf(app, &with_path(&params, "path", path)));
+        return app.ask_save(&name, Bound::Document, move |app, path| {
+            let mut params = with_path(&params, "path", path);
+            params["background"] = json!(true);
+            export_pdf(app, &params)
+        });
     }
     let st = app.session.active().ok_or("no document")?;
     let name = format!("{}.pdf", st.doc.title);
@@ -1825,6 +1829,10 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
             o.entry("flatten").or_insert(json!(app.ui.flattener));
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !browser && params.get("background").and_then(Value::as_bool) == Some(true) {
+        return crate::pdf_export_job::start(app, path, params);
+    }
     let r = app.run("file.exportPdf", params)?;
     let bytes = pagenor_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
     if browser && let Some(download) = app.services.download.as_mut() {
@@ -1839,6 +1847,9 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if app.pdf_export_job.busy() && matches!(id, "app.exportPdf" | "app.exportInteractivePdf") {
+        return false;
+    }
     if id == "edit.paste" && app.services.request_paste.is_some() {
         return app.session.active().is_some();
     }

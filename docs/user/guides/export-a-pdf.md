@@ -18,6 +18,8 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 5. Under **Marks and Bleeds**, tick **Include document bleed**, **Crop Marks**, **Bleed Marks** or **Page Information** as your printer asks. **Weight:** and **Offset:** set the marks.
 6. Under **Advanced**, pick a **Standard:** (**None**, **PDF/X-4** or **PDF/A-2b**) and decide on **Tagged PDF**.
 7. Click **OK**, then choose where to save. The file name starts as your document's title with `.pdf`.
+8. On Mac, Windows and Linux, the progress window shows preparation, pages exported, finishing and saving, even for a one-page document. You can cancel before saving starts.
+9. After saving succeeds, the export window closes and **PDF export completed.** shows the destination, page count and any warnings. A failed export keeps your options available to retry.
 
 ## Presets
 
