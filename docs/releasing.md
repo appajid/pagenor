@@ -7,7 +7,7 @@ desktop development preview; [distribution notes](pagenor/DESKTOP_RELEASE_060.md
 record the native evidence and signing/interactive limits. Keep routine work
 local and publish versioned artifacts at milestones.
 
-Latest verified desktop preview: [0.15.0](releases/0.15.0.md#completed-distribution),
+Latest verified desktop preview: [0.15.1](releases/0.15.1.md#completed-distribution),
 with matching Mac/Windows/Linux packages and a pinned binary-source tag.
 
 ## Local prerequisites and commands
@@ -99,7 +99,8 @@ icons/export/uninstall and Linux/Flatpak execution, then publishes a development
 prerelease only after all checks pass. Actions and the optional font input are
 pinned. Publishing alone has contents-write permission; signing secrets and
 paid Mac runners are not required. A duplicate version skips artifact rebuilding
-and keeps source quality checks active. Published artifacts are never replaced.
+and keeps source quality checks active. Published installer/archive payloads are never replaced; completing missing
+platforms may extend the shared checksum manifest and release description.
 Publication requires nonempty `docs/releases/<version>.md` notes for the exact
 workspace version; it refuses to fall back to an older release's description.
 The matching universal Mac packages are included in the same gated build and checksum manifest. Both the finished DMG and extracted CLI ZIP must open the synthetic PageMaker document using their bundled helpers, with isolated HOME/PATH and no non-system helper libraries.
@@ -147,3 +148,10 @@ unchanged; extend the shared checksum manifest and release notes for the added
 platforms. Record the source-gate run and completion build separately. Do not
 install or quit the owner's current Mac app when the request is build/publication
 only. Packaging regressions cover source identity and failed/missing gates.
+
+The 0.15.1 completion is published: source gate/build run `44945175932` and
+packaging validation `44945176084` pass on automation source `ad420cf4c43a`,
+using application source `ffb3eba058c5`. Fourteen Mac/Linux files are added, the
+shared manifest covers all twenty payloads, and every public digest is verified.
+The six existing Windows installer/ZIP IDs and digests and the source tag are
+unchanged. The owner's current Mac session is retained without installation.

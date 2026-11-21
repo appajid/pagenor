@@ -1,14 +1,18 @@
 # Pagenor roadmap
 
-P11.34: preparing **Mac/Linux 0.15.1 distribution completion** at the owner's
-request. Build the exact existing tag source `ffb3eba058c5`, reusing its successful
-Mac/Windows/Linux seven-stage source gates and Rust 1.95 check. An isolated workflow
-validates tag/release/source/version identity, then reuses the existing universal
-Mac and native x86_64/ARM64 Linux/Flatpak package steps with no publication rights
-or Windows rebuild. All 26 packaging contracts pass, including rejection of moved
-tags, changed source, failed/missing gates and mismatched versions. Native package
-checks and final asset/checksum verification must pass before adding downloads.
-The owner's running Mac app/session and existing Windows installers are retained.
+P11.34: published **Mac/Linux 0.15.1 completion** on 22 November 2026, using the
+existing binary tag `ffb3eba058c5` and its passed seven-stage Mac/Windows/Linux
+source gates. All six completion jobs pass: source identity, universal Mac, both
+native Linux architectures and both Flatpak builds. Finished Mac DMG/app-copy
+signatures, both slices, bundled PageMaker text/save-reopen from DMG and CLI ZIP,
+helper system dependencies and PDF export pass. Linux package, native AppImage/
+update-data/PDF and Flatpak install/CLI checks pass on x86_64 and ARM64. Workflow/
+shell/PowerShell/metadata lint and 26 packaging contracts pass. Fourteen packages
+are added; all twenty payloads plus the extended manifest have verified public
+digests. Windows installer IDs/digests and the tag remain unchanged. The running
+Mac session is kept open with no local install or GUI launch. Mac remains ad-hoc
+signed without notarization; Linux PageMaker still needs an external helper.
+[Release, evidence and limits](docs/releases/0.15.1.md).
 
 P11.33: published **0.15.1 Windows PageMaker patch preview** on 21 November 2026.
 All x64/x86/ARM64 MSI and portable packages pass native exact English/high-byte
