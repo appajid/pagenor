@@ -1,5 +1,17 @@
 # Pagenor roadmap
 
+P11.32: local **Windows PageMaker text decoding repair**. Normalize CRLF before
+byte-v2 text recognition; reject malformed records and infer only named helper
+transport profiles when no explicit profile is supplied. Three regressions fail
+before the fix; all four Windows transport/profile checks pass afterwards. Replace
+the blank-only installer fixture with original English/high-byte text and exact
+Mac/Windows verifier assertions. All seven gates pass: 3,227 tests, zero failures,
+seven existing ignores and twenty WASM packages; 24 packaging contracts pass.
+The private 5-page and 32-page P65 imports match across LF/CRLF, including all text,
+styles, geometry and 47 image assets (only import timestamps differ). Originals,
+published installers and the running Mac session are unchanged. New native Windows
+package execution remains for the next build. [Evidence and limits](docs/pagemaker-windows-text-20261121.md).
+
 P11.31: local **PDF export progress** work after 0.15.0. Every native interactive
 export, including one page, shows actual page progress and finishing/saving phases.
 A successful save closes progress and reports PDF export completed; failures retain

@@ -38,3 +38,23 @@ then run build.py there. Boost and zlib come from the pinned public sources.
 Import remains experimental: legacy fonts must be supplied legally by the user;
 font conversion, complete PageMaker layout fidelity and automatic Unicode
 conversion are not implied by bundling the helper.
+
+
+The Rust trace decoder accepts LF and Windows CRLF record endings before decoding
+V2 payloads; no transport marker should become visible publication text. Named
+V1/V2 converter overrides infer their protocol when the explicit byte-output flag
+is absent. A supplied flag retains precedence, and custom names need an explicit
+profile. This does not detect or convert Anu font encodings.
+
+`packaging/tests/pagemaker_fixture.py` generates three pages plus original English
+and high-byte text, and a neighboring `.expected.json` contract. Both platform
+verifiers require exact decoded story text after saving/reopening `.pgnr`. A
+blank-page smoke test alone cannot verify text transport. Use only the synthetic
+fixture in public CI; owner publications and fonts stay local.
+
+
+Runtime conversion reads the original P65/PM7 directly. It preserves legacy text
+codes and font assignments; the original installed fonts provide the glyphs.
+There is no source-PDF dependency, PDF reconstruction or automatic Anu-to-Unicode
+content conversion. Expected-JSON files are test assertions only and are never
+required alongside a user's document.

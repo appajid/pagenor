@@ -197,6 +197,9 @@ fn byte_trace(output: &[u8]) -> Result<String> {
 fn decode_byte_trace(output: &[u8], hex_mode: bool) -> Result<String> {
     let mut raw = String::new();
     for (index, line) in output.split(|b| *b == b'\n').enumerate() {
+        // Windows stdio emits CRLF. Normalize the record terminator before
+        // recognizing insertText; never trim the original payload's bytes/spaces.
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
         if index >= MAX_EVENTS || line.len() > event_limit(line) {
             return Err(bad("file.open", "PageMaker event budget exceeded"));
         }
@@ -240,6 +243,9 @@ fn decode_byte_trace(output: &[u8], hex_mode: bool) -> Result<String> {
             }
             raw.push(')');
         } else {
+            if event.starts_with(b"insertText") {
+                return Err(bad("file.open", "malformed PageMaker byte text record"));
+            }
             raw.push_str(std::str::from_utf8(line).map_err(|_| bad("file.open", "PageMaker helper attributes are not UTF-8"))?);
         }
         raw.push('\n');
@@ -315,13 +321,27 @@ mod native {
         path.is_file().then_some(path)
     }
 
-    fn helper() -> (std::ffi::OsString, u8) {
-        if let Some(path) = std::env::var_os("PAGENOR_PAGEMAKER_CONVERTER") {
-            let mode = match std::env::var("PAGENOR_PAGEMAKER_BYTE_OUTPUT").as_deref() {
-                Ok("1") => 1,
-                Ok("2") => 2,
+    /// Recognize only our named transport helpers, never guess a document's
+    /// font encoding. An explicit profile retains precedence (including 0).
+    fn override_profile(path: &std::ffi::OsStr, explicit: Option<&str>) -> u8 {
+        if let Some(profile) = explicit {
+            return match profile {
+                "1" => 1,
+                "2" => 2,
                 _ => 0,
             };
+        }
+        match std::path::Path::new(path).file_stem().and_then(|name| name.to_str()) {
+            Some(name) if name.eq_ignore_ascii_case("pmd2raw-byte-v2") => 2,
+            Some(name) if name.eq_ignore_ascii_case("pmd2raw-byte-v1") => 1,
+            _ => 0,
+        }
+    }
+
+    fn helper() -> (std::ffi::OsString, u8) {
+        if let Some(path) = std::env::var_os("PAGENOR_PAGEMAKER_CONVERTER") {
+            let profile = std::env::var("PAGENOR_PAGEMAKER_BYTE_OUTPUT").ok();
+            let mode = override_profile(&path, profile.as_deref());
             return (path, mode);
         }
         if let Some(path) = std::env::current_exe().ok().and_then(|exe| bundled_helper(&exe)) {
@@ -373,6 +393,25 @@ mod native {
         std::fs::write(&helper, b"synthetic helper").unwrap();
         assert_eq!(bundled_helper(&executable), Some(helper));
         assert!(bundled_helper(&root.path().join("other/pagenor.exe")).is_none());
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn windows_named_helper_override_selects_transport_without_an_extra_environment_flag() {
+        for (name, expected) in [
+            ("pmd2raw-byte-v2.exe", 2),
+            ("PMD2RAW-BYTE-V2.EXE", 2),
+            ("pmd2raw-byte-v2", 2),
+            ("pmd2raw-byte-v1.exe", 1),
+            ("pmd2raw.exe", 0),
+            ("custom-converter", 0),
+        ] {
+            let path = std::path::Path::new("Folder with spaces").join(name);
+            assert_eq!(override_profile(path.as_os_str(), None), expected);
+            assert_eq!(override_profile(path.as_os_str(), Some("0")), 0);
+            assert_eq!(override_profile(path.as_os_str(), Some("1")), 1);
+            assert_eq!(override_profile(path.as_os_str(), Some("2")), 2);
+        }
     }
 
     fn read_pipe(reader: impl Read, limit: usize, exceeded: &AtomicBool) -> std::io::Result<Vec<u8>> {
@@ -913,6 +952,47 @@ mod tests {
         let origin = item.xf * pagenor_geom::Point::new(72., 144.);
         assert!((origin.x - 324.).abs() < 1e-6 && (origin.y - 108.).abs() < 1e-6);
         assert!(parse(&EVENTS.replace("rotate: 0.0000in", "rotate: 90pt"), "bad unit", true).is_err());
+    }
+
+    #[test]
+    fn v2_windows_crlf_and_mixed_newlines_match_lf_without_exposing_transport_text() {
+        let mut source = b"English text (fixture) 123 ".to_vec();
+        source.extend(128..=255);
+        source.push(0xe8);
+        let hex = source.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let lf = EVENTS.replace("a (b) తెలుగు", &format!("@PAGENOR-BYTES-V2@{hex}")).replace("insertText (z)", "insertText (@PAGENOR-BYTES-V2@7a)");
+        let expected = decode_byte_trace(lf.as_bytes(), true).unwrap();
+        for wire in [lf.replace('\n', "\r\n"), lf.replacen('\n', "\r\n", 8), lf.trim_end_matches('\n').replace('\n', "\r\n")] {
+            let normalized = decode_byte_trace(wire.as_bytes(), true).unwrap();
+            assert_eq!(normalized, expected, "Windows CRLF must decode the same source bytes as Unix LF");
+            let (mut doc, _, _) = parse(&normalized, "synthetic Windows text", true).unwrap();
+            resolve_legacy_bytes(&mut doc, |_, _, b| legacy_char(b, |c| c.is_ascii())).unwrap();
+            let story = doc.stories.values().next().unwrap();
+            assert!(story.text.starts_with("English text (fixture) 123 "));
+            assert!(!story.text.contains("@PAGENOR-BYTES-V2@"));
+            let reopened = crate::cmd::from_bytes(&crate::cmd::to_bytes(&doc).unwrap()).unwrap();
+            assert_eq!(reopened.stories.values().next().unwrap().text, story.text);
+            assert_eq!(reopened.stories.values().next().unwrap().chars, story.chars);
+        }
+    }
+
+    #[test]
+    fn v1_windows_crlf_preserves_raw_byte_payloads_without_trimming_spaces() {
+        let raw = EVENTS.replace("a (b) తెలుగు", "  Latin text  ");
+        assert_eq!(byte_trace(raw.replace('\n', "\r\n").as_bytes()).unwrap(), byte_trace(raw.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn v2_windows_transport_rejects_bad_records_instead_of_importing_markers() {
+        for wire in [
+            "insertText (@PAGENOR-BYTES-V2@a)\r\n",
+            "insertText (@PAGENOR-BYTES-V2@zz)\r\n",
+            "insertText (unmarked)\r\n",
+            "insertText (@PAGENOR-BYTES-V2@00)\r\n",
+            "insertText (@PAGENOR-BYTES-V2@41)\r\r\n",
+        ] {
+            assert!(decode_byte_trace(wire.as_bytes(), true).is_err(), "malformed Windows byte transport must fail closed");
+        }
     }
 
     #[test]

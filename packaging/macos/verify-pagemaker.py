@@ -41,9 +41,13 @@ def main():
         saved = Path(temp) / 'three-pages.pgnr'
         subprocess.run([str(cli), 'run', '--in', str(fixture), '--export', str(saved)], env=env, check=True)
         report = json.loads(subprocess.check_output([str(cli), 'run', '--in', str(saved), '--cmd', 'document.inspect'], env=env))
-        if report.get('pageCount') != 3:
+        expected = json.loads(fixture.with_suffix('.expected.json').read_text())
+        if report.get('pageCount') != expected['pages']:
             raise RuntimeError(f'PageMaker/native round trip lost pages: {report}')
-    print('ok packaged Mac converter: matching slices, signed, system libraries only, three pages in two PAGE containers, native save/reopen, isolated HOME/PATH')
+        stories = report.get('stories', [])
+        if len(stories) != 1 or stories[0].get('preview') != expected['text'] + '\n':
+            raise RuntimeError('PageMaker text transport did not decode the English and high-byte source text')
+    print('ok packaged Mac converter: matching slices, signed, system libraries only, three pages in two PAGE containers, exact English/high-byte text, native save/reopen, isolated HOME/PATH')
 
 
 if __name__ == '__main__':

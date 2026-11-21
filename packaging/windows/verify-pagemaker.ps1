@@ -52,8 +52,12 @@ try {
   & $cli run --in $Fixture --export $native
   if ($LASTEXITCODE -ne 0) { throw 'packaged PageMaker import failed without PATH/override' }
   $inspection = & $cli run --in $native --cmd document.inspect | ConvertFrom-Json
-  if ($LASTEXITCODE -ne 0 -or $inspection.pageCount -ne 3) { throw 'PageMaker/native round trip lost pages' }
-  Write-Output 'ok packaged converter: three pages in two PAGE containers, native save/reopen, no external PATH or user helper'
+  $expected = Get-Content -LiteralPath ([IO.Path]::ChangeExtension($Fixture, 'expected.json')) -Raw | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0 -or $inspection.pageCount -ne $expected.pages) { throw 'PageMaker/native round trip lost pages' }
+  if (@($inspection.stories).Count -ne 1 -or $inspection.stories[0].preview -cne ($expected.text + "`n")) {
+    throw 'PageMaker text transport did not decode the English and high-byte source text'
+  }
+  Write-Output 'ok packaged converter: three pages in two PAGE containers, exact English/high-byte text, native save/reopen, no external PATH or user helper'
 } finally {
   $env:PATH = $oldPath
   $env:PAGENOR_PAGEMAKER_CONVERTER = $oldConverter

@@ -131,6 +131,42 @@ class ReleasePackages(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, 'a missing matching release note must stop publication')
         self.assertFalse(capture.exists(), 'missing notes must fail before gh release create')
 
+    def test_pagemaker_fixture_carries_original_english_and_high_byte_text(self):
+        output=self.path/'synthetic.p65'
+        subprocess.run([sys.executable,str(ROOT/'packaging/tests/pagemaker_fixture.py'),str(output)],check=True)
+        expected=json.loads(output.with_suffix('.expected.json').read_text())
+        self.assertEqual(expected,{'pages':3,'text':'Pagenor PageMaker fixture: English 123 and caf\u00e9.'})
+        data=output.read_bytes()
+        self.assertEqual(data[:8],bytes.fromhex('d0cf11e0a1b11ae1'))
+        self.assertIn(expected['text'].encode('cp1252'),data)
+        verifier=(ROOT/'packaging/windows/verify-pagemaker.ps1').read_text()
+        self.assertIn("ChangeExtension($Fixture, 'expected.json')",verifier)
+        self.assertIn('preview -cne ($expected.text',verifier)
+
+    def test_macos_pagemaker_verifier_rejects_marker_text_empty_stories_and_changed_bytes(self):
+        import importlib.util
+        from unittest.mock import patch
+        spec=importlib.util.spec_from_file_location('verify_pagemaker',ROOT/'packaging/macos/verify-pagemaker.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        legal=self.path/'legal';legal.mkdir()
+        for name in ['libpagemaker-0.0.4.tar.xz','librevenge-0.0.6.tar.xz','pmd2raw-byte-v2.patch',
+                     'LICENSE-MPL-2.0.txt','LICENSE-Boost.txt','LICENSE-zlib.txt','build.py','CMakeLists.txt']:
+            (legal/name).write_text('synthetic notice')
+        fixture=self.path/'test.p65';fixture.write_bytes(b'synthetic')
+        text='Pagenor PageMaker fixture: English 123 and caf\u00e9.'
+        fixture.with_suffix('.expected.json').write_text(json.dumps({'pages':3,'text':text}))
+        argv=['verify','--directory',str(self.path),'--legal',str(legal),'--fixture',str(fixture),'--arch','universal']
+        for preview in [text+'\n','@PAGENOR-BYTES-V2@'+text.encode('cp1252').hex(),'',text.replace('caf\u00e9','cafe')+'\n']:
+            report={'pageCount':3,'stories':[{'preview':preview}]}
+            def output(args,**kwargs):
+                if args[-1]=='--version':return 'pmd2raw 0.0.4-pagenor-byte-v2'
+                if args[0]=='/usr/bin/otool':return 'helper:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n'
+                return json.dumps(report).encode()
+            with patch.object(sys,'argv',argv),patch.object(module.subprocess,'run'),patch.object(module.subprocess,'check_output',side_effect=output):
+                if preview==text+'\n':module.main()
+                else:
+                    with self.assertRaisesRegex(RuntimeError,'text transport'):module.main()
+
     def test_windows_extensions_share_a_single_open_verb_and_document_icon(self):
         ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
         wix = ET.parse(ROOT / 'packaging/windows/pagenor.wxs')
