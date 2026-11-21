@@ -1,5 +1,13 @@
 # Pagenor development phases
 
+P11.33: preparing **0.15.1 Windows patch installers** at the owner's explicit
+publication request. Includes P11.32 PageMaker CRLF source-text repair, bundled
+converter/source/notices and P11.31 PDF export progress. Build x64/x86/ARM64 MSI
+and portable ZIP packages, then verify exact English/high-byte P65 text, fresh
+installation and 0.14.1 upgrade preservation natively before publishing checksums.
+No private samples/fonts are uploaded. Existing releases and the running Mac
+session are retained. [Release notes and validation](docs/releases/0.15.1.md).
+
 P11.32: local **Windows PageMaker text decoding repair**. Normalize CRLF before
 byte-v2 text recognition; reject malformed records and infer only named helper
 transport profiles when no explicit profile is supplied. Three regressions fail

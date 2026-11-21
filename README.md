@@ -15,10 +15,13 @@ Source and issue tracking: [appajid/pagenor](https://github.com/appajid/pagenor)
 
 [User guides](docs/user/index.md) cover installation, documents, placement, PDF export and troubleshooting.
 
-Current development milestone: **0.15.0** — thirty selected upstream scopes improve
+Current development milestone: **0.15.1** — Windows PageMaker text repair and PDF
+export progress, retaining the 0.15.0 publishing update. See the
+[patch notes](docs/releases/0.15.1.md). Thirty retained upstream scopes improve
 editing, table rules, IDML styles, dialogs, image paste and Indic word breaking.
-All seven gates pass: 3,212 tests, zero failures, 7 existing ignores and
-twenty WASM packages; Windows/Linux shared-library checks pass.
+Local source validation: all seven gates pass, 3,227 tests, zero failures, seven
+existing ignores and twenty WASM packages. Previous Windows/Linux shared-library
+checks also pass.
 [Adaptation notes, limitations and remaining queue](docs/upstream-adoption-20261120.md).
 
 Published desktop preview: [0.15.0](https://github.com/appajid/pagenor/releases/tag/v0.15.0).
