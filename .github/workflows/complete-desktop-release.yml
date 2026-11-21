@@ -1,0 +1,256 @@
+# Build missing platforms from an already tested immutable release source.
+# This workflow has no publication permission; verified assets are added separately.
+name: Complete Mac and Linux release
+'on':
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Existing published release tag to complete
+        type: string
+        default: v0.15.1
+        required: true
+      quality_run:
+        description: Successful CI run for the exact tagged source
+        type: string
+        default: '44893303317'
+        required: true
+  push:
+    branches:
+    - codex/release-0151-unix
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release-completion-${{ inputs.source_tag || 'v0.15.1' }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  RUST_BACKTRACE: '1'
+  INPUT_VERSION: ''
+jobs:
+  version:
+    name: Verify tagged release source
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.gate.outputs.source }}
+      version: ${{ steps.gate.outputs.version }}
+      date: ${{ steps.gate.outputs.date }}
+    steps:
+    - name: Require exact published tag and successful source gates
+      id: gate
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SOURCE_TAG: ${{ inputs.source_tag || 'v0.15.1' }}
+        QUALITY_RUN: ${{ inputs.quality_run || '44893303317' }}
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        [[ "$QUALITY_RUN" =~ ^[0-9]+$ ]]
+        gh api "repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_TAG" > "$RUNNER_TEMP/release.json"
+        gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > "$RUNNER_TEMP/tag.json"
+        gh run view "$QUALITY_RUN" --repo "$GITHUB_REPOSITORY" --json headSha,status,conclusion,workflowName,jobs > "$RUNNER_TEMP/quality.json"
+        source="$(python3 -c 'import json,os; from pathlib import Path; print(json.loads((Path(os.environ["RUNNER_TEMP"])/"tag.json").read_text())["object"]["sha"])')"
+        [[ "$source" =~ ^[0-9a-f]{40}$ ]]
+        gh api --method GET "repos/$GITHUB_REPOSITORY/contents/Cargo.toml" -f "ref=$source" > "$RUNNER_TEMP/manifest.json"
+        python3 - <<'PYGATE'
+        import base64, datetime, json, os, re, tomllib
+        from pathlib import Path
+        root = Path(os.environ['RUNNER_TEMP'])
+        release = json.loads((root / 'release.json').read_text())
+        tag = json.loads((root / 'tag.json').read_text())
+        quality = json.loads((root / 'quality.json').read_text())
+        manifest = json.loads((root / 'manifest.json').read_text())
+        source = tag['object']['sha']
+        name = os.environ['SOURCE_TAG']
+        if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', name):
+            raise SystemExit('Invalid release version')
+        if tag['object']['type'] != 'commit' or not re.fullmatch('[0-9a-f]{40}', source):
+            raise SystemExit('Expected immutable commit tag')
+        if release['draft'] or release['tag_name'] != name or release['target_commitish'] != source:
+            raise SystemExit('Published release and tag source differ')
+        required = {'Quality (macos-15)', 'Quality (windows-latest)', 'Quality (ubuntu-22.04)', 'Minimum Rust (1.95)'}
+        passed = {job['name'] for job in quality['jobs'] if job['conclusion'] == 'success'}
+        if quality['workflowName'] != 'CI' or quality['headSha'] != source or quality['status'] != 'completed' or quality['conclusion'] != 'success' or not required <= passed:
+            raise SystemExit('Exact release source has not passed all required quality gates')
+        version = tomllib.loads(base64.b64decode(manifest['content']).decode())['workspace']['package']['version']
+        if version != name[1:]:
+            raise SystemExit('Source manifest version differs from release')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'source={source}\nversion={version}\ndate={datetime.datetime.now(datetime.timezone.utc).date()}\n')
+        print(f'Building missing Mac/Linux packages from verified {name} source {source}; no publication or Windows rebuild')
+        PYGATE
+    timeout-minutes: 10
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PAGENOR_BUILD_SHA: ${{ needs.version.outputs.source }}
+    steps:
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      with:
+        ref: ${{ needs.version.outputs.source }}
+    - name: Check out pinned release fonts
+      uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      with:
+        repository: storytold/craft-fonts
+        ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+        path: craft-fonts
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: 1.99.0
+        targets: aarch64-apple-darwin,x86_64-apple-darwin
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        key: release-macos-universal
+        cache-on-failure: true
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build universal app and required PageMaker helper
+      env:
+        CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        CRAFT_FONTS_REQUIRED: '1'
+      run: packaging/macos/package.sh --arch universal
+    - name: Verify finished DMG and extracted CLI PageMaker support
+      run: |
+        set -euo pipefail
+        python3 packaging/tests/pagemaker_fixture.py "$RUNNER_TEMP/three-pages.p65"
+        mount="$RUNNER_TEMP/pagenor-dmg"
+        mkdir -p "$mount" "$RUNNER_TEMP/pagenor-cli"
+        hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "dist/release/pagenor-$PAGENOR_VERSION-macos-universal.dmg"
+        trap 'hdiutil detach "$mount" || true' EXIT
+        python3 packaging/macos/verify-pagemaker.py --arch universal --fixture "$RUNNER_TEMP/three-pages.p65" \
+          --directory "$mount/Pagenor.app/Contents/MacOS" --legal "$mount/Pagenor.app/Contents/Resources/Legal/licenses/pagemaker"
+        ditto -x -k "dist/release/pagenor-cli-$PAGENOR_VERSION-macos-universal.zip" "$RUNNER_TEMP/pagenor-cli"
+        cli="$RUNNER_TEMP/pagenor-cli/pagenor-cli-$PAGENOR_VERSION-macos-universal"
+        python3 packaging/macos/verify-pagemaker.py --arch universal --fixture "$RUNNER_TEMP/three-pages.p65" \
+          --directory "$cli" --legal "$cli/licenses/pagemaker"
+        "$cli/pagenor-cli" run --sample --export "$RUNNER_TEMP/mac-smoke.pdf"
+        test -s "$RUNNER_TEMP/mac-smoke.pdf"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: release-macos
+        path: dist/release/*
+        if-no-files-found: error
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          runner: ubuntu-22.04
+          deb: amd64
+        - arch: aarch64
+          runner: ubuntu-22.04-arm
+          deb: arm64
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NFPM_VERSION: 2.47.0
+      PAGENOR_BUILD_SHA: ${{ needs.version.outputs.source }}
+    steps:
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      with:
+        ref: ${{ needs.version.outputs.source }}
+    - name: Check out craft-fonts
+      uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      with:
+        repository: storytold/craft-fonts
+        ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+        path: craft-fonts
+    - name: Install build and packaging tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+          desktop-file-utils appstream python3-yaml zsync
+        curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+          "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
+        sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      with:
+        toolchain: 1.99.0
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        key: release-linux-${{ matrix.arch }}
+    - name: Build and package (AppImage, deb, rpm, tar.gz)
+      env:
+        CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        CRAFT_FONTS_REQUIRED: '1'
+      run: packaging/linux/package.sh
+    - name: Check the packages
+      run: |
+        dpkg-deb --info dist/release/*.deb
+        dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/pagenor$|metainfo|applications'
+        ldd target/release/pagenor
+        python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/org.pagenor.app.yml')); assert m['id'] == 'org.pagenor.app'"
+        for appimage in dist/release/*.AppImage; do
+          chmod +x "$appimage"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
+          # Update information is embedded, and the .zsync for delta updates sits beside it.
+          "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
+          test -s "$appimage.zsync"
+        done
+    - name: Native CLI PDF export
+      run: |
+        target/release/pagenor-cli run --sample --export "$RUNNER_TEMP/pagenor-smoke.pdf"
+        test -s "$RUNNER_TEMP/pagenor-smoke.pdf"
+        file target/release/pagenor target/release/pagenor-cli
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: release-linux-${{ matrix.arch }}
+        path: dist/release/*
+        if-no-files-found: error
+    timeout-minutes: 120
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    needs:
+    - version
+    - linux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          runner: ubuntu-24.04
+        - arch: aarch64
+          runner: ubuntu-24.04-arm
+    env:
+      PAGENOR_VERSION: ${{ needs.version.outputs.version }}
+      PAGENOR_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PAGENOR_BUILD_SHA: ${{ needs.version.outputs.source }}
+    steps:
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      with:
+        ref: ${{ needs.version.outputs.source }}
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: release-linux-${{ matrix.arch }}
+        path: dist/linux
+    - name: Install flatpak-builder
+      run: |
+        sudo apt-get update
+        # librsvg2-common: the SVG pixbuf loader. flatpak-builder runs the host's
+        # `appstreamcli compose`, which renders the scalable icon and fails without it.
+        sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common
+        # Ubuntu 24.04's AppArmor blocks the unprivileged user namespaces bubblewrap needs.
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    - name: Build the Flatpak bundle
+      run: packaging/linux/flatpak-bundle.sh "dist/linux/pagenor-$PAGENOR_VERSION-linux-${{ matrix.arch }}.tar.gz"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: release-flatpak-${{ matrix.arch }}
+        path: dist/release/*.flatpak
+        if-no-files-found: error
+    timeout-minutes: 120

@@ -19,6 +19,58 @@ APP_ID = 'org.pagenor.app'
 
 
 class ReleasePackages(unittest.TestCase):
+    def test_completion_workflow_builds_only_immutable_mac_linux_source_without_publication(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/complete-desktop-release.yml').read_text())
+        self.assertEqual(set(workflow['jobs']), {'version', 'macos', 'linux', 'flatpak'})
+        self.assertEqual(workflow['permissions']['contents'], 'read')
+        self.assertEqual(workflow['on']['push']['branches'], ['codex/release-0151-unix'])
+        self.assertFalse(workflow['concurrency']['cancel-in-progress'])
+        for name in ['macos', 'linux', 'flatpak']:
+            job = workflow['jobs'][name]
+            self.assertEqual(job['env']['PAGENOR_BUILD_SHA'], '${{ needs.version.outputs.source }}')
+            checkouts = [step for step in job['steps'] if step.get('uses', '').startswith('actions/checkout@')
+                         and not step.get('with', {}).get('repository')]
+            self.assertEqual(len(checkouts), 1)
+            self.assertEqual(checkouts[0]['with']['ref'], '${{ needs.version.outputs.source }}')
+        mac_steps = workflow['jobs']['macos']['steps']
+        self.assertTrue(any('verify-pagemaker.py' in step.get('run', '') and 'hdiutil attach -readonly' in step['run'] for step in mac_steps))
+        self.assertEqual(set(workflow['jobs']['flatpak']['needs']), {'version', 'linux'})
+
+    def test_completion_source_gate_rejects_unverified_or_mismatched_release_sources(self):
+        import base64
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/complete-desktop-release.yml').read_text())
+        step = workflow['jobs']['version']['steps'][0]
+        script = step['run'].split("python3 - <<'PYGATE'\n", 1)[1].split('\nPYGATE', 1)[0]
+        names = ['Quality (macos-15)', 'Quality (windows-latest)', 'Quality (ubuntu-22.04)', 'Minimum Rust (1.95)']
+        for variant in ['ok', 'draft', 'wrong-tag', 'moved-tag', 'changed-source', 'failed-job', 'missing-job', 'running', 'wrong-workflow', 'wrong-version']:
+            release = dict(draft=False, tag_name='v' + VERSION, target_commitish='a' * 40)
+            tag = {'object': {'type': 'commit', 'sha': 'a' * 40}}
+            quality = dict(workflowName='CI', headSha='a' * 40, status='completed', conclusion='success',
+                           jobs=[dict(name=name, conclusion='success') for name in names])
+            version = VERSION
+            if variant == 'draft': release['draft'] = True
+            if variant == 'wrong-tag': release['tag_name'] = 'v99.0.0'
+            if variant == 'moved-tag': tag['object']['sha'] = 'b' * 40
+            if variant == 'changed-source': quality['headSha'] = 'b' * 40
+            if variant == 'failed-job': quality['jobs'][0]['conclusion'] = 'failure'
+            if variant == 'missing-job': quality['jobs'].pop()
+            if variant == 'running': quality['status'] = 'in_progress'
+            if variant == 'wrong-workflow': quality['workflowName'] = 'Unrelated'
+            if variant == 'wrong-version': version = '99.0.0'
+            manifest = {'content': base64.b64encode(('[workspace.package]\nversion = "' + version + '"\n').encode()).decode()}
+            for name, value in [('release', release), ('tag', tag), ('quality', quality), ('manifest', manifest)]:
+                (self.path / (name + '.json')).write_text(json.dumps(value))
+            output = self.path / ('source-gate-' + variant)
+            env = dict(self.env, RUNNER_TEMP=str(self.path), GITHUB_OUTPUT=str(output), SOURCE_TAG='v' + VERSION)
+            result = subprocess.run([sys.executable, '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, variant == 'ok', variant + ': ' + result.stdout + result.stderr)
+            if variant == 'ok':
+                self.assertIn('source=' + 'a' * 40, output.read_text())
+            else:
+                self.assertFalse(output.exists(), 'a rejected source must never reach build outputs')
+
     def test_desktop_release_preserves_existing_version_and_runs_source_quality(self):
         import yaml
         jobs = yaml.safe_load((ROOT / '.github/workflows/desktop-release.yml').read_text())['jobs']

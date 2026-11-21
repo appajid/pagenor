@@ -130,3 +130,20 @@ generates checksums and tags the original binary commit. Default runs verify
 only; published versions are never replaced. Link both the original build and
 final verification run in the completion record, rather than describing a run
 with a corrected harness failure as entirely successful.
+
+## Completing missing platforms on an existing release
+
+`complete-desktop-release.yml` builds Mac/Linux packages from the exact commit of
+a published lightweight release tag. It requires the existing successful CI run
+for that same source, including Mac/Windows/Linux and minimum-Rust gates, and
+checks the source Cargo version. Every package checkout and embedded build SHA
+uses the verified source, while the workflow itself may live on a newer branch.
+The dedicated `codex/release-0151-unix` push or manual dispatch starts builds; it
+reuses the established Mac/Linux/Flatpak scripts and has no write/publication job.
+
+Verify every native package and downloaded digest before adding missing files to
+the existing release. Keep the binary tag and existing Windows installers/ZIPs
+unchanged; extend the shared checksum manifest and release notes for the added
+platforms. Record the source-gate run and completion build separately. Do not
+install or quit the owner's current Mac app when the request is build/publication
+only. Packaging regressions cover source identity and failed/missing gates.
