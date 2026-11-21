@@ -24,13 +24,17 @@ existing ignores and twenty WASM packages. Previous Windows/Linux shared-library
 checks also pass.
 [Adaptation notes, limitations and remaining queue](docs/upstream-adoption-20261120.md).
 
-Published desktop preview: [0.15.0](https://github.com/appajid/pagenor/releases/tag/v0.15.0).
-Mac and Windows include the experimental PageMaker converter. All three platforms'
-source quality gates pass; Windows fresh installs, portable import and 0.14.1
-upgrades pass on x64/x86/ARM64. Twenty package payloads and a checksum manifest
-are published. Packages remain unsigned/ad-hoc signed; original legacy fonts are
-required. [Release verification and limits](docs/releases/0.15.0.md#completed-distribution).
-The earlier [0.14.2 Windows update candidates](docs/releases/0.14.2.md) remain unchanged.
+Published Windows preview: [0.15.1](https://github.com/appajid/pagenor/releases/tag/v0.15.1).
+The x64/x86/ARM64 installers and portable ZIPs include the repaired PageMaker
+text decoder and bundled converter. Exact English/high-byte text, fresh installs
+and 0.14.1 upgrades pass natively on all three architectures. Six packages plus
+checksums are published and verified. Original legacy fonts are required; no PDF
+is needed for conversion. [Verification and limits](docs/releases/0.15.1.md).
+
+Mac/Linux desktop downloads remain at [0.15.0](https://github.com/appajid/pagenor/releases/tag/v0.15.0);
+those files and the running Mac session are unchanged. Packages remain unsigned
+or ad-hoc signed. The earlier [0.14.2 Windows update candidates](docs/releases/0.14.2.md)
+remain unchanged.
 
 ## The sample magazine
 

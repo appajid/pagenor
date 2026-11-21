@@ -1,5 +1,10 @@
 # Windows PageMaker text transport — P11.32 (21 November 2026)
 
+Published follow-up: [Windows 0.15.1](releases/0.15.1.md) includes this repair.
+Native text-bearing installer, portable and upgrade checks now pass on x64/x86/ARM64;
+all seven public asset digests and the source tag are verified. The record below
+describes the preceding local diagnosis and its simulation limits.
+
 Local repair after 0.15.0; no installer, release, original publication or running
 Mac session is replaced. The owner reports both computers on the 0.14 series.
 The same defect is present in the published 0.15.0 binary source.

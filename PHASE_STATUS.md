@@ -1,12 +1,18 @@
 # Pagenor development phases
 
-P11.33: preparing **0.15.1 Windows patch installers** at the owner's explicit
-publication request. Includes P11.32 PageMaker CRLF source-text repair, bundled
-converter/source/notices and P11.31 PDF export progress. Build x64/x86/ARM64 MSI
-and portable ZIP packages, then verify exact English/high-byte P65 text, fresh
-installation and 0.14.1 upgrade preservation natively before publishing checksums.
-No private samples/fonts are uploaded. Existing releases and the running Mac
-session are retained. [Release notes and validation](docs/releases/0.15.1.md).
+P11.33: published **0.15.1 Windows PageMaker patch preview** on 21 November 2026.
+All x64/x86/ARM64 MSI and portable packages pass native exact English/high-byte
+P65 import, native save/reopen, fresh installation, compiled Finish UI and real
+0.14.1 upgrade checks, preserving settings/documents and creating desktop shortcuts.
+All seven hosted source gates pass: Mac 3,227 tests / 7 existing ignores, Windows
+3,213 / 4, Linux 3,224 / 7; zero failures and twenty WASM packages per host. Rust
+1.95 and all 24 packaging contracts pass. Six payloads plus checksums are public;
+all seven asset digests and source tag `ffb3eba058c5` are verified. Retains the
+bundled converter/source/notices, original text/font meanings without PDF input
+or automatic Anu-to-Unicode conversion, and P11.31 PDF export progress. Older
+release files and the current Mac session are unchanged. Windows signing and
+interactive Windows 10 performance retests remain pending.
+[Release, source/build verification and limits](docs/releases/0.15.1.md).
 
 P11.32: local **Windows PageMaker text decoding repair**. Normalize CRLF before
 byte-v2 text recognition; reject malformed records and infer only named helper
